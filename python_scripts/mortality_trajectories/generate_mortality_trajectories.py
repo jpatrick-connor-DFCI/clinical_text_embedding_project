@@ -5,9 +5,8 @@ import pandas as pd
 from embed_surv_utils import run_grid_CoxPH_parallel, get_heldout_risk_scores_CoxPH, generate_survival_embedding_df
 
 # Paths
-PROJ_PATH = '/data/gusev/USERS/jpconnor/clinical_text_project/'
-FIGURE_PATH = os.path.join(PROJ_PATH, 'figures/model_metrics/')
-DATA_PATH = os.path.join(PROJ_PATH, 'data/')
+FIGURE_PATH = '/data/gusev/USERS/jpconnor/figures/clinical_text_embedding_project/model_metrics/'
+DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 FEATURE_PATH = os.path.join(DATA_PATH, 'clinical_and_genomic_features/')
 SURV_PATH = os.path.join(DATA_PATH, 'survival_data/')
 RESULTS_PATH = os.path.join(SURV_PATH, 'results/icd_results/')

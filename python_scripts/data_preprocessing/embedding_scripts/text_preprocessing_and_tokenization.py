@@ -7,7 +7,8 @@ from transformers import AutoTokenizer
 from embed_surv_utils import clean_text, deduplicate_texts
 
 # Paths and constants
-DATA_PATH = "/data/gusev/PROFILE/CLINICAL/OncDRS/CLINICAL_TEXTS_2024_03/"
+DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
+RAW_TEXT_PATH = "/data/gusev/PROFILE/CLINICAL/OncDRS/CLINICAL_TEXTS_2024_03/"
 PREFIX = "RequestID-19-033-March24-"
 
 COL_METADATA = [
@@ -28,7 +29,7 @@ FILE_SOURCES = (
 )
 
 VTE_DATA_PATH = "/data/gusev/PROFILE/CLINICAL/robust_VTE_pred_project_2025_03_cohort/data/"
-BATCHED_DATA_PATH = "/data/gusev/USERS/jpconnor/clinical_text_project/data/batched_datasets/"
+BATCHED_DATA_PATH = os.path.join(DATA_PATH, "batched_datasets/")
 BATCHED_TEXT_PATH = os.path.join(BATCHED_DATA_PATH, "batched_text/")
 
 VTE_MRNS = pd.read_csv(VTE_DATA_PATH + "follow_up_vte_df_cohort.csv")["DFCI_MRN"].unique()
@@ -41,7 +42,7 @@ batch_count = 0
 text_data_dict = {col: [] for col in COLUMNS_TO_SAVE}
 
 for filename, source in tqdm(list(zip(FULL_FILENAMES, FILE_SOURCES))):
-    docs = json.load(open((os.path.join(DATA_PATH, filename)), 'r'))["response"]["docs"]
+    docs = json.load(open((os.path.join(RAW_TEXT_PATH, filename)), 'r'))["response"]["docs"]
 
     for note in docs:
         if int(note["DFCI_MRN"]) not in VTE_MRNS:

@@ -5,7 +5,7 @@ from tqdm import tqdm
 from embed_surv_utils import generate_survival_embedding_df
 
 # Paths
-DATA_PATH = "/data/gusev/USERS/jpconnor/clinical_text_project/data/"
+DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 SURV_PATH = os.path.join(DATA_PATH, 'survival_data/')
 NOTES_PATH = os.path.join(DATA_PATH, "batched_datasets/VTE_data/processed_datasets/")
 ICI_PRED_PATH = os.path.join(DATA_PATH,'treatment_prediction/line_ICI_prediction_data/')

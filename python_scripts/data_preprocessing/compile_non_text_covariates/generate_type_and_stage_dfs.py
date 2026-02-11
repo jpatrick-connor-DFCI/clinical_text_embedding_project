@@ -4,9 +4,8 @@ import pickle
 import pandas as pd
 
 # === Paths ===
-PROJ_PATH = '/data/gusev/USERS/jpconnor/clinical_text_project/'
-FIGURE_PATH = os.path.join(PROJ_PATH, 'figures/model_metrics/')
-DATA_PATH = os.path.join(PROJ_PATH, 'data/')
+FIGURE_PATH = '/data/gusev/USERS/jpconnor/figures/clinical_text_embedding_project/model_metrics/'
+DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 SURV_PATH = os.path.join(DATA_PATH, 'survival_data/')
 STAGE_PATH = '/data/gusev/PROFILE/CLINICAL/OncDRS/DERIVED_FROM_CLINICAL_TEXTS_2024_03/derived_files/cancer_stage/'
 

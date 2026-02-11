@@ -5,8 +5,7 @@ import numpy as np
 from embed_surv_utils import generate_survival_embedding_df
 
 # Paths
-PROJ_PATH = '/data/gusev/USERS/jpconnor/clinical_text_project/'
-DATA_PATH = os.path.join(PROJ_PATH, 'data/')
+DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 SURV_PATH = os.path.join(DATA_PATH, 'survival_data/')
 NOTES_PATH = os.path.join(DATA_PATH, 'batched_datasets/processed_datasets/')
 OUTPUT_PATH = os.path.join(SURV_PATH, 'time-to-icd/landmark_datasets/')

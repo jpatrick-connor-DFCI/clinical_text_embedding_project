@@ -3,8 +3,7 @@ import os
 import pandas as pd
 
 # === Paths ===
-PROJ_PATH = '/data/gusev/USERS/jpconnor/clinical_text_project/'
-DATA_PATH = os.path.join(PROJ_PATH, 'data/')
+DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 SURV_PATH = os.path.join(DATA_PATH, 'survival_data/')
 RESULTS_PATH = os.path.join(SURV_PATH, 'results/icd_results/')
 TREATMENT_PATH = os.path.join(DATA_PATH, 'treatment_prediction/first_line_treatment_prediction_data/')

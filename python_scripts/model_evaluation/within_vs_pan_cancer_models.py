@@ -8,8 +8,7 @@ from sksurv.metrics import concordance_index_censored
 from embed_surv_utils import run_grid_CoxPH_parallel, get_heldout_risk_scores_CoxPH
 
 # === Paths ===
-PROJ_PATH = '/data/gusev/USERS/jpconnor/clinical_text_project/'
-DATA_PATH = os.path.join(PROJ_PATH, 'data/')
+DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 SURV_PATH = os.path.join(DATA_PATH, 'survival_data/')
 RESULTS_PATH = os.path.join(SURV_PATH, 'results/icd_results/')
 

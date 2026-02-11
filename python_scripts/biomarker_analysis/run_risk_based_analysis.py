@@ -10,8 +10,7 @@ random.seed(42)  # set seed for reproducibility
 
 # Paths
 IO_PATH = '/data/gusev/USERS/mjsaleh/'
-PROJ_PATH = '/data/gusev/USERS/jpconnor/clinical_text_project/'
-DATA_PATH = os.path.join(PROJ_PATH, 'data/')
+DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
 NOTES_PATH = os.path.join(DATA_PATH, 'batched_datasets/VTE_data/processed_datasets/')
 RISK_RUN_PATH = os.path.join(MARKER_PATH, 'text_risk_runs/')

@@ -4,7 +4,7 @@ from tqdm import tqdm
 from embed_surv_utils import find_icd_code
 
 # Paths
-DATA_PATH = '/data/gusev/USERS/jpconnor/clinical_text_project/data/'
+DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 DIAGNOSTICS_PATH = '/data/gusev/PROFILE/CLINICAL/OncDRS/ALL_2025_03/'
 INTAE_DATA_PATH = '/data/gusev/PROFILE/CLINICAL/robust_VTE_pred_project_2025_03_cohort/data/'
 CODE_PATH = os.path.join(DATA_PATH, 'code_data/')

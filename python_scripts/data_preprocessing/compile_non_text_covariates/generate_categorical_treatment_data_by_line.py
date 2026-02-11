@@ -2,7 +2,7 @@ import os
 import pandas as pd
 
 # Paths
-DATA_PATH = "/data/gusev/USERS/jpconnor/clinical_text_project/data/"
+DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 SURV_PATH = os.path.join(DATA_PATH, 'survival_data/')
 NOTES_PATH = os.path.join(DATA_PATH, "batched_datasets/processed_datasets/")
 TREATMENT_PRED_PATH = os.path.join(DATA_PATH,'treatment_prediction/first_line_treatment_prediction_data/')

@@ -9,15 +9,14 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
 
 # Paths
-PROJ_PATH = '/data/gusev/USERS/jpconnor/clinical_text_project/'
-FIGURE_PATH = os.path.join(PROJ_PATH, 'figures/model_metrics/')
-DATA_PATH = os.path.join(PROJ_PATH, 'data/')
+FIGURE_PATH = '/data/gusev/USERS/jpconnor/figures/clinical_text_embedding_project/model_metrics/'
+DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 FEATURE_PATH = os.path.join(DATA_PATH, 'clinical_and_genomic_features/')
 SURV_PATH = os.path.join(DATA_PATH, 'survival_data/')
 RESULTS_PATH = os.path.join(SURV_PATH, 'results/icd_results/')
 TRAJECTORY_PATH = os.path.join(RESULTS_PATH, 'mortality_trajectories/')
 
-FIGURE_PATH = os.path.join(PROJ_PATH, 'figures/mortality_trajectories/')
+FIGURE_PATH = '/data/gusev/USERS/jpconnor/figures/clinical_text_embedding_project/mortality_trajectories/'
 FEATURE_FIG_PATH = os.path.join(FIGURE_PATH, 'feature_based_clusters_decay_param=0.01/')
 UNSCALED_FEATURE_FIG_PATH = os.path.join(FEATURE_FIG_PATH, 'unscaled/')
 ADJUSTED_FEATURE_FIG_PATH = os.path.join(FEATURE_FIG_PATH, 'adjusted/')

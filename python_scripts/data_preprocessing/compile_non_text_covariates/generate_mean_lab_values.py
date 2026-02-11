@@ -4,7 +4,7 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-DATA_PATH = '/data/gusev/USERS/jpconnor/clinical_text_project/data/'
+DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 DIAGNOSTICS_PATH = '/data/gusev/PROFILE/CLINICAL/OncDRS/ALL_2025_03/'
 INTAE_DATA_PATH = '/data/gusev/PROFILE/CLINICAL/robust_VTE_pred_project_2025_03_cohort/data/'
 SURV_PATH = os.path.join(DATA_PATH, 'survival_data/')

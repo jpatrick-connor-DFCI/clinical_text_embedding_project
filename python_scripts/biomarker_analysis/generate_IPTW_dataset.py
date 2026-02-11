@@ -5,8 +5,7 @@ import pandas as pd
 random.seed(42)  # set seed for reproducibility
 
 # Paths
-PROJ_PATH = '/data/gusev/USERS/jpconnor/clinical_text_project/'
-DATA_PATH = os.path.join(PROJ_PATH, 'data/')
+DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 ICI_PATH = os.path.join(DATA_PATH, 'treatment_prediction/ICI_propensity/w_30_day_buffer/')
 SURV_PATH = os.path.join(DATA_PATH, 'survival_data/')
 MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')

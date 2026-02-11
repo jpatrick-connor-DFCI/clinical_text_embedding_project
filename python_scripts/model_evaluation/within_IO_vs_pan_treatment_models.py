@@ -15,9 +15,8 @@ random.seed(42)  # set seed for reproducibility
 
 # Paths
 IO_PATH = '/data/gusev/USERS/mjsaleh/'
-PROJ_PATH = '/data/gusev/USERS/jpconnor/clinical_text_project/'
-FIGURE_PATH = os.path.join(PROJ_PATH, 'figures/model_metrics/')
-DATA_PATH = os.path.join(PROJ_PATH, 'data/')
+FIGURE_PATH = '/data/gusev/USERS/jpconnor/figures/clinical_text_embedding_project/model_metrics/'
+DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 SURV_PATH = os.path.join(DATA_PATH, 'survival_data/')
 RESULTS_PATH = os.path.join(SURV_PATH, 'results/')
 NOTES_PATH = os.path.join(DATA_PATH, 'batched_datasets/VTE_data/processed_datasets/')

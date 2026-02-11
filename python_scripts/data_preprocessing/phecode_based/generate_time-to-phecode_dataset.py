@@ -6,7 +6,7 @@ from datetime import datetime
 from embed_surv_utils import map_time_to_event
 
 # Paths
-DATA_PATH = '/data/gusev/USERS/jpconnor/clinical_text_project/data/'
+DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 SURV_PATH = os.path.join(DATA_PATH, 'survival_data/')
 INTAE_DATA_PATH = '/data/gusev/PROFILE/CLINICAL/robust_VTE_pred_project_2025_03_cohort/data/'
 METS_PROJECT = '/data/gusev/Recurrent_Mets_Project/'
