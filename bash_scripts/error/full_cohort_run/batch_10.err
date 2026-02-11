@@ -1,38 +1,0 @@
-  0%|          | 0/25 [00:00<?, ?it/s]  0%|          | 0/25 [00:00<?, ?it/s]  4%|▍         | 1/25 [27:08<10:51:21, 1628.41s/it]  4%|▍         | 1/25 [32:52<13:09:09, 1972.91s/it]  8%|▊         | 2/25 [52:48<10:04:14, 1576.29s/it]  8%|▊         | 2/25 [1:03:24<12:04:25, 1889.80s/it] 12%|█▏        | 3/25 [1:23:54<10:26:32, 1708.75s/it] 12%|█▏        | 3/25 [1:43:31<12:59:28, 2125.83s/it] 16%|█▌        | 4/25 [1:54:35<10:16:21, 1761.03s/it] 20%|██        | 5/25 [2:16:11<8:51:05, 1593.28s/it]  16%|█▌        | 4/25 [2:20:16<12:35:03, 2157.32s/it] 20%|██        | 5/25 [2:39:26<10:37:47, 1913.36s/it]
-Traceback (most recent call last):
-  File "/data/gusev/USERS/jpconnor/clinical_text_project/code/python_scripts/model_training/full_cohort_batches/batch_10.py", line 61, in <module>
-    text_test.to_csv(os.path.join(event_path, 'text_test.csv'), index=False)
-    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/data/gusev/USERS/jpconnor/conda/envs/clinical_notes_project/lib/python3.13/site-packages/pandas/util/_decorators.py", line 333, in wrapper
-    return func(*args, **kwargs)
-  File "/data/gusev/USERS/jpconnor/conda/envs/clinical_notes_project/lib/python3.13/site-packages/pandas/core/generic.py", line 3986, in to_csv
-    return DataFrameRenderer(formatter).to_csv(
-           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
-        path_or_buf,
-        ^^^^^^^^^^^^
-    ...<14 lines>...
-        storage_options=storage_options,
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    )
-    ^
-  File "/data/gusev/USERS/jpconnor/conda/envs/clinical_notes_project/lib/python3.13/site-packages/pandas/io/formats/format.py", line 1014, in to_csv
-    csv_formatter.save()
-    ~~~~~~~~~~~~~~~~~~^^
-  File "/data/gusev/USERS/jpconnor/conda/envs/clinical_notes_project/lib/python3.13/site-packages/pandas/io/formats/csvs.py", line 251, in save
-    with get_handle(
-         ~~~~~~~~~~^
-        self.filepath_or_buffer,
-        ^^^^^^^^^^^^^^^^^^^^^^^^
-    ...<4 lines>...
-        storage_options=self.storage_options,
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    ) as handles:
-    ^
-  File "/data/gusev/USERS/jpconnor/conda/envs/clinical_notes_project/lib/python3.13/site-packages/pandas/io/common.py", line 873, in get_handle
-    handle = open(
-        handle,
-    ...<3 lines>...
-        newline="",
-    )
-OSError: [Errno 5] Input/output error: '/data/gusev/USERS/jpconnor/clinical_text_project/data/survival_data/results/icd10_level_3_full_cohort/B07/text_test.csv'
- 20%|██        | 5/25 [2:42:28<10:19:54, 1859.70s/it] 24%|██▍       | 6/25 [3:10:39<9:30:39, 1802.07s/it]  28%|██▊       | 7/25 [3:48:13<9:44:59, 1949.97s/it] 32%|███▏      | 8/25 [4:19:15<9:04:31, 1921.88s/it] 36%|███▌      | 9/25 [4:43:25<7:53:11, 1774.47s/it] 40%|████      | 10/25 [5:09:12<7:06:05, 1704.36s/it] 44%|████▍     | 11/25 [5:42:49<6:59:56, 1799.78s/it] 48%|████▊     | 12/25 [6:16:07<6:43:04, 1860.32s/it] 52%|█████▏    | 13/25 [6:43:08<5:57:33, 1787.76s/it] 56%|█████▌    | 14/25 [7:16:16<5:38:49, 1848.13s/it] 60%|██████    | 15/25 [7:44:18<4:59:42, 1798.21s/it] 64%|██████▍   | 16/25 [8:08:24<4:13:49, 1692.12s/it] 68%|██████▊   | 17/25 [8:34:33<3:40:40, 1655.01s/it] 72%|███████▏  | 18/25 [9:09:08<3:27:48, 1781.27s/it] 76%|███████▌  | 19/25 [9:36:41<2:54:16, 1742.76s/it] 80%|████████  | 20/25 [10:02:37<2:20:33, 1686.70s/it] 84%|████████▍ | 21/25 [10:28:00<1:49:10, 1637.59s/it] 88%|████████▊ | 22/25 [10:58:48<1:25:02, 1700.75s/it] 92%|█████████▏| 23/25 [11:35:16<1:01:33, 1846.78s/it] 96%|█████████▌| 24/25 [11:58:55<28:38, 1718.66s/it]  100%|██████████| 25/25 [12:32:06<00:00, 1800.20s/it]100%|██████████| 25/25 [12:32:06<00:00, 1805.05s/it]
