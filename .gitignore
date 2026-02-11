@@ -1,0 +1,20 @@
+# Jupyter
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/*
+
+# Log files
+*.err
+*.out
+bash_scripts/error/
+bash_scripts/output/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Data files (if applicable)
+*.csv
+*.parquet
+data/

@@ -1,307 +1,0 @@
-Traceback (most recent call last):
-  File "/data/gusev/USERS/jpconnor/clinical_text_project/code/python_scripts/mortality_trajectories/generate_mortality_trajectories.py", line 21, in <module>
-    cancer_type_df = pd.read_csv(os.path.join(FEATURE_PATH, 'cancer_type_df.csv'))
-  File "/data/gusev/USERS/jpconnor/conda/envs/clinical_notes_project/lib/python3.13/site-packages/pandas/io/parsers/readers.py", line 1026, in read_csv
-    return _read(filepath_or_buffer, kwds)
-  File "/data/gusev/USERS/jpconnor/conda/envs/clinical_notes_project/lib/python3.13/site-packages/pandas/io/parsers/readers.py", line 620, in _read
-    parser = TextFileReader(filepath_or_buffer, **kwds)
-  File "/data/gusev/USERS/jpconnor/conda/envs/clinical_notes_project/lib/python3.13/site-packages/pandas/io/parsers/readers.py", line 1620, in __init__
-    self._engine = self._make_engine(f, self.engine)
-                   ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
-  File "/data/gusev/USERS/jpconnor/conda/envs/clinical_notes_project/lib/python3.13/site-packages/pandas/io/parsers/readers.py", line 1880, in _make_engine
-    self.handles = get_handle(
-                   ~~~~~~~~~~^
-        f,
-        ^^
-    ...<6 lines>...
-        storage_options=self.options.get("storage_options", None),
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    )
-    ^
-  File "/data/gusev/USERS/jpconnor/conda/envs/clinical_notes_project/lib/python3.13/site-packages/pandas/io/common.py", line 873, in get_handle
-    handle = open(
-        handle,
-    ...<3 lines>...
-        newline="",
-    )
-FileNotFoundError: [Errno 2] No such file or directory: '/data/gusev/USERS/jpconnor/clinical_text_project/data/clinical_genomic_features/cancer_type_df.csv'
-[Parallel(n_jobs=-1)]: Using backend ThreadingBackend with 16 concurrent workers.
-[Parallel(n_jobs=-1)]: Done  17 tasks      | elapsed: 20.6min
-[Parallel(n_jobs=-1)]: Using backend LokyBackend with 16 concurrent workers.
-  0%|          | 0/20 [00:00<?, ?it/s]  5%|▌         | 1/20 [04:33<1:26:41, 273.74s/it] 10%|█         | 2/20 [09:19<1:24:09, 280.53s/it] 15%|█▌        | 3/20 [13:15<1:13:44, 260.26s/it] 20%|██        | 4/20 [17:44<1:10:21, 263.82s/it] 25%|██▌       | 5/20 [22:12<1:06:20, 265.34s/it] 30%|███       | 6/20 [26:08<59:37, 255.51s/it]  /data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
- 35%|███▌      | 7/20 [30:41<56:32, 260.97s/it]/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
- 40%|████      | 8/20 [34:53<51:37, 258.15s/it]/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
- 45%|████▌     | 9/20 [38:49<46:03, 251.26s/it]/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
- 50%|█████     | 10/20 [42:29<40:15, 241.50s/it]/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
- 55%|█████▌    | 11/20 [45:57<34:42, 231.40s/it]/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
- 60%|██████    | 12/20 [49:04<29:02, 217.82s/it]/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
- 65%|██████▌   | 13/20 [51:38<23:10, 198.70s/it]/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
- 70%|███████   | 14/20 [54:14<18:34, 185.67s/it]/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
- 75%|███████▌  | 15/20 [56:37<14:24, 172.86s/it]/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
- 80%|████████  | 16/20 [58:55<10:48, 162.21s/it]/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
- 85%|████████▌ | 17/20 [1:00:56<07:29, 149.93s/it]/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
- 90%|█████████ | 18/20 [1:02:38<04:30, 135.47s/it]/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
- 95%|█████████▌| 19/20 [1:04:34<02:09, 129.67s/it]/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-100%|██████████| 20/20 [1:06:15<00:00, 120.91s/it]100%|██████████| 20/20 [1:06:15<00:00, 198.75s/it]
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_scripts/mortality_trajectories/generate_mortality_trajectories.py:21: DtypeWarning: Columns (1,5,6,9) have mixed types. Specify dtype option on import or set low_memory=False.
-  notes_meta = pd.read_csv(NOTES_PATH + 'full_VTE_embeddings_metadata.csv')
-[Parallel(n_jobs=-1)]: Using backend ThreadingBackend with 16 concurrent workers.
-[Parallel(n_jobs=-1)]: Done  17 tasks      | elapsed: 20.3min
-[Parallel(n_jobs=-1)]: Using backend LokyBackend with 16 concurrent workers.
-  0%|          | 0/20 [00:00<?, ?it/s]  5%|▌         | 1/20 [01:28<28:08, 88.88s/it] 10%|█         | 2/20 [03:00<27:11, 90.64s/it] 15%|█▌        | 3/20 [04:36<26:21, 93.02s/it] 20%|██        | 4/20 [06:18<25:45, 96.59s/it] 25%|██▌       | 5/20 [08:06<25:08, 100.54s/it] 30%|███       | 6/20 [09:57<24:18, 104.17s/it] 35%|███▌      | 7/20 [11:52<23:18, 107.60s/it] 40%|████      | 8/20 [13:49<22:08, 110.72s/it] 45%|████▌     | 9/20 [15:50<20:51, 113.82s/it] 50%|█████     | 10/20 [17:52<19:23, 116.40s/it] 55%|█████▌    | 11/20 [19:53<17:39, 117.75s/it] 60%|██████    | 12/20 [21:57<15:58, 119.80s/it] 65%|██████▌   | 13/20 [24:14<14:34, 124.96s/it] 70%|███████   | 14/20 [26:32<12:53, 128.84s/it] 75%|███████▌  | 15/20 [28:52<11:02, 132.40s/it] 80%|████████  | 16/20 [31:15<09:01, 135.46s/it] 85%|████████▌ | 17/20 [33:37<06:51, 137.31s/it] 90%|█████████ | 18/20 [36:00<04:38, 139.11s/it] 95%|█████████▌| 19/20 [38:27<02:21, 141.60s/it]100%|██████████| 20/20 [40:53<00:00, 142.74s/it]100%|██████████| 20/20 [40:53<00:00, 122.66s/it]
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_scripts/mortality_trajectories/generate_mortality_trajectories.py:21: DtypeWarning: Columns (1,5,6,9) have mixed types. Specify dtype option on import or set low_memory=False.
-  notes_meta = pd.read_csv(NOTES_PATH + 'full_VTE_embeddings_metadata.csv')
-[Parallel(n_jobs=-1)]: Using backend ThreadingBackend with 16 concurrent workers.
-[Parallel(n_jobs=-1)]: Done  17 tasks      | elapsed: 19.9min
-[Parallel(n_jobs=-1)]: Using backend LokyBackend with 16 concurrent workers.
-  0%|          | 0/20 [00:00<?, ?it/s]  5%|▌         | 1/20 [13:57<4:25:09, 837.35s/it] 10%|█         | 2/20 [22:25<3:13:04, 643.57s/it] 15%|█▌        | 3/20 [25:56<2:06:25, 446.18s/it] 20%|██        | 4/20 [30:08<1:38:32, 369.51s/it] 25%|██▌       | 5/20 [34:43<1:23:51, 335.41s/it]/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
- 30%|███       | 6/20 [40:30<1:19:09, 339.26s/it]/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
- 35%|███▌      | 7/20 [47:23<1:18:45, 363.49s/it]/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
- 40%|████      | 8/20 [51:23<1:04:50, 324.17s/it]/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
- 45%|████▌     | 9/20 [54:52<52:48, 288.02s/it]  /data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
- 50%|█████     | 10/20 [1:05:08<1:04:53, 389.38s/it]/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
- 55%|█████▌    | 11/20 [1:07:52<48:03, 320.40s/it]  /data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
- 60%|██████    | 12/20 [1:10:24<35:52, 269.10s/it]/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
- 65%|██████▌   | 13/20 [1:12:42<26:46, 229.48s/it]/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
- 70%|███████   | 14/20 [1:15:00<20:11, 201.89s/it]/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
- 75%|███████▌  | 15/20 [1:17:23<15:20, 184.19s/it]/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
- 80%|████████  | 16/20 [1:19:37<11:15, 168.91s/it]/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
- 85%|████████▌ | 17/20 [1:21:29<07:35, 151.90s/it]/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
- 90%|█████████ | 18/20 [1:23:16<04:36, 138.41s/it]/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
- 95%|█████████▌| 19/20 [1:24:49<02:04, 124.81s/it]/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-/data/gusev/USERS/jpconnor/clinical_text_project/code/python_utils/embed_surv_utils/cox_models.py:746: ConvergenceWarning: Optimization terminated early, you might want to increase the number of iterations (max_iter=1000).
-  model.fit(X_tr, y_tr)
-100%|██████████| 20/20 [1:26:25<00:00, 116.18s/it]100%|██████████| 20/20 [1:26:25<00:00, 259.29s/it]
