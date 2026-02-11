@@ -1,6 +1,7 @@
 Clinical Text Project:
 
 Code directory overview:
+-jupyter notebooks
 - python_scripts:
     - data_preprocessing
         - text_preprocessing_and_tokenization.py
