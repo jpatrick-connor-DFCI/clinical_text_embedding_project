@@ -1,0 +1,10 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "embed_surv_utils"
+version = "0.1.0"
+description = "My custom helper functions"
+authors = [{ name="J. Patrick Connor", email="patrickconnor@g.harvard.edu" }]
+dependencies = []
