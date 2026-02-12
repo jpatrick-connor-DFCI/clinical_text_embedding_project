@@ -74,13 +74,13 @@ def add_icd10_chapter_block(df: pd.DataFrame, code_col: str, chapters: pd.DataFr
     out["Title"] = title
     return out
 
-def _to_icd10_two_decimal(code: str) -> str:
+def _to_icd10_one_decimal(code: str) -> str:
     """
-    Normalize ICD-10 code to keep up to two characters after the decimal.
+    Normalize ICD-10 code to keep up to one character after the decimal.
     Examples:
-      A04.11 -> A04.11
+      A04.11 -> A04.1
       A04.1  -> A04.1
-      A0411  -> A04.11
+      A0411  -> A04.1
       A04    -> A04
     """
     if pd.isna(code):
@@ -94,12 +94,12 @@ def _to_icd10_two_decimal(code: str) -> str:
         right = re.sub(r"[^A-Z0-9]", "", right)
         if len(right) == 0:
             return left
-        return f"{left}.{right[:2]}"
+        return f"{left}.{right[:1]}"
 
     code = re.sub(r"[^A-Z0-9]", "", code)
     if len(code) <= 3:
         return code
-    return f"{code[:3]}.{code[3:5]}"
+    return f"{code[:3]}.{code[3:4]}"
 
 # ---- example ----
 # df = pd.DataFrame({"icd10": ["A04.1", "C50.9", "D64", "H90.3", "U07.1", "Y93.9"]})
@@ -124,18 +124,18 @@ mrn_tstart_dict = dict(zip(vte_data_sub['DFCI_MRN'], vte_data_sub['first_treatme
 
 # EHR ICD info
 split_ehr_icd_subset = pd.read_csv(os.path.join(SURV_PATH, 'time-to-icd/timestamped_icd_info.csv'))
-split_ehr_icd_subset['ICD10_LEVEL_5_CD'] = split_ehr_icd_subset['DIAGNOSIS_ICD10_CD'].apply(_to_icd10_two_decimal)
+split_ehr_icd_subset['ICD10_LEVEL_4_CD'] = split_ehr_icd_subset['DIAGNOSIS_ICD10_CD'].apply(_to_icd10_one_decimal)
 split_ehr_icd_subset['START_DT'] = pd.to_datetime(split_ehr_icd_subset['START_DT'], errors='coerce')
 split_ehr_icd_subset = (split_ehr_icd_subset
-                        .sort_values(['DFCI_MRN', 'ICD10_LEVEL_5_CD', 'START_DT'])
-                        .drop_duplicates(subset=['DFCI_MRN', 'ICD10_LEVEL_5_CD'], keep='first'))
+                        .sort_values(['DFCI_MRN', 'ICD10_LEVEL_4_CD', 'START_DT'])
+                        .drop_duplicates(subset=['DFCI_MRN', 'ICD10_LEVEL_4_CD'], keep='first'))
 
-icd_descr_lookup = {key : icd10.find(key).description for key in split_ehr_icd_subset['ICD10_LEVEL_5_CD'].dropna().unique() if icd10.find(key) is not None}
-split_ehr_icd_subset['ICD10_LEVEL_5_NM'] = split_ehr_icd_subset['ICD10_LEVEL_5_CD'].map(icd_descr_lookup)
+icd_descr_lookup = {key : icd10.find(key).description for key in split_ehr_icd_subset['ICD10_LEVEL_4_CD'].dropna().unique() if icd10.find(key) is not None}
+split_ehr_icd_subset['ICD10_LEVEL_4_NM'] = split_ehr_icd_subset['ICD10_LEVEL_4_CD'].map(icd_descr_lookup)
 
-common_icds = split_ehr_icd_subset[['ICD10_LEVEL_5_CD', 'ICD10_LEVEL_5_NM']].value_counts().reset_index()
+common_icds = split_ehr_icd_subset[['ICD10_LEVEL_4_CD', 'ICD10_LEVEL_4_NM']].value_counts().reset_index()
 
-common_icds_w_descr = add_icd10_chapter_block(common_icds, 'ICD10_LEVEL_5_CD')
+common_icds_w_descr = add_icd10_chapter_block(common_icds, 'ICD10_LEVEL_4_CD')
 common_icds_to_select = common_icds_w_descr.loc[~common_icds_w_descr['Chapter'].isin(['II',   # Neoplasms
                                                                                       'XV',   # Pregnancy
                                                                                       'XVI',  # Conditions in the perinatal period
@@ -147,14 +147,14 @@ common_icds_to_select = common_icds_w_descr.loc[~common_icds_w_descr['Chapter'].
                                                                                      ])]
 
 split_ehr_icd_subset = split_ehr_icd_subset.loc[
-    split_ehr_icd_subset['ICD10_LEVEL_5_CD'].isin(common_icds_to_select['ICD10_LEVEL_5_CD'].unique())
+    split_ehr_icd_subset['ICD10_LEVEL_4_CD'].isin(common_icds_to_select['ICD10_LEVEL_4_CD'].unique())
 ].copy()
 
 # Generate time-to-event for icds
-icds_to_analyze = split_ehr_icd_subset['ICD10_LEVEL_5_CD'].dropna().unique()
+icds_to_analyze = split_ehr_icd_subset['ICD10_LEVEL_4_CD'].dropna().unique()
 
 for icd in tqdm(icds_to_analyze, desc="Generating icd events"):
-    icd_data_sub = split_ehr_icd_subset[split_ehr_icd_subset['ICD10_LEVEL_5_CD'] == icd]
+    icd_data_sub = split_ehr_icd_subset[split_ehr_icd_subset['ICD10_LEVEL_4_CD'] == icd]
     vte_data_sub['tt_' + str(icd)], vte_data_sub[str(icd)] = map_time_to_event(icd_data_sub, vte_data_sub, 'DFCI_MRN', str(icd), 'TIME_TO_ICD')
 
 # Filter icds with ≥5% prevalence
@@ -217,7 +217,7 @@ events_to_include = event_freq_df.loc[event_freq_df['event_freq'] >= 0.01, 'even
 
 base_cols = ['DFCI_MRN', 'first_treatment_date', 'AGE_AT_TREATMENTSTART', 'GENDER']
 events_data_sub = vte_data_sub[base_cols + [event for event in events_to_include] + [f'tt_{event}' for event in events_to_include]]
-events_data_sub.to_csv(os.path.join(SURV_PATH, 'level_5_ICD_surv_df.csv'), index=False)
+events_data_sub.to_csv(os.path.join(SURV_PATH, 'level_4_ICD_surv_df.csv'), index=False)
 
 # Create embedding prediction dataset
 embeddings_data = np.load(os.path.join(NOTES_PATH, 'full_VTE_embeddings_as_array.npy'))
@@ -227,4 +227,4 @@ note_types = ['Clinician', 'Imaging', 'Pathology']
 monthly_data = generate_survival_embedding_df(notes_meta, events_data_sub, embeddings_data, note_types=note_types,
                                               note_timing_col='NOTE_TIME_REL_FIRST_TREATMENT_START', continuous_window=False,
                                               pool_fx={key : 'time_decay_mean' for key in note_types}, decay_param=0.01).dropna()
-monthly_data.to_csv(os.path.join(SURV_PATH, 'level_5_ICD_embedding_prediction_df.csv'), index=False)
+monthly_data.to_csv(os.path.join(SURV_PATH, 'level_4_ICD_embedding_prediction_df.csv'), index=False)

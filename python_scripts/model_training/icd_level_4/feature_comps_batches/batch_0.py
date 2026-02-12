@@ -11,7 +11,7 @@ FIGURE_PATH = '/data/gusev/USERS/jpconnor/figures/clinical_text_embedding_projec
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 FEATURE_PATH = os.path.join(DATA_PATH, 'clinical_and_genomic_features/')
 SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
-RESULTS_PATH = os.path.join(SURV_PATH, 'results/level_5_ICD_results/')
+RESULTS_PATH = os.path.join(SURV_PATH, 'results/level_4_ICD_results/')
 OUTPUT_PATH = os.path.join(RESULTS_PATH, 'feature_comps/')
 STAGE_PATH = '/data/gusev/PROFILE/CLINICAL/OncDRS/DERIVED_FROM_CLINICAL_TEXTS_2024_03/derived_files/cancer_stage/'
 os.makedirs(OUTPUT_PATH, exist_ok=True)
@@ -19,7 +19,7 @@ os.makedirs(OUTPUT_PATH, exist_ok=True)
 os.environ["JOBLIB_DEFAULT_WORKER_TIMEOUT"] = "600"
 
 # Load text data
-time_decayed_events_df = pd.read_csv(os.path.join(SURV_PATH, 'level_5_ICD_embedding_prediction_df.csv'))
+time_decayed_events_df = pd.read_csv(os.path.join(SURV_PATH, 'level_4_ICD_embedding_prediction_df.csv'))
 
 # load clinical and genomic features
 mrn_stage_df = pd.read_csv(os.path.join(FEATURE_PATH, 'cancer_stage_df.csv'))

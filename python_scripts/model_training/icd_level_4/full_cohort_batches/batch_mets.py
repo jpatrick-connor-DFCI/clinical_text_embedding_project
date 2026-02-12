@@ -12,13 +12,13 @@ DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 FEATURE_PATH = os.path.join(DATA_PATH, 'clinical_and_genomic_features/')
 SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
 RESULTS_PATH = os.path.join(SURV_PATH, 'results/')
-OUTPUT_PATH = os.path.join(RESULTS_PATH, 'level_5_ICD_results/full_cohort_high_iter/')
+OUTPUT_PATH = os.path.join(RESULTS_PATH, 'level_4_ICD_results/full_cohort_high_iter/')
 os.makedirs(OUTPUT_PATH, exist_ok=True)
 
 os.environ["JOBLIB_DEFAULT_WORKER_TIMEOUT"] = "600"
 
 # Load text data
-time_decayed_events_df = pd.read_csv(os.path.join(SURV_PATH, 'level_5_ICD_embedding_prediction_df.csv'))
+time_decayed_events_df = pd.read_csv(os.path.join(SURV_PATH, 'level_4_ICD_embedding_prediction_df.csv'))
 
 # load clinical and genomic features
 cancer_type_df = pd.read_csv(os.path.join(FEATURE_PATH, 'cancer_type_df.csv'))
@@ -33,29 +33,39 @@ continuous_vars = ['AGE_AT_TREATMENTSTART'] + embed_cols
 
 full_prediction_df = time_decayed_events_df.merge(cancer_type_df[['DFCI_MRN'] + type_cols], on='DFCI_MRN')
 
-# Find all time-to-event columns
 met_events = ['brainM', 'boneM', 'adrenalM', 'liverM', 'lungM', 'nodeM', 'peritonealM']
-events = [col.split('_', 1)[1] for col in time_decayed_events_df.columns if (col.startswith('tt') and (col not in met_events))]
-tt_events = [f"tt_{e}" for e in events]
+event_pairs = [(col, f'tt_{col}') for col in met_events]
+
+baseline_met_cols = []
+for ind_col, time_col in event_pairs:
+    col = f"{ind_col}_baseline_met"
+    full_prediction_df[col] = (full_prediction_df[ind_col] == 1) & (full_prediction_df[time_col] <= 0)
+    baseline_met_cols.append(col)
+
+full_prediction_df["has_baseline_met"] = full_prediction_df[baseline_met_cols].any(axis=1)
+met_free_prediction_df = full_prediction_df.loc[~full_prediction_df["has_baseline_met"]].copy()
 
 # CoxPH hyperparameters
 alphas_to_test = np.logspace(-5, 0, 30)
 l1_ratios = [0.5, 1.0]
 
 max_iter=5_000
-for event in tqdm(events[0:25]):
-    event_path = os.path.join(OUTPUT_PATH, event)
+for met_event in tqdm(met_events):
+    event_path = os.path.join(OUTPUT_PATH, met_event)
     os.makedirs(event_path, exist_ok=True)
     
-    event_pred_df = full_prediction_df.loc[full_prediction_df[f'tt_{event}'] > 0].copy()
-
-    print(event)
+    event_pred_df = met_free_prediction_df.loc[met_free_prediction_df[f'tt_{met_event}'] > 0].copy()
+    if met_event == 'brainM':
+        event_pred_df = event_pred_df.loc[~event_pred_df['CANCER_TYPE_BRAIN']]
+        
+    print(met_event)
+    print(len(event_pred_df))
     
     # text
     text_start = time.time()
     text_test, text_val, _ = run_grid_CoxPH_parallel(
         event_pred_df, base_vars + type_cols, ['AGE_AT_TREATMENTSTART'] + embed_cols, embed_cols,
-        l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}', max_iter=max_iter)
+        l1_ratios, alphas_to_test, event_col=met_event, tstop_col=f'tt_{met_event}', max_iter=max_iter)
     print(f'text complete in {(time.time() - text_start) / 60 : 0.2f} \n')
     
     text_test.to_csv(os.path.join(event_path, 'text_test.csv'), index=False)
@@ -63,6 +73,6 @@ for event in tqdm(events[0:25]):
     
     base_results = run_base_CoxPH(
         event_pred_df, base_vars + type_cols, ['AGE_AT_TREATMENTSTART'],
-        event_col=event, tstop_col=f'tt_{event}')
+        event_col=met_event, tstop_col=f'tt_{met_event}')
 
     base_results.to_csv(os.path.join(event_path, 'type_model_metrics.csv'))
