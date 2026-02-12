@@ -98,6 +98,11 @@ mrn_tstart_dict = dict(zip(vte_data_sub['DFCI_MRN'], vte_data_sub['first_treatme
 # EHR ICD info
 split_ehr_icd_subset = pd.read_csv(os.path.join(SURV_PATH, 'time-to-icd/timestamped_icd_info.csv'))
 split_ehr_icd_subset['ICD10_LEVEL_3_CD'] = split_ehr_icd_subset['DIAGNOSIS_ICD10_CD'].apply(lambda x : x.split('.')[0])
+split_ehr_icd_subset['START_DT'] = pd.to_datetime(split_ehr_icd_subset['START_DT'], errors='coerce')
+split_ehr_icd_subset = (split_ehr_icd_subset
+                        .sort_values(['DFCI_MRN', 'ICD10_LEVEL_3_CD', 'START_DT'])
+                        .drop_duplicates(subset=['DFCI_MRN', 'ICD10_LEVEL_3_CD'], keep='first'))
+
 icd_descr_lookup = {key : icd10.find(key).description for key in split_ehr_icd_subset['ICD10_LEVEL_3_CD'].unique() if icd10.find(key) is not None}
 split_ehr_icd_subset['ICD10_LEVEL_3_NM'] = split_ehr_icd_subset['ICD10_LEVEL_3_CD'].map(icd_descr_lookup)
 
@@ -114,8 +119,9 @@ common_icds_to_select = common_icds_w_descr.loc[~common_icds_w_descr['Chapter'].
                                                                                       'XXII', # Codes for special purposes
                                                                                      ])]
 
-split_ehr_icd_subset = split_ehr_icd_subset.loc[(split_ehr_icd_subset['TIME_TO_ICD'] > 0) & 
-                                                (split_ehr_icd_subset['ICD10_LEVEL_3_CD'].isin(common_icds_to_select['ICD10_LEVEL_3_CD'].unique()))].copy()
+split_ehr_icd_subset = split_ehr_icd_subset.loc[
+    split_ehr_icd_subset['ICD10_LEVEL_3_CD'].isin(common_icds_to_select['ICD10_LEVEL_3_CD'].unique())
+].copy()
 
 # Generate time-to-event for icds
 icds_to_analyze = split_ehr_icd_subset['ICD10_LEVEL_3_CD'].unique()

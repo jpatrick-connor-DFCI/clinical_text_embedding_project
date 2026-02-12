@@ -27,9 +27,14 @@ icd_to_phecode_map = pd.read_csv(os.path.join(DATA_PATH, 'code_data/icd_to_pheco
 
 # EHR ICD info
 split_ehr_icd_subset = pd.read_csv(os.path.join(SURV_PATH, 'time-to-icd/timestamped_icd_info.csv'))
-split_ehr_icd_subset = split_ehr_icd_subset.loc[(split_ehr_icd_subset['TIME_TO_ICD'] > 0) & 
-                                                (split_ehr_icd_subset['DIAGNOSIS_ICD10_CD'].isin(icd_to_phecode_map['ICD10_CD'].unique()))].copy()
+split_ehr_icd_subset = split_ehr_icd_subset.loc[
+    split_ehr_icd_subset['DIAGNOSIS_ICD10_CD'].isin(icd_to_phecode_map['ICD10_CD'].unique())
+].copy()
 split_ehr_icd_subset['PHECODE'] = split_ehr_icd_subset['DIAGNOSIS_ICD10_CD'].map(dict(zip(icd_to_phecode_map['ICD10_CD'], icd_to_phecode_map['PHECODE'])))
+split_ehr_icd_subset['START_DT'] = pd.to_datetime(split_ehr_icd_subset['START_DT'], errors='coerce')
+split_ehr_icd_subset = (split_ehr_icd_subset
+                        .sort_values(['DFCI_MRN', 'PHECODE', 'START_DT'])
+                        .drop_duplicates(subset=['DFCI_MRN', 'PHECODE'], keep='first'))
 
 # Generate time-to-event for phecodes
 phecodes_to_analyze = split_ehr_icd_subset['PHECODE'].unique()
