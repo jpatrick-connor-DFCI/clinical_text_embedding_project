@@ -85,37 +85,37 @@ for event in tqdm(met_events):
         event_pred_df = event_pred_df.loc[~event_pred_df['CANCER_TYPE_BRAIN']]
         
     stage_l1, stage_alpha = pd.read_csv(os.path.join(event_path, 'stage_val.csv')).sort_values(
-                                        by='mean_c_index', ascending=False)[['l1_ratio', 'alpha']].values[0]
+                                        by='mean_auc(t)', ascending=False)[['l1_ratio', 'alpha']].values[0]
     stage_scores = get_heldout_risk_scores_CoxPH(event_pred_df, base_vars + type_cols, ['AGE_AT_TREATMENTSTART'], stage_cols,
                                                  event_col=event, tstop_col=f'tt_{event}', max_iter=max_iter, penalized=True,
                                                  l1_ratio=stage_l1, alpha=stage_alpha).rename(columns={'risk_score' : 'stage_risk_score'})
     
     treatment_l1, treatment_alpha = pd.read_csv(os.path.join(event_path, 'treatment_val.csv')).sort_values(
-                                                by='mean_c_index', ascending=False)[['l1_ratio', 'alpha']].values[0]
+                                                by='mean_auc(t)', ascending=False)[['l1_ratio', 'alpha']].values[0]
     treatment_scores = get_heldout_risk_scores_CoxPH(event_pred_df, base_vars + type_cols, ['AGE_AT_TREATMENTSTART'], treatment_cols,
                                                      event_col=event, tstop_col=f'tt_{event}', max_iter=max_iter, penalized=True, 
                                                      l1_ratio=treatment_l1, alpha=treatment_alpha).rename(columns={'risk_score' : 'treatment_risk_score'})
     
     lab_l1, lab_alpha = pd.read_csv(os.path.join(event_path, 'labs_val.csv')).sort_values(
-                                    by='mean_c_index', ascending=False)[['l1_ratio', 'alpha']].values[0]
+                                    by='mean_auc(t)', ascending=False)[['l1_ratio', 'alpha']].values[0]
     lab_scores = get_heldout_risk_scores_CoxPH(event_pred_df, base_vars + type_cols, ['AGE_AT_TREATMENTSTART'], labs_cols,
                                                event_col=event, tstop_col=f'tt_{event}', max_iter=max_iter, penalized=True,
                                                l1_ratio=lab_l1, alpha=lab_alpha).rename(columns={'risk_score' : 'labs_risk_score'})
     
     somatic_l1, somatic_alpha = pd.read_csv(os.path.join(event_path, 'somatic_val.csv')).sort_values(
-                                            by='mean_c_index', ascending=False)[['l1_ratio', 'alpha']].values[0]
+                                            by='mean_auc(t)', ascending=False)[['l1_ratio', 'alpha']].values[0]
     somatic_scores = get_heldout_risk_scores_CoxPH(event_pred_df, base_vars + type_cols, ['AGE_AT_TREATMENTSTART'], somatic_cols,
                                                    event_col=event, tstop_col=f'tt_{event}', max_iter=max_iter, penalized=True,
                                                    l1_ratio=somatic_l1, alpha=somatic_alpha).rename(columns={'risk_score' : 'somatic_risk_score'})
     
     prs_l1, prs_alpha = pd.read_csv(os.path.join(event_path, 'prs_val.csv')).sort_values(
-                                    by='mean_c_index', ascending=False)[['l1_ratio', 'alpha']].values[0]
+                                    by='mean_auc(t)', ascending=False)[['l1_ratio', 'alpha']].values[0]
     prs_scores = get_heldout_risk_scores_CoxPH(event_pred_df, base_vars + type_cols, ['AGE_AT_TREATMENTSTART'], prs_cols,
                                                event_col=event, tstop_col=f'tt_{event}', max_iter=max_iter, penalized=True,
                                                l1_ratio=prs_l1, alpha=prs_alpha).rename(columns={'risk_score' : 'prs_risk_score'})
     
     text_l1, text_alpha = pd.read_csv(os.path.join(event_path, 'text_val.csv')).sort_values(
-                                      by='mean_c_index', ascending=False)[['l1_ratio', 'alpha']].values[0]
+                                      by='mean_auc(t)', ascending=False)[['l1_ratio', 'alpha']].values[0]
     text_scores = get_heldout_risk_scores_CoxPH(event_pred_df, base_vars + type_cols, ['AGE_AT_TREATMENTSTART'], embed_cols,
                                                 event_col=event, tstop_col=f'tt_{event}', max_iter=max_iter, penalized=True,
                                                 l1_ratio=text_l1, alpha=text_alpha).rename(columns={'risk_score' : 'text_risk_score'})
@@ -133,37 +133,37 @@ for event in tqdm(events):
     event_pred_df = full_prediction_df.loc[full_prediction_df[f'tt_{event}'] > 0].copy()
     
     stage_l1, stage_alpha = pd.read_csv(os.path.join(event_path, 'stage_val.csv')).sort_values(
-                                        by='mean_c_index', ascending=False)[['l1_ratio', 'alpha']].values[0]
+                                        by='mean_auc(t)', ascending=False)[['l1_ratio', 'alpha']].values[0]
     stage_scores = get_heldout_risk_scores_CoxPH(event_pred_df, base_vars + type_cols, ['AGE_AT_TREATMENTSTART'], stage_cols,
                                                  event_col=event, tstop_col=f'tt_{event}', max_iter=max_iter, penalized=True,
                                                  l1_ratio=stage_l1, alpha=stage_alpha).rename(columns={'risk_score' : 'stage_risk_score'})
     
     treatment_l1, treatment_alpha = pd.read_csv(os.path.join(event_path, 'treatment_val.csv')).sort_values(
-                                                by='mean_c_index', ascending=False)[['l1_ratio', 'alpha']].values[0]
+                                                by='mean_auc(t)', ascending=False)[['l1_ratio', 'alpha']].values[0]
     treatment_scores = get_heldout_risk_scores_CoxPH(event_pred_df, base_vars + type_cols, ['AGE_AT_TREATMENTSTART'], treatment_cols,
                                                      event_col=event, tstop_col=f'tt_{event}', max_iter=max_iter, penalized=True, 
                                                      l1_ratio=treatment_l1, alpha=treatment_alpha).rename(columns={'risk_score' : 'treatment_risk_score'})
     
     lab_l1, lab_alpha = pd.read_csv(os.path.join(event_path, 'labs_val.csv')).sort_values(
-                                    by='mean_c_index', ascending=False)[['l1_ratio', 'alpha']].values[0]
+                                    by='mean_auc(t)', ascending=False)[['l1_ratio', 'alpha']].values[0]
     lab_scores = get_heldout_risk_scores_CoxPH(event_pred_df, base_vars + type_cols, ['AGE_AT_TREATMENTSTART'], labs_cols,
                                                event_col=event, tstop_col=f'tt_{event}', max_iter=max_iter, penalized=True,
                                                l1_ratio=lab_l1, alpha=lab_alpha).rename(columns={'risk_score' : 'labs_risk_score'})
     
     somatic_l1, somatic_alpha = pd.read_csv(os.path.join(event_path, 'somatic_val.csv')).sort_values(
-                                            by='mean_c_index', ascending=False)[['l1_ratio', 'alpha']].values[0]
+                                            by='mean_auc(t)', ascending=False)[['l1_ratio', 'alpha']].values[0]
     somatic_scores = get_heldout_risk_scores_CoxPH(event_pred_df, base_vars + type_cols, ['AGE_AT_TREATMENTSTART'], somatic_cols,
                                                    event_col=event, tstop_col=f'tt_{event}', max_iter=max_iter, penalized=True,
                                                    l1_ratio=somatic_l1, alpha=somatic_alpha).rename(columns={'risk_score' : 'somatic_risk_score'})
     
     prs_l1, prs_alpha = pd.read_csv(os.path.join(event_path, 'prs_val.csv')).sort_values(
-                                    by='mean_c_index', ascending=False)[['l1_ratio', 'alpha']].values[0]
+                                    by='mean_auc(t)', ascending=False)[['l1_ratio', 'alpha']].values[0]
     prs_scores = get_heldout_risk_scores_CoxPH(event_pred_df, base_vars + type_cols, ['AGE_AT_TREATMENTSTART'], prs_cols,
                                                event_col=event, tstop_col=f'tt_{event}', max_iter=max_iter, penalized=True,
                                                l1_ratio=prs_l1, alpha=prs_alpha).rename(columns={'risk_score' : 'prs_risk_score'})
     
     text_l1, text_alpha = pd.read_csv(os.path.join(event_path, 'text_val.csv')).sort_values(
-                                      by='mean_c_index', ascending=False)[['l1_ratio', 'alpha']].values[0]
+                                      by='mean_auc(t)', ascending=False)[['l1_ratio', 'alpha']].values[0]
     text_scores = get_heldout_risk_scores_CoxPH(event_pred_df, base_vars + type_cols, ['AGE_AT_TREATMENTSTART'], embed_cols,
                                                 event_col=event, tstop_col=f'tt_{event}', max_iter=max_iter, penalized=True,
                                                 l1_ratio=text_l1, alpha=text_alpha).rename(columns={'risk_score' : 'text_risk_score'})

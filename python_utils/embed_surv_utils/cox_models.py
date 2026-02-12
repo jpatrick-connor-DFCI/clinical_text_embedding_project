@@ -1,14 +1,13 @@
 import os
+import shutil
 import time
 import warnings
 import tempfile
 import joblib
 import numpy as np
 import pandas as pd
-from itertools import product
-
 from sklearn.decomposition import PCA
-from sklearn.model_selection import train_test_split, KFold, StratifiedKFold
+from sklearn.model_selection import train_test_split, StratifiedKFold
 from sklearn.preprocessing import StandardScaler
 
 from sksurv.linear_model import CoxPHSurvivalAnalysis, CoxnetSurvivalAnalysis
@@ -26,10 +25,12 @@ def scale_model_data(X_train: pd.DataFrame, X_test: pd.DataFrame, continuous_var
     Returns:
         tuple[pd.DataFrame, pd.DataFrame]: Scaled X_train and X_test.
     """
-    scaler = StandardScaler().fit(X_train[continuous_vars])
-    X_train[continuous_vars] = scaler.transform(X_train[continuous_vars])
-    X_test[continuous_vars] = scaler.transform(X_test[continuous_vars])
-    return X_train, X_test
+    X_train_scaled = X_train.copy()
+    X_test_scaled = X_test.copy()
+    scaler = StandardScaler().fit(X_train_scaled[continuous_vars])
+    X_train_scaled[continuous_vars] = scaler.transform(X_train_scaled[continuous_vars])
+    X_test_scaled[continuous_vars] = scaler.transform(X_test_scaled[continuous_vars])
+    return X_train_scaled, X_test_scaled
 
 def evaluate_surv_model(surv_model, X_eval, y_train, y_eval, eval_times: np.ndarray) -> tuple[float, float, float]:
     """
@@ -53,62 +54,22 @@ def evaluate_surv_model(surv_model, X_eval, y_train, y_eval, eval_times: np.ndar
     try:
         chf_funcs = surv_model.predict_cumulative_hazard_function(X_eval, return_array=False)
         risk_scores = np.vstack([chf(eval_times) for chf in chf_funcs])
-        auc_t, mean_auc_t = cumulative_dynamic_auc(y_train, y_eval, risk_scores, eval_times)
-        ibs = integrated_brier_score(y_train, y_eval, risk_scores, eval_times)
+        surv_probs = np.exp(-risk_scores)  # S(t) = exp(-H(t)); IBS requires survival probs in [0,1]
+        _, mean_auc_t = cumulative_dynamic_auc(y_train, y_eval, risk_scores, eval_times)
+        ibs = integrated_brier_score(y_train, y_eval, surv_probs, eval_times)
         c_index = surv_model.score(X_eval, y_eval)
-    except:
+    except Exception:
         mean_auc_t, ibs, c_index = np.nan, np.nan, np.nan
     return mean_auc_t, ibs, c_index
 
-def apply_group_pca(
-    X_train: pd.DataFrame,
-    X_test: pd.DataFrame,
-    group_cols: list[str],
-    group_name: str,
-    k: int,
-    random_state: int = 1234
-):
-    if k is None or k <= 0:
-        return X_train, X_test, []
+def _make_surv_array(event: np.ndarray, time: np.ndarray) -> np.ndarray:
+    """Build a sksurv-compatible structured survival array without list(zip(...)) overhead."""
+    y = np.empty(len(event), dtype=[("Status", "?"), ("Survival_in_days", "<f8")])
+    y["Status"] = np.asarray(event, dtype=bool)
+    y["Survival_in_days"] = np.asarray(time, dtype=np.float64)
+    return y
 
-    group_cols_present = [c for c in group_cols if c in X_train.columns]
-    if len(group_cols_present) == 0:
-        return X_train, X_test, []
 
-    # ---- Scale before PCA ----
-    scaler = StandardScaler().fit(X_train[group_cols_present])
-    X_train_scaled = scaler.transform(X_train[group_cols_present])
-    X_test_scaled  = scaler.transform(X_test[group_cols_present])
-
-    n_train = X_train_scaled.shape[0]
-    k_eff = min(k, len(group_cols_present), n_train)
-    if k_eff <= 0:
-        return X_train, X_test, []
-
-    # ---- PCA ----
-    pca = PCA(n_components=k_eff, random_state=random_state)
-    train_pcs = pca.fit_transform(X_train_scaled)
-    test_pcs  = pca.transform(X_test_scaled)
-
-    pc_names = [f"{group_name}_PC{i+1}" for i in range(k_eff)]
-
-    # ---- Build PC DataFrames once (fixes fragmentation) ----
-    pc_train_df = pd.DataFrame(train_pcs, columns=pc_names, index=X_train.index)
-    pc_test_df  = pd.DataFrame(test_pcs,  columns=pc_names, index=X_test.index)
-
-    # ---- Drop original group cols, concat in one shot ----
-    X_train_new = pd.concat(
-        [X_train.drop(columns=group_cols_present), pc_train_df],
-        axis=1
-    ).copy()
-
-    X_test_new = pd.concat(
-        [X_test.drop(columns=group_cols_present), pc_test_df],
-        axis=1
-    ).copy()
-
-    return X_train_new, X_test_new, pc_names
-    
 def run_base_CoxPH(df: pd.DataFrame, base_cols: list[str], continuous_vars: list[str],
                    event_col: str = 'event', tstop_col: str = 'tstop',
                    max_iter: int = 1000, n_splits: int = 5,
@@ -123,22 +84,22 @@ def run_base_CoxPH(df: pd.DataFrame, base_cols: list[str], continuous_vars: list
     if ignore_warnings:
         warnings.filterwarnings('ignore')
 
+    df = df[df[tstop_col] > 0].copy()
+
     # Split into train+val and held-out test set
     strat_labels = df[event_col].astype(int)
     df_trainval, df_test = train_test_split(df, test_size=test_size, 
                                             stratify=strat_labels, random_state=1234)
 
     Xt_trainval = df_trainval[base_cols]
-    y_trainval = np.asarray(list(zip(df_trainval[event_col], df_trainval[tstop_col])),
-                            dtype=[('Status', '?'), ('Survival_in_days', '<f8')])
+    y_trainval = _make_surv_array(df_trainval[event_col].to_numpy(), df_trainval[tstop_col].to_numpy())
 
     Xt_test = df_test[base_cols]
-    y_test = np.asarray(list(zip(df_test[event_col], df_test[tstop_col])),
-                        dtype=[('Status', '?'), ('Survival_in_days', '<f8')])
+    y_test = _make_surv_array(df_test[event_col].to_numpy(), df_test[tstop_col].to_numpy())
 
     # Compute evaluation times
     lower, upper = np.percentile(df_trainval[tstop_col], [time_evals[0], time_evals[1]])
-    eval_times = np.arange(lower, upper + 1)
+    eval_times = np.linspace(lower, upper, 50) if lower != upper else np.array([lower], dtype=float)
 
     # --- Cross-validation on train+val ---
     c_index_vals, mean_auc_t_vals, ibs_vals = [], [], []
@@ -151,7 +112,7 @@ def run_base_CoxPH(df: pd.DataFrame, base_cols: list[str], continuous_vars: list
 
         X_train, X_val = scale_model_data(X_train, X_val, continuous_vars)
 
-        cox_model = CoxPHSurvivalAnalysis()
+        cox_model = CoxPHSurvivalAnalysis(n_iter=max_iter)
         try:
             cox_model.fit(X_train, y_train)
             mean_auc_t, ibs, c_index = evaluate_surv_model(cox_model, X_val, y_train, y_val, eval_times)
@@ -165,7 +126,7 @@ def run_base_CoxPH(df: pd.DataFrame, base_cols: list[str], continuous_vars: list
     # --- Evaluate on held-out test set ---
     # Fit CoxPH on full train+val
     Xt_trainval_scaled, Xt_test_scaled = scale_model_data(Xt_trainval, Xt_test, continuous_vars)
-    cox_model_final = CoxPHSurvivalAnalysis()
+    cox_model_final = CoxPHSurvivalAnalysis(n_iter=max_iter)
     try:
         cox_model_final.fit(Xt_trainval_scaled, y_trainval)
         mean_auc_t_test, ibs_test, c_index_test = evaluate_surv_model(
@@ -178,25 +139,6 @@ def run_base_CoxPH(df: pd.DataFrame, base_cols: list[str], continuous_vars: list
         ['cv_data', np.nanmean(c_index_vals), np.nanmean(mean_auc_t_vals), np.nanmean(ibs_vals)],
         ['test_data', c_index_test, mean_auc_t_test, ibs_test]
     ], columns=['eval_data', 'mean_c_index', 'mean_auc(t)', 'mean_ibs'])
-
-import os
-import time
-import shutil
-import tempfile
-import warnings
-from itertools import product
-
-import numpy as np
-import pandas as pd
-import joblib
-
-from sklearn.model_selection import StratifiedKFold, train_test_split
-from sklearn.decomposition import PCA
-
-# You already have these in your environment:
-# from sksurv.linear_model import CoxnetSurvivalAnalysis
-# from ... import evaluate_surv_model
-
 
 # =========================
 # Fast NumPy preprocessing
@@ -336,10 +278,7 @@ def run_grid_CoxPH_parallel(
     X_full = df[all_cols].to_numpy(dtype=np.float32, copy=False)
 
     # ---- Structured survival array ----
-    y_struct = np.asarray(
-        list(zip(df[event_col].astype(bool).to_numpy(), df[tstop_col].to_numpy())),
-        dtype=[("Status", "?"), ("Survival_in_days", "<f8")],
-    )
+    y_struct = _make_surv_array(df[event_col].to_numpy(), df[tstop_col].to_numpy())
 
     # ---- Train/val vs test split ----
     idx = np.arange(X_full.shape[0])
@@ -361,7 +300,7 @@ def run_grid_CoxPH_parallel(
     folds = list(cv.split(X_train_val, strat_labels))  # materialize once
 
     # ---- Evaluation time points ----
-    lower, upper = np.percentile(y_struct["Survival_in_days"], [time_evals[0], time_evals[1]])
+    lower, upper = np.percentile(y_train_val["Survival_in_days"], [time_evals[0], time_evals[1]])
     eval_times = np.linspace(lower, upper, 50) if lower != upper else np.array([lower], dtype=float)
 
     # ---- penalty once if no PCA; recomputed per fold if PCA changes columns ----
@@ -378,69 +317,95 @@ def run_grid_CoxPH_parallel(
     # Path A: NO PCA => NO MEMMAP (fastest)
     # ==========================================================================================
     if not use_memmap:
-        def evaluate_param_no_pca(l1_ratio: float, alpha: float):
-            auc_list, ibs_list, c_list = [], [], []
-            fold_times = []
-            fold_error_flags = []
-            fold_warning_counts = []
+        alphas_desc = np.sort(alphas_to_test)[::-1].tolist()
+        n_alphas = len(alphas_desc)
 
-            for tr, va in folds:
+        def evaluate_l1_path_no_pca(l1_ratio: float):
+            fold_aucs = np.full((len(folds), n_alphas), np.nan)
+            fold_times = np.zeros(len(folds))
+            fold_errors = np.zeros(len(folds), dtype=bool)
+
+            for fi, (tr, va) in enumerate(folds):
                 start = time.time()
-                error_flag = False
 
                 X_tr = X_train_val[tr]
                 X_va = X_train_val[va]
                 y_tr = y_train_val[tr]
                 y_va = y_train_val[va]
 
-                with warnings.catch_warnings(record=True) as w:
-                    warnings.simplefilter("always")
+                with warnings.catch_warnings():
                     warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*`trapz` is deprecated.*")
 
                     try:
                         model = CoxnetSurvivalAnalysis(
-                            alphas=[alpha],
+                            alphas=alphas_desc,
                             l1_ratio=l1_ratio,
                             max_iter=max_iter,
-                            fit_baseline_model=True,
+                            fit_baseline_model=False,
                             penalty_factor=penalty_no_pca,
                         )
                         model.fit(X_tr, y_tr)
-                        mean_auc, ibs, cidx = evaluate_surv_model(model, X_va, y_tr, y_va, eval_times)
+
+                        risk_all = model.predict(X_va)
+                        if risk_all.ndim == 1:
+                            risk_all = risk_all[:, np.newaxis]
+
+                        if risk_all.shape[1] >= n_alphas:
+                            for ai in range(n_alphas):
+                                try:
+                                    _, fold_aucs[fi, ai] = cumulative_dynamic_auc(
+                                        y_tr, y_va, risk_all[:, ai], eval_times
+                                    )
+                                except Exception:
+                                    pass
+                        else:
+                            raise ValueError("path returned fewer alphas than requested")
                     except Exception:
-                        error_flag = True
-                        mean_auc, ibs, cidx = np.nan, np.nan, np.nan
+                        # Path failed or returned partial results; fall back to individual fits
+                        fold_errors[fi] = True
+                        for ai, a in enumerate(alphas_desc):
+                            try:
+                                m = CoxnetSurvivalAnalysis(
+                                    alphas=[a], l1_ratio=l1_ratio,
+                                    max_iter=max_iter, fit_baseline_model=False,
+                                    penalty_factor=penalty_no_pca,
+                                )
+                                m.fit(X_tr, y_tr)
+                                _, fold_aucs[fi, ai] = cumulative_dynamic_auc(
+                                    y_tr, y_va, m.predict(X_va), eval_times
+                                )
+                            except Exception:
+                                pass
 
-                fold_warning_counts.append(len(w))
-                auc_list.append(mean_auc)
-                ibs_list.append(ibs)
-                c_list.append(cidx)
-                fold_times.append(time.time() - start)
-                fold_error_flags.append(error_flag)
+                fold_times[fi] = time.time() - start
 
-            return [
-                float(l1_ratio),
-                float(alpha),
-                float(np.nanmean(c_list)),
-                float(np.nanmean(auc_list)),
-                float(np.nanmean(ibs_list)),
-                float(np.nanmean(fold_times)),
-                fold_times,
-                fold_error_flags,
-                float(np.mean(fold_error_flags)),
-                fold_warning_counts,
-            ]
+            rows = []
+            for ai, alpha in enumerate(alphas_desc):
+                rows.append([
+                    float(l1_ratio),
+                    float(alpha),
+                    np.nan,
+                    float(np.nanmean(fold_aucs[:, ai])),
+                    np.nan,
+                    float(np.mean(fold_times)),
+                    fold_times.tolist(),
+                    fold_errors.tolist(),
+                    float(np.mean(fold_errors)),
+                    [0] * len(folds),
+                ])
+            return rows
 
         with parallel_ctx:
-            results = joblib.Parallel(
+            nested = joblib.Parallel(
                 n_jobs=n_jobs,
                 verbose=verbose,
                 pre_dispatch=pre_dispatch,
                 batch_size=batch_size,
             )(
-                joblib.delayed(evaluate_param_no_pca)(l1, a)
-                for l1, a in product(l1_ratios, alphas_to_test)
+                joblib.delayed(evaluate_l1_path_no_pca)(l1)
+                for l1 in l1_ratios
             )
+            results = [row for batch in nested for row in batch]
 
         cv_results_df = pd.DataFrame(
             results,
@@ -458,7 +423,10 @@ def run_grid_CoxPH_parallel(
             ],
         )
 
-        opt = cv_results_df.sort_values("mean_auc(t)", ascending=False).iloc[0]
+        valid_cv = cv_results_df.dropna(subset=["mean_auc(t)"])
+        if valid_cv.empty:
+            raise RuntimeError("All CV evaluations failed (all NaN mean_auc(t)). Check data and parameters.")
+        opt = valid_cv.sort_values("mean_auc(t)", ascending=False).iloc[0]
         opt_l1, opt_alpha = float(opt.l1_ratio), float(opt.alpha)
 
         try:
@@ -529,15 +497,16 @@ def run_grid_CoxPH_parallel(
                 }
             )
 
-        def evaluate_param_with_pca(l1_ratio: float, alpha: float):
-            auc_list, ibs_list, c_list = [], [], []
-            fold_times = []
-            fold_error_flags = []
-            fold_warning_counts = []
+        alphas_desc_b = np.sort(alphas_to_test)[::-1].tolist()
+        n_alphas_b = len(alphas_desc_b)
 
-            for m in fold_meta:
+        def evaluate_l1_path_with_pca(l1_ratio: float):
+            fold_aucs = np.full((len(fold_meta), n_alphas_b), np.nan)
+            fold_times = np.zeros(len(fold_meta))
+            fold_errors = np.zeros(len(fold_meta), dtype=bool)
+
+            for fi, m in enumerate(fold_meta):
                 start = time.time()
-                error_flag = False
 
                 X_tr_np = np.memmap(m["tr_path"], mode="r", dtype=np.float32, shape=m["tr_shape"])
                 X_va_np = np.memmap(m["va_path"], mode="r", dtype=np.float32, shape=m["va_shape"])
@@ -545,54 +514,79 @@ def run_grid_CoxPH_parallel(
                 y_va = m["y_va"]
                 penalty = m["penalty"]
 
-                with warnings.catch_warnings(record=True) as w:
-                    warnings.simplefilter("always")
+                with warnings.catch_warnings():
                     warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*`trapz` is deprecated.*")
 
                     try:
                         model = CoxnetSurvivalAnalysis(
-                            alphas=[alpha],
+                            alphas=alphas_desc_b,
                             l1_ratio=l1_ratio,
                             max_iter=max_iter,
-                            fit_baseline_model=True,
+                            fit_baseline_model=False,
                             penalty_factor=penalty,
                         )
                         model.fit(X_tr_np, y_tr)
-                        mean_auc, ibs, cidx = evaluate_surv_model(model, X_va_np, y_tr, y_va, eval_times)
+
+                        risk_all = model.predict(X_va_np)
+                        if risk_all.ndim == 1:
+                            risk_all = risk_all[:, np.newaxis]
+
+                        if risk_all.shape[1] >= n_alphas_b:
+                            for ai in range(n_alphas_b):
+                                try:
+                                    _, fold_aucs[fi, ai] = cumulative_dynamic_auc(
+                                        y_tr, y_va, risk_all[:, ai], eval_times
+                                    )
+                                except Exception:
+                                    pass
+                        else:
+                            raise ValueError("path returned fewer alphas than requested")
                     except Exception:
-                        error_flag = True
-                        mean_auc, ibs, cidx = np.nan, np.nan, np.nan
+                        # Path failed or returned partial results; fall back to individual fits
+                        fold_errors[fi] = True
+                        for ai, a in enumerate(alphas_desc_b):
+                            try:
+                                m_fb = CoxnetSurvivalAnalysis(
+                                    alphas=[a], l1_ratio=l1_ratio,
+                                    max_iter=max_iter, fit_baseline_model=False,
+                                    penalty_factor=penalty,
+                                )
+                                m_fb.fit(X_tr_np, y_tr)
+                                _, fold_aucs[fi, ai] = cumulative_dynamic_auc(
+                                    y_tr, y_va, m_fb.predict(X_va_np), eval_times
+                                )
+                            except Exception:
+                                pass
 
-                fold_warning_counts.append(len(w))
-                auc_list.append(mean_auc)
-                ibs_list.append(ibs)
-                c_list.append(cidx)
-                fold_times.append(time.time() - start)
-                fold_error_flags.append(error_flag)
+                fold_times[fi] = time.time() - start
 
-            return [
-                float(l1_ratio),
-                float(alpha),
-                float(np.nanmean(c_list)),
-                float(np.nanmean(auc_list)),
-                float(np.nanmean(ibs_list)),
-                float(np.nanmean(fold_times)),
-                fold_times,
-                fold_error_flags,
-                float(np.mean(fold_error_flags)),
-                fold_warning_counts,
-            ]
+            rows = []
+            for ai, alpha in enumerate(alphas_desc_b):
+                rows.append([
+                    float(l1_ratio),
+                    float(alpha),
+                    np.nan,
+                    float(np.nanmean(fold_aucs[:, ai])),
+                    np.nan,
+                    float(np.mean(fold_times)),
+                    fold_times.tolist(),
+                    fold_errors.tolist(),
+                    float(np.mean(fold_errors)),
+                    [0] * len(fold_meta),
+                ])
+            return rows
 
         with parallel_ctx:
-            results = joblib.Parallel(
+            nested = joblib.Parallel(
                 n_jobs=n_jobs,
                 verbose=verbose,
                 pre_dispatch=pre_dispatch,
                 batch_size=batch_size,
             )(
-                joblib.delayed(evaluate_param_with_pca)(l1, a)
-                for l1, a in product(l1_ratios, alphas_to_test)
+                joblib.delayed(evaluate_l1_path_with_pca)(l1)
+                for l1 in l1_ratios
             )
+            results = [row for batch in nested for row in batch]
 
         cv_results_df = pd.DataFrame(
             results,
@@ -611,7 +605,10 @@ def run_grid_CoxPH_parallel(
         )
 
         # ---- final fit (apply same preprocessing to train_val/test) ----
-        opt = cv_results_df.sort_values("mean_auc(t)", ascending=False).iloc[0]
+        valid_cv = cv_results_df.dropna(subset=["mean_auc(t)"])
+        if valid_cv.empty:
+            raise RuntimeError("All CV evaluations failed (all NaN mean_auc(t)). Check data and parameters.")
+        opt = valid_cv.sort_values("mean_auc(t)", ascending=False).iloc[0]
         opt_l1, opt_alpha = float(opt.l1_ratio), float(opt.alpha)
 
         X_trval = np.array(X_train_val, dtype=np.float32, copy=True)
@@ -701,10 +698,7 @@ def get_heldout_risk_scores_CoxPH(
     X = df[all_cols].to_numpy(dtype=np.float32, copy=False)
 
     # ---- Structured survival array ----
-    y = np.asarray(
-        list(zip(df[event_col].astype(bool).to_numpy(), df[tstop_col].to_numpy())),
-        dtype=[("event", "?"), ("time", "<f8")],
-    )
+    y = _make_surv_array(df[event_col].to_numpy(), df[tstop_col].to_numpy())
 
     # ---- CV ----
     strat_labels = df[event_col].astype(int).to_numpy()
