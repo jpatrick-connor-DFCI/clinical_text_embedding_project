@@ -16,7 +16,7 @@ tt_phecodes_df = pd.read_csv(os.path.join(SURV_PATH, 'phecode_surv_df.csv'))
 biomarker_df = pd.read_csv(os.path.join(MARKER_PATH, 'IO_biomarker_discovery.csv')).drop_duplicates(subset=['DFCI_MRN'], keep='first')
 
 treatment_df = pd.read_csv("/data/gusev/USERS/mjsaleh/profile_lines_of_rx/profile_rxlines.csv")
-somatic_df = pd.read_csv(os.path.join(DATA_PATH, 'clinical_and_genomic_features/PROFILE_2024_MUTATION_CARRIERS.csv'))
+somatic_df = pd.read_csv(os.path.join(DATA_PATH, 'clinical_and_genomic_features/complete_somatic_data_df.csv'))
 
 line1_preds = pd.read_csv(os.path.join(ICI_PATH, 'line_1_predictions.csv'))
 required_pred_cols = {'DFCI_MRN', 'ground_truth', 'model_probs'}

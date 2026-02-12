@@ -74,7 +74,7 @@ trained_IO = (get_heldout_risk_scores_CoxPH(IO_prediction_df, base_vars, continu
                                             l1_ratio=IO_l1_ratio, alpha=IO_alpha, max_iter=3000)
               .rename(columns={'risk_score' : 'IO_risk_score'}))
 
-somatic_df = pd.read_csv(os.path.join(DATA_PATH, 'clinical_and_genomic_features/PROFILE_2024_MUTATION_CARRIERS.csv'))
+somatic_df = pd.read_csv(os.path.join(DATA_PATH, 'clinical_and_genomic_features/complete_somatic_data_df.csv'))
 
 biomarker_df = (irAE_df[['DFCI_MRN', 'tt_death', 'death', 'GENDER', 'AGE_AT_TREATMENTSTART']]
                 .merge(cancer_type_df, on='DFCI_MRN')
