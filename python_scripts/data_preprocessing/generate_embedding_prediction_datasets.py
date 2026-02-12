@@ -182,13 +182,37 @@ def _finalize_base_covariates(vte_data_sub: pd.DataFrame) -> None:
 def _write_outputs(
     vte_data_sub: pd.DataFrame,
     endpoint_events: list[str],
-    metastatic_events: list[str],
     surv_filename: str,
     embedding_filename: str,
     pooled_embedding_df: pd.DataFrame,
 ) -> None:
     event_cols = [event for event in endpoint_events if event in vte_data_sub.columns]
-    event_cols += [event for event in metastatic_events if event in vte_data_sub.columns]
+    event_cols = _dedupe_in_order(event_cols)
+    tt_event_cols = [f'tt_{event}' for event in event_cols]
+
+    events_data_sub = vte_data_sub[BASE_OUTPUT_COLS + event_cols + tt_event_cols]
+    events_data_sub.to_csv(os.path.join(SURV_PATH, surv_filename), index=False)
+
+    monthly_data = events_data_sub.merge(pooled_embedding_df, on='DFCI_MRN', how='left').dropna()
+    monthly_data.to_csv(os.path.join(SURV_PATH, embedding_filename), index=False)
+
+
+def _write_death_met_outputs(
+    base_vte_data_sub: pd.DataFrame,
+    pooled_embedding_df: pd.DataFrame,
+    surv_filename: str = 'death_met_surv_df.csv',
+    embedding_filename: str = 'death_met_embedding_prediction_df.csv',
+    min_events: int = 100,
+) -> None:
+    vte_data_sub = base_vte_data_sub.copy()
+    vte_data_sub, met_events_added = _add_metastatic_events(vte_data_sub)
+    _finalize_base_covariates(vte_data_sub)
+
+    met_events_added = _filter_endpoint_events_by_min_post_baseline_count(
+        vte_data_sub, met_events_added, min_events=min_events
+    )
+
+    event_cols = ['death'] + [event for event in met_events_added if event in vte_data_sub.columns]
     event_cols = _dedupe_in_order(event_cols)
     tt_event_cols = [f'tt_{event}' for event in event_cols]
 
@@ -213,6 +237,14 @@ pooled_embedding_df = generate_survival_embedding_df(
     pool_fx={key: 'time_decay_mean' for key in NOTE_TYPES},
     decay_param=0.01,
 ).dropna()
+
+# =========================
+# SHARED DEATH + MET DATASET
+# =========================
+_write_death_met_outputs(
+    base_vte_data_sub=base_vte_data_sub,
+    pooled_embedding_df=pooled_embedding_df,
+)
 
 
 # =========================
@@ -249,13 +281,11 @@ icd_event_cols = _map_events_to_columns(
 )
 vte_data_sub = pd.concat([vte_data_sub, icd_event_cols], axis=1)
 
-vte_data_sub, met_events_added = _add_metastatic_events(vte_data_sub)
 _finalize_base_covariates(vte_data_sub)
 icds_to_analyze = _filter_endpoint_events_by_min_post_baseline_count(vte_data_sub, icds_to_analyze, min_events=100)
 _write_outputs(
     vte_data_sub=vte_data_sub,
     endpoint_events=icds_to_analyze,
-    metastatic_events=met_events_added,
     surv_filename='level_3_ICD_surv_df.csv',
     embedding_filename='level_3_ICD_embedding_prediction_df.csv',
     pooled_embedding_df=pooled_embedding_df,
@@ -296,13 +326,11 @@ icd_event_cols = _map_events_to_columns(
 )
 vte_data_sub = pd.concat([vte_data_sub, icd_event_cols], axis=1)
 
-vte_data_sub, met_events_added = _add_metastatic_events(vte_data_sub)
 _finalize_base_covariates(vte_data_sub)
 icds_to_analyze = _filter_endpoint_events_by_min_post_baseline_count(vte_data_sub, icds_to_analyze, min_events=100)
 _write_outputs(
     vte_data_sub=vte_data_sub,
     endpoint_events=icds_to_analyze,
-    metastatic_events=met_events_added,
     surv_filename='level_4_ICD_surv_df.csv',
     embedding_filename='level_4_ICD_embedding_prediction_df.csv',
     pooled_embedding_df=pooled_embedding_df,
@@ -357,13 +385,11 @@ phecode_event_cols = _map_events_to_columns(
 )
 vte_data_sub = pd.concat([vte_data_sub, phecode_event_cols], axis=1)
 
-vte_data_sub, met_events_added = _add_metastatic_events(vte_data_sub)
 _finalize_base_covariates(vte_data_sub)
 phecodes_to_analyze = _filter_endpoint_events_by_min_post_baseline_count(vte_data_sub, phecodes_to_analyze, min_events=100)
 _write_outputs(
     vte_data_sub=vte_data_sub,
     endpoint_events=phecodes_to_analyze,
-    metastatic_events=met_events_added,
     surv_filename='phecode_surv_df.csv',
     embedding_filename='phecode_embedding_prediction_df.csv',
     pooled_embedding_df=pooled_embedding_df,
