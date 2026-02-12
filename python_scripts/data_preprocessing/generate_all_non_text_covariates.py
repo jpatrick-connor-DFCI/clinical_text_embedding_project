@@ -1,7 +1,9 @@
 import os
 import pickle
 import pandas as pd
+import numpy as np
 from functools import reduce
+from collections import defaultdict
 
 # === Paths ===
 PROFILE_PATH = '/data/gusev/PROFILE/CLINICAL/'
@@ -82,6 +84,106 @@ prs_df = (pd.read_csv('/data/gusev/USERS/mjsaleh/PRS_PGScatalog/pgs_matrix_with_
           .rename(columns={'IID' : 'cbio_sample_id'})
           .merge(px_metadata_min[['cbio_sample_id', 'DFCI_MRN']], on='cbio_sample_id'))
 prs_df.to_csv(os.path.join(CLINICAL_FEATURE_PATH, 'complete_germline_data_df.csv'), index=False)
+
+# === Structural variant features ===
+SV_DOMINANCE_THRESHOLD = 0.5
+SV_MIN_CASES = 20
+SV_MIN_POSITIVE_SAMPLES = 10
+
+sv_data = pd.read_csv(
+    os.path.join(PROFILE_PATH, 'OncDRS/ALL_2025_03/SOMATIC_SV_RESULTS.csv'),
+    usecols=['DFCI_MRN', 'SAMPLE_BL_NBR', 'SV_TYPE', 'PARTNER1_HUGO_GENE_NM', 'PARTNER2_HUGO_GENE_NM'],
+).rename(columns={'SAMPLE_BL_NBR': 'sample_id'})
+
+sv_data = sv_data.loc[sv_data['sample_id'].isin(px_metadata_min['sample_id'].unique())].copy()
+
+# Canonicalize fusion partners by sorting gene names per row
+genes = (
+    sv_data[['PARTNER1_HUGO_GENE_NM', 'PARTNER2_HUGO_GENE_NM']]
+    .astype('string')
+    .apply(lambda x: x.str.strip().str.upper())
+)
+sorted_genes = np.sort(genes.fillna('').to_numpy(), axis=1)
+sv_data['GENE_A'] = pd.Series(sorted_genes[:, 0], index=sv_data.index).replace('', pd.NA)
+sv_data['GENE_B'] = pd.Series(sorted_genes[:, 1], index=sv_data.index).replace('', pd.NA)
+
+gene_long = pd.concat(
+    [
+        sv_data[['sample_id', 'GENE_A', 'GENE_B']].rename(columns={'GENE_A': 'GENE', 'GENE_B': 'PARTNER'}),
+        sv_data[['sample_id', 'GENE_A', 'GENE_B']].rename(columns={'GENE_B': 'GENE', 'GENE_A': 'PARTNER'}),
+    ],
+    ignore_index=True,
+).dropna(subset=['sample_id', 'GENE', 'PARTNER'])
+
+partner_counts = (
+    gene_long
+    .groupby(['GENE', 'PARTNER'])['sample_id']
+    .nunique()
+    .reset_index(name='n')
+)
+gene_totals = partner_counts.groupby('GENE')['n'].sum().reset_index(name='total_n')
+partner_counts = partner_counts.merge(gene_totals, on='GENE')
+partner_counts['fraction'] = partner_counts['n'] / partner_counts['total_n']
+
+major_partners = partner_counts.loc[
+    (partner_counts['fraction'] >= SV_DOMINANCE_THRESHOLD) &
+    (partner_counts['n'] >= SV_MIN_CASES)
+].copy()
+
+genes_with_major = set(major_partners['GENE'])
+all_genes = set(gene_long['GENE'].unique())
+genes_without_major = all_genes - genes_with_major
+
+feature_dict = defaultdict(set)
+
+# For genes with a dominant partner, split into dominant fusion and "other SV" features
+for _, row in major_partners.iterrows():
+    gene = row['GENE']
+    partner = row['PARTNER']
+
+    major_name = f'{gene}_{partner}_FUSION'
+    other_name = f'{gene}_OTHER_SV'
+
+    major_mask = (
+        ((sv_data['GENE_A'] == gene) & (sv_data['GENE_B'] == partner)) |
+        ((sv_data['GENE_A'] == partner) & (sv_data['GENE_B'] == gene))
+    )
+    gene_mask = (sv_data['GENE_A'] == gene) | (sv_data['GENE_B'] == gene)
+
+    major_samples = set(sv_data.loc[major_mask, 'sample_id'])
+    gene_samples = set(sv_data.loc[gene_mask, 'sample_id'])
+
+    feature_dict[major_name].update(major_samples)
+    feature_dict[other_name].update(gene_samples - major_samples)
+
+# For genes without a dominant partner, use a single gene-level SV indicator
+for gene in genes_without_major:
+    colname = f'{gene}_SV'
+    gene_mask = (sv_data['GENE_A'] == gene) | (sv_data['GENE_B'] == gene)
+    feature_dict[colname].update(set(sv_data.loc[gene_mask, 'sample_id']))
+
+all_samples = sv_data['sample_id'].dropna().unique()
+feature_df = pd.DataFrame(0, index=all_samples, columns=list(feature_dict.keys()), dtype='int8')
+for col, sample_set in feature_dict.items():
+    feature_df.loc[list(sample_set), col] = 1
+feature_df = feature_df.reset_index().rename(columns={'index': 'sample_id'})
+
+if feature_df.shape[1] > 1:
+    pos_counts = feature_df.iloc[:, 1:].sum()
+    valid_cols = pos_counts.index[pos_counts >= SV_MIN_POSITIVE_SAMPLES].tolist()
+else:
+    valid_cols = []
+
+complete_sv_data = (
+    feature_df[['sample_id'] + valid_cols]
+    .merge(px_metadata_min, on='sample_id', how='inner')
+)
+sv_columns = [col for col in complete_sv_data.columns if col.endswith('_SV') or col.endswith('_FUSION')]
+complete_sv_data = complete_sv_data[metadata_columns + sv_columns]
+if sv_columns:
+    complete_sv_data[sv_columns] = complete_sv_data[sv_columns].astype(int)
+
+complete_sv_data.to_csv(os.path.join(CLINICAL_FEATURE_PATH, 'complete_sv_data_df.csv'), index=False)
 
 # === Categorical treatment by line ===
 med_classes = pd.read_csv(os.path.join(DATA_PATH, 'GPT_generated_med_classes.csv'))
