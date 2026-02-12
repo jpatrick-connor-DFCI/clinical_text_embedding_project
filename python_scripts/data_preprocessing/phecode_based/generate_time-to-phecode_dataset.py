@@ -26,7 +26,7 @@ mrn_tstart_dict = dict(zip(vte_data_sub['DFCI_MRN'], vte_data_sub['first_treatme
 icd_to_phecode_map = pd.read_csv(os.path.join(DATA_PATH, 'code_data/icd_to_phecode_map.csv'))
 
 # EHR ICD info
-split_ehr_icd_subset = pd.read_csv(os.path.join(SURV_PATH, 'time-to-icd/timestamped_icd_info.csv'))
+split_ehr_icd_subset = pd.read_csv(os.path.join(SURV_PATH, 'timestamped_icd_info.csv'))
 split_ehr_icd_subset = split_ehr_icd_subset.loc[
     split_ehr_icd_subset['DIAGNOSIS_ICD10_CD'].isin(icd_to_phecode_map['ICD10_CD'].unique())
 ].copy()
