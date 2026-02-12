@@ -1,13 +1,15 @@
 import os
 import re
 import pandas as pd
+import numpy as np
 from tqdm import tqdm
 from datetime import datetime
-from embed_surv_utils import map_time_to_event
+from embed_surv_utils import map_time_to_event, generate_survival_embedding_df
 
 # Paths
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
-SURV_PATH = os.path.join(DATA_PATH, 'survival_data/')
+SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
+NOTES_PATH = os.path.join(DATA_PATH, 'batched_datasets/processed_datasets/')
 INTAE_DATA_PATH = '/data/gusev/PROFILE/CLINICAL/robust_VTE_pred_project_2025_03_cohort/data/'
 METS_PROJECT = '/data/gusev/Recurrent_Mets_Project/'
 PROCESSED_DATA_PATH = os.path.join(METS_PROJECT, 'clinical_to_ag/')
@@ -76,4 +78,15 @@ vte_data_sub['GENDER'] = vte_data_sub['BIOLOGICAL_SEX'].map({'MALE' : 0, 'FEMALE
 vte_data_sub.drop(columns=['AGE_AT_FIRST_TREAT', 'BIOLOGICAL_SEX', 'death_date', 'last_contact_date'], inplace=True)
     
 # Save final dataset
-vte_data_sub.to_csv(os.path.join(SURV_PATH, 'time-to-phecode/tt_vte_plus_phecodes.csv'), index=False)
+events_data_sub = vte_data_sub
+events_data_sub.to_csv(os.path.join(SURV_PATH, 'phecode_surv_df.csv'), index=False)
+
+# Create embedding prediction dataset
+embeddings_data = np.load(os.path.join(NOTES_PATH, 'full_VTE_embeddings_as_array.npy'))
+notes_meta = pd.read_csv(os.path.join(NOTES_PATH, 'full_VTE_embeddings_metadata.csv'))
+
+note_types = ['Clinician', 'Imaging', 'Pathology']
+monthly_data = generate_survival_embedding_df(notes_meta, events_data_sub, embeddings_data, note_types=note_types,
+                                              note_timing_col='NOTE_TIME_REL_FIRST_TREATMENT_START', continuous_window=False,
+                                              pool_fx={key : 'time_decay_mean' for key in note_types}, decay_param=0.01).dropna()
+monthly_data.to_csv(os.path.join(SURV_PATH, 'phecode_embedding_prediction_df.csv'), index=False)

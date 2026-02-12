@@ -10,7 +10,7 @@ random.seed(42)  # set seed for reproducibility
 IO_PATH = '/data/gusev/USERS/mjsaleh/'
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 NOTES_PATH = os.path.join(DATA_PATH, 'batched_datasets/processed_datasets/')
-SURV_PATH = os.path.join(DATA_PATH, 'survival_data/')
+SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
 MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
 
 # Load datasets
@@ -19,7 +19,7 @@ cancer_type_df = pd.read_csv(os.path.join(DATA_PATH, 'clinical_and_genomic_featu
 notes_meta = pd.read_csv(os.path.join(NOTES_PATH, 'full_VTE_embeddings_metadata.csv'))
 embeddings = np.load(os.path.join(NOTES_PATH, 'full_VTE_embeddings_as_array.npy'))
 
-tt_phecodes_df = pd.read_csv(os.path.join(SURV_PATH, 'time-to-phecode/tt_vte_plus_phecodes.csv'))
+tt_phecodes_df = pd.read_csv(os.path.join(SURV_PATH, 'phecode_surv_df.csv'))
 irAE_df = pd.read_csv(os.path.join(IO_PATH, 'IO_START.csv'), index_col=0).rename(columns={'MRN' : 'DFCI_MRN'})
 
 vte_data = pd.read_csv("/data/gusev/PROFILE/CLINICAL/robust_VTE_pred_project_2025_03_cohort/data/follow_up_vte_df_cohort.csv")

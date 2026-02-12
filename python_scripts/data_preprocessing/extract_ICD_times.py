@@ -5,7 +5,7 @@ from datetime import datetime
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 DIAGNOSTICS_PATH = '/data/gusev/PROFILE/CLINICAL/OncDRS/ALL_2025_03/'
 INTAE_DATA_PATH = '/data/gusev/PROFILE/CLINICAL/robust_VTE_pred_project_2025_03_cohort/data/'
-SURV_PATH = os.path.join(DATA_PATH, 'survival_data/')
+SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
 RESULTS_PATH = os.path.join(SURV_PATH, 'results/')
 
 ehr_icds = pd.read_csv(os.path.join(DIAGNOSTICS_PATH, 'EHR_DIAGNOSIS.csv'))

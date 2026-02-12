@@ -12,8 +12,8 @@ from sklearn.metrics import silhouette_score
 FIGURE_PATH = '/data/gusev/USERS/jpconnor/figures/clinical_text_embedding_project/model_metrics/'
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 FEATURE_PATH = os.path.join(DATA_PATH, 'clinical_and_genomic_features/')
-SURV_PATH = os.path.join(DATA_PATH, 'survival_data/')
-RESULTS_PATH = os.path.join(SURV_PATH, 'results/icd_results/')
+SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
+RESULTS_PATH = os.path.join(SURV_PATH, 'results/level_3_ICD_results/')
 TRAJECTORY_PATH = os.path.join(RESULTS_PATH, 'mortality_trajectories/')
 
 FIGURE_PATH = '/data/gusev/USERS/jpconnor/figures/clinical_text_embedding_project/mortality_trajectories/'

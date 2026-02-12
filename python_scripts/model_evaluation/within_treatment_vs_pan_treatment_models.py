@@ -10,14 +10,14 @@ from embed_surv_utils import run_grid_CoxPH_parallel, get_heldout_risk_scores_Co
 # === Paths ===
 FIGURE_PATH = '/data/gusev/USERS/jpconnor/figures/clinical_text_embedding_project/model_metrics/'
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
-SURV_PATH = os.path.join(DATA_PATH, 'survival_data/')
-RESULTS_PATH = os.path.join(SURV_PATH, 'results/icd_results/')
+SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
+RESULTS_PATH = os.path.join(SURV_PATH, 'results/level_3_ICD_results/')
 TREATMENT_PATH = os.path.join(DATA_PATH, 'treatment_prediction/first_line_treatment_prediction_data/')
 
 os.environ["JOBLIB_DEFAULT_WORKER_TIMEOUT"] = "600"
 
 # === Load datasets ===
-time_decayed_events_df = pd.read_csv(os.path.join(SURV_PATH, 'time-to-icd/time_decayed_events_df.csv'))
+time_decayed_events_df = pd.read_csv(os.path.join(SURV_PATH, 'level_3_ICD_embedding_prediction_df.csv'))
 
 # Load cancer types
 cancer_type_df = pd.read_csv(

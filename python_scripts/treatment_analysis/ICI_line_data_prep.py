@@ -1,23 +1,19 @@
 import os
-import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from embed_surv_utils import generate_survival_embedding_df
+from treatment_analysis_common import (
+    DATA_PATH,
+    load_note_embeddings,
+    load_vte_cohort_treatments,
+    add_treatment_line_columns,
+)
 
 # Paths
-DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
-SURV_PATH = os.path.join(DATA_PATH, 'survival_data/')
-NOTES_PATH = os.path.join(DATA_PATH, "batched_datasets/VTE_data/processed_datasets/")
 ICI_PRED_PATH = os.path.join(DATA_PATH,'treatment_prediction/line_ICI_prediction_data/')
 
 # --- Load cohort ---
-treatment_df = pd.read_csv("/data/gusev/USERS/mjsaleh/profile_lines_of_rx/profile_rxlines.csv")
-tt_phecode_df = pd.read_csv(os.path.join(SURV_PATH, "time-to-phecode/tt_vte_plus_phecodes.csv"))
-
-cohort_treatment_df = (
-    treatment_df.loc[treatment_df["MRN"].isin(tt_phecode_df["DFCI_MRN"].unique())]
-    .copy()
-)
+cohort_treatment_df = load_vte_cohort_treatments()
 
 # --- One-hot encode treatment subtypes ---
 treatments = (
@@ -30,9 +26,9 @@ dummies = pd.get_dummies(treatments, prefix="PX_on").groupby(level=0).max()
 cohort_treatment_df = pd.concat([cohort_treatment_df, dummies], axis=1)
 
 # --- Treatment line + time-to-next ---
-cohort_treatment_df["LOT_start_date"] = pd.to_datetime(cohort_treatment_df["LOT_start_date"])
-cohort_treatment_df = cohort_treatment_df.sort_values(["MRN", "LOT_start_date"])
-cohort_treatment_df["treatment_line"] = cohort_treatment_df.groupby("MRN").cumcount() + 1
+cohort_treatment_df = add_treatment_line_columns(
+    cohort_treatment_df, mrn_col='MRN', start_col='LOT_start_date'
+)
 cohort_treatment_df["time_to_next_treatment"] = (
     cohort_treatment_df.groupby("MRN")["LOT_start_date"].diff(-1).dt.days.abs()
 )
@@ -67,8 +63,7 @@ for line, df_line in cohort_treatment_df.groupby("treatment_line"):
     
     ici_sets[line] = {"ICI": ici_df, "non-ICI": non_ici_df}
 
-notes_meta = pd.read_csv(os.path.join(NOTES_PATH, 'full_VTE_embeddings_metadata.csv'))
-embeddings_data = np.load(os.path.join(NOTES_PATH, 'full_VTE_embeddings_as_array.npy'))
+notes_meta, embeddings_data = load_note_embeddings()
 
 note_types = ['Clinician', 'Imaging', 'Pathology']
 pool_fx = {nt: 'time_decay_mean' for nt in note_types}

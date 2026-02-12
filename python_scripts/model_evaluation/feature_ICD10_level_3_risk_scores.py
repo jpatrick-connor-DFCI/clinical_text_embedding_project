@@ -10,8 +10,8 @@ from embed_surv_utils import run_grid_CoxPH_parallel, get_heldout_risk_scores_Co
 # === Paths ===
 FIGURE_PATH = '/data/gusev/USERS/jpconnor/figures/clinical_text_embedding_project/model_metrics/'
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
-SURV_PATH = os.path.join(DATA_PATH, 'survival_data/')
-RESULTS_PATH = os.path.join(SURV_PATH, 'results/icd_results/')
+SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
+RESULTS_PATH = os.path.join(SURV_PATH, 'results/level_3_ICD_results/')
 FEATURE_PATH = os.path.join(DATA_PATH, 'clinical_and_genomic_features/')
 FULL_COHORT_PATH = os.path.join(RESULTS_PATH, 'full_cohort/')
 FEATURE_COMPS_PATH = os.path.join(RESULTS_PATH, 'feature_comps/')
@@ -23,7 +23,7 @@ events = list(set(os.listdir(FULL_COHORT_PATH)) & set(os.listdir(FEATURE_COMPS_P
 os.environ["JOBLIB_DEFAULT_WORKER_TIMEOUT"] = "600"
 
 # Load text data
-time_decayed_events_df = pd.read_csv(os.path.join(SURV_PATH, 'time-to-icd/time_decayed_events_df.csv'))
+time_decayed_events_df = pd.read_csv(os.path.join(SURV_PATH, 'level_3_ICD_embedding_prediction_df.csv'))
 
 # load clinical and genomic features
 mrn_stage_df = pd.read_csv(os.path.join(FEATURE_PATH, 'cancer_stage_df.csv'))

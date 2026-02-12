@@ -8,7 +8,7 @@ from sklearn.metrics import accuracy_score, classification_report
 
 # Paths
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
-SURV_PATH = os.path.join(DATA_PATH, 'survival_data/')
+SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
 NOTES_PATH = os.path.join(DATA_PATH, "batched_datasets/VTE_data/processed_datasets/")
 
 full_IO_prediction_dataset = pd.read_csv(os.path.join(DATA_PATH, 'treatment_prediction/IO_first_line_preds.csv'))

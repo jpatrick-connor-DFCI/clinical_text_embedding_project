@@ -8,7 +8,7 @@ from embed_surv_utils import run_base_CoxPH, run_grid_CoxPH_parallel
 # Paths
 # -------------------------------------------------------------------
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
-SURV_PATH = os.path.join(DATA_PATH, "survival_data/")
+SURV_PATH = os.path.join(DATA_PATH, "time-to-event_analysis/")
 NOTES_PATH = os.path.join(DATA_PATH, "batched_datasets/VTE_data/processed_datasets/")
 ICI_PRED_PATH = os.path.join(DATA_PATH, "treatment_prediction/line_ICI_prediction_data/")
 LINE_PRED_PATH = os.path.join(DATA_PATH,'treatment_prediction/time-to-next-treatment/')
@@ -19,7 +19,7 @@ full_ttnt_df = pd.read_csv(os.path.join(LINE_PRED_PATH, 'full_tt_next_treatment_
 cancer_type_df = pd.read_csv('/data/gusev/PROFILE/CLINICAL/robust_VTE_pred_project_2025_03_cohort/data/first_treatments_dfci_w_inferred_cancers.csv',
                              usecols=['DFCI_MRN', 'med_genomics_merged_cancer_group']).rename(columns={'med_genomics_merged_cancer_group' : 'CANCER_TYPE'})
 
-tt_phecodes_df = pd.read_csv(os.path.join(SURV_PATH, 'time-to-phecode/tt_vte_plus_phecodes.csv'))
+tt_phecodes_df = pd.read_csv(os.path.join(SURV_PATH, 'phecode_surv_df.csv'))
 
 full_ttnt_df = (full_ttnt_df
                 .merge(tt_phecodes_df[['DFCI_MRN', 'AGE_AT_TREATMENTSTART', 'GENDER']], on='DFCI_MRN')
