@@ -18,6 +18,11 @@ source /PHShome/jpc91/.bashrc
 module load miniforge3
 conda activate clinical_notes_project
 
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+
 python /data/gusev/USERS/jpconnor/clinical_text_project/code/python_scripts/model_training/full_cohort_batches/selected_events.py
 
 conda deactivate

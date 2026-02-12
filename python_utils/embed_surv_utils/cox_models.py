@@ -248,8 +248,9 @@ def run_grid_CoxPH_parallel(
     ignore_warnings: bool = True,
     backend: str = "threading",     # "threading" or "loky"
     pca_iterated_power: int = 1,
-    pre_dispatch: int | str = 1,
-    batch_size: int = 1,
+    pre_dispatch: int | str = "2*n_jobs",
+    batch_size: int | str = "auto",
+    parallel_axis: str = "auto",    # "auto", "l1", or "fold"
 ) -> tuple[pd.DataFrame, pd.DataFrame, object]:
     """
     Auto-switch behavior:
@@ -259,6 +260,11 @@ def run_grid_CoxPH_parallel(
     Why:
       - No PCA => memmaps are mostly overhead (I/O, mmap setup).
       - PCA/scaling => precomputing per fold once is a big win for grid search.
+
+    Parallelism:
+      - parallel_axis="l1": parallelize over l1_ratios (best when many l1 values).
+      - parallel_axis="fold": parallelize over CV folds inside each l1 (best when few l1 values).
+      - parallel_axis="auto": picks "fold" when l1 grid is small, else "l1".
     """
 
     if ignore_warnings:
@@ -313,6 +319,13 @@ def run_grid_CoxPH_parallel(
         else joblib.parallel_backend("threading")
     )
 
+    if parallel_axis not in {"auto", "l1", "fold"}:
+        raise ValueError("parallel_axis must be one of {'auto', 'l1', 'fold'}")
+    if parallel_axis == "auto":
+        parallel_axis_eff = "fold" if len(l1_ratios) <= 2 else "l1"
+    else:
+        parallel_axis_eff = parallel_axis
+
     # ==========================================================================================
     # Path A: NO PCA => NO MEMMAP (fastest)
     # ==========================================================================================
@@ -320,64 +333,88 @@ def run_grid_CoxPH_parallel(
         alphas_desc = np.sort(alphas_to_test)[::-1].tolist()
         n_alphas = len(alphas_desc)
 
+        def _evaluate_fold_no_pca(fi: int, tr: np.ndarray, va: np.ndarray, l1_ratio: float):
+            fold_auc = np.full(n_alphas, np.nan)
+            start = time.time()
+            error_flag = False
+
+            X_tr = X_train_val[tr]
+            X_va = X_train_val[va]
+            y_tr = y_train_val[tr]
+            y_va = y_train_val[va]
+
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*`trapz` is deprecated.*")
+
+                try:
+                    model = CoxnetSurvivalAnalysis(
+                        alphas=alphas_desc,
+                        l1_ratio=l1_ratio,
+                        max_iter=max_iter,
+                        fit_baseline_model=False,
+                        penalty_factor=penalty_no_pca,
+                    )
+                    model.fit(X_tr, y_tr)
+
+                    risk_all = model.predict(X_va)
+                    if risk_all.ndim == 1:
+                        risk_all = risk_all[:, np.newaxis]
+
+                    if risk_all.shape[1] >= n_alphas:
+                        for ai in range(n_alphas):
+                            try:
+                                _, fold_auc[ai] = cumulative_dynamic_auc(
+                                    y_tr, y_va, risk_all[:, ai], eval_times
+                                )
+                            except Exception:
+                                pass
+                    else:
+                        raise ValueError("path returned fewer alphas than requested")
+                except Exception:
+                    # Path failed or returned partial results; fall back to individual fits
+                    error_flag = True
+                    for ai, a in enumerate(alphas_desc):
+                        try:
+                            m = CoxnetSurvivalAnalysis(
+                                alphas=[a], l1_ratio=l1_ratio,
+                                max_iter=max_iter, fit_baseline_model=False,
+                                penalty_factor=penalty_no_pca,
+                            )
+                            m.fit(X_tr, y_tr)
+                            _, fold_auc[ai] = cumulative_dynamic_auc(
+                                y_tr, y_va, m.predict(X_va), eval_times
+                            )
+                        except Exception:
+                            pass
+
+            return fi, fold_auc, time.time() - start, error_flag
+
         def evaluate_l1_path_no_pca(l1_ratio: float):
             fold_aucs = np.full((len(folds), n_alphas), np.nan)
             fold_times = np.zeros(len(folds))
             fold_errors = np.zeros(len(folds), dtype=bool)
 
-            for fi, (tr, va) in enumerate(folds):
-                start = time.time()
+            if parallel_axis_eff == "fold":
+                with parallel_ctx:
+                    fold_results = joblib.Parallel(
+                        n_jobs=n_jobs,
+                        verbose=verbose,
+                        pre_dispatch=pre_dispatch,
+                        batch_size=batch_size,
+                    )(
+                        joblib.delayed(_evaluate_fold_no_pca)(fi, tr, va, l1_ratio)
+                        for fi, (tr, va) in enumerate(folds)
+                    )
+            else:
+                fold_results = [
+                    _evaluate_fold_no_pca(fi, tr, va, l1_ratio)
+                    for fi, (tr, va) in enumerate(folds)
+                ]
 
-                X_tr = X_train_val[tr]
-                X_va = X_train_val[va]
-                y_tr = y_train_val[tr]
-                y_va = y_train_val[va]
-
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*`trapz` is deprecated.*")
-
-                    try:
-                        model = CoxnetSurvivalAnalysis(
-                            alphas=alphas_desc,
-                            l1_ratio=l1_ratio,
-                            max_iter=max_iter,
-                            fit_baseline_model=False,
-                            penalty_factor=penalty_no_pca,
-                        )
-                        model.fit(X_tr, y_tr)
-
-                        risk_all = model.predict(X_va)
-                        if risk_all.ndim == 1:
-                            risk_all = risk_all[:, np.newaxis]
-
-                        if risk_all.shape[1] >= n_alphas:
-                            for ai in range(n_alphas):
-                                try:
-                                    _, fold_aucs[fi, ai] = cumulative_dynamic_auc(
-                                        y_tr, y_va, risk_all[:, ai], eval_times
-                                    )
-                                except Exception:
-                                    pass
-                        else:
-                            raise ValueError("path returned fewer alphas than requested")
-                    except Exception:
-                        # Path failed or returned partial results; fall back to individual fits
-                        fold_errors[fi] = True
-                        for ai, a in enumerate(alphas_desc):
-                            try:
-                                m = CoxnetSurvivalAnalysis(
-                                    alphas=[a], l1_ratio=l1_ratio,
-                                    max_iter=max_iter, fit_baseline_model=False,
-                                    penalty_factor=penalty_no_pca,
-                                )
-                                m.fit(X_tr, y_tr)
-                                _, fold_aucs[fi, ai] = cumulative_dynamic_auc(
-                                    y_tr, y_va, m.predict(X_va), eval_times
-                                )
-                            except Exception:
-                                pass
-
-                fold_times[fi] = time.time() - start
+            for fi, fold_auc, fold_time, error_flag in fold_results:
+                fold_aucs[fi, :] = fold_auc
+                fold_times[fi] = fold_time
+                fold_errors[fi] = error_flag
 
             rows = []
             for ai, alpha in enumerate(alphas_desc):
@@ -395,17 +432,20 @@ def run_grid_CoxPH_parallel(
                 ])
             return rows
 
-        with parallel_ctx:
-            nested = joblib.Parallel(
-                n_jobs=n_jobs,
-                verbose=verbose,
-                pre_dispatch=pre_dispatch,
-                batch_size=batch_size,
-            )(
-                joblib.delayed(evaluate_l1_path_no_pca)(l1)
-                for l1 in l1_ratios
-            )
-            results = [row for batch in nested for row in batch]
+        if parallel_axis_eff == "l1":
+            with parallel_ctx:
+                nested = joblib.Parallel(
+                    n_jobs=n_jobs,
+                    verbose=verbose,
+                    pre_dispatch=pre_dispatch,
+                    batch_size=batch_size,
+                )(
+                    joblib.delayed(evaluate_l1_path_no_pca)(l1)
+                    for l1 in l1_ratios
+                )
+        else:
+            nested = [evaluate_l1_path_no_pca(l1) for l1 in l1_ratios]
+        results = [row for batch in nested for row in batch]
 
         cv_results_df = pd.DataFrame(
             results,
@@ -500,65 +540,89 @@ def run_grid_CoxPH_parallel(
         alphas_desc_b = np.sort(alphas_to_test)[::-1].tolist()
         n_alphas_b = len(alphas_desc_b)
 
+        def _evaluate_fold_with_pca(fi: int, meta: dict, l1_ratio: float):
+            fold_auc = np.full(n_alphas_b, np.nan)
+            start = time.time()
+            error_flag = False
+
+            X_tr_np = np.memmap(meta["tr_path"], mode="r", dtype=np.float32, shape=meta["tr_shape"])
+            X_va_np = np.memmap(meta["va_path"], mode="r", dtype=np.float32, shape=meta["va_shape"])
+            y_tr = meta["y_tr"]
+            y_va = meta["y_va"]
+            penalty = meta["penalty"]
+
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*`trapz` is deprecated.*")
+
+                try:
+                    model = CoxnetSurvivalAnalysis(
+                        alphas=alphas_desc_b,
+                        l1_ratio=l1_ratio,
+                        max_iter=max_iter,
+                        fit_baseline_model=False,
+                        penalty_factor=penalty,
+                    )
+                    model.fit(X_tr_np, y_tr)
+
+                    risk_all = model.predict(X_va_np)
+                    if risk_all.ndim == 1:
+                        risk_all = risk_all[:, np.newaxis]
+
+                    if risk_all.shape[1] >= n_alphas_b:
+                        for ai in range(n_alphas_b):
+                            try:
+                                _, fold_auc[ai] = cumulative_dynamic_auc(
+                                    y_tr, y_va, risk_all[:, ai], eval_times
+                                )
+                            except Exception:
+                                pass
+                    else:
+                        raise ValueError("path returned fewer alphas than requested")
+                except Exception:
+                    # Path failed or returned partial results; fall back to individual fits
+                    error_flag = True
+                    for ai, a in enumerate(alphas_desc_b):
+                        try:
+                            m_fb = CoxnetSurvivalAnalysis(
+                                alphas=[a], l1_ratio=l1_ratio,
+                                max_iter=max_iter, fit_baseline_model=False,
+                                penalty_factor=penalty,
+                            )
+                            m_fb.fit(X_tr_np, y_tr)
+                            _, fold_auc[ai] = cumulative_dynamic_auc(
+                                y_tr, y_va, m_fb.predict(X_va_np), eval_times
+                            )
+                        except Exception:
+                            pass
+
+            return fi, fold_auc, time.time() - start, error_flag
+
         def evaluate_l1_path_with_pca(l1_ratio: float):
             fold_aucs = np.full((len(fold_meta), n_alphas_b), np.nan)
             fold_times = np.zeros(len(fold_meta))
             fold_errors = np.zeros(len(fold_meta), dtype=bool)
 
-            for fi, m in enumerate(fold_meta):
-                start = time.time()
+            if parallel_axis_eff == "fold":
+                with parallel_ctx:
+                    fold_results = joblib.Parallel(
+                        n_jobs=n_jobs,
+                        verbose=verbose,
+                        pre_dispatch=pre_dispatch,
+                        batch_size=batch_size,
+                    )(
+                        joblib.delayed(_evaluate_fold_with_pca)(fi, meta, l1_ratio)
+                        for fi, meta in enumerate(fold_meta)
+                    )
+            else:
+                fold_results = [
+                    _evaluate_fold_with_pca(fi, meta, l1_ratio)
+                    for fi, meta in enumerate(fold_meta)
+                ]
 
-                X_tr_np = np.memmap(m["tr_path"], mode="r", dtype=np.float32, shape=m["tr_shape"])
-                X_va_np = np.memmap(m["va_path"], mode="r", dtype=np.float32, shape=m["va_shape"])
-                y_tr = m["y_tr"]
-                y_va = m["y_va"]
-                penalty = m["penalty"]
-
-                with warnings.catch_warnings():
-                    warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*`trapz` is deprecated.*")
-
-                    try:
-                        model = CoxnetSurvivalAnalysis(
-                            alphas=alphas_desc_b,
-                            l1_ratio=l1_ratio,
-                            max_iter=max_iter,
-                            fit_baseline_model=False,
-                            penalty_factor=penalty,
-                        )
-                        model.fit(X_tr_np, y_tr)
-
-                        risk_all = model.predict(X_va_np)
-                        if risk_all.ndim == 1:
-                            risk_all = risk_all[:, np.newaxis]
-
-                        if risk_all.shape[1] >= n_alphas_b:
-                            for ai in range(n_alphas_b):
-                                try:
-                                    _, fold_aucs[fi, ai] = cumulative_dynamic_auc(
-                                        y_tr, y_va, risk_all[:, ai], eval_times
-                                    )
-                                except Exception:
-                                    pass
-                        else:
-                            raise ValueError("path returned fewer alphas than requested")
-                    except Exception:
-                        # Path failed or returned partial results; fall back to individual fits
-                        fold_errors[fi] = True
-                        for ai, a in enumerate(alphas_desc_b):
-                            try:
-                                m_fb = CoxnetSurvivalAnalysis(
-                                    alphas=[a], l1_ratio=l1_ratio,
-                                    max_iter=max_iter, fit_baseline_model=False,
-                                    penalty_factor=penalty,
-                                )
-                                m_fb.fit(X_tr_np, y_tr)
-                                _, fold_aucs[fi, ai] = cumulative_dynamic_auc(
-                                    y_tr, y_va, m_fb.predict(X_va_np), eval_times
-                                )
-                            except Exception:
-                                pass
-
-                fold_times[fi] = time.time() - start
+            for fi, fold_auc, fold_time, error_flag in fold_results:
+                fold_aucs[fi, :] = fold_auc
+                fold_times[fi] = fold_time
+                fold_errors[fi] = error_flag
 
             rows = []
             for ai, alpha in enumerate(alphas_desc_b):
@@ -576,17 +640,20 @@ def run_grid_CoxPH_parallel(
                 ])
             return rows
 
-        with parallel_ctx:
-            nested = joblib.Parallel(
-                n_jobs=n_jobs,
-                verbose=verbose,
-                pre_dispatch=pre_dispatch,
-                batch_size=batch_size,
-            )(
-                joblib.delayed(evaluate_l1_path_with_pca)(l1)
-                for l1 in l1_ratios
-            )
-            results = [row for batch in nested for row in batch]
+        if parallel_axis_eff == "l1":
+            with parallel_ctx:
+                nested = joblib.Parallel(
+                    n_jobs=n_jobs,
+                    verbose=verbose,
+                    pre_dispatch=pre_dispatch,
+                    batch_size=batch_size,
+                )(
+                    joblib.delayed(evaluate_l1_path_with_pca)(l1)
+                    for l1 in l1_ratios
+                )
+        else:
+            nested = [evaluate_l1_path_with_pca(l1) for l1 in l1_ratios]
+        results = [row for batch in nested for row in batch]
 
         cv_results_df = pd.DataFrame(
             results,
