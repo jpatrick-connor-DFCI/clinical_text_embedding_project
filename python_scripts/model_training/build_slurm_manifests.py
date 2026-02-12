@@ -1,17 +1,19 @@
 import argparse
 import os
+from pathlib import Path
 
 from slurm_array_utils import SCHEME_CONFIG, get_events_from_df, load_embedding_prediction_df
 
 MODALITIES = ["stage", "treatment", "labs", "somatic", "prs", "text"]
-HEAVY_MODALITIES = {"text", "prs", "labs"}
+HEAVY_MODALITIES = {"text", "prs", "labs", "somatic"}
+DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[2] / "bash_scripts" / "slurm_manifests"
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build TSV manifests for Slurm array event-level training.")
     parser.add_argument(
         "--output-dir",
-        default="bash_scripts/slurm_manifests",
+        default=str(DEFAULT_OUTPUT_DIR),
         help="Directory where manifest .tsv files are written.",
     )
     parser.add_argument(
