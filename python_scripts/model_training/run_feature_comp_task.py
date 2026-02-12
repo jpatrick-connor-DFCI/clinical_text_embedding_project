@@ -26,7 +26,7 @@ def _parse_args() -> argparse.Namespace:
         choices=["stage", "treatment", "labs", "somatic", "prs", "text"],
     )
     parser.add_argument("--n-jobs", type=int, default=None)
-    parser.add_argument("--max-iter", type=int, default=3000)
+    parser.add_argument("--max-iter", type=int, default=5000)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--backend", default="threading", choices=["threading", "loky"])
     return parser.parse_args()

@@ -2,9 +2,19 @@
 
 set -euo pipefail
 
-PROJECT_ROOT=${PROJECT_ROOT:-/data/gusev/USERS/jpconnor/clinical_text_project/code}
+PROJECT_ROOT=${PROJECT_ROOT:-/data/gusev/USERS/jpconnor/clinical_text_embedding_project/code}
 MANIFEST=${MANIFEST:-$PROJECT_ROOT/bash_scripts/slurm_manifests/full_cohort_tasks.tsv}
 MAX_CONCURRENT=${MAX_CONCURRENT:-20}
+
+if [[ ! -d "$PROJECT_ROOT" ]]; then
+  echo "Project root not found: $PROJECT_ROOT"
+  exit 1
+fi
+
+mkdir -p "$(dirname "$MANIFEST")"
+mkdir -p "$PROJECT_ROOT/output/array_full_cohort" "$PROJECT_ROOT/error/array_full_cohort"
+
+cd "$PROJECT_ROOT"
 
 if [[ ! -f "$MANIFEST" ]]; then
   echo "Manifest not found: $MANIFEST"
