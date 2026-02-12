@@ -39,10 +39,11 @@ events = [col.split('_', 1)[1] for col in time_decayed_events_df.columns if (col
 tt_events = [f"tt_{e}" for e in events]
 
 # CoxPH hyperparameters
-alphas_to_test = np.logspace(-5, 0, 30)
+alphas_to_test = np.logspace(-5, 0, 25)
 l1_ratios = [0.5, 1.0]
 
-max_iter=5_000
+
+max_iter=3_000
 for event in tqdm(events[250:275]):
     event_path = os.path.join(OUTPUT_PATH, event)
     os.makedirs(event_path, exist_ok=True)

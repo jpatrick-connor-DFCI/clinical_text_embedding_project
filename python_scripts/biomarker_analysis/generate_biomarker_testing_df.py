@@ -59,18 +59,19 @@ continuous_vars = ['AGE_AT_TREATMENTSTART'] + embed_cols
 IO_mrns = list(set(irAE_df['DFCI_MRN'].unique()).intersection(set(IO_prediction_df['DFCI_MRN'].unique())))
 
 event='death'
-alphas_to_test = np.logspace(-5, 0, 30)
+alphas_to_test = np.logspace(-5, 0, 25)
 l1_ratios = [0.5, 1.0]
+
 
 _, IO_val_results, _ = run_grid_CoxPH_parallel(
     IO_prediction_df, base_vars, continuous_vars, embed_cols,
-    l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}', verbose=5)
+    l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}', max_iter=3000, verbose=5)
 
 IO_l1_ratio, IO_alpha = IO_val_results.sort_values(by='mean_auc(t)', ascending=False).iloc[0][['l1_ratio', 'alpha']]
 
 trained_IO = (get_heldout_risk_scores_CoxPH(IO_prediction_df, base_vars, continuous_vars, embed_cols,
                                             event_col=event, tstop_col=f'tt_{event}', penalized=True,
-                                            l1_ratio=IO_l1_ratio, alpha=IO_alpha)
+                                            l1_ratio=IO_l1_ratio, alpha=IO_alpha, max_iter=3000)
               .rename(columns={'risk_score' : 'IO_risk_score'}))
 
 somatic_df = pd.read_csv(os.path.join(DATA_PATH, 'clinical_and_genomic_features/PROFILE_2024_MUTATION_CARRIERS.csv'))

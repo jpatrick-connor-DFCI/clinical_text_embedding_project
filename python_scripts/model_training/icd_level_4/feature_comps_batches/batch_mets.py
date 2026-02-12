@@ -66,10 +66,11 @@ full_prediction_df["has_baseline_met"] = full_prediction_df[baseline_met_cols].a
 met_free_prediction_df = full_prediction_df.loc[~full_prediction_df["has_baseline_met"]].copy()
 
 # CoxPH hyperparameters
-alphas_to_test = np.logspace(-5, 0, 30)
+alphas_to_test = np.logspace(-5, 0, 25)
 l1_ratios = [0.5, 1.0]
 
-max_iter=1_000
+
+max_iter=3_000
 for met_event in tqdm(met_events):
     event_path = os.path.join(OUTPUT_PATH, met_event)
     os.makedirs(event_path, exist_ok=True)

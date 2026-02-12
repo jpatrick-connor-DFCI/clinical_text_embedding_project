@@ -23,8 +23,9 @@ events_data = pd.read_csv(SURV_PATH + 'level_3_ICD_surv_df.csv')
 cancer_type_df = pd.read_csv(os.path.join(FEATURE_PATH, 'cancer_type_df.csv'))
 
 event='death'
-alphas_to_test = np.logspace(-5, 0, 30)
+alphas_to_test = np.logspace(-5, 0, 25)
 l1_ratios = [0.5, 1.0]
+
 
 # regenerate predication dataframe at time 0 with new decay parameter
 decay_param=1.0
@@ -49,7 +50,7 @@ type_cols = [c for c in full_prediction_df.columns if 'CANCER_TYPE' in c]
 _, embed_val_results, pan_cancer_model = run_grid_CoxPH_parallel(
     full_prediction_df, base_vars + type_cols, continuous_vars, embed_cols,
     l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}',
-    max_iter=1000, verbose=5)
+    max_iter=3000, verbose=5)
 
 opt_l1_ratio, opt_alpha = embed_val_results.sort_values(by='mean_auc(t)', ascending=False).iloc[0][['l1_ratio', 'alpha']]
 
@@ -61,7 +62,7 @@ trajectory_predictions_df = pd.DataFrame({'DFCI_MRN' : cohort_mrns} | {f'plus_{m
 
 risk_scores = get_heldout_risk_scores_CoxPH(full_prediction_df, base_vars + type_cols, continuous_vars, embed_cols,
                                             event_col=event, tstop_col=f'tt_{event}', id_col='DFCI_MRN', penalized=True, 
-                                            l1_ratio=opt_l1_ratio, alpha=opt_alpha, max_iter=1000, verbose=5)
+                                            l1_ratio=opt_l1_ratio, alpha=opt_alpha, max_iter=3000, verbose=5)
 
 trajectory_predictions_df['plus_0_months_data'] = (trajectory_predictions_df['DFCI_MRN']
                                                    .map(dict(zip(risk_scores['DFCI_MRN'], risk_scores['risk_score'])) |
@@ -81,7 +82,7 @@ for month_adj in tqdm(months_to_test):
     try:
         risk_scores = get_heldout_risk_scores_CoxPH(monthly_data, base_vars + type_cols, continuous_vars, embed_cols,
                                                     event_col=event, tstop_col=f'tt_{event}', id_col='DFCI_MRN', penalized=True, 
-                                                    l1_ratio=opt_l1_ratio, alpha=opt_alpha, max_iter=1000, verbose=0)
+                                                    l1_ratio=opt_l1_ratio, alpha=opt_alpha, max_iter=3000, verbose=0)
         trajectory_predictions_df[f'plus_{month_adj}_months_data'] = (trajectory_predictions_df['DFCI_MRN']
                                                                       .map(dict(zip(risk_scores['DFCI_MRN'], risk_scores['risk_score'])) | 
                                                                            {mrn : np.nan for mrn in cohort_mrns if mrn not in risk_scores['DFCI_MRN'].unique()}))

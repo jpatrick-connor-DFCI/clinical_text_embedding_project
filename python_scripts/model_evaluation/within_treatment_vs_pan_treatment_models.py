@@ -66,19 +66,20 @@ train_df[continuous_vars] = scaler.fit_transform(train_df[continuous_vars])
 held_df[continuous_vars] = scaler.transform(held_df[continuous_vars])
 
 # === Train Pan-Treatment Model ===
-alphas_to_test = np.logspace(-5, 0, 30)
+alphas_to_test = np.logspace(-5, 0, 25)
 l1_ratios = [0.5, 1.0]
+
 
 _, embed_val_results, pan_treatment_model = run_grid_CoxPH_parallel(
     train_df, base_vars, continuous_vars, embed_cols,
-    l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}', max_iter=1000
+    l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}', max_iter=3000
 )
 
 pan_treatment_l1, pan_treatment_alpha = embed_val_results.sort_values(by='mean_auc(t)', ascending=False).iloc[0][['l1_ratio', 'alpha']]
 
 trained_pan_treatment = (
     get_heldout_risk_scores_CoxPH(train_df, base_vars, continuous_vars, embed_cols,
-                                  event_col=event, tstop_col=f'tt_{event}', penalized=True, max_iter=1000,
+                                  event_col=event, tstop_col=f'tt_{event}', penalized=True, max_iter=3000,
                                   l1_ratio=pan_treatment_l1, alpha=pan_treatment_alpha)
     .rename(columns={'risk_score': 'pan_treatment_risk_score'})
 )
@@ -95,13 +96,13 @@ for treatment in tqdm(treatment_types):
 
     cur_test, cur_val, cur_model = run_grid_CoxPH_parallel(
         sub_df, base_vars, continuous_vars, embed_cols,
-        l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}', max_iter=1000
+        l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}', max_iter=3000
     )
 
     best_l1, best_alpha = cur_val.sort_values(by='mean_auc(t)', ascending=False).iloc[0][['l1_ratio', 'alpha']]
     trained_sub = get_heldout_risk_scores_CoxPH(
         sub_df, base_vars, continuous_vars, embed_cols,
-        event_col=event, tstop_col=f'tt_{event}', penalized=True, max_iter=1000,
+        event_col=event, tstop_col=f'tt_{event}', penalized=True, max_iter=3000,
         l1_ratio=best_l1, alpha=best_alpha
     )
 

@@ -32,8 +32,9 @@ embed_cols = [c for c in full_ttnt_df.columns if 'EMBEDDING' in c or '2015' in c
 continuous_vars = ['AGE_AT_TREATMENTSTART'] + embed_cols
 
 # CoxPH hyperparameters
-alphas_to_test = np.logspace(-5, 0, 30)
+alphas_to_test = np.logspace(-5, 0, 25)
 l1_ratios = [0.5, 1.0]
+
 
 for line in tqdm(list(range(1, 7))):
     line_pred_df = full_ttnt_df.loc[full_ttnt_df['treatment_line'] == line, base_vars + ['CANCER_TYPE'] + embed_cols + target_cols].dropna()
@@ -53,7 +54,7 @@ for line in tqdm(list(range(1, 7))):
     
     embed_plus_type_test_results, embed_plus_type_val_results, _ = run_grid_CoxPH_parallel(
         line_pred_df, base_vars + cancer_type_cols, continuous_vars, embed_cols,
-        l1_ratios, alphas_to_test, event_col='event', tstop_col='time_on_treatment', max_iter=5000)
+        l1_ratios, alphas_to_test, event_col='event', tstop_col='time_on_treatment', max_iter=3000)
 
     line_path = os.path.join(OUTPUT_PATH, f'line_{line}')
     os.makedirs(line_path, exist_ok=True)
