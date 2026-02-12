@@ -96,6 +96,23 @@ def _dedupe_in_order(values: list[str]) -> list[str]:
     return out
 
 
+def _filter_endpoint_events_by_min_post_baseline_count(
+    vte_data_sub: pd.DataFrame,
+    endpoint_events: list[str],
+    min_events: int = 100,
+) -> list[str]:
+    kept_events = []
+    for event in endpoint_events:
+        tt_col = f'tt_{event}'
+        if event not in vte_data_sub.columns or tt_col not in vte_data_sub.columns:
+            continue
+
+        post_baseline_events = ((vte_data_sub[event] == 1) & (vte_data_sub[tt_col] > 0)).sum()
+        if int(post_baseline_events) >= min_events:
+            kept_events.append(event)
+    return kept_events
+
+
 def _load_shared_inputs() -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray, pd.DataFrame]:
     base_vte_data_sub = pd.read_csv(os.path.join(INTAE_DATA_PATH, 'follow_up_vte_df_cohort.csv'))[BASE_INPUT_COLS].copy()
     split_ehr_icd_subset = pd.read_csv(os.path.join(SURV_PATH, 'timestamped_icd_info.csv'))
@@ -104,7 +121,26 @@ def _load_shared_inputs() -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray, pd.Da
     return base_vte_data_sub, split_ehr_icd_subset, embeddings_data, notes_meta
 
 
-def _add_metastatic_events(vte_data_sub: pd.DataFrame) -> list[str]:
+def _map_events_to_columns(
+    vte_data_sub: pd.DataFrame,
+    event_data: pd.DataFrame,
+    events_to_analyze: list[str],
+    event_col: str,
+    time_col: str,
+    progress_desc: str,
+) -> pd.DataFrame:
+    mapped_cols: dict[str, pd.Series] = {}
+    for event in tqdm(events_to_analyze, desc=progress_desc):
+        event_data_sub = event_data.loc[event_data[event_col] == event]
+        tt_series, event_series = map_time_to_event(
+            event_data_sub, vte_data_sub, 'DFCI_MRN', event, time_col
+        )
+        mapped_cols[f'tt_{event}'] = tt_series
+        mapped_cols[event] = event_series
+    return pd.DataFrame(mapped_cols, index=vte_data_sub.index)
+
+
+def _add_metastatic_events(vte_data_sub: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     dfs_to_concat = [
         pd.read_csv(os.path.join(PROCESSED_DATA_PATH, f'clinical_to_{site}_met.csv'))
         .loc[lambda df: df['event'] == 1, ['dfci_mrn', 'date', 'type']]
@@ -121,14 +157,20 @@ def _add_metastatic_events(vte_data_sub: pd.DataFrame) -> list[str]:
     met_date_df = met_date_df.dropna(subset=['TIME_TO_MET'])
 
     met_events_added = []
+    met_event_cols: dict[str, pd.Series] = {}
     for met_loc in sorted(met_date_df['MET_LOCATION'].dropna().unique()):
         cur_met_data_sub = met_date_df.loc[met_date_df['MET_LOCATION'] == met_loc]
-        vte_data_sub[f'tt_{met_loc}'], vte_data_sub[met_loc] = map_time_to_event(
+        tt_series, event_series = map_time_to_event(
             cur_met_data_sub, vte_data_sub, 'DFCI_MRN', met_loc, 'TIME_TO_MET'
         )
+        met_event_cols[f'tt_{met_loc}'] = tt_series
+        met_event_cols[met_loc] = event_series
         met_events_added.append(str(met_loc))
 
-    return met_events_added
+    if met_event_cols:
+        vte_data_sub = pd.concat([vte_data_sub, pd.DataFrame(met_event_cols, index=vte_data_sub.index)], axis=1)
+
+    return vte_data_sub, met_events_added
 
 
 def _finalize_base_covariates(vte_data_sub: pd.DataFrame) -> None:
@@ -197,14 +239,19 @@ icd_data = (
     .drop_duplicates(subset=['DFCI_MRN', 'ICD10_LEVEL_3_CD'], keep='first')
 )
 
-for icd in tqdm(icds_to_analyze, desc='Generating level-3 ICD events'):
-    icd_data_sub = icd_data.loc[icd_data['ICD10_LEVEL_3_CD'] == icd]
-    vte_data_sub[f'tt_{icd}'], vte_data_sub[icd] = map_time_to_event(
-        icd_data_sub, vte_data_sub, 'DFCI_MRN', icd, 'TIME_TO_ICD'
-    )
+icd_event_cols = _map_events_to_columns(
+    vte_data_sub=vte_data_sub,
+    event_data=icd_data,
+    events_to_analyze=icds_to_analyze,
+    event_col='ICD10_LEVEL_3_CD',
+    time_col='TIME_TO_ICD',
+    progress_desc='Generating level-3 ICD events',
+)
+vte_data_sub = pd.concat([vte_data_sub, icd_event_cols], axis=1)
 
-met_events_added = _add_metastatic_events(vte_data_sub)
+vte_data_sub, met_events_added = _add_metastatic_events(vte_data_sub)
 _finalize_base_covariates(vte_data_sub)
+icds_to_analyze = _filter_endpoint_events_by_min_post_baseline_count(vte_data_sub, icds_to_analyze, min_events=100)
 _write_outputs(
     vte_data_sub=vte_data_sub,
     endpoint_events=icds_to_analyze,
@@ -239,14 +286,19 @@ icd_data = (
     .drop_duplicates(subset=['DFCI_MRN', 'ICD10_LEVEL_4_CD'], keep='first')
 )
 
-for icd in tqdm(icds_to_analyze, desc='Generating level-4 ICD events'):
-    icd_data_sub = icd_data.loc[icd_data['ICD10_LEVEL_4_CD'] == icd]
-    vte_data_sub[f'tt_{icd}'], vte_data_sub[icd] = map_time_to_event(
-        icd_data_sub, vte_data_sub, 'DFCI_MRN', icd, 'TIME_TO_ICD'
-    )
+icd_event_cols = _map_events_to_columns(
+    vte_data_sub=vte_data_sub,
+    event_data=icd_data,
+    events_to_analyze=icds_to_analyze,
+    event_col='ICD10_LEVEL_4_CD',
+    time_col='TIME_TO_ICD',
+    progress_desc='Generating level-4 ICD events',
+)
+vte_data_sub = pd.concat([vte_data_sub, icd_event_cols], axis=1)
 
-met_events_added = _add_metastatic_events(vte_data_sub)
+vte_data_sub, met_events_added = _add_metastatic_events(vte_data_sub)
 _finalize_base_covariates(vte_data_sub)
+icds_to_analyze = _filter_endpoint_events_by_min_post_baseline_count(vte_data_sub, icds_to_analyze, min_events=100)
 _write_outputs(
     vte_data_sub=vte_data_sub,
     endpoint_events=icds_to_analyze,
@@ -295,14 +347,19 @@ phecode_data = (
     .drop_duplicates(subset=['DFCI_MRN', 'PHECODE'], keep='first')
 )
 
-for phecode in tqdm(phecodes_to_analyze, desc='Generating phecode events'):
-    phecode_data_sub = phecode_data.loc[phecode_data['PHECODE'] == phecode]
-    vte_data_sub[f'tt_{phecode}'], vte_data_sub[phecode] = map_time_to_event(
-        phecode_data_sub, vte_data_sub, 'DFCI_MRN', phecode, 'TIME_TO_ICD'
-    )
+phecode_event_cols = _map_events_to_columns(
+    vte_data_sub=vte_data_sub,
+    event_data=phecode_data,
+    events_to_analyze=phecodes_to_analyze,
+    event_col='PHECODE',
+    time_col='TIME_TO_ICD',
+    progress_desc='Generating phecode events',
+)
+vte_data_sub = pd.concat([vte_data_sub, phecode_event_cols], axis=1)
 
-met_events_added = _add_metastatic_events(vte_data_sub)
+vte_data_sub, met_events_added = _add_metastatic_events(vte_data_sub)
 _finalize_base_covariates(vte_data_sub)
+phecodes_to_analyze = _filter_endpoint_events_by_min_post_baseline_count(vte_data_sub, phecodes_to_analyze, min_events=100)
 _write_outputs(
     vte_data_sub=vte_data_sub,
     endpoint_events=phecodes_to_analyze,
