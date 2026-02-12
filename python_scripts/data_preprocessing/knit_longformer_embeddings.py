@@ -1,3 +1,5 @@
+"""Knit Longformer Embeddings script for data preprocessing workflows."""
+
 import os
 import torch
 import pandas as pd

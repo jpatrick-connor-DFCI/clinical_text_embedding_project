@@ -1,3 +1,5 @@
+"""Ici Line Data Prep script for treatment analysis workflows."""
+
 import os
 import pandas as pd
 from tqdm import tqdm

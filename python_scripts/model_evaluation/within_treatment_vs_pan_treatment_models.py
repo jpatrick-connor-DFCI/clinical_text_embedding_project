@@ -1,3 +1,5 @@
+"""Within Treatment Vs Pan Treatment Models script for model evaluation workflows."""
+
 # === Imports ===
 import os
 from tqdm import tqdm
@@ -8,7 +10,6 @@ from sksurv.metrics import concordance_index_censored
 from embed_surv_utils import run_grid_CoxPH_parallel, get_heldout_risk_scores_CoxPH
 
 # === Paths ===
-FIGURE_PATH = '/data/gusev/USERS/jpconnor/figures/clinical_text_embedding_project/model_metrics/'
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
 RESULTS_PATH = os.path.join(SURV_PATH, 'results/level_3_ICD_results/')

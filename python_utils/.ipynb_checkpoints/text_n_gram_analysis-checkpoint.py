@@ -1,8 +1,7 @@
-import os
+"""Text N Gram Analysis-Checkpoint utilities for the .ipynb checkpoints package."""
+
 import re
 import json
-import numpy as np
-import pandas as pd 
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 

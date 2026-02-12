@@ -1,3 +1,5 @@
+"""Run Risk Based Analysis script for biomarker analysis workflows."""
+
 import os
 import time
 import random
@@ -12,7 +14,6 @@ random.seed(42)  # set seed for reproducibility
 IO_PATH = '/data/gusev/USERS/mjsaleh/'
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
-NOTES_PATH = os.path.join(DATA_PATH, 'batched_datasets/VTE_data/processed_datasets/')
 RISK_RUN_PATH = os.path.join(MARKER_PATH, 'text_risk_runs/')
 
 biomarker_df = pd.read_csv(os.path.join(MARKER_PATH, 'IO_biomarker_discovery.csv')).drop_duplicates(subset=['DFCI_MRN'], keep='first')
@@ -81,7 +82,10 @@ for cancer_type in cancer_types_to_test:
         all_sig_type_hits = type_IO_marker_df.loc[(type_IO_marker_df['significant_without_text_risk']) |
                                              (type_IO_marker_df['significant_with_text_risk'])]
     
-        all_sig_type_hits.to_csv(os.path.join(RISK_RUN_PATH, f'all_sig_{cancer_type.replace('CANCER_TYPE_', '').lower()}_hits.csv'), index=False)
+        all_sig_type_hits.to_csv(
+            os.path.join(RISK_RUN_PATH, f"all_sig_{cancer_type.replace('CANCER_TYPE_', '').lower()}_hits.csv"),
+            index=False,
+        )
     
         print(f'{cancer_type} finished. Time elapsed = {(time.time() - start_time) / 60 : 0.2f}')
     

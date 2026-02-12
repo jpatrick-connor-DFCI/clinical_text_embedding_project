@@ -1,3 +1,5 @@
+"""Ici Lrs script for treatment analysis workflows."""
+
 # Auto-generated from ICI_LRs.ipynb
 
 # %% [code cell 1]
@@ -6,12 +8,19 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from embed_surv_utils import generate_survival_embedding_df
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import StratifiedKFold
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score, roc_curve
 
 # Paths
 DATA_PATH = "/data/gusev/USERS/jpconnor/clinical_text_project/data/"
 SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
 NOTES_PATH = os.path.join(DATA_PATH, "batched_datasets/VTE_data/processed_datasets/")
-ICI_PRED_PATH = os.path.join(DATA_PATH,'treatment_prediction/line_ICI_prediction_data/')
+ICI_DATA_PATH = os.path.join(DATA_PATH, 'treatment_prediction/line_ICI_prediction_data/')
+ICI_PROP_PATH = os.path.join(DATA_PATH, 'treatment_prediction/ICI_propensity/')
 
 # --- Load cohort ---
 treatment_df = pd.read_csv("/data/gusev/USERS/mjsaleh/profile_lines_of_rx/profile_rxlines.csv")
@@ -79,7 +88,7 @@ pool_fx = {nt: 'time_decay_mean' for nt in note_types}
 # %% [code cell 2]
 buffers = [0, 30, 60, 90]
 for buffer in buffers:
-    buffer_path = os.path.join(ICI_PRED_PATH, f'w_{buffer}_day_buffer/')
+    buffer_path = os.path.join(ICI_DATA_PATH, f'w_{buffer}_day_buffer/')
     os.makedirs(buffer_path, exist_ok=True)
     for line in tqdm(range(1,5)):
         IO_prediction_dataset = (pd.concat([ici_sets[line]['ICI'], ici_sets[line]['non-ICI']])[['MRN', 'LOT_start_date', 'PX_on_ICI']]
@@ -98,25 +107,9 @@ for buffer in buffers:
 
         full_IO_prediction_dataset.to_csv(os.path.join(buffer_path, f'line_{line}_ICI_prediction_df_w_{buffer}_day_buffer.csv'), index=False)
 
-# %% [code cell 3]
-import os
-import numpy as np
-import pandas as pd
-from sklearn.model_selection import StratifiedKFold
-from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score
-from tqdm import tqdm
-
-# Paths
-DATA_PATH = "/data/gusev/USERS/jpconnor/clinical_text_project/data/"
-ICI_DATA_PATH = os.path.join(DATA_PATH, 'treatment_prediction/line_ICI_prediction_data/')
-ICI_PRED_PATH = os.path.join(DATA_PATH, 'treatment_prediction/ICI_propensity/')
-
-result_dfs = []
 for buffer in [0, 30, 60, 90]:
     buffer_input_path = os.path.join(ICI_DATA_PATH, f'w_{buffer}_day_buffer/')
-    buffer_output_path = os.path.join(ICI_PRED_PATH, f'w_{buffer}_day_buffer/')
+    buffer_output_path = os.path.join(ICI_PROP_PATH, f'w_{buffer}_day_buffer/')
     os.makedirs(buffer_output_path, exist_ok=True)
     
     for pred_file in tqdm(os.listdir(buffer_input_path)):
@@ -125,8 +118,6 @@ for buffer in [0, 30, 60, 90]:
         X = full_ICI_pred_df[['DFCI_MRN'] + [col for col in full_ICI_pred_df.columns 
                                              if ('IMAGING' in col) or ('PATHOLOGY' in col) or ('CLINICIAN' in col)]]
         y = full_ICI_pred_df[['PX_on_ICI']].astype(int)
-
-        pred_cols = [col for col in X.columns if col != 'DFCI_MRN']
 
         # 5-fold stratified CV
         skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=1234)
@@ -164,10 +155,6 @@ for buffer in [0, 30, 60, 90]:
             cv_probs += y_prob.tolist()
             cv_true += y_test['PX_on_ICI'].tolist()
 
-            # Metrics
-            acc = accuracy_score(y_test, y_pred)
-            # (Optional: print or log per-fold accuracy)
-
         # Save predictions with probabilities
         out_df = pd.DataFrame({
             'DFCI_MRN': cv_mrns,
@@ -178,21 +165,7 @@ for buffer in [0, 30, 60, 90]:
         out_file = os.path.join(buffer_output_path, f'line_{pred_file.split("_")[1]}_predictions.csv')
         out_df.to_csv(out_file, index=False)
 
-# %% [code cell 4]
-import os
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.metrics import roc_auc_score, roc_curve
-
 sns.set_style("whitegrid")
-
-DATA_PATH = "/data/gusev/USERS/jpconnor/clinical_text_project/data/"
-SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
-NOTES_PATH = os.path.join(DATA_PATH, "batched_datasets/VTE_data/processed_datasets/")
-ICI_PRED_PATH = os.path.join(DATA_PATH, 'treatment_prediction/ICI_propensity/')
-
-os.listdir(ICI_PRED_PATH + 'w_0_day_buffer')
 
 # %% [code cell 5]
 buffers = [0, 30, 60]
@@ -202,7 +175,7 @@ fig, axes = plt.subplots(len(lines), len(buffers), figsize=(16,16))
 
 for y, buffer in enumerate(buffers):
     for x, line in enumerate(lines):
-        pred_df = pd.read_csv(os.path.join(ICI_PRED_PATH, f'w_{buffer}_day_buffer/line_{line}_predictions.csv'))
+        pred_df = pd.read_csv(os.path.join(ICI_PROP_PATH, f'w_{buffer}_day_buffer/line_{line}_predictions.csv'))
         
         auc = roc_auc_score(pred_df['ground_truth'], pred_df['model_probs'])
         fpr, tpr, thresholds = roc_curve(pred_df['ground_truth'], pred_df['model_probs'])
@@ -218,4 +191,3 @@ for y, buffer in enumerate(buffers):
         
 plt.tight_layout()
 plt.show()
-

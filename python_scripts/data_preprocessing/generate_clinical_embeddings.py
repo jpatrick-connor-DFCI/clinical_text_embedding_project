@@ -1,3 +1,5 @@
+"""Generate Clinical Embeddings script for data preprocessing workflows."""
+
 ## RAN ON GCP ##
 import os
 import re

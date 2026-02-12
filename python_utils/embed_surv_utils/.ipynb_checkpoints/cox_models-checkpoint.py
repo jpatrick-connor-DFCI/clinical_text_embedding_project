@@ -1,3 +1,5 @@
+""".Ipynb Checkpoints utilities for the embed surv utils package."""
+
 import os
 import warnings
 import tempfile
@@ -7,7 +9,7 @@ import pandas as pd
 from itertools import product
 
 from sklearn.decomposition import PCA
-from sklearn.model_selection import train_test_split, KFold, StratifiedKFold
+from sklearn.model_selection import train_test_split, StratifiedKFold
 from sklearn.preprocessing import StandardScaler
 
 from sksurv.linear_model import CoxPHSurvivalAnalysis, CoxnetSurvivalAnalysis

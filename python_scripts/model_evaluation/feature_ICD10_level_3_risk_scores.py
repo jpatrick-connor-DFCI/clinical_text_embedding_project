@@ -1,14 +1,14 @@
+"""Feature Icd10 Level 3 Risk Scores script for model evaluation workflows."""
+
 # === Imports ===
 import os
-import time
 from tqdm import tqdm
 import numpy as np
 import pandas as pd
 from functools import reduce
-from embed_surv_utils import run_grid_CoxPH_parallel, get_heldout_risk_scores_CoxPH
+from embed_surv_utils import get_heldout_risk_scores_CoxPH
 
 # === Paths ===
-FIGURE_PATH = '/data/gusev/USERS/jpconnor/figures/clinical_text_embedding_project/model_metrics/'
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
 RESULTS_PATH = os.path.join(SURV_PATH, 'results/level_3_ICD_results/')

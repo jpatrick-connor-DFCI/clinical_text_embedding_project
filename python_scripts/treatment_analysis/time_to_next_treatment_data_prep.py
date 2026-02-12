@@ -1,3 +1,5 @@
+"""Time To Next Treatment Data Prep script for treatment analysis workflows."""
+
 import os
 import numpy as np
 import pandas as pd
@@ -13,11 +15,9 @@ from treatment_analysis_common import (
 # -------------------------------------------------------------------
 # Paths
 # -------------------------------------------------------------------
-ICI_PRED_PATH = os.path.join(DATA_PATH, "treatment_prediction/line_ICI_prediction_data/")
 LINE_PRED_PATH = os.path.join(DATA_PATH,'treatment_prediction/time-to-next-treatment/')
 INTAE_DATA_PATH = "/data/gusev/PROFILE/CLINICAL/robust_VTE_pred_project_2025_03_cohort/data/"
 METS_PROJECT = "/data/gusev/Recurrent_Mets_Project/"
-PROCESSED_DATA_PATH = os.path.join(METS_PROJECT, "clinical_to_ag/")
 
 # -------------------------------------------------------------------
 # Load core datasets

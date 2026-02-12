@@ -1,3 +1,5 @@
+"""Treatment Analysis Common script for treatment analysis workflows."""
+
 import os
 import numpy as np
 import pandas as pd

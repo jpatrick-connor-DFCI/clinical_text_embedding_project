@@ -1,3 +1,5 @@
+"""Generate Iptw Dataset script for biomarker analysis workflows."""
+
 import os
 import random
 import pandas as pd

@@ -1,3 +1,5 @@
+"""Run Feature Comp Task script for model training workflows."""
+
 import argparse
 import os
 

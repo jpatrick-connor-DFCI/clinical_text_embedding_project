@@ -1,3 +1,5 @@
+"""Predict Time To Next Treatment Line script for treatment analysis workflows."""
+
 import os
 import numpy as np
 import pandas as pd
@@ -9,8 +11,6 @@ from embed_surv_utils import run_base_CoxPH, run_grid_CoxPH_parallel
 # -------------------------------------------------------------------
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 SURV_PATH = os.path.join(DATA_PATH, "time-to-event_analysis/")
-NOTES_PATH = os.path.join(DATA_PATH, "batched_datasets/VTE_data/processed_datasets/")
-ICI_PRED_PATH = os.path.join(DATA_PATH, "treatment_prediction/line_ICI_prediction_data/")
 LINE_PRED_PATH = os.path.join(DATA_PATH,'treatment_prediction/time-to-next-treatment/')
 OUTPUT_PATH = os.path.join(LINE_PRED_PATH, 'results/')
 

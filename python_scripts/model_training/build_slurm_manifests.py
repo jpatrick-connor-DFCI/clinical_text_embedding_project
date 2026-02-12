@@ -1,3 +1,5 @@
+"""Build Slurm Manifests script for model training workflows."""
+
 import argparse
 import os
 from pathlib import Path

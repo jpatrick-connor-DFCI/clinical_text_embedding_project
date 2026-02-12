@@ -1,3 +1,5 @@
+"""Cluster Mortality Trajectories script for model evaluation workflows."""
+
 import os
 import numpy as np
 import pandas as pd
@@ -5,18 +7,12 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import AgglomerativeClustering
-from tslearn.metrics import cdist_dtw
-from scipy.spatial.distance import squareform
-from scipy.cluster.hierarchy import linkage, fcluster
 
 # Paths
 FIGURE_PATH = '/data/gusev/USERS/jpconnor/figures/clinical_text_embedding_project/model_metrics/'
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
 RESULTS_PATH = os.path.join(SURV_PATH, 'results/')
-NOTES_PATH = os.path.join(DATA_PATH, 'batched_datasets/VTE_data/processed_datasets/')
-STAGE_PATH = '/data/gusev/PROFILE/CLINICAL/OncDRS/DERIVED_FROM_CLINICAL_TEXTS_2024_03/derived_files/cancer_stage/'
-OUTPUT_PATH = os.path.join(RESULTS_PATH, 'phecode_model_comps_final/')
 HELD_OUT_PRED_PATH = os.path.join(RESULTS_PATH, 'mortality_trajectories/')
 
 trajectory_predictions_df = pd.read_csv(os.path.join(HELD_OUT_PRED_PATH, 'held_out_preds_full_cohort.csv'))

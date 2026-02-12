@@ -1,3 +1,5 @@
+"""Cox Models utilities for the embed surv utils package."""
+
 import os
 import shutil
 import time

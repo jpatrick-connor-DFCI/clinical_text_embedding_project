@@ -1,3 +1,5 @@
+"""Run Iptw Analysis script for biomarker analysis workflows."""
+
 import os
 import random
 from tqdm import tqdm
@@ -45,7 +47,6 @@ def classify_noiptw(row):
 
 # Paths
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
-NOTES_PATH = os.path.join(DATA_PATH, 'batched_datasets/processed_datasets/')
 MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
 
 interaction_IO_df = pd.read_csv(os.path.join(MARKER_PATH, 'IPTW_IO_interaction_runs_df.csv'))

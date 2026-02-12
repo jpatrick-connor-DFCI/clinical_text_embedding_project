@@ -1,3 +1,5 @@
+"""Preprocessing utilities for the embed surv utils package."""
+
 import re
 import icd10
 import numpy as np

@@ -1,3 +1,5 @@
+"""Run Full Cohort Event script for model training workflows."""
+
 import argparse
 import os
 

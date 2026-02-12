@@ -1,3 +1,5 @@
+"""Slurm Array Utils script for model training workflows."""
+
 import os
 from typing import Any
 

@@ -1,18 +1,28 @@
+"""Full Treatment Lrs script for treatment analysis workflows."""
+
 # Auto-generated from full_treatment_LRs.ipynb
 
 # %% [code cell 1]
 import os
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
-from embed_surv_utils import generate_survival_embedding_df
+from iterstrat.ml_stratifiers import MultilabelStratifiedKFold
+from sklearn.preprocessing import StandardScaler
+from sklearn.multiclass import OneVsRestClassifier
+from sklearn.linear_model import LogisticRegression
 
 # Paths
 DATA_PATH = "/data/gusev/USERS/jpconnor/clinical_text_project/data/"
-SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
 NOTES_PATH = os.path.join(DATA_PATH, "batched_datasets/VTE_data/processed_datasets/")
 TREATMENT_PRED_PATH = os.path.join(DATA_PATH,'treatment_prediction/first_line_treatment_prediction_data/')
-buffer_path = os.path.join(TREATMENT_PRED_PATH, 'buffered_prediction_data/')
+BUFFER_PATH = os.path.join(TREATMENT_PRED_PATH, 'buffered_prediction_data/')
+TREATMENT_PROPENSITY_PATH = os.path.join(DATA_PATH, 'treatment_prediction/first_line_propensity/')
+TARGET_COLS = ['PX_on_ICI', 'PX_on_IO', 'PX_on_cellular', 'PX_on_chemo', 'PX_on_hormonal', 'PX_on_targetted']
+COL_NAMES = {
+    'model_preds': [f'pred_label_{col}' for col in TARGET_COLS],
+    'model_probs': [f'prob_{col}' for col in TARGET_COLS],
+    'ground_truth': [f'ground_truth_{col}' for col in TARGET_COLS],
+}
 
 # Load treatment data
 treatment_df = (pd.read_csv("/data/gusev/USERS/mjsaleh/profile_lines_of_rx/profile_rxlines.csv")
@@ -48,36 +58,18 @@ pool_fx = {nt: 'time_decay_mean' for nt in note_types}
 
 #     full_treatment_prediction_dataset = treatment_classification_df.merge(treatment_prediction_embedding_vals.dropna(), on='DFCI_MRN')
 
-#     full_treatment_prediction_dataset.to_csv(os.path.join(buffer_path, f'first_line_prediction_df_w_{buffer}_day_buffer.csv'), index=False) 
+#     full_treatment_prediction_dataset.to_csv(os.path.join(BUFFER_PATH, f'first_line_prediction_df_w_{buffer}_day_buffer.csv'), index=False) 
 
 # %% [code cell 3]
-import os
-import numpy as np
-import pandas as pd
-from iterstrat.ml_stratifiers import MultilabelStratifiedKFold
-from sklearn.preprocessing import StandardScaler
-from sklearn.multiclass import OneVsRestClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score
-from tqdm import tqdm
-
-TREATMENT_PROPENSITY_PATH = os.path.join(DATA_PATH, 'treatment_prediction/first_line_propensity/')
-buffer_path = os.path.join(TREATMENT_PRED_PATH, 'buffered_prediction_data/')
-
-col_names = {'model_preds': [f'pred_label_{col}' for col in target_cols],
-             'model_probs': [f'prob_{col}' for col in target_cols],
-             'ground_truth': [f'ground_truth_{col}' for col in target_cols]}
-
 result_dfs = []
 for buffer in [0, 30, 60, 90]:
     
-    pred_df = pd.read_csv(os.path.join(buffer_path, f'first_line_prediction_df_w_{buffer}_day_buffer.csv'))
+    pred_df = pd.read_csv(os.path.join(BUFFER_PATH, f'first_line_prediction_df_w_{buffer}_day_buffer.csv'))
     
-    target_cols = ['PX_on_ICI', 'PX_on_IO', 'PX_on_cellular', 'PX_on_chemo', 'PX_on_hormonal', 'PX_on_targetted']
     pred_cols = [col for col in pred_df.columns if ('IMAGING' in col) or ('PATHOLOGY' in col) or ('CLINICIAN' in col)]
     
     X = pred_df[['DFCI_MRN'] + pred_cols]
-    Y = pred_df[target_cols].astype(int)
+    Y = pred_df[TARGET_COLS].astype(int)
 
     pred_cols = [col for col in X.columns if col != 'DFCI_MRN']
 
@@ -126,23 +118,19 @@ for buffer in [0, 30, 60, 90]:
 
     # Unpack each list column into new columns
     expanded = []
-    for col, names in col_names.items():
+    for col, names in COL_NAMES.items():
         expanded.append(pd.DataFrame(out_df[col].tolist(), columns=names))
     
     # Concatenate back together
     df_expanded = pd.concat(expanded, axis=1)
     
     # Combine with other non-list columns (if any)
-    df_final = pd.concat([out_df.drop(columns=list(col_names)), df_expanded], axis=1)
+    df_final = pd.concat([out_df.drop(columns=list(COL_NAMES)), df_expanded], axis=1)
     
     out_file = os.path.join(TREATMENT_PROPENSITY_PATH, f'first_line_propensity_w_{buffer}_buffer.csv')
     df_final.to_csv(out_file, index=False)
 
-# %% [code cell 4]
-target_cols
-
 # %% [code cell 5]
-import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import roc_auc_score, roc_curve
@@ -165,7 +153,7 @@ for y, buffer in enumerate(buffers):
         sns.lineplot(x=fpr, y=tpr, ax=ax, label=f'AUC = {auc : 0.3f}')
         sns.lineplot(x=[0,1], y=[0,1], ax=ax, linestyle='--', color='gray')
         
-        ax.set_title(f'treatment = {target.replace('PX_on_', '')}, buffer = {buffer} days')
+        ax.set_title(f"treatment = {target.replace('PX_on_', '')}, buffer = {buffer} days")
         ax.set_xlabel('False Positive Rate')
         ax.set_ylabel('True Positive Rate')
         ax.legend(loc='lower right')
@@ -174,4 +162,3 @@ plt.tight_layout()
 plt.savefig("/data/gusev/USERS/jpconnor/figures/clinical_text_embedding_project/bar_cindex_per_treatment.png", dpi=300, bbox_inches="tight")
 
 plt.show()
-

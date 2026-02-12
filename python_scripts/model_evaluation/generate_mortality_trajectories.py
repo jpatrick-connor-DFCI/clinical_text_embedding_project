@@ -1,3 +1,5 @@
+"""Generate Mortality Trajectories script for model evaluation workflows."""
+
 import os
 from tqdm import tqdm
 import numpy as np
@@ -5,7 +7,6 @@ import pandas as pd
 from embed_surv_utils import run_grid_CoxPH_parallel, get_heldout_risk_scores_CoxPH, generate_survival_embedding_df
 
 # Paths
-FIGURE_PATH = '/data/gusev/USERS/jpconnor/figures/clinical_text_embedding_project/model_metrics/'
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 FEATURE_PATH = os.path.join(DATA_PATH, 'clinical_and_genomic_features/')
 SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')

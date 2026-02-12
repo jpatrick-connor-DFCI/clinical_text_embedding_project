@@ -1,3 +1,5 @@
+"""Generate All Non Text Covariates script for data preprocessing workflows."""
+
 import os
 import pickle
 import pandas as pd

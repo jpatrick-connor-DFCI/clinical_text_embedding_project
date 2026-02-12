@@ -1,3 +1,5 @@
+"""Generate Embedding Prediction Datasets script for data preprocessing workflows."""
+
 import os
 import re
 from typing import Optional
