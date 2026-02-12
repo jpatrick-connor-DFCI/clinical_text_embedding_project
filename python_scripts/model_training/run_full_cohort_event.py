@@ -20,7 +20,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--scheme", required=True, choices=["icd3", "icd4", "phecode", "death_met"])
     parser.add_argument("--event", required=True)
     parser.add_argument("--n-jobs", type=int, default=None)
-    parser.add_argument("--max-iter", type=int, default=5000)
+    parser.add_argument("--max-iter", type=int, default=2500)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--backend", default="threading", choices=["threading", "loky"])
     return parser.parse_args()
