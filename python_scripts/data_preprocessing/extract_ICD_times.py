@@ -53,4 +53,4 @@ split_ehr_icd_subset = pd.concat([single_diag_set1, double_diag_set1, double_dia
 split_ehr_icd_subset['FIRST_TREATMENT_START_DT'] = split_ehr_icd_subset['DFCI_MRN'].map(mrn_tstart_dict)
 split_ehr_icd_subset['TIME_TO_ICD'] = (split_ehr_icd_subset['START_DT'].apply(lambda x : datetime.strptime(x, '%Y-%m-%d %H:%M:%S')) - split_ehr_icd_subset['FIRST_TREATMENT_START_DT']).apply(lambda x : x.days)
 
-split_ehr_icd_subset.to_csv(os.path.join(SURV_PATH, 'time-to-icd/IO_post_treatment_icd_info.csv'), index=False)
+split_ehr_icd_subset.to_csv(os.path.join(SURV_PATH, 'time-to-icd/timestamped_icd_info.csv'), index=False)

@@ -123,7 +123,7 @@ vte_data_sub = vte_data[['DFCI_MRN', 'AGE_AT_FIRST_TREAT', 'BIOLOGICAL_SEX', 'fi
 mrn_tstart_dict = dict(zip(vte_data_sub['DFCI_MRN'], vte_data_sub['first_treatment_date'].apply(lambda x : datetime.strptime(x, '%Y-%m-%d'))))
 
 # EHR ICD info
-split_ehr_icd_subset = pd.read_csv(os.path.join(SURV_PATH, 'time-to-icd/IO_post_treatment_icd_info.csv'))
+split_ehr_icd_subset = pd.read_csv(os.path.join(SURV_PATH, 'time-to-icd/timestamped_icd_info.csv'))
 split_ehr_icd_subset['ICD10_LEVEL_5_CD'] = split_ehr_icd_subset['DIAGNOSIS_ICD10_CD'].apply(_to_icd10_two_decimal)
 icd_descr_lookup = {key : icd10.find(key).description for key in split_ehr_icd_subset['ICD10_LEVEL_5_CD'].dropna().unique() if icd10.find(key) is not None}
 split_ehr_icd_subset['ICD10_LEVEL_5_NM'] = split_ehr_icd_subset['ICD10_LEVEL_5_CD'].map(icd_descr_lookup)
