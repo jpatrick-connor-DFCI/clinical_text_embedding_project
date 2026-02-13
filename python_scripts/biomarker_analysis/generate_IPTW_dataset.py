@@ -14,7 +14,7 @@ MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
 
 # Load datasets
 cancer_type_df = pd.read_csv(os.path.join(DATA_PATH, 'clinical_and_genomic_features/cancer_type_df.csv'))
-tt_phecodes_df = pd.read_csv(os.path.join(SURV_PATH, 'phecode_surv_df.csv'))
+tt_death_df = pd.read_csv(os.path.join(SURV_PATH, 'death_met_surv_df.csv'))
 biomarker_df = pd.read_csv(os.path.join(MARKER_PATH, 'IO_biomarker_discovery.csv')).drop_duplicates(subset=['DFCI_MRN'], keep='first')
 
 treatment_df = pd.read_csv("/data/gusev/USERS/mjsaleh/profile_lines_of_rx/profile_rxlines.csv")
@@ -33,8 +33,8 @@ line1_io_mrns = line1_preds.loc[line1_preds['ground_truth'] == 1, 'DFCI_MRN'].un
 line1_non_io_mrns = line1_preds.loc[line1_preds['ground_truth'] == 0, 'DFCI_MRN'].unique()
 
 line1_IO_data = biomarker_df.loc[biomarker_df['DFCI_MRN'].isin(line1_io_mrns)]
-line1_non_IO_data = (tt_phecodes_df.loc[(tt_phecodes_df['DFCI_MRN'].isin(line1_mrns)) & 
-                                        (tt_phecodes_df['DFCI_MRN'].isin(line1_non_io_mrns))]
+line1_non_IO_data = (tt_death_df.loc[(tt_death_df['DFCI_MRN'].isin(line1_mrns)) & 
+                                     (tt_death_df['DFCI_MRN'].isin(line1_non_io_mrns))]
                      .merge(somatic_df, on='DFCI_MRN')
                      .merge(cancer_type_df, on='DFCI_MRN')).drop_duplicates(subset=['DFCI_MRN'], keep='first')
 
