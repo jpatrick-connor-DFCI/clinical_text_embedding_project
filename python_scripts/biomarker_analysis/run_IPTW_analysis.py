@@ -105,6 +105,52 @@ def merge_rare_cancer_types_into_other(
     return out, kept_for_model, rare_cols
 
 
+def get_nonredundant_dummy_cols(
+    df: pd.DataFrame,
+    dummy_cols: list[str],
+    group_name: str,
+) -> list[str]:
+    """Drop one active dummy level as reference to reduce collinearity."""
+    active_cols = []
+    active_counts: dict[str, float] = {}
+    for col in dummy_cols:
+        if col not in df.columns:
+            continue
+        count = pd.to_numeric(df[col], errors='coerce').fillna(0).sum()
+        if count > 0:
+            active_cols.append(col)
+            active_counts[col] = float(count)
+
+    if len(active_cols) <= 1:
+        return active_cols
+
+    ref_col = max(active_cols, key=lambda col: active_counts[col])
+    kept_cols = [col for col in active_cols if col != ref_col]
+    print(f"Dropped {group_name} reference level for identifiability: {ref_col}")
+    return kept_cols
+
+
+def marker_has_within_arm_support(
+    df: pd.DataFrame,
+    marker: str,
+    treat_col: str = 'PX_on_ICI',
+    min_pos_per_arm: int = 5,
+    min_neg_per_arm: int = 5,
+) -> bool:
+    marker_bin = (pd.to_numeric(df[marker], errors='coerce').fillna(0) > 0).astype(int)
+    treatment = pd.to_numeric(df[treat_col], errors='coerce').fillna(0).astype(int)
+
+    for arm in (0, 1):
+        arm_mask = treatment == arm
+        if arm_mask.sum() == 0:
+            return False
+        arm_pos = int(marker_bin.loc[arm_mask].sum())
+        arm_neg = int(arm_mask.sum() - arm_pos)
+        if arm_pos < min_pos_per_arm or arm_neg < min_neg_per_arm:
+            return False
+    return True
+
+
 # Paths
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
@@ -125,6 +171,11 @@ biomarker_cols = [
     if (col not in excluded_cols) and any(tag in col.upper() for tag in mutation_tags)
 ]
 MIN_CANCER_TYPE_TOTAL = 30
+IPTW_TRUNC_PCT = (5, 95)
+MAX_IPTW = 20.0
+MIN_MARKER_PREVALENCE = 0.05
+MIN_MARKER_POS_PER_ARM = 5
+MIN_MARKER_NEG_PER_ARM = 5
 
 result_cols = [
     'marker', 'beta_markerxICI', 'HR_markerxICI', 'p_markerxICI',
@@ -194,7 +245,6 @@ def fit_cph_suppress_warnings(
 types_to_test = ['pan_cancer', 'SKIN', 'LUNG']
 
 for cancer_type in types_to_test:
-
     if cancer_type == 'pan_cancer':
         type_specific_interaction_ICI_df = interaction_ICI_df.copy()
         (
@@ -210,10 +260,25 @@ for cancer_type in types_to_test:
                 f"[pan_cancer] Merged {len(merged_rare_type_cols)} rare cancer types into CANCER_TYPE_OTHER: "
                 + ", ".join(sorted(merged_rare_type_cols))
             )
-        base_vars = base_covars + panel_cols + pan_cancer_type_cols
+        panel_cols_for_fit = get_nonredundant_dummy_cols(
+            type_specific_interaction_ICI_df,
+            panel_cols,
+            'panel',
+        )
+        cancer_type_cols_for_fit = get_nonredundant_dummy_cols(
+            type_specific_interaction_ICI_df,
+            pan_cancer_type_cols,
+            'cancer-type',
+        )
+        base_vars = base_covars + panel_cols_for_fit + cancer_type_cols_for_fit
     else:
         type_specific_interaction_ICI_df = interaction_ICI_df.loc[interaction_ICI_df[f'CANCER_TYPE_{cancer_type}']].copy()
-        base_vars = base_covars + panel_cols
+        panel_cols_for_fit = get_nonredundant_dummy_cols(
+            type_specific_interaction_ICI_df,
+            panel_cols,
+            'panel',
+        )
+        base_vars = base_covars + panel_cols_for_fit
 
     if type_specific_interaction_ICI_df.empty:
         print(f"[{cancer_type}] Skipping: no rows available.")
@@ -270,12 +335,13 @@ for cancer_type in types_to_test:
         print(f"[{cancer_type}] Skipping: no IPTW weights computed.")
         continue
 
-    low, high = np.percentile(w, [1,99])
+    low, high = np.percentile(w, IPTW_TRUNC_PCT)
     if not np.isfinite(low) or not np.isfinite(high):
         print(f"[{cancer_type}] Skipping: non-finite IPTW truncation bounds.")
         continue
 
     w_trunc = np.clip(w, low, high)
+    w_trunc = np.clip(w_trunc, 0, MAX_IPTW)
     type_specific_interaction_ICI_df['IPTW'] = w_trunc
     
     # ---------------------------------------
@@ -284,7 +350,15 @@ for cancer_type in types_to_test:
     markers_to_test = []
     for marker in biomarker_cols:
         prevalence = pd.to_numeric(type_specific_interaction_ICI_df[marker], errors='coerce').sum(skipna=True) / len(type_specific_interaction_ICI_df)
-        if prevalence >= 0.05:
+        if prevalence < MIN_MARKER_PREVALENCE:
+            continue
+        if marker_has_within_arm_support(
+            type_specific_interaction_ICI_df,
+            marker,
+            treat_col='PX_on_ICI',
+            min_pos_per_arm=MIN_MARKER_POS_PER_ARM,
+            min_neg_per_arm=MIN_MARKER_NEG_PER_ARM,
+        ):
             markers_to_test.append(marker)
     
     results = []
