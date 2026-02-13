@@ -33,6 +33,12 @@ line1_starts = (treatment_df
 # --- Load genomic / clinical features ---
 cancer_type_df = pd.read_csv(os.path.join(DATA_PATH, 'clinical_and_genomic_features/cancer_type_df.csv'))
 somatic_df = pd.read_csv(os.path.join(DATA_PATH, 'clinical_and_genomic_features/complete_somatic_data_df.csv'))
+mutation_tags = ('_SNV', '_SV', '_FUSION', '_DEL', '_AMP', '_CNV')
+panel_cols = [col for col in somatic_df.columns if col.upper().startswith('PANEL_VERSION')]
+mutation_cols = [col for col in somatic_df.columns if any(tag in col.upper() for tag in mutation_tags)]
+somatic_keep_cols = ['DFCI_MRN'] + panel_cols + mutation_cols
+somatic_keep_cols = list(dict.fromkeys(somatic_keep_cols))
+somatic_df = somatic_df[somatic_keep_cols].copy()
 
 # --- Load propensity predictions (line 1, 30-day buffer) ---
 line1_preds = pd.read_csv(os.path.join(ICI_PATH, 'line_1_predictions.csv'))
