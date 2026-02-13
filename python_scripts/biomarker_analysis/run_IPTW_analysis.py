@@ -118,9 +118,10 @@ def add_fdr_and_labels(results_df, classifier_fn):
     results_df['classifier'] = results_df.apply(classifier_fn, axis=1)
     return results_df
 
-cols_to_test = ['pan_cancer'] + [col.replace('CANCER_TYPE_', '') for col in interaction_ICI_df.columns if (col.startswith('CANCER_TYPE_')) and ('OTHER' not in col)]
+cancer_type_cols = [col for col in interaction_ICI_df.columns if col.startswith('CANCER_TYPE_')]
+types_to_test = ['pan_cancer', 'SKIN', 'LUNG']
 
-for cancer_type in cols_to_test:
+for cancer_type in types_to_test:
 
     if cancer_type == 'pan_cancer':
         type_specific_interaction_ICI_df = interaction_ICI_df.copy()
@@ -198,7 +199,7 @@ for cancer_type in cols_to_test:
     markers_to_test = []
     for marker in biomarker_cols:
         prevalence = pd.to_numeric(type_specific_interaction_ICI_df[marker], errors='coerce').sum(skipna=True) / len(type_specific_interaction_ICI_df)
-        if prevalence >= 0.01:
+        if prevalence >= 0.05:
             markers_to_test.append(marker)
     
     results = []
