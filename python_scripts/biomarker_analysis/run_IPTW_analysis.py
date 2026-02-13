@@ -65,6 +65,46 @@ def one_hot_panel_version(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def merge_rare_cancer_types_into_other(
+    df: pd.DataFrame,
+    min_total: int = 30,
+) -> tuple[pd.DataFrame, list[str], list[str]]:
+    """Collapse rare CANCER_TYPE_* dummies into CANCER_TYPE_OTHER for pan-cancer fitting."""
+    out = df.copy()
+    cancer_cols = [col for col in out.columns if col.startswith('CANCER_TYPE_')]
+    if not cancer_cols:
+        return out, [], []
+
+    cancer_matrix = out[cancer_cols].apply(pd.to_numeric, errors='coerce').fillna(0)
+    cancer_matrix = (cancer_matrix > 0).astype(int)
+
+    total_counts = cancer_matrix.sum(axis=0)
+
+    keep_cols = [
+        col for col in cancer_cols
+        if (total_counts[col] >= min_total)
+        and (col != 'CANCER_TYPE_OTHER')
+    ]
+    rare_cols = [col for col in cancer_cols if col not in keep_cols and col != 'CANCER_TYPE_OTHER']
+
+    existing_other = (
+        cancer_matrix['CANCER_TYPE_OTHER'].copy()
+        if 'CANCER_TYPE_OTHER' in cancer_matrix.columns
+        else pd.Series(0, index=out.index, dtype=int)
+    )
+    merged_other = existing_other.copy()
+    if rare_cols:
+        merged_other = ((merged_other + cancer_matrix[rare_cols].sum(axis=1)) > 0).astype(int)
+
+    out = out.drop(columns=cancer_cols)
+    for col in keep_cols:
+        out[col] = cancer_matrix[col].astype(int)
+    out['CANCER_TYPE_OTHER'] = merged_other.astype(int)
+
+    kept_for_model = [col for col in (keep_cols + ['CANCER_TYPE_OTHER']) if out[col].sum() > 0]
+    return out, kept_for_model, rare_cols
+
+
 # Paths
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
@@ -84,6 +124,7 @@ biomarker_cols = [
     col for col in interaction_ICI_df.columns
     if (col not in excluded_cols) and any(tag in col.upper() for tag in mutation_tags)
 ]
+MIN_CANCER_TYPE_TOTAL = 30
 
 result_cols = [
     'marker', 'beta_markerxICI', 'HR_markerxICI', 'p_markerxICI',
@@ -156,7 +197,20 @@ for cancer_type in types_to_test:
 
     if cancer_type == 'pan_cancer':
         type_specific_interaction_ICI_df = interaction_ICI_df.copy()
-        base_vars = base_covars + panel_cols + cancer_type_cols
+        (
+            type_specific_interaction_ICI_df,
+            pan_cancer_type_cols,
+            merged_rare_type_cols,
+        ) = merge_rare_cancer_types_into_other(
+            type_specific_interaction_ICI_df,
+            min_total=MIN_CANCER_TYPE_TOTAL,
+        )
+        if merged_rare_type_cols:
+            print(
+                f"[pan_cancer] Merged {len(merged_rare_type_cols)} rare cancer types into CANCER_TYPE_OTHER: "
+                + ", ".join(sorted(merged_rare_type_cols))
+            )
+        base_vars = base_covars + panel_cols + pan_cancer_type_cols
     else:
         type_specific_interaction_ICI_df = interaction_ICI_df.loc[interaction_ICI_df[f'CANCER_TYPE_{cancer_type}']].copy()
         base_vars = base_covars + panel_cols
