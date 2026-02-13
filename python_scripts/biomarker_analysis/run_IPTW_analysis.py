@@ -7,6 +7,7 @@ from tqdm import tqdm
 import numpy as np
 import pandas as pd
 from scipy import stats
+from scipy.linalg import LinAlgWarning
 from statsmodels.stats.multitest import multipletests
 from lifelines import CoxPHFitter
 from lifelines.exceptions import ConvergenceWarning
@@ -131,6 +132,7 @@ def fit_cph_suppress_warnings(
     """Fit CoxPH while suppressing lifelines convergence warnings."""
     with warnings.catch_warnings():
         warnings.filterwarnings('ignore', category=ConvergenceWarning)
+        warnings.filterwarnings('ignore', category=LinAlgWarning)
         if weights_col is not None:
             cph.fit(
                 df_fit,
