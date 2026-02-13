@@ -2,12 +2,14 @@
 
 import os
 import random
+import warnings
 from tqdm import tqdm
 import numpy as np
 import pandas as pd
 from scipy import stats
 from statsmodels.stats.multitest import multipletests
 from lifelines import CoxPHFitter
+from lifelines.exceptions import ConvergenceWarning
 random.seed(42)  # set seed for reproducibility
 
 # ---------------------------------------
@@ -118,6 +120,35 @@ def add_fdr_and_labels(results_df, classifier_fn):
     results_df['classifier'] = results_df.apply(classifier_fn, axis=1)
     return results_df
 
+
+def fit_cph_suppress_warnings(
+    cph: CoxPHFitter,
+    df_fit: pd.DataFrame,
+    duration_col: str,
+    event_col: str,
+    weights_col: str | None = None,
+    robust: bool = True,
+) -> CoxPHFitter:
+    """Fit CoxPH while suppressing lifelines convergence warnings."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', category=ConvergenceWarning)
+        if weights_col is not None:
+            cph.fit(
+                df_fit,
+                duration_col=duration_col,
+                event_col=event_col,
+                weights_col=weights_col,
+                robust=robust,
+            )
+        else:
+            cph.fit(
+                df_fit,
+                duration_col=duration_col,
+                event_col=event_col,
+                robust=robust,
+            )
+    return cph
+
 cols_to_test = ['pan_cancer'] + [col.replace('CANCER_TYPE_', '') for col in interaction_ICI_df.columns if (col.startswith('CANCER_TYPE_')) and ('OTHER' not in col)]
 
 for cancer_type in cols_to_test:
@@ -212,8 +243,14 @@ for cancer_type in cols_to_test:
             df_fit[mx] = df_fit['PX_on_ICI'] * df_fit[marker]
     
             cph = CoxPHFitter()
-            cph.fit(df_fit, duration_col='tt_death', event_col='death',
-                    weights_col='IPTW', robust=True)
+            cph = fit_cph_suppress_warnings(
+                cph,
+                df_fit,
+                duration_col='tt_death',
+                event_col='death',
+                weights_col='IPTW',
+                robust=True,
+            )
     
             summ = cph.summary.reset_index()
             V = cph.variance_matrix_
@@ -302,10 +339,14 @@ for cancer_type in cols_to_test:
             df_fit[mx] = df_fit['PX_on_ICI'] * df_fit[marker]
     
             cph = CoxPHFitter()
-            cph.fit(df_fit,
-                    duration_col='tt_death',
-                    event_col='death',
-                    robust=True)  # ✅ no weights_col
+            cph = fit_cph_suppress_warnings(
+                cph,
+                df_fit,
+                duration_col='tt_death',
+                event_col='death',
+                weights_col=None,
+                robust=True,
+            )  # no weights_col
     
             summ = cph.summary.reset_index()
             V = cph.variance_matrix_
