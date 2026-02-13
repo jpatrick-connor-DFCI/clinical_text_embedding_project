@@ -32,7 +32,7 @@ BASE_INPUT_COLS = [
     'tt_vte',
     'vte',
 ]
-BASE_OUTPUT_COLS = ['DFCI_MRN', 'first_treatment_date', 'AGE_AT_TREATMENTSTART', 'GENDER']
+BASE_OUTPUT_COLS = ['DFCI_MRN', 'first_treatment_date', 'last_contact_date', 'AGE_AT_TREATMENTSTART', 'GENDER']
 NOTE_TYPES = ['Clinician', 'Imaging', 'Pathology']
 MET_SITES = ['brain', 'bone', 'adrenal', 'liver', 'lung', 'node', 'peritoneal']
 
@@ -178,7 +178,7 @@ def _add_metastatic_events(vte_data_sub: pd.DataFrame) -> tuple[pd.DataFrame, li
 def _finalize_base_covariates(vte_data_sub: pd.DataFrame) -> None:
     vte_data_sub['AGE_AT_TREATMENTSTART'] = vte_data_sub['AGE_AT_FIRST_TREAT']
     vte_data_sub['GENDER'] = vte_data_sub['BIOLOGICAL_SEX'].map({'MALE': 0, 'FEMALE': 1})
-    vte_data_sub.drop(columns=['AGE_AT_FIRST_TREAT', 'BIOLOGICAL_SEX', 'death_date', 'last_contact_date'], inplace=True)
+    vte_data_sub.drop(columns=['AGE_AT_FIRST_TREAT', 'BIOLOGICAL_SEX', 'death_date'], inplace=True)
 
 
 def _write_outputs(
@@ -195,7 +195,9 @@ def _write_outputs(
     events_data_sub = vte_data_sub[BASE_OUTPUT_COLS + event_cols + tt_event_cols]
     events_data_sub.to_csv(os.path.join(SURV_PATH, surv_filename), index=False)
 
-    monthly_data = events_data_sub.merge(pooled_embedding_df, on='DFCI_MRN', how='left').dropna()
+    monthly_data = events_data_sub.merge(pooled_embedding_df, on='DFCI_MRN', how='left')
+    embedding_cols = [col for col in pooled_embedding_df.columns if col != 'DFCI_MRN']
+    monthly_data = monthly_data.dropna(subset=embedding_cols)
     monthly_data.to_csv(os.path.join(SURV_PATH, embedding_filename), index=False)
 
 
@@ -221,7 +223,9 @@ def _write_death_met_outputs(
     events_data_sub = vte_data_sub[BASE_OUTPUT_COLS + event_cols + tt_event_cols]
     events_data_sub.to_csv(os.path.join(SURV_PATH, surv_filename), index=False)
 
-    monthly_data = events_data_sub.merge(pooled_embedding_df, on='DFCI_MRN', how='left').dropna()
+    monthly_data = events_data_sub.merge(pooled_embedding_df, on='DFCI_MRN', how='left')
+    embedding_cols = [col for col in pooled_embedding_df.columns if col != 'DFCI_MRN']
+    monthly_data = monthly_data.dropna(subset=embedding_cols)
     monthly_data.to_csv(os.path.join(SURV_PATH, embedding_filename), index=False)
 
 
