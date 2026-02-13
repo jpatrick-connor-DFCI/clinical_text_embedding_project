@@ -15,8 +15,6 @@ DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 ICI_PATH = os.path.join(DATA_PATH, 'treatment_prediction/ICI_propensity/w_30_day_buffer/')
 SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
 MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
-INTAE_DATA_PATH = '/data/gusev/PROFILE/CLINICAL/robust_VTE_pred_project_2025_03_cohort/data/'
-
 # --- Load base survival data (tt_death measured from first_treatment_date) ---
 tt_death_df = pd.read_csv(os.path.join(SURV_PATH, 'death_met_surv_df.csv'))
 tt_death_df['first_treatment_date'] = pd.to_datetime(tt_death_df['first_treatment_date'])
@@ -73,7 +71,7 @@ drop_cols = set(required_cols + base_vars + ['PX_on_ICI', 'ICI_prediction',
 biomarker_cols = [col for col in patient_df.columns if col not in drop_cols]
 
 interaction_ICI_df = patient_df[required_cols + base_vars + biomarker_cols
-                               + ['PX_on_ICI', 'IO_prediction']].copy()
+                               + ['PX_on_ICI', 'ICI_prediction']].copy()
 
 interaction_ICI_df = interaction_ICI_df.dropna(subset=['ICI_prediction', 'tt_death', 'death']).copy()
 interaction_ICI_df['PX_on_ICI'] = interaction_ICI_df['PX_on_ICI'].astype(int)
