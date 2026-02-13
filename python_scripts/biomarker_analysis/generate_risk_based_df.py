@@ -61,7 +61,7 @@ notes_meta['NOTE_TIME_REL_ANALYSIS_START_DT'] = (
 
 # --- Generate embedding features with time-decay-mean pooling ---
 note_types = ['Clinician', 'Imaging', 'Pathology']
-IO_prediction_df = (generate_survival_embedding_df(
+ICI_prediction_df = (generate_survival_embedding_df(
                         notes_meta, surv_df[['DFCI_MRN', 'death', 'tt_death']], embeddings,
                         note_types=note_types,
                         pool_fx={key: 'time_decay_mean' for key in note_types},
@@ -70,8 +70,8 @@ IO_prediction_df = (generate_survival_embedding_df(
                     .merge(surv_df[['DFCI_MRN', 'GENDER', 'AGE_AT_TREATMENTSTART']], on='DFCI_MRN')
                     .merge(cancer_type_df, on='DFCI_MRN')).dropna()
 
-base_vars = ['GENDER', 'AGE_AT_TREATMENTSTART'] + [col for col in IO_prediction_df if col.startswith('CANCER_TYPE')]
-embed_cols = [c for c in IO_prediction_df.columns if 'EMBEDDING' in c or '2015' in c]
+base_vars = ['GENDER', 'AGE_AT_TREATMENTSTART'] + [col for col in ICI_prediction_df if col.startswith('CANCER_TYPE')]
+embed_cols = [c for c in ICI_prediction_df.columns if 'EMBEDDING' in c or '2015' in c]
 continuous_vars = ['AGE_AT_TREATMENTSTART'] + embed_cols
 
 # Grid search for best penalized CoxPH hyperparameters (trained on ALL patients)
@@ -79,25 +79,25 @@ event = 'death'
 alphas_to_test = np.logspace(-5, 0, 25)
 l1_ratios = [0.5, 1.0]
 
-_, IO_val_results, _ = run_grid_CoxPH_parallel(
-    IO_prediction_df, base_vars, continuous_vars, embed_cols,
+_, ICI_val_results, _ = run_grid_CoxPH_parallel(
+    ICI_prediction_df, base_vars, continuous_vars, embed_cols,
     l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}', max_iter=5000, verbose=5)
 
-IO_l1_ratio, IO_alpha = IO_val_results.sort_values(by='mean_auc(t)', ascending=False).iloc[0][['l1_ratio', 'alpha']]
+ICI_l1_ratio, ICI_alpha = ICI_val_results.sort_values(by='mean_auc(t)', ascending=False).iloc[0][['l1_ratio', 'alpha']]
 
 # Get held-out risk scores using best hyperparameters
-trained_IO = (get_heldout_risk_scores_CoxPH(
-                  IO_prediction_df, base_vars, continuous_vars, embed_cols,
+trained_ICI = (get_heldout_risk_scores_CoxPH(
+                  ICI_prediction_df, base_vars, continuous_vars, embed_cols,
                   event_col=event, tstop_col=f'tt_{event}', penalized=True,
-                  l1_ratio=IO_l1_ratio, alpha=IO_alpha, max_iter=5000)
-              .rename(columns={'risk_score': 'IO_risk_score'}))
+                  l1_ratio=ICI_l1_ratio, alpha=ICI_alpha, max_iter=5000)
+              .rename(columns={'risk_score': 'ICI_risk_score'}))
 
 # --- Build final biomarker df (ICI patients only) ---
 biomarker_df = (surv_df[['DFCI_MRN', 'tt_death', 'death', 'GENDER', 'AGE_AT_TREATMENTSTART']]
                 .loc[surv_df['DFCI_MRN'].isin(ICI_mrns)]
                 .merge(somatic_df, on='DFCI_MRN')
                 .merge(cancer_type_df, on='DFCI_MRN')
-                .merge(trained_IO, on='DFCI_MRN')
+                .merge(trained_ICI, on='DFCI_MRN')
                 .drop_duplicates(subset=['DFCI_MRN'], keep='first'))
 
-biomarker_df.to_csv(os.path.join(MARKER_PATH, 'IO_biomarker_discovery.csv'), index=False)
+biomarker_df.to_csv(os.path.join(MARKER_PATH, 'ICI_biomarker_discovery.csv'), index=False)

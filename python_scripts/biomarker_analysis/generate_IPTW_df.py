@@ -63,20 +63,20 @@ patient_df = patient_df.loc[patient_df['tt_death'] > 0].copy()
 
 # --- Assign treatment group and propensity scores ---
 patient_df['PX_on_ICI'] = patient_df['ground_truth'].astype(int)
-patient_df['IO_prediction'] = patient_df['model_probs']
+patient_df['ICI_prediction'] = patient_df['model_probs']
 
 # --- Select final columns ---
 required_cols = ['DFCI_MRN', 'tt_death', 'death']
 base_vars = ['GENDER', 'AGE_AT_TREATMENTSTART']
-drop_cols = set(required_cols + base_vars + ['PX_on_ICI', 'IO_prediction',
+drop_cols = set(required_cols + base_vars + ['PX_on_ICI', 'ICI_prediction',
                 'first_treatment_date', 'line1_start_date', 'ground_truth', 'model_probs'])
 biomarker_cols = [col for col in patient_df.columns if col not in drop_cols]
 
-interaction_IO_df = patient_df[required_cols + base_vars + biomarker_cols
+interaction_ICI_df = patient_df[required_cols + base_vars + biomarker_cols
                                + ['PX_on_ICI', 'IO_prediction']].copy()
 
-interaction_IO_df = interaction_IO_df.dropna(subset=['IO_prediction', 'tt_death', 'death']).copy()
-interaction_IO_df['PX_on_ICI'] = interaction_IO_df['PX_on_ICI'].astype(int)
-interaction_IO_df['death'] = interaction_IO_df['death'].astype(int)
+interaction_ICI_df = interaction_ICI_df.dropna(subset=['ICI_prediction', 'tt_death', 'death']).copy()
+interaction_ICI_df['PX_on_ICI'] = interaction_ICI_df['PX_on_ICI'].astype(int)
+interaction_ICI_df['death'] = interaction_ICI_df['death'].astype(int)
 
-interaction_IO_df.to_csv(os.path.join(MARKER_PATH, 'IPTW_IO_interaction_runs_df.csv'), index=False)
+interaction_ICI_df.to_csv(os.path.join(MARKER_PATH, 'IPTW_ICI_interaction_runs_df.csv'), index=False)

@@ -16,17 +16,17 @@ random.seed(42)  # set seed for reproducibility
 def classify(row):
     # Predictive biomarker: interaction significant AND direction
     if row['significant_predictive']:
-        if row['HR_markerxIO'] < 1:
-            return "predictive_IO_benefit"
+        if row['HR_markerxICI'] < 1:
+            return "predictive_ICI_benefit"
         else:
-            return "predictive_IO_harm"
+            return "predictive_ICI_harm"
 
-    # Not predictive, but has IO-specific effect
-    if row['significant_in_IO'] and not row['significant_prognostic_nonIO']:
+    # Not predictive, but has ICI-specific effect
+    if row['significant_in_ICI'] and not row['significant_prognostic_nonICI']:
         return "IO_specific_effect"
 
     # Prognostic only (acts in controls but not IO)
-    if row['significant_prognostic_nonIO'] and not row['significant_in_IO']:
+    if row['significant_prognostic_nonICI'] and not row['significant_in_ICI']:
         return "prognostic_nonIO"
 
     # no clear signal
@@ -37,11 +37,11 @@ def classify(row):
 # ---------------------------------------
 def classify_noiptw(row):
     if row['significant_predictive']:
-        return "predictive_IO_benefit" if row['HR_markerxIO'] < 1 else "predictive_IO_harm"
-    if row['significant_in_IO'] and not row['significant_prognostic_nonIO']:
+        return "predictive_ICI_benefit" if row['HR_markerxICI'] < 1 else "predictive_ICI_harm"
+    if row['significant_in_ICI'] and not row['significant_prognostic_nonICI']:
         return "IO_specific_effect"
-    if row['significant_prognostic_nonIO'] and not row['significant_in_IO']:
-        return "prognostic_nonIO"
+    if row['significant_prognostic_nonICI'] and not row['significant_in_ICI']:
+        return "prognostic_nonICI"
     return "no_signal"
 
 
@@ -49,60 +49,60 @@ def classify_noiptw(row):
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
 
-interaction_IO_df = pd.read_csv(os.path.join(MARKER_PATH, 'IPTW_IO_interaction_runs_df.csv'))
+interaction_ICI_df = pd.read_csv(os.path.join(MARKER_PATH, 'IPTW_ICI_interaction_runs_df.csv'))
 
 required_vars = ['DFCI_MRN', 'tt_death', 'death']
-panel_cols = [col for col in interaction_IO_df.columns if 'PANEL_VERSION' in col]
-cancer_type_cols = [col for col in interaction_IO_df.columns if col.startswith('CANCER_TYPE_')]
-biomarker_cols = [col for col in interaction_IO_df.columns if col not in (required_vars + panel_cols + cancer_type_cols + ['PX_on_ICI', 'IO_prediction'])]
+panel_cols = [col for col in interaction_ICI_df.columns if 'PANEL_VERSION' in col]
+cancer_type_cols = [col for col in interaction_ICI_df.columns if col.startswith('CANCER_TYPE_')]
+biomarker_cols = [col for col in interaction_ICI_df.columns if col not in (required_vars + panel_cols + cancer_type_cols + ['PX_on_ICI', 'ICI_prediction'])]
 
-cols_to_test = ['pan_cancer'] + [col.replace('CANCER_TYPE_', '') for col in interaction_IO_df.columns if (col.startswith('CANCER_TYPE_')) and ('OTHER' not in col)]
+cols_to_test = ['pan_cancer'] + [col.replace('CANCER_TYPE_', '') for col in interaction_ICI_df.columns if (col.startswith('CANCER_TYPE_')) and ('OTHER' not in col)]
 
 for cancer_type in cols_to_test:
 
     if cancer_type == 'pan_cancer':
-        type_specific_interaction_IO_df = interaction_IO_df.copy()
+        type_specific_interaction_ICI_df = interaction_ICI_df.copy()
         base_vars = ['GENDER', 'AGE_AT_TREATMENTSTART'] + panel_cols + cancer_type_cols
     else:
-        type_specific_interaction_IO_df = interaction_IO_df.loc[interaction_IO_df[f'CANCER_TYPE_{cancer_type}']].copy()
+        type_specific_interaction_ICI_df = interaction_ICI_df.loc[interaction_ICI_df[f'CANCER_TYPE_{cancer_type}']].copy()
         base_vars = ['GENDER', 'AGE_AT_TREATMENTSTART'] + panel_cols
 
     # ---------------------------------------
     # Common support trimming
     # ---------------------------------------
     eps = 1e-6
-    ps_raw = type_specific_interaction_IO_df['IO_prediction'].clip(eps, 1 - eps)
+    ps_raw = type_specific_interaction_ICI_df['ICI_prediction'].clip(eps, 1 - eps)
     
-    ps_t = ps_raw[type_specific_interaction_IO_df['PX_on_ICI'] == 1]
-    ps_c = ps_raw[type_specific_interaction_IO_df['PX_on_ICI'] == 0]
+    ps_t = ps_raw[type_specific_interaction_ICI_df['PX_on_ICI'] == 1]
+    ps_c = ps_raw[type_specific_interaction_ICI_df['PX_on_ICI'] == 0]
     lower, upper = max(ps_t.min(), ps_c.min()), min(ps_t.max(), ps_c.max())
     
-    type_specific_interaction_IO_df = type_specific_interaction_IO_df[(ps_raw >= lower) & (ps_raw <= upper)].copy()
-    ps = type_specific_interaction_IO_df['IO_prediction'].clip(eps, 1 - eps)
+    type_specific_interaction_ICI_df = type_specific_interaction_ICI_df[(ps_raw >= lower) & (ps_raw <= upper)].copy()
+    ps = type_specific_interaction_ICI_df['ICI_prediction'].clip(eps, 1 - eps)
     
     # ---------------------------------------
     # Stabilized ATE IPTW with truncation
     # ---------------------------------------
-    p_treated = type_specific_interaction_IO_df['PX_on_ICI'].mean()
+    p_treated = type_specific_interaction_ICI_df['PX_on_ICI'].mean()
     p_control = 1 - p_treated
     
-    w = np.where(type_specific_interaction_IO_df['PX_on_ICI']==1, p_treated/ps, p_control/(1-ps))
+    w = np.where(type_specific_interaction_ICI_df['PX_on_ICI']==1, p_treated/ps, p_control/(1-ps))
     low, high = np.percentile(w, [1,99])
     w_trunc = np.clip(w, low, high)
-    type_specific_interaction_IO_df['IPTW'] = w_trunc
+    type_specific_interaction_ICI_df['IPTW'] = w_trunc
     
     # ---------------------------------------
     # Cox IPTW marker screening
     # ---------------------------------------
-    markers_to_test = [m for m in biomarker_cols if (type_specific_interaction_IO_df[m].sum()/len(type_specific_interaction_IO_df)) >= 0.01]
+    markers_to_test = [m for m in biomarker_cols if (type_specific_interaction_ICI_df[m].sum()/len(type_specific_interaction_ICI_df)) >= 0.01]
     
     results = []
     for marker in tqdm(markers_to_test):
         try:
-            df_fit = type_specific_interaction_IO_df[['tt_death','death','PX_on_ICI'] + base_vars + [marker,'IPTW']].copy()
+            df_fit = type_specific_interaction_ICI_df[['tt_death','death','PX_on_ICI'] + base_vars + [marker,'IPTW']].copy()
             df_fit = df_fit.dropna().copy()
     
-            mx = f"{marker}_x_IO"
+            mx = f"{marker}_x_ICI"
             df_fit[mx] = df_fit['PX_on_ICI'] * df_fit[marker]
     
             cph = CoxPHFitter()
@@ -122,20 +122,20 @@ for cancer_type in cols_to_test:
             se_mx = float(np.sqrt(V.loc[mx, mx]))
             p_mx = float(summ.loc[summ['covariate']==mx,'p'].values[0])
     
-            # marker effect in NON-IO
-            hr_nonio = np.exp(beta_m)
-            ci_nonio = (np.exp(beta_m - 1.96*se_m), np.exp(beta_m + 1.96*se_m))
+            # marker effect in NON-ICI
+            hr_nonici = np.exp(beta_m)
+            ci_nonici = (np.exp(beta_m - 1.96*se_m), np.exp(beta_m + 1.96*se_m))
     
-            # marker effect in IO = beta_m + beta_mx
+            # marker effect in ICI = beta_m + beta_mx
             cov_m_mx = float(V.loc[marker, mx])
-            se_io = np.sqrt(se_m**2 + se_mx**2 + 2*cov_m_mx)
-            beta_io = beta_m + beta_mx
-            hr_io = np.exp(beta_io)
-            ci_io = (np.exp(beta_io - 1.96*se_io), np.exp(beta_io + 1.96*se_io))
+            se_ici = np.sqrt(se_m**2 + se_mx**2 + 2*cov_m_mx)
+            beta_ici = beta_m + beta_mx
+            hr_ici = np.exp(beta_ici)
+            ci_ici = (np.exp(beta_ici - 1.96*se_ici), np.exp(beta_ici + 1.96*se_ici))
     
             # p-value for marker effect IN IO patients
-            z_io = beta_io / se_io
-            p_io = 2 * (1 - stats.norm.cdf(abs(z_io)))
+            z_ici = beta_ici / se_ici
+            p_ici = 2 * (1 - stats.norm.cdf(abs(z_ici)))
     
             # optional: treatment main effect at marker=0
             beta_IO0 = float(b['PX_on_ICI']) if 'PX_on_ICI' in b.index else np.nan
@@ -144,28 +144,28 @@ for cancer_type in cols_to_test:
             results.append({
                 "marker": marker,
     
-                # Predictive (IO-specific modulation)
-                "beta_markerxIO": beta_mx,
-                "HR_markerxIO": np.exp(beta_mx),
-                "p_markerxIO": p_mx,
+                # Predictive (ICI-specific modulation)
+                "beta_markerxICI": beta_mx,
+                "HR_markerxICI": np.exp(beta_mx),
+                "p_markerxICI": p_mx,
     
-                # Effect in IO
-                "beta_marker_IO": beta_io,
-                "HR_marker_IO": hr_io,
-                "CI95_marker_IO_low": ci_io[0],
-                "CI95_marker_IO_high": ci_io[1],
-                "p_marker_IO": p_io,
+                # Effect in ICI
+                "beta_marker_ICI": beta_ici,
+                "HR_marker_ICI": hr_ici,
+                "CI95_marker_ICI_low": ci_ici[0],
+                "CI95_marker_ICI_high": ci_ici[1],
+                "p_marker_ICI": p_ici,
     
-                # Effect in non-IO
-                "beta_marker_nonIO": beta_m,
-                "HR_marker_nonIO": hr_nonio,
-                "CI95_marker_nonIO_low": ci_nonio[0],
-                "CI95_marker_nonIO_high": ci_nonio[1],
-                "p_marker_nonIO": p_m,
+                # Effect in non-ICI
+                "beta_marker_nonICI": beta_m,
+                "HR_marker_nonICI": hr_nonici,
+                "CI95_marker_nonICI_low": ci_nonici[0],
+                "CI95_marker_nonICI_high": ci_nonici[1],
+                "p_marker_nonICI": p_m,
     
-                # IO effect at marker-negative baseline
-                "beta_IO_at_marker0": beta_IO0,
-                "p_IO_at_marker0": p_IO0
+                # ICI effect at marker-negative baseline
+                "beta_ICI_at_marker0": beta_IO0,
+                "p_ICI_at_marker0": p_IO0
             })
     
         except Exception as e:
@@ -177,22 +177,22 @@ for cancer_type in cols_to_test:
     # FDR corrections
     # ---------------------------------------
     # Predictive biomarkers = significant interaction
-    rej_int, fdr_int, _, _ = multipletests(results_df['p_markerxIO'], alpha=0.05, method='fdr_bh')
-    results_df['FDR_markerxIO'] = fdr_int
+    rej_int, fdr_int, _, _ = multipletests(results_df['p_markerxICI'], alpha=0.05, method='fdr_bh')
+    results_df['FDR_markerxICI'] = fdr_int
     results_df['significant_predictive'] = rej_int
     
     # Marker effect in IO patients
-    rej_io, fdr_io, _, _ = multipletests(results_df['p_marker_IO'], alpha=0.05, method='fdr_bh')
-    results_df['FDR_marker_IO'] = fdr_io
-    results_df['significant_in_IO'] = rej_io
+    rej_ici, fdr_ici, _, _ = multipletests(results_df['p_marker_ICI'], alpha=0.05, method='fdr_bh')
+    results_df['FDR_marker_ICI'] = fdr_ici
+    results_df['significant_in_ICI'] = rej_ici
     
     # Marker effect in NON-IO
-    rej_nonio, fdr_nonio, _, _ = multipletests(results_df['p_marker_nonIO'], alpha=0.05, method='fdr_bh')
-    results_df['FDR_marker_nonIO'] = fdr_nonio
-    results_df['significant_prognostic_nonIO'] = rej_nonio
+    rej_nonici, fdr_nonici, _, _ = multipletests(results_df['p_marker_nonICI'], alpha=0.05, method='fdr_bh')
+    results_df['FDR_marker_nonICI'] = fdr_nonici
+    results_df['significant_prognostic_nonICI'] = rej_nonici
     
     results_df['classifier'] = results_df.apply(classify, axis=1)
-    results_df.to_csv(os.path.join(MARKER_PATH, f'IPTW_runs/{cancer_type}_IPTW_IO_predictive_markers.csv'), index=False)
+    results_df.to_csv(os.path.join(MARKER_PATH, f'IPTW_runs/{cancer_type}_IPTW_ICI_predictive_markers.csv'), index=False)
 
     # ===============================================
     # ==  NO IPTW VERSION OF MARKER SCREENING  ==
@@ -201,11 +201,11 @@ for cancer_type in cols_to_test:
     for marker in tqdm(markers_to_test):
         try:
             # same columns as before, but no IPTW
-            df_fit = type_specific_interaction_IO_df[['tt_death','death','PX_on_ICI'] 
+            df_fit = type_specific_interaction_ICI_df[['tt_death','death','PX_on_ICI'] 
                                        + base_vars + [marker]].dropna().copy()
     
             # interaction term
-            mx = f"{marker}_x_IO"
+            mx = f"{marker}_x_ICI"
             df_fit[mx] = df_fit['PX_on_ICI'] * df_fit[marker]
     
             cph = CoxPHFitter()
@@ -227,19 +227,19 @@ for cancer_type in cols_to_test:
             se_mx = float(np.sqrt(V.loc[mx, mx]))
             p_mx = float(summ.loc[summ['covariate']==mx,'p'].values[0])
     
-            # effect in non-IO
-            hr_nonio = np.exp(beta_m)
-            ci_nonio = (np.exp(beta_m - 1.96*se_m), np.exp(beta_m + 1.96*se_m))
+            # effect in non-ICI
+            hr_nonici = np.exp(beta_m)
+            ci_nonici = (np.exp(beta_m - 1.96*se_m), np.exp(beta_m + 1.96*se_m))
     
-            # effect in IO
+            # effect in ICI
             cov_m_mx = float(V.loc[marker, mx])
-            se_io = np.sqrt(se_m**2 + se_mx**2 + 2*cov_m_mx)
-            beta_io = beta_m + beta_mx
-            hr_io = np.exp(beta_io)
-            ci_io = (np.exp(beta_io - 1.96*se_io), np.exp(beta_io + 1.96*se_io))
+            se_ici = np.sqrt(se_m**2 + se_mx**2 + 2*cov_m_mx)
+            beta_ici = beta_m + beta_mx
+            hr_ici = np.exp(beta_ici)
+            ci_ici = (np.exp(beta_ici - 1.96*se_ici), np.exp(beta_ici + 1.96*se_ici))
     
-            z_io = beta_io / se_io
-            p_io = 2 * (1 - stats.norm.cdf(abs(z_io)))
+            z_ici = beta_ici / se_ici
+            p_ici = 2 * (1 - stats.norm.cdf(abs(z_ici)))
     
             # baseline IO effect at marker = 0
             beta_IO0 = float(b['PX_on_ICI']) if 'PX_on_ICI' in b.index else np.nan
@@ -247,23 +247,23 @@ for cancer_type in cols_to_test:
     
             results_noiptw.append({
                 "marker": marker,
-                "beta_markerxIO": beta_mx,
-                "HR_markerxIO": np.exp(beta_mx),
-                "p_markerxIO": p_mx,
+                "beta_markerxICI": beta_mx,
+                "HR_markerxICI": np.exp(beta_mx),
+                "p_markerxICI": p_mx,
     
-                "beta_marker_IO": beta_io,
-                "HR_marker_IO": hr_io,
-                "CI95_marker_IO_low": ci_io[0],
-                "CI95_marker_IO_high": ci_io[1],
-                "p_marker_IO": p_io,
+                "beta_marker_ICI": beta_ici,
+                "HR_marker_ICI": hr_ici,
+                "CI95_marker_ICI_low": ci_ici[0],
+                "CI95_marker_ICI_high": ci_ici[1],
+                "p_marker_ICI": p_ici,
     
-                "beta_marker_nonIO": beta_m,
-                "HR_marker_nonIO": hr_nonio,
-                "CI95_marker_nonIO_low": ci_nonio[0],
-                "CI95_marker_nonIO_high": ci_nonio[1],
-                "p_marker_nonIO": p_m,
+                "beta_marker_nonICI": beta_m,
+                "HR_marker_nonICI": hr_nonici,
+                "CI95_marker_nonICI_low": ci_nonici[0],
+                "CI95_marker_nonICI_high": ci_nonici[1],
+                "p_marker_nonICI": p_m,
     
-                "beta_IO_at_marker0": beta_IO0,
+                "beta_ICI_at_marker0": beta_IO0,
                 "p_IO_at_marker0": p_IO0
             })
     
@@ -275,18 +275,18 @@ for cancer_type in cols_to_test:
     # ---------------------------------------
     # FDR corrections (same as IPTW version)
     # ---------------------------------------
-    rej_int, fdr_int, _, _ = multipletests(results_noiptw_df['p_markerxIO'], alpha=0.05, method='fdr_bh')
-    results_noiptw_df['FDR_markerxIO'] = fdr_int
+    rej_int, fdr_int, _, _ = multipletests(results_noiptw_df['p_markerxICI'], alpha=0.05, method='fdr_bh')
+    results_noiptw_df['FDR_markerxICI'] = fdr_int
     results_noiptw_df['significant_predictive'] = rej_int
     
-    rej_io, fdr_io, _, _ = multipletests(results_noiptw_df['p_marker_IO'], alpha=0.05, method='fdr_bh')
-    results_noiptw_df['FDR_marker_IO'] = fdr_io
-    results_noiptw_df['significant_in_IO'] = rej_io
+    rej_ici, fdr_ici, _, _ = multipletests(results_noiptw_df['p_marker_ICI'], alpha=0.05, method='fdr_bh')
+    results_noiptw_df['FDR_marker_ICI'] = fdr_ici
+    results_noiptw_df['significant_in_ICI'] = rej_ici
     
-    rej_nonio, fdr_nonio, _, _ = multipletests(results_noiptw_df['p_marker_nonIO'], alpha=0.05, method='fdr_bh')
-    results_noiptw_df['FDR_marker_nonIO'] = fdr_nonio
-    results_noiptw_df['significant_prognostic_nonIO'] = rej_nonio
+    rej_nonici, fdr_nonici, _, _ = multipletests(results_noiptw_df['p_marker_nonICI'], alpha=0.05, method='fdr_bh')
+    results_noiptw_df['FDR_marker_nonICI'] = fdr_nonici
+    results_noiptw_df['significant_prognostic_nonIO'] = rej_nonici
     
     results_noiptw_df['classifier'] = results_noiptw_df.apply(classify_noiptw, axis=1)
-    results_noiptw_df.to_csv(os.path.join(MARKER_PATH, f'IPTW_runs/{cancer_type}_noIPTW_IO_predictive_markers.csv'), index=False)
+    results_noiptw_df.to_csv(os.path.join(MARKER_PATH, f'IPTW_runs/{cancer_type}_noIPTW_ICI_predictive_markers.csv'), index=False)
     print("Saved no-IPTW marker results ✅")

@@ -167,7 +167,6 @@ for buffer in [0, 30, 60, 90]:
 
 sns.set_style("whitegrid")
 
-# %% [code cell 5]
 buffers = [0, 30, 60]
 lines = [1, 2, 3]
 

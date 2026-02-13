@@ -8,7 +8,7 @@ import pandas as pd
 # Shared paths
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
-NOTES_PATH = os.path.join(DATA_PATH, 'batched_datasets/VTE_data/processed_datasets/')
+NOTES_PATH = os.path.join(DATA_PATH, 'batched_datasets/processed_datasets/')
 
 
 def load_note_embeddings():
