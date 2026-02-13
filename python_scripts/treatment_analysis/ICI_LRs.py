@@ -16,18 +16,18 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score, roc_curve
 
 # Paths
-DATA_PATH = "/data/gusev/USERS/jpconnor/clinical_text_project/data/"
+DATA_PATH = "/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/"
 SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
-NOTES_PATH = os.path.join(DATA_PATH, "batched_datasets/VTE_data/processed_datasets/")
+NOTES_PATH = os.path.join(DATA_PATH, "batched_datasets/processed_datasets/")
 ICI_DATA_PATH = os.path.join(DATA_PATH, 'treatment_prediction/line_ICI_prediction_data/')
 ICI_PROP_PATH = os.path.join(DATA_PATH, 'treatment_prediction/ICI_propensity/')
 
 # --- Load cohort ---
 treatment_df = pd.read_csv("/data/gusev/USERS/mjsaleh/profile_lines_of_rx/profile_rxlines.csv")
-tt_phecode_df = pd.read_csv(os.path.join(SURV_PATH, "phecode_surv_df.csv"))
+tt_death_df = pd.read_csv(os.path.join(SURV_PATH, "death_met_surv_df.csv"))
 
 cohort_treatment_df = (
-    treatment_df.loc[treatment_df["MRN"].isin(tt_phecode_df["DFCI_MRN"].unique())]
+    treatment_df.loc[treatment_df["MRN"].isin(tt_death_df["DFCI_MRN"].unique())]
     .copy()
 )
 
