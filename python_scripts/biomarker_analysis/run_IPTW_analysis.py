@@ -54,7 +54,7 @@ interaction_IO_df = pd.read_csv(os.path.join(MARKER_PATH, 'IPTW_IO_interaction_r
 required_vars = ['DFCI_MRN', 'tt_death', 'death']
 panel_cols = [col for col in interaction_IO_df.columns if 'PANEL_VERSION' in col]
 cancer_type_cols = [col for col in interaction_IO_df.columns if col.startswith('CANCER_TYPE_')]
-biomarker_cols = [col for col in interaction_IO_df.columns if col not in (required_vars + panel_cols + cancer_type_cols + ['PX_on_IO', 'IO_prediction'])]
+biomarker_cols = [col for col in interaction_IO_df.columns if col not in (required_vars + panel_cols + cancer_type_cols + ['PX_on_ICI', 'IO_prediction'])]
 
 cols_to_test = ['pan_cancer'] + [col.replace('CANCER_TYPE_', '') for col in interaction_IO_df.columns if (col.startswith('CANCER_TYPE_')) and ('OTHER' not in col)]
 
@@ -73,8 +73,8 @@ for cancer_type in cols_to_test:
     eps = 1e-6
     ps_raw = type_specific_interaction_IO_df['IO_prediction'].clip(eps, 1 - eps)
     
-    ps_t = ps_raw[type_specific_interaction_IO_df['PX_on_IO'] == 1]
-    ps_c = ps_raw[type_specific_interaction_IO_df['PX_on_IO'] == 0]
+    ps_t = ps_raw[type_specific_interaction_IO_df['PX_on_ICI'] == 1]
+    ps_c = ps_raw[type_specific_interaction_IO_df['PX_on_ICI'] == 0]
     lower, upper = max(ps_t.min(), ps_c.min()), min(ps_t.max(), ps_c.max())
     
     type_specific_interaction_IO_df = type_specific_interaction_IO_df[(ps_raw >= lower) & (ps_raw <= upper)].copy()
@@ -83,10 +83,10 @@ for cancer_type in cols_to_test:
     # ---------------------------------------
     # Stabilized ATE IPTW with truncation
     # ---------------------------------------
-    p_treated = type_specific_interaction_IO_df['PX_on_IO'].mean()
+    p_treated = type_specific_interaction_IO_df['PX_on_ICI'].mean()
     p_control = 1 - p_treated
     
-    w = np.where(type_specific_interaction_IO_df['PX_on_IO']==1, p_treated/ps, p_control/(1-ps))
+    w = np.where(type_specific_interaction_IO_df['PX_on_ICI']==1, p_treated/ps, p_control/(1-ps))
     low, high = np.percentile(w, [1,99])
     w_trunc = np.clip(w, low, high)
     type_specific_interaction_IO_df['IPTW'] = w_trunc
@@ -99,11 +99,11 @@ for cancer_type in cols_to_test:
     results = []
     for marker in tqdm(markers_to_test):
         try:
-            df_fit = type_specific_interaction_IO_df[['tt_death','death','PX_on_IO'] + base_vars + [marker,'IPTW']].copy()
+            df_fit = type_specific_interaction_IO_df[['tt_death','death','PX_on_ICI'] + base_vars + [marker,'IPTW']].copy()
             df_fit = df_fit.dropna().copy()
     
             mx = f"{marker}_x_IO"
-            df_fit[mx] = df_fit['PX_on_IO'] * df_fit[marker]
+            df_fit[mx] = df_fit['PX_on_ICI'] * df_fit[marker]
     
             cph = CoxPHFitter()
             cph.fit(df_fit, duration_col='tt_death', event_col='death',
@@ -138,8 +138,8 @@ for cancer_type in cols_to_test:
             p_io = 2 * (1 - stats.norm.cdf(abs(z_io)))
     
             # optional: treatment main effect at marker=0
-            beta_IO0 = float(b['PX_on_IO']) if 'PX_on_IO' in b.index else np.nan
-            p_IO0 = float(summ.loc[summ['covariate']=='PX_on_IO','p'].values[0]) if 'PX_on_IO' in summ['covariate'].values else np.nan
+            beta_IO0 = float(b['PX_on_ICI']) if 'PX_on_ICI' in b.index else np.nan
+            p_IO0 = float(summ.loc[summ['covariate']=='PX_on_ICI','p'].values[0]) if 'PX_on_ICI' in summ['covariate'].values else np.nan
     
             results.append({
                 "marker": marker,
@@ -201,12 +201,12 @@ for cancer_type in cols_to_test:
     for marker in tqdm(markers_to_test):
         try:
             # same columns as before, but no IPTW
-            df_fit = type_specific_interaction_IO_df[['tt_death','death','PX_on_IO'] 
+            df_fit = type_specific_interaction_IO_df[['tt_death','death','PX_on_ICI'] 
                                        + base_vars + [marker]].dropna().copy()
     
             # interaction term
             mx = f"{marker}_x_IO"
-            df_fit[mx] = df_fit['PX_on_IO'] * df_fit[marker]
+            df_fit[mx] = df_fit['PX_on_ICI'] * df_fit[marker]
     
             cph = CoxPHFitter()
             cph.fit(df_fit,
@@ -242,8 +242,8 @@ for cancer_type in cols_to_test:
             p_io = 2 * (1 - stats.norm.cdf(abs(z_io)))
     
             # baseline IO effect at marker = 0
-            beta_IO0 = float(b['PX_on_IO']) if 'PX_on_IO' in b.index else np.nan
-            p_IO0 = float(summ.loc[summ['covariate']=='PX_on_IO','p'].values[0]) if 'PX_on_IO' in summ['covariate'].values else np.nan
+            beta_IO0 = float(b['PX_on_ICI']) if 'PX_on_ICI' in b.index else np.nan
+            p_IO0 = float(summ.loc[summ['covariate']=='PX_on_ICI','p'].values[0]) if 'PX_on_ICI' in summ['covariate'].values else np.nan
     
             results_noiptw.append({
                 "marker": marker,

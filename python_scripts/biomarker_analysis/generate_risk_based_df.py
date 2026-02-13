@@ -1,4 +1,8 @@
-"""Generate risk-based biomarker discovery dataset with text-embedding risk scores."""
+"""Generate risk-based biomarker discovery dataset with text-embedding risk scores.
+
+Time origin for all patients is LOT_start_date for line 1, matching the
+prediction time used to generate propensity scores in ICI_LRs.py.
+"""
 
 import os
 import random
@@ -9,62 +13,69 @@ from embed_surv_utils import run_grid_CoxPH_parallel, get_heldout_risk_scores_Co
 random.seed(42)  # set seed for reproducibility
 
 # Paths
-IO_PATH = '/data/gusev/USERS/mjsaleh/'
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
+ICI_PATH = os.path.join(DATA_PATH, 'treatment_prediction/ICI_propensity/w_30_day_buffer/')
 NOTES_PATH = os.path.join(DATA_PATH, 'batched_datasets/processed_datasets/')
 SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
 MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
 
-# Load IO patient base df (from generate_IO_patient_df.py)
-IO_patient_base_df = pd.read_csv(os.path.join(MARKER_PATH, 'IO_patient_base_df.csv'))
+# --- Load base survival data (tt_death measured from first_treatment_date) ---
+tt_death_df = pd.read_csv(os.path.join(SURV_PATH, 'death_met_surv_df.csv'))
+tt_death_df['first_treatment_date'] = pd.to_datetime(tt_death_df['first_treatment_date'])
 
-# Load data needed for embedding generation and CoxPH model training
-cancer_type_df = pd.read_csv(os.path.join(DATA_PATH, 'clinical_and_genomic_features/cancer_type_df.csv'))
+# --- Load line 1 treatment start dates (propensity score time origin) ---
+treatment_df = pd.read_csv('/data/gusev/USERS/mjsaleh/profile_lines_of_rx/profile_rxlines.csv')
+treatment_df['LOT_start_date'] = pd.to_datetime(treatment_df['LOT_start_date'])
+treatment_df = treatment_df.sort_values(['MRN', 'LOT_start_date'])
+treatment_df['treatment_line'] = treatment_df.groupby('MRN').cumcount() + 1
+line1_starts = (treatment_df
+                .loc[treatment_df['treatment_line'] == 1, ['MRN', 'LOT_start_date']]
+                .rename(columns={'MRN': 'DFCI_MRN', 'LOT_start_date': 'line1_start_date'}))
+
+# --- Load note embeddings ---
 notes_meta = pd.read_csv(os.path.join(NOTES_PATH, 'full_VTE_embeddings_metadata.csv'))
 embeddings = np.load(os.path.join(NOTES_PATH, 'full_VTE_embeddings_as_array.npy'))
-tt_death_df = pd.read_csv(os.path.join(SURV_PATH, 'death_met_surv_df.csv'))
-irAE_df = pd.read_csv(os.path.join(IO_PATH, 'IO_START.csv'), index_col=0).rename(columns={'MRN' : 'DFCI_MRN'})
 
-vte_data = pd.read_csv("/data/gusev/PROFILE/CLINICAL/robust_VTE_pred_project_2025_03_cohort/data/follow_up_vte_df_cohort.csv")
-vte_data_sub = vte_data[["DFCI_MRN", "last_contact_date"]].copy()
-vte_data_sub["last_contact_date"] = pd.to_datetime(vte_data_sub["last_contact_date"])
+# --- Load genomic / clinical features ---
+cancer_type_df = pd.read_csv(os.path.join(DATA_PATH, 'clinical_and_genomic_features/cancer_type_df.csv'))
+somatic_df = pd.read_csv(os.path.join(DATA_PATH, 'clinical_and_genomic_features/complete_somatic_data_df.csv'))
 
-tt_death_df['last_contact_date'] = tt_death_df['DFCI_MRN'].map(dict(zip(vte_data_sub['DFCI_MRN'], vte_data_sub['last_contact_date'])))
+# --- Load propensity predictions to identify ICI patients ---
+line1_preds = pd.read_csv(os.path.join(ICI_PATH, 'line_1_predictions.csv'))
+line1_preds = line1_preds[['DFCI_MRN', 'ground_truth']].dropna().copy()
+line1_preds['ground_truth'] = line1_preds['ground_truth'].astype(int)
+ICI_mrns = line1_preds.loc[line1_preds['ground_truth'] == 1, 'DFCI_MRN'].unique()
 
-# Rebuild IO-adjusted survival times for embedding model training
-irAE_df = irAE_df.merge(tt_death_df[['DFCI_MRN', 'death', 'GENDER', 'AGE_AT_TREATMENTSTART', 'last_contact_date']], on='DFCI_MRN')
-irAE_df['tt_death'] = (irAE_df['last_contact_date'] - pd.to_datetime(irAE_df['IO_START'])).dt.days
+# --- Merge line 1 start dates and recompute tt_death ---
+surv_df = tt_death_df.merge(line1_starts, on='DFCI_MRN')
+days_offset = (surv_df['line1_start_date'] - surv_df['first_treatment_date']).dt.days
+surv_df['tt_death'] = surv_df['tt_death'] - days_offset
+surv_df = surv_df.loc[surv_df['tt_death'] > 0].copy()
 
-IO_mrns = irAE_df['DFCI_MRN'].unique()
-tt_death_df_wo_IO_mrns = tt_death_df.loc[~tt_death_df['DFCI_MRN'].isin(IO_mrns)]
+# --- Build note timing relative to line 1 start date for ALL patients ---
+line1_start_map = dict(zip(line1_starts['DFCI_MRN'], line1_starts['line1_start_date']))
+notes_meta['ANALYSIS_START_DT'] = notes_meta['DFCI_MRN'].map(line1_start_map)
+notes_meta['NOTE_TIME_REL_ANALYSIS_START_DT'] = (
+    pd.to_datetime(notes_meta['NOTE_DATETIME']) - pd.to_datetime(notes_meta['ANALYSIS_START_DT'])
+).dt.days
 
-# Build note timing: IO patients use IO_START, non-IO patients use first_treatment_date
-tstart_dict_w_IOs = dict(zip(irAE_df['DFCI_MRN'], irAE_df['IO_START'])) | \
-                    dict(zip(tt_death_df_wo_IO_mrns['DFCI_MRN'], tt_death_df_wo_IO_mrns['first_treatment_date']))
-
-notes_meta['IO_ANALYSIS_START_DT'] = notes_meta['DFCI_MRN'].map(tstart_dict_w_IOs)
-notes_meta['NOTE_TIME_REL_IO_ANALYSIS_START_DT'] = (pd.to_datetime(notes_meta['NOTE_DATETIME']) - pd.to_datetime(notes_meta['IO_ANALYSIS_START_DT'])).dt.days
-
-# Combined survival df (IO patients with adjusted tt_death, non-IO with original)
-tt_death_df_w_IO_mrns = pd.concat([tt_death_df_wo_IO_mrns[['DFCI_MRN', 'death', 'tt_death']],
-                                      irAE_df[['DFCI_MRN', 'death', 'tt_death']]])
-
-# Generate embedding features with time-decay-mean pooling
+# --- Generate embedding features with time-decay-mean pooling ---
 note_types = ['Clinician', 'Imaging', 'Pathology']
-IO_prediction_df = (generate_survival_embedding_df(notes_meta, tt_death_df_w_IO_mrns, embeddings, note_types=note_types,
-                                                   pool_fx={key : 'time_decay_mean' for key in note_types}, decay_param=0.01,
-                                                   note_timing_col='NOTE_TIME_REL_IO_ANALYSIS_START_DT')
-                    .merge(tt_death_df[['DFCI_MRN', 'GENDER', 'AGE_AT_TREATMENTSTART']], on='DFCI_MRN')
+IO_prediction_df = (generate_survival_embedding_df(
+                        notes_meta, surv_df[['DFCI_MRN', 'death', 'tt_death']], embeddings,
+                        note_types=note_types,
+                        pool_fx={key: 'time_decay_mean' for key in note_types},
+                        decay_param=0.01,
+                        note_timing_col='NOTE_TIME_REL_ANALYSIS_START_DT')
+                    .merge(surv_df[['DFCI_MRN', 'GENDER', 'AGE_AT_TREATMENTSTART']], on='DFCI_MRN')
                     .merge(cancer_type_df, on='DFCI_MRN')).dropna()
 
 base_vars = ['GENDER', 'AGE_AT_TREATMENTSTART'] + [col for col in IO_prediction_df if col.startswith('CANCER_TYPE')]
 embed_cols = [c for c in IO_prediction_df.columns if 'EMBEDDING' in c or '2015' in c]
 continuous_vars = ['AGE_AT_TREATMENTSTART'] + embed_cols
 
-IO_mrns = list(set(irAE_df['DFCI_MRN'].unique()).intersection(set(IO_prediction_df['DFCI_MRN'].unique())))
-
-# Grid search for best penalized CoxPH hyperparameters
-event='death'
+# Grid search for best penalized CoxPH hyperparameters (trained on ALL patients)
+event = 'death'
 alphas_to_test = np.logspace(-5, 0, 25)
 l1_ratios = [0.5, 1.0]
 
@@ -75,12 +86,18 @@ _, IO_val_results, _ = run_grid_CoxPH_parallel(
 IO_l1_ratio, IO_alpha = IO_val_results.sort_values(by='mean_auc(t)', ascending=False).iloc[0][['l1_ratio', 'alpha']]
 
 # Get held-out risk scores using best hyperparameters
-trained_IO = (get_heldout_risk_scores_CoxPH(IO_prediction_df, base_vars, continuous_vars, embed_cols,
-                                            event_col=event, tstop_col=f'tt_{event}', penalized=True,
-                                            l1_ratio=IO_l1_ratio, alpha=IO_alpha, max_iter=5000)
-              .rename(columns={'risk_score' : 'IO_risk_score'}))
+trained_IO = (get_heldout_risk_scores_CoxPH(
+                  IO_prediction_df, base_vars, continuous_vars, embed_cols,
+                  event_col=event, tstop_col=f'tt_{event}', penalized=True,
+                  l1_ratio=IO_l1_ratio, alpha=IO_alpha, max_iter=5000)
+              .rename(columns={'risk_score': 'IO_risk_score'}))
 
-# Merge risk scores with base IO patient df
-biomarker_df = IO_patient_base_df.merge(trained_IO, on='DFCI_MRN')
+# --- Build final biomarker df (ICI patients only) ---
+biomarker_df = (surv_df[['DFCI_MRN', 'tt_death', 'death', 'GENDER', 'AGE_AT_TREATMENTSTART']]
+                .loc[surv_df['DFCI_MRN'].isin(ICI_mrns)]
+                .merge(somatic_df, on='DFCI_MRN')
+                .merge(cancer_type_df, on='DFCI_MRN')
+                .merge(trained_IO, on='DFCI_MRN')
+                .drop_duplicates(subset=['DFCI_MRN'], keep='first'))
 
 biomarker_df.to_csv(os.path.join(MARKER_PATH, 'IO_biomarker_discovery.csv'), index=False)

@@ -11,15 +11,13 @@ from statsmodels.stats.multitest import multipletests
 random.seed(42)  # set seed for reproducibility
 
 # Paths
-IO_PATH = '/data/gusev/USERS/mjsaleh/'
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
 RISK_RUN_PATH = os.path.join(MARKER_PATH, 'text_risk_runs/')
 
 biomarker_df = pd.read_csv(os.path.join(MARKER_PATH, 'IO_biomarker_discovery.csv')).drop_duplicates(subset=['DFCI_MRN'], keep='first')
-irAE_df = pd.read_csv(os.path.join(IO_PATH, 'IO_START.csv'), index_col=0).rename(columns={'MRN' : 'DFCI_MRN'})
 
-death_df = biomarker_df.loc[biomarker_df['DFCI_MRN'].isin(irAE_df['DFCI_MRN'].unique())].copy()
+death_df = biomarker_df.copy()
 
 base_vars = ['GENDER', 'AGE_AT_TREATMENTSTART'] + \
             [col for col in death_df if col.startswith('CANCER_TYPE') and death_df[col].sum() > 0] + \

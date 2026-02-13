@@ -71,18 +71,18 @@ note_types = ['Clinician', 'Imaging', 'Pathology']
 pool_fx = {nt: 'time_decay_mean' for nt in note_types}
 
 for line in tqdm(ici_sets):
-    IO_prediction_dataset = (pd.concat([ici_sets[line]['ICI'], ici_sets[line]['non-ICI']])[['MRN', 'LOT_start_date', 'PX_on_IO']]
-                             .rename(columns={'MRN' : 'DFCI_MRN', 'LOT_start_date' : 'treatment_start_date'}))
-    
-    notes_meta_sub = (notes_meta[notes_meta['DFCI_MRN'].isin(IO_prediction_dataset['DFCI_MRN'])]
-                      .merge(IO_prediction_dataset[['DFCI_MRN', 'treatment_start_date']], on='DFCI_MRN', how='left')
+    ICI_prediction_dataset = (pd.concat([ici_sets[line]['ICI'], ici_sets[line]['non-ICI']])[['MRN', 'LOT_start_date', 'PX_on_ICI']]
+                              .rename(columns={'MRN' : 'DFCI_MRN', 'LOT_start_date' : 'treatment_start_date'}))
+
+    notes_meta_sub = (notes_meta[notes_meta['DFCI_MRN'].isin(ICI_prediction_dataset['DFCI_MRN'])]
+                      .merge(ICI_prediction_dataset[['DFCI_MRN', 'treatment_start_date']], on='DFCI_MRN', how='left')
                       .assign(NOTE_TIME_REL_PRED_START_DT = lambda df: (
                           pd.to_datetime(df['NOTE_DATETIME']) - pd.to_datetime(df['treatment_start_date'])).dt.days))
-    
-    IO_prediction_embedding_vals = generate_survival_embedding_df(notes_meta=notes_meta_sub, survival_df=None, embedding_array=embeddings_data, 
-                                                                  note_types=note_types, note_timing_col="NOTE_TIME_REL_PRED_START_DT", 
-                                                                  max_note_window=0, pool_fx=pool_fx, decay_param=0.01, continuous_window=True)
-    
-    full_IO_prediction_dataset = IO_prediction_dataset.merge(IO_prediction_embedding_vals.dropna(), on='DFCI_MRN')
 
-    full_IO_prediction_dataset.to_csv(os.path.join(ICI_PRED_PATH, f'line_{line}_ICI_prediction_df.csv'), index=False)
+    ICI_prediction_embedding_vals = generate_survival_embedding_df(notes_meta=notes_meta_sub, survival_df=None, embedding_array=embeddings_data,
+                                                                   note_types=note_types, note_timing_col="NOTE_TIME_REL_PRED_START_DT",
+                                                                   max_note_window=0, pool_fx=pool_fx, decay_param=0.01, continuous_window=True)
+
+    full_ICI_prediction_dataset = ICI_prediction_dataset.merge(ICI_prediction_embedding_vals.dropna(), on='DFCI_MRN')
+
+    full_ICI_prediction_dataset.to_csv(os.path.join(ICI_PRED_PATH, f'line_{line}_ICI_prediction_df.csv'), index=False)
