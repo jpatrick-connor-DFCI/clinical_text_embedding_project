@@ -10,6 +10,24 @@ from statsmodels.stats.multitest import multipletests
 
 random.seed(42)  # set seed for reproducibility
 
+
+def one_hot_panel_version(df: pd.DataFrame) -> pd.DataFrame:
+    panel_raw_cols = [col for col in df.columns if col.strip().upper() == 'PANEL_VERSION']
+    if not panel_raw_cols:
+        return df
+
+    out = df.copy()
+    panel_raw_col = panel_raw_cols[0]
+    existing_panel_one_hot = [col for col in out.columns if col.upper().startswith('PANEL_VERSION_')]
+    if existing_panel_one_hot:
+        out = out.drop(columns=existing_panel_one_hot)
+
+    panel_values = out[panel_raw_col].fillna('MISSING').astype(str)
+    panel_dummies = pd.get_dummies(panel_values, prefix='PANEL_VERSION', dtype=int)
+    out = pd.concat([out.drop(columns=[panel_raw_col]), panel_dummies], axis=1)
+    return out
+
+
 # Paths
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
@@ -17,14 +35,19 @@ RISK_RUN_PATH = os.path.join(MARKER_PATH, 'text_risk_runs/')
 os.makedirs(RISK_RUN_PATH, exist_ok=True)
 
 biomarker_df = pd.read_csv(os.path.join(MARKER_PATH, 'ICI_biomarker_discovery.csv')).drop_duplicates(subset=['DFCI_MRN'], keep='first')
+biomarker_df = one_hot_panel_version(biomarker_df)
 
 death_df = biomarker_df.copy()
 
 cancer_type_counts = death_df[[col for col in death_df.columns if col.startswith('CANCER_TYPE_') and ('OTHER' not in col)]].sum(axis=0).sort_values(ascending=False)
 cancer_types_to_test = cancer_type_counts[cancer_type_counts >= 100].index.tolist()
 
-base_vars = ['GENDER', 'AGE_AT_TREATMENTSTART'] + \
-            [col for col in death_df if col.startswith('PANEL_VERSION') and death_df[col].sum() > 0]
+panel_cols = [
+    col for col in death_df
+    if col.upper().startswith('PANEL_VERSION_')
+    and pd.to_numeric(death_df[col], errors='coerce').fillna(0).sum() > 0
+]
+base_vars = ['GENDER', 'AGE_AT_TREATMENTSTART'] + panel_cols
 excluded_cols = ['DFCI_MRN', 'tt_death', 'death'] + base_vars + [col for col in biomarker_df.columns if col.startswith('CANCER_TYPE')]
 mutation_tags = ('_SNV', '_SV', '_FUSION', '_DEL', '_AMP', '_CNV')
 genomics_cols = [

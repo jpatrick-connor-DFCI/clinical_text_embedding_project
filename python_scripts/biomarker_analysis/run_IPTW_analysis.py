@@ -45,6 +45,23 @@ def classify_noiptw(row):
     return "no_signal"
 
 
+def one_hot_panel_version(df: pd.DataFrame) -> pd.DataFrame:
+    panel_raw_cols = [col for col in df.columns if col.strip().upper() == 'PANEL_VERSION']
+    if not panel_raw_cols:
+        return df
+
+    out = df.copy()
+    panel_raw_col = panel_raw_cols[0]
+    existing_panel_one_hot = [col for col in out.columns if col.upper().startswith('PANEL_VERSION_')]
+    if existing_panel_one_hot:
+        out = out.drop(columns=existing_panel_one_hot)
+
+    panel_values = out[panel_raw_col].fillna('MISSING').astype(str)
+    panel_dummies = pd.get_dummies(panel_values, prefix='PANEL_VERSION', dtype=int)
+    out = pd.concat([out.drop(columns=[panel_raw_col]), panel_dummies], axis=1)
+    return out
+
+
 # Paths
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
@@ -52,10 +69,11 @@ IPTW_RUN_PATH = os.path.join(MARKER_PATH, 'IPTW_runs/')
 os.makedirs(IPTW_RUN_PATH, exist_ok=True)
 
 interaction_ICI_df = pd.read_csv(os.path.join(MARKER_PATH, 'IPTW_ICI_interaction_runs_df.csv'))
+interaction_ICI_df = one_hot_panel_version(interaction_ICI_df)
 
 required_vars = ['DFCI_MRN', 'tt_death', 'death']
 base_covars = ['GENDER', 'AGE_AT_TREATMENTSTART']
-panel_cols = [col for col in interaction_ICI_df.columns if 'PANEL_VERSION' in col]
+panel_cols = [col for col in interaction_ICI_df.columns if col.upper().startswith('PANEL_VERSION_')]
 cancer_type_cols = [col for col in interaction_ICI_df.columns if col.startswith('CANCER_TYPE_')]
 excluded_cols = required_vars + base_covars + panel_cols + cancer_type_cols + ['PX_on_ICI', 'ICI_prediction']
 mutation_tags = ('_SNV', '_SV', '_FUSION', '_DEL', '_AMP', '_CNV')
