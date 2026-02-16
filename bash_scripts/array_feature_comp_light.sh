@@ -9,8 +9,6 @@
 #SBATCH --output=output/array_feature_light/%A_%a.out
 #SBATCH --error=error/array_feature_light/%A_%a.err
 
-set -euo pipefail
-
 PROJECT_ROOT=${PROJECT_ROOT:-/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project}
 MANIFEST=${MANIFEST:-$PROJECT_ROOT/bash_scripts/slurm_manifests/feature_comp_light_tasks.tsv}
 ROWS_PER_TASK=${ROWS_PER_TASK:-30}
@@ -31,6 +29,8 @@ cd "$PROJECT_ROOT"
 source /PHShome/jpc91/.bashrc
 module load miniforge3
 conda activate clinical_notes_project
+
+set -euo pipefail
 
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
