@@ -6,8 +6,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --array=0-0%1
-#SBATCH --output=output/array_full_cohort/%A_%a.out
-#SBATCH --error=error/array_full_cohort/%A_%a.err
+#SBATCH --output=bash_scripts/output/array_full_cohort/%A_%a.out
+#SBATCH --error=bash_scripts/error/array_full_cohort/%A_%a.err
 
 PROJECT_ROOT=${PROJECT_ROOT:-/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project}
 MANIFEST=${MANIFEST:-$PROJECT_ROOT/bash_scripts/slurm_manifests/full_cohort_tasks.tsv}
@@ -37,7 +37,7 @@ export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 
-mkdir -p output/array_full_cohort error/array_full_cohort
+mkdir -p bash_scripts/output/array_full_cohort bash_scripts/error/array_full_cohort
 
 OVERWRITE_FLAG=()
 if [[ "${OVERWRITE:-0}" == "1" ]]; then

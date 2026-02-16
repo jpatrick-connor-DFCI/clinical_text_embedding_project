@@ -6,8 +6,8 @@
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=24G
 #SBATCH --array=0-0%1
-#SBATCH --output=output/array_feature_light/%A_%a.out
-#SBATCH --error=error/array_feature_light/%A_%a.err
+#SBATCH --output=bash_scripts/output/array_feature_light/%A_%a.out
+#SBATCH --error=bash_scripts/error/array_feature_light/%A_%a.err
 
 PROJECT_ROOT=${PROJECT_ROOT:-/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project}
 MANIFEST=${MANIFEST:-$PROJECT_ROOT/bash_scripts/slurm_manifests/feature_comp_light_tasks.tsv}
@@ -37,7 +37,7 @@ export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 
-mkdir -p output/array_feature_light error/array_feature_light
+mkdir -p bash_scripts/output/array_feature_light bash_scripts/error/array_feature_light
 
 OVERWRITE_FLAG=()
 if [[ "${OVERWRITE:-0}" == "1" ]]; then

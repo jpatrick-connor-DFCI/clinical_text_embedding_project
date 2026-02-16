@@ -13,7 +13,7 @@ if [[ ! -d "$PROJECT_ROOT" ]]; then
 fi
 
 mkdir -p "$(dirname "$MANIFEST")"
-mkdir -p "$PROJECT_ROOT/output/array_feature_light" "$PROJECT_ROOT/error/array_feature_light"
+mkdir -p "$PROJECT_ROOT/bash_scripts/output/array_feature_light" "$PROJECT_ROOT/bash_scripts/error/array_feature_light"
 
 cd "$PROJECT_ROOT"
 

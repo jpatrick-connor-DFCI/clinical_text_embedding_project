@@ -6,8 +6,8 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
 #SBATCH --array=0-0%1
-#SBATCH --output=output/array_feature_heavy/%A_%a.out
-#SBATCH --error=error/array_feature_heavy/%A_%a.err
+#SBATCH --output=bash_scripts/output/array_feature_heavy/%A_%a.out
+#SBATCH --error=bash_scripts/error/array_feature_heavy/%A_%a.err
 
 PROJECT_ROOT=${PROJECT_ROOT:-/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project}
 MANIFEST=${MANIFEST:-$PROJECT_ROOT/bash_scripts/slurm_manifests/feature_comp_heavy_tasks.tsv}
@@ -37,7 +37,7 @@ export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 
-mkdir -p output/array_feature_heavy error/array_feature_heavy
+mkdir -p bash_scripts/output/array_feature_heavy bash_scripts/error/array_feature_heavy
 
 OVERWRITE_FLAG=()
 if [[ "${OVERWRITE:-0}" == "1" ]]; then
