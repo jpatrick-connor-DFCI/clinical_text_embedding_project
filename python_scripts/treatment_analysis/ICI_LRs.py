@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LogisticRegressionCV
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score, roc_curve
 
 from treatment_analysis_common import (
@@ -162,16 +162,8 @@ for buffer in tqdm(buffers, desc="Training propensity models"):
         X_train = scaler.transform(X_train)
         X_test = scaler.transform(X_test)
 
-        # Fit model with elastic net regularization tuned via inner CV
-        clf = LogisticRegressionCV(
-            Cs=10,
-            penalty='elasticnet',
-            solver='saga',
-            l1_ratios=[0.0, 0.5, 1.0],
-            cv=5,
-            max_iter=2000,
-            random_state=1234,
-        )
+        # Fit model
+        clf = LogisticRegression(max_iter=1000, solver="lbfgs")
         clf.fit(X_train, y_train.values.ravel())
 
         # Predict
