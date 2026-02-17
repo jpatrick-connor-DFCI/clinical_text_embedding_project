@@ -1,5 +1,8 @@
 """Generate risk-based biomarker discovery dataset with text-embedding risk scores.
 
+Restricted to first-line ICI patients only (patients with ICI only at later
+lines are excluded upstream in ICI_LRs.py).
+
 Time origin for all patients is LOT_start_date for line 1, matching the
 prediction time used to generate propensity scores in ICI_LRs.py.
 """

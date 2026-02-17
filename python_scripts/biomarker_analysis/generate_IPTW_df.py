@@ -1,5 +1,10 @@
 """Generate IPTW dataset for biomarker analysis (ICI vs non-ICI with propensity scores).
 
+Treatment groups:
+  - ICI:     patients who receive ICI at first line of treatment
+  - non-ICI: patients who NEVER receive ICI at any line of treatment
+  - Excluded (upstream in ICI_LRs.py): patients with ICI only at later lines
+
 Time origin for all patients is LOT_start_date for line 1, matching the
 prediction time used to generate propensity scores in ICI_LRs.py.
 """
