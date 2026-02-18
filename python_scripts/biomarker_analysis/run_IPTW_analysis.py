@@ -11,7 +11,10 @@ from scipy.linalg import LinAlgWarning
 from statsmodels.stats.multitest import multipletests
 from lifelines import CoxPHFitter
 from lifelines.exceptions import ConvergenceWarning
+from joblib import Parallel, delayed
 random.seed(42)  # set seed for reproducibility
+
+N_JOBS = int(os.getenv("SLURM_CPUS_PER_TASK", "-1"))
 
 # ---------------------------------------
 # Summary classifier
@@ -186,6 +189,83 @@ def fit_cph_suppress_warnings(
             )
     return cph
 
+
+def _fit_one_marker(
+    df: pd.DataFrame,
+    marker: str,
+    base_vars: list[str],
+    weights_col: str | None,
+) -> dict | None:
+    """Fit a single marker interaction Cox model. Returns result dict or None on failure."""
+    cols = ['tt_death', 'death', 'PX_on_ICI'] + base_vars + [marker]
+    if weights_col is not None:
+        cols.append(weights_col)
+    df_fit = df[cols].dropna().copy()
+
+    mx = f"{marker}_x_ICI"
+    df_fit[mx] = df_fit['PX_on_ICI'] * df_fit[marker]
+
+    cph = CoxPHFitter()
+    cph = fit_cph_suppress_warnings(
+        cph, df_fit,
+        duration_col='tt_death', event_col='death',
+        weights_col=weights_col, robust=True,
+    )
+
+    summ = cph.summary.reset_index()
+    V = cph.variance_matrix_
+    b = cph.params_
+
+    beta_m = float(b[marker])
+    se_m = float(np.sqrt(V.loc[marker, marker]))
+    p_m = float(summ.loc[summ['covariate'] == marker, 'p'].values[0])
+
+    beta_mx = float(b[mx])
+    se_mx = float(np.sqrt(V.loc[mx, mx]))
+    p_mx = float(summ.loc[summ['covariate'] == mx, 'p'].values[0])
+
+    hr_nonici = np.exp(beta_m)
+    ci_nonici = (np.exp(beta_m - 1.96 * se_m), np.exp(beta_m + 1.96 * se_m))
+
+    cov_m_mx = float(V.loc[marker, mx])
+    se_ici = np.sqrt(se_m**2 + se_mx**2 + 2 * cov_m_mx)
+    beta_ici = beta_m + beta_mx
+    hr_ici = np.exp(beta_ici)
+    ci_ici = (np.exp(beta_ici - 1.96 * se_ici), np.exp(beta_ici + 1.96 * se_ici))
+
+    z_ici = beta_ici / se_ici
+    p_ici = 2 * (1 - stats.norm.cdf(abs(z_ici)))
+
+    beta_IO0 = float(b['PX_on_ICI']) if 'PX_on_ICI' in b.index else np.nan
+    p_IO0 = (float(summ.loc[summ['covariate'] == 'PX_on_ICI', 'p'].values[0])
+             if 'PX_on_ICI' in summ['covariate'].values else np.nan)
+
+    return {
+        "marker": marker,
+        "beta_markerxICI": beta_mx, "HR_markerxICI": np.exp(beta_mx), "p_markerxICI": p_mx,
+        "beta_marker_ICI": beta_ici, "HR_marker_ICI": hr_ici,
+        "CI95_marker_ICI_low": ci_ici[0], "CI95_marker_ICI_high": ci_ici[1], "p_marker_ICI": p_ici,
+        "beta_marker_nonICI": beta_m, "HR_marker_nonICI": hr_nonici,
+        "CI95_marker_nonICI_low": ci_nonici[0], "CI95_marker_nonICI_high": ci_nonici[1], "p_marker_nonICI": p_m,
+        "beta_ICI_at_marker0": beta_IO0, "p_ICI_at_marker0": p_IO0,
+    }
+
+
+def _run_marker_screen(df, markers, base_vars, weights_col, n_jobs, label=""):
+    """Run parallel marker screening. Returns (results_list, failed_list)."""
+    def _safe_fit(marker):
+        try:
+            return _fit_one_marker(df, marker, base_vars, weights_col), None
+        except Exception as e:
+            return None, (marker, str(e))
+
+    raw = Parallel(n_jobs=n_jobs, backend="loky")(
+        delayed(_safe_fit)(m) for m in tqdm(markers, desc=label)
+    )
+    results = [r for r, _ in raw if r is not None]
+    failed = [f for _, f in raw if f is not None]
+    return results, failed
+
 types_to_test = ['pan_cancer', 'SKIN', 'LUNG']
 
 for cancer_type in types_to_test:
@@ -252,7 +332,7 @@ for cancer_type in types_to_test:
     ps = type_specific_interaction_ICI_df['ICI_prediction'].clip(eps, 1 - eps)
     
     # ---------------------------------------
-    # Stabilized ATE IPTW with truncation
+    # ATT IPTW with truncation
     # ---------------------------------------
     p_treated = type_specific_interaction_ICI_df['PX_on_ICI'].mean()
 
@@ -300,182 +380,25 @@ for cancer_type in types_to_test:
         ):
             markers_to_test.append(marker)
     
-    results = []
-    failed_iptw = []
-    for marker in tqdm(markers_to_test):
-        try:
-            df_fit = type_specific_interaction_ICI_df[['tt_death','death','PX_on_ICI'] + base_vars + [marker,'IPTW']].copy()
-            df_fit = df_fit.dropna().copy()
-    
-            mx = f"{marker}_x_ICI"
-            df_fit[mx] = df_fit['PX_on_ICI'] * df_fit[marker]
-    
-            cph = CoxPHFitter()
-            cph = fit_cph_suppress_warnings(
-                cph,
-                df_fit,
-                duration_col='tt_death',
-                event_col='death',
-                weights_col='IPTW',
-                robust=True,
-            )
-    
-            summ = cph.summary.reset_index()
-            V = cph.variance_matrix_
-            b = cph.params_
-    
-            # main + interaction
-            beta_m = float(b[marker])
-            se_m = float(np.sqrt(V.loc[marker, marker]))
-            p_m = float(summ.loc[summ['covariate']==marker, 'p'].values[0])
-    
-            beta_mx = float(b[mx])
-            se_mx = float(np.sqrt(V.loc[mx, mx]))
-            p_mx = float(summ.loc[summ['covariate']==mx,'p'].values[0])
-    
-            # marker effect in NON-ICI
-            hr_nonici = np.exp(beta_m)
-            ci_nonici = (np.exp(beta_m - 1.96*se_m), np.exp(beta_m + 1.96*se_m))
-    
-            # marker effect in ICI = beta_m + beta_mx
-            cov_m_mx = float(V.loc[marker, mx])
-            se_ici = np.sqrt(se_m**2 + se_mx**2 + 2*cov_m_mx)
-            beta_ici = beta_m + beta_mx
-            hr_ici = np.exp(beta_ici)
-            ci_ici = (np.exp(beta_ici - 1.96*se_ici), np.exp(beta_ici + 1.96*se_ici))
-    
-            # p-value for marker effect IN IO patients
-            z_ici = beta_ici / se_ici
-            p_ici = 2 * (1 - stats.norm.cdf(abs(z_ici)))
-    
-            # optional: treatment main effect at marker=0
-            beta_IO0 = float(b['PX_on_ICI']) if 'PX_on_ICI' in b.index else np.nan
-            p_IO0 = float(summ.loc[summ['covariate']=='PX_on_ICI','p'].values[0]) if 'PX_on_ICI' in summ['covariate'].values else np.nan
-    
-            results.append({
-                "marker": marker,
-    
-                # Predictive (ICI-specific modulation)
-                "beta_markerxICI": beta_mx,
-                "HR_markerxICI": np.exp(beta_mx),
-                "p_markerxICI": p_mx,
-    
-                # Effect in ICI
-                "beta_marker_ICI": beta_ici,
-                "HR_marker_ICI": hr_ici,
-                "CI95_marker_ICI_low": ci_ici[0],
-                "CI95_marker_ICI_high": ci_ici[1],
-                "p_marker_ICI": p_ici,
-    
-                # Effect in non-ICI
-                "beta_marker_nonICI": beta_m,
-                "HR_marker_nonICI": hr_nonici,
-                "CI95_marker_nonICI_low": ci_nonici[0],
-                "CI95_marker_nonICI_high": ci_nonici[1],
-                "p_marker_nonICI": p_m,
-    
-                # ICI effect at marker-negative baseline
-                "beta_ICI_at_marker0": beta_IO0,
-                "p_ICI_at_marker0": p_IO0
-            })
-    
-        except Exception as e:
-            failed_iptw.append((marker, str(e)))
-            continue
-    
+    # --- IPTW marker screening (parallel) ---
+    results_iptw, failed_iptw = _run_marker_screen(
+        type_specific_interaction_ICI_df, markers_to_test, base_vars,
+        weights_col='IPTW', n_jobs=N_JOBS, label=f"{cancer_type} IPTW",
+    )
     if failed_iptw:
-        first_marker, first_error = failed_iptw[0]
-        print(f"[{cancer_type}] IPTW failures: {len(failed_iptw)} markers. First: {first_marker} -> {first_error}")
+        print(f"[{cancer_type}] IPTW failures: {len(failed_iptw)}. First: {failed_iptw[0][0]} -> {failed_iptw[0][1]}")
 
-    results_df = pd.DataFrame(results, columns=result_cols)
+    results_df = pd.DataFrame(results_iptw, columns=result_cols)
     results_df = add_fdr_and_labels(results_df, classify)
     results_df.to_csv(os.path.join(IPTW_RUN_PATH, f'{cancer_type}_IPTW_ICI_predictive_markers.csv'), index=False)
 
-    # ===============================================
-    # ==  NO IPTW VERSION OF MARKER SCREENING  ==
-    # ===============================================
-    results_noiptw = []
-    failed_noiptw = []
-    for marker in tqdm(markers_to_test):
-        try:
-            # same columns as before, but no IPTW
-            df_fit = type_specific_interaction_ICI_df[['tt_death','death','PX_on_ICI'] 
-                                       + base_vars + [marker]].dropna().copy()
-    
-            # interaction term
-            mx = f"{marker}_x_ICI"
-            df_fit[mx] = df_fit['PX_on_ICI'] * df_fit[marker]
-    
-            cph = CoxPHFitter()
-            cph = fit_cph_suppress_warnings(
-                cph,
-                df_fit,
-                duration_col='tt_death',
-                event_col='death',
-                weights_col=None,
-                robust=True,
-            )  # no weights_col
-    
-            summ = cph.summary.reset_index()
-            V = cph.variance_matrix_
-            b = cph.params_
-    
-            # main + interaction
-            beta_m = float(b[marker])
-            se_m = float(np.sqrt(V.loc[marker, marker]))
-            p_m = float(summ.loc[summ['covariate']==marker, 'p'].values[0])
-    
-            beta_mx = float(b[mx])
-            se_mx = float(np.sqrt(V.loc[mx, mx]))
-            p_mx = float(summ.loc[summ['covariate']==mx,'p'].values[0])
-    
-            # effect in non-ICI
-            hr_nonici = np.exp(beta_m)
-            ci_nonici = (np.exp(beta_m - 1.96*se_m), np.exp(beta_m + 1.96*se_m))
-    
-            # effect in ICI
-            cov_m_mx = float(V.loc[marker, mx])
-            se_ici = np.sqrt(se_m**2 + se_mx**2 + 2*cov_m_mx)
-            beta_ici = beta_m + beta_mx
-            hr_ici = np.exp(beta_ici)
-            ci_ici = (np.exp(beta_ici - 1.96*se_ici), np.exp(beta_ici + 1.96*se_ici))
-    
-            z_ici = beta_ici / se_ici
-            p_ici = 2 * (1 - stats.norm.cdf(abs(z_ici)))
-    
-            # baseline IO effect at marker = 0
-            beta_IO0 = float(b['PX_on_ICI']) if 'PX_on_ICI' in b.index else np.nan
-            p_IO0 = float(summ.loc[summ['covariate']=='PX_on_ICI','p'].values[0]) if 'PX_on_ICI' in summ['covariate'].values else np.nan
-    
-            results_noiptw.append({
-                "marker": marker,
-                "beta_markerxICI": beta_mx,
-                "HR_markerxICI": np.exp(beta_mx),
-                "p_markerxICI": p_mx,
-    
-                "beta_marker_ICI": beta_ici,
-                "HR_marker_ICI": hr_ici,
-                "CI95_marker_ICI_low": ci_ici[0],
-                "CI95_marker_ICI_high": ci_ici[1],
-                "p_marker_ICI": p_ici,
-    
-                "beta_marker_nonICI": beta_m,
-                "HR_marker_nonICI": hr_nonici,
-                "CI95_marker_nonICI_low": ci_nonici[0],
-                "CI95_marker_nonICI_high": ci_nonici[1],
-                "p_marker_nonICI": p_m,
-    
-                "beta_ICI_at_marker0": beta_IO0,
-                "p_ICI_at_marker0": p_IO0
-            })
-    
-        except Exception as e:
-            failed_noiptw.append((marker, str(e)))
-            continue
-    
+    # --- No-IPTW marker screening (parallel) ---
+    results_noiptw, failed_noiptw = _run_marker_screen(
+        type_specific_interaction_ICI_df, markers_to_test, base_vars,
+        weights_col=None, n_jobs=N_JOBS, label=f"{cancer_type} no-IPTW",
+    )
     if failed_noiptw:
-        first_marker, first_error = failed_noiptw[0]
-        print(f"[{cancer_type}] no-IPTW failures: {len(failed_noiptw)} markers. First: {first_marker} -> {first_error}")
+        print(f"[{cancer_type}] no-IPTW failures: {len(failed_noiptw)}. First: {failed_noiptw[0][0]} -> {failed_noiptw[0][1]}")
 
     results_noiptw_df = pd.DataFrame(results_noiptw, columns=result_cols)
     results_noiptw_df = add_fdr_and_labels(results_noiptw_df, classify)

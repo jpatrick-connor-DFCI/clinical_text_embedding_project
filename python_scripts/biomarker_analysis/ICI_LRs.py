@@ -169,6 +169,7 @@ for buffer in tqdm(buffers, desc="Training propensity models"):
         clf = LogisticRegressionCV(
             Cs=10, cv=3, penalty="l2", solver="lbfgs",
             scoring="neg_log_loss", max_iter=1000, random_state=1234,
+            n_jobs=-1,
         )
         clf.fit(X_train, y_train.values.ravel())
 
