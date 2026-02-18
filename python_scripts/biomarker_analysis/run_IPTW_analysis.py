@@ -47,24 +47,6 @@ def classify_noiptw(row):
         return "prognostic_nonICI"
     return "no_signal"
 
-
-def one_hot_panel_version(df: pd.DataFrame) -> pd.DataFrame:
-    panel_raw_cols = [col for col in df.columns if col.strip().upper() == 'PANEL_VERSION']
-    if not panel_raw_cols:
-        return df
-
-    out = df.copy()
-    panel_raw_col = panel_raw_cols[0]
-    existing_panel_one_hot = [col for col in out.columns if col.upper().startswith('PANEL_VERSION_')]
-    if existing_panel_one_hot:
-        out = out.drop(columns=existing_panel_one_hot)
-
-    panel_values = out[panel_raw_col].fillna('MISSING').astype(str)
-    panel_dummies = pd.get_dummies(panel_values, prefix='PANEL_VERSION', dtype=int)
-    out = pd.concat([out.drop(columns=[panel_raw_col]), panel_dummies], axis=1)
-    return out
-
-
 def merge_rare_cancer_types_into_other(
     df: pd.DataFrame,
     min_total: int = 30,
@@ -104,32 +86,6 @@ def merge_rare_cancer_types_into_other(
     kept_for_model = [col for col in (keep_cols + ['CANCER_TYPE_OTHER']) if out[col].sum() > 0]
     return out, kept_for_model, rare_cols
 
-
-def get_nonredundant_dummy_cols(
-    df: pd.DataFrame,
-    dummy_cols: list[str],
-    group_name: str,
-) -> list[str]:
-    """Drop one active dummy level as reference to reduce collinearity."""
-    active_cols = []
-    active_counts: dict[str, float] = {}
-    for col in dummy_cols:
-        if col not in df.columns:
-            continue
-        count = pd.to_numeric(df[col], errors='coerce').fillna(0).sum()
-        if count > 0:
-            active_cols.append(col)
-            active_counts[col] = float(count)
-
-    if len(active_cols) <= 1:
-        return active_cols
-
-    ref_col = max(active_cols, key=lambda col: active_counts[col])
-    kept_cols = [col for col in active_cols if col != ref_col]
-    print(f"Dropped {group_name} reference level for identifiability: {ref_col}")
-    return kept_cols
-
-
 def marker_has_within_arm_support(
     df: pd.DataFrame,
     marker: str,
@@ -158,7 +114,6 @@ IPTW_RUN_PATH = os.path.join(MARKER_PATH, 'IPTW_runs/')
 os.makedirs(IPTW_RUN_PATH, exist_ok=True)
 
 interaction_ICI_df = pd.read_csv(os.path.join(MARKER_PATH, 'IPTW_ICI_interaction_runs_df.csv'))
-interaction_ICI_df = one_hot_panel_version(interaction_ICI_df)
 
 required_vars = ['DFCI_MRN', 'tt_death', 'death']
 base_covars = ['GENDER', 'AGE_AT_TREATMENTSTART']
@@ -260,24 +215,12 @@ for cancer_type in types_to_test:
                 f"[pan_cancer] Merged {len(merged_rare_type_cols)} rare cancer types into CANCER_TYPE_OTHER: "
                 + ", ".join(sorted(merged_rare_type_cols))
             )
-        panel_cols_for_fit = get_nonredundant_dummy_cols(
-            type_specific_interaction_ICI_df,
-            panel_cols,
-            'panel',
-        )
-        cancer_type_cols_for_fit = get_nonredundant_dummy_cols(
-            type_specific_interaction_ICI_df,
-            pan_cancer_type_cols,
-            'cancer-type',
-        )
+        panel_cols_for_fit = [col for col in type_specific_interaction_ICI_df if 'PANEL' in col]
+        cancer_type_cols_for_fit = [col for col in type_specific_interaction_ICI_df if 'CANCER_TYPE' in col]
         base_vars = base_covars + panel_cols_for_fit + cancer_type_cols_for_fit
     else:
         type_specific_interaction_ICI_df = interaction_ICI_df.loc[interaction_ICI_df[f'CANCER_TYPE_{cancer_type}']].copy()
-        panel_cols_for_fit = get_nonredundant_dummy_cols(
-            type_specific_interaction_ICI_df,
-            panel_cols,
-            'panel',
-        )
+        panel_cols_for_fit = [col for col in type_specific_interaction_ICI_df if 'PANEL' in col]
         base_vars = base_covars + panel_cols_for_fit
 
     if type_specific_interaction_ICI_df.empty:

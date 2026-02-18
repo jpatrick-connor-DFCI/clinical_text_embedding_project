@@ -27,6 +27,8 @@ from treatment_analysis_common import (
 ICI_DATA_PATH = os.path.join(DATA_PATH, 'treatment_prediction/line_ICI_prediction_data/')
 ICI_PROP_PATH = os.path.join(DATA_PATH, 'treatment_prediction/ICI_propensity/')
 
+manual_ICI_start_df = pd.read_csv('/data/gusev/USERS/mjsaleh/IO_START.csv',index_col=0).rename(columns={'MRN' : 'DFCI_MRN'})
+
 # --- Load cohort ---
 cohort_treatment_df = load_cohort_treatments()
 
@@ -63,15 +65,17 @@ cohort_treatment_df = cohort_treatment_df.sort_values(["MRN", "treatment_line"])
 ever_ici = (cohort_treatment_df.groupby("MRN")["PX_on_ICI"]
             .max()
             .rename("ever_ici"))
+manual_ever_ici = set(manual_ICI_start_df['DFCI_MRN'].tolist())
 
 # Identify patients with ICI at line 1
 line1 = cohort_treatment_df.loc[cohort_treatment_df["treatment_line"] == 1].copy()
 line1_ici_mrns = set(line1.loc[line1["PX_on_ICI"] == 1, "MRN"])
 
 # Never-ICI patients: no ICI at any treatment line
-never_ici_mrns = set(ever_ici.loc[ever_ici == 0].index)
+never_ici_mrns = set(ever_ici.loc[ever_ici == 0].index) - manual_ever_ici
 
 # Excluded: patients who receive ICI but NOT at line 1 (i.e. only at later lines)
+later_line_ici_mrns = (set(ever_ici.loc[ever_ici == 1].index) | manual_ever_ici) - line1_ici_mrns
 later_line_ici_mrns = set(ever_ici.loc[ever_ici == 1].index) - line1_ici_mrns
 
 print(f"First-line ICI: {len(line1_ici_mrns)}")

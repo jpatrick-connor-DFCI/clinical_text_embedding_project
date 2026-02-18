@@ -55,12 +55,12 @@ line1_preds['ground_truth'] = line1_preds['ground_truth'].astype(int)
 
 # --- Build unified patient dataframe ---
 # Merge all data sources; restrict to patients with propensity predictions
-patient_df = (tt_death_df
+patient_df = pd.get_dummies(tt_death_df
               .merge(line1_starts, on='DFCI_MRN')
               .merge(somatic_df, on='DFCI_MRN')
               .merge(cancer_type_df, on='DFCI_MRN')
               .merge(line1_preds, on='DFCI_MRN')
-              .drop_duplicates(subset=['DFCI_MRN'], keep='first'))
+              .drop_duplicates(subset=['DFCI_MRN'], keep='first'), columns=['PANEL_VERSION'], drop_first=True)
 
 # --- Recompute tt_death from line 1 start date ---
 # Original tt_death is measured from first_treatment_date; shift to line1_start_date
