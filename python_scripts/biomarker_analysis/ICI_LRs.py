@@ -18,7 +18,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score, roc_curve
 
-from treatment_analysis_common import (
+from biomarker_common import (
     DATA_PATH, load_note_embeddings, load_cohort_treatments,
     add_treatment_line_columns, load_confounders,
 )

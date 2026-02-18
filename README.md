@@ -1,6 +1,6 @@
 # Clinical Text Embedding Project
 
-This repository builds clinical-text embeddings from EHR notes using Clinical-Longformer, then trains and evaluates penalized Cox survival models across multiple endpoint schemes (ICD-10 level 3/4, phecodes, death/metastasis). It also includes treatment analysis (ICI propensity scoring via IPTW) and biomarker discovery pipelines.
+This repository builds clinical-text embeddings from EHR notes using Clinical-Longformer, then trains and evaluates penalized Cox survival models across multiple endpoint schemes (ICD-10 level 3/4, phecodes, death/metastasis). It also includes ICI propensity scoring and biomarker discovery pipelines.
 
 ## Repository Layout
 
@@ -10,8 +10,7 @@ clinical_text_embedding_project/
 │   ├── data_preprocessing/       # Text processing, embedding generation, covariate creation
 │   ├── model_training/           # CoxPH model training with SLURM array jobs
 │   ├── model_evaluation/         # Risk scoring, mortality trajectories, model comparisons
-│   ├── biomarker_analysis/       # IPTW and risk-based biomarker discovery
-│   └── treatment_analysis/       # ICI propensity score modeling
+│   └── biomarker_analysis/       # ICI propensity scoring, IPTW and risk-based biomarker discovery
 ├── python_utils/
 │   └── embed_surv_utils/         # Shared preprocessing and Cox model utilities (installable package)
 ├── bash_scripts/                 # SLURM submission and worker scripts
@@ -58,17 +57,12 @@ clinical_text_embedding_project/
 
 | File | Description |
 |------|-------------|
+| `biomarker_common.py` | Shared utilities for loading note embeddings, cohort treatment data, survival outcomes, and confounder matrices (demographics, cancer type, panel version) used across biomarker analysis scripts. |
+| `ICI_LRs.py` | Trains logistic regression propensity score models predicting first-line ICI vs. never-ICI receipt using clinical note embeddings plus confounders (demographics, cancer type, panel version). Generates held-out propensity scores via stratified 5-fold CV at multiple buffer windows (0, 15, 30, 45 days before treatment). Patients with ICI only at later treatment lines are excluded. |
 | `generate_IPTW_df.py` | Creates the IPTW analysis dataset by merging propensity scores (from 30-day buffer predictions) with genomic markers (somatic mutations, PRS) and clinical covariates for ICI vs. non-ICI comparison. |
 | `generate_risk_based_df.py` | Generates the biomarker discovery dataset for first-line ICI patients, combining text-embedding-derived risk scores with genomic and clinical features. |
 | `run_IPTW_analysis.py` | Performs IPTW analysis to identify predictive and prognostic biomarkers for ICI benefit. Applies common support trimming, stabilized ATE weights (truncated at 5th/95th percentile, capped at 20), Cox PH models with marker-treatment interactions, and Benjamini-Hochberg FDR correction. Runs on pan-cancer, SKIN, and LUNG cohorts. |
 | `run_risk_based_analysis.py` | Tests whether genomic markers retain significance for mortality after adjustment for text-embedding-derived risk scores in first-line ICI patients. Auto-selects cancer types with sufficient sample size. |
-
-### `python_scripts/treatment_analysis/`
-
-| File | Description |
-|------|-------------|
-| `ICI_LRs.py` | Trains logistic regression propensity score models predicting first-line ICI vs. never-ICI receipt using clinical note embeddings plus confounders (demographics, cancer type, panel version). Generates held-out propensity scores via stratified 5-fold CV at multiple buffer windows (0, 15, 30, 45 days before treatment). Patients with ICI only at later treatment lines are excluded. |
-| `treatment_analysis_common.py` | Shared utilities for loading note embeddings, cohort treatment data, survival outcomes, and confounder matrices (demographics, cancer type, panel version) used across treatment analysis scripts. |
 
 ### `python_utils/embed_surv_utils/`
 
@@ -138,17 +132,10 @@ bash bash_scripts/submit_feature_comp_heavy_array.sh
 
 Use scripts under `python_scripts/model_evaluation/` for held-out risk scoring, mortality trajectory generation/clustering, and within-vs-pan cohort comparisons.
 
-### 5) Treatment Analysis (ICI Propensity Scoring)
+### 5) Biomarker Analysis (Propensity Scoring + Biomarker Discovery)
 
 ```bash
-python python_scripts/treatment_analysis/ICI_LRs.py
-```
-
-Generates propensity scores for first-line ICI vs. never-ICI at buffer windows [0, 15, 30, 45] days.
-
-### 6) Biomarker Discovery
-
-```bash
+python python_scripts/biomarker_analysis/ICI_LRs.py
 python python_scripts/biomarker_analysis/generate_IPTW_df.py
 python python_scripts/biomarker_analysis/run_IPTW_analysis.py
 python python_scripts/biomarker_analysis/generate_risk_based_df.py

@@ -1,4 +1,9 @@
-"""Treatment Analysis Common script for treatment analysis workflows."""
+"""Shared utilities for biomarker analysis workflows.
+
+Provides standardized data loading functions for note embeddings, survival
+cohort, cohort treatments, confounders (demographics, cancer type, panel
+version), and treatment line helpers.
+"""
 
 import os
 import numpy as np

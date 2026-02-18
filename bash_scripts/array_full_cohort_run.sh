@@ -89,7 +89,7 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
     --n-jobs "${SLURM_CPUS_PER_TASK:-1}" \
     --max-iter "${COXNET_MAX_ITER:-2500}" \
     --backend "${COXNET_BACKEND:-threading}" \
-    "${OVERWRITE_FLAG[@]}"
+    ${OVERWRITE_FLAG[@]+"${OVERWRITE_FLAG[@]}"}
 done
 
 conda deactivate
