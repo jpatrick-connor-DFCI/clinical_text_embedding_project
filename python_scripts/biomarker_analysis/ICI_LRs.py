@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LogisticRegressionCV
 from sklearn.metrics import roc_auc_score, roc_curve
 
 from biomarker_common import (
@@ -76,7 +76,6 @@ never_ici_mrns = set(ever_ici.loc[ever_ici == 0].index) - manual_ever_ici
 
 # Excluded: patients who receive ICI but NOT at line 1 (i.e. only at later lines)
 later_line_ici_mrns = (set(ever_ici.loc[ever_ici == 1].index) | manual_ever_ici) - line1_ici_mrns
-later_line_ici_mrns = set(ever_ici.loc[ever_ici == 1].index) - line1_ici_mrns
 
 print(f"First-line ICI: {len(line1_ici_mrns)}")
 print(f"Never ICI:      {len(never_ici_mrns)}")
@@ -166,8 +165,11 @@ for buffer in tqdm(buffers, desc="Training propensity models"):
         X_train = scaler.transform(X_train)
         X_test = scaler.transform(X_test)
 
-        # Fit model
-        clf = LogisticRegression(max_iter=1000, solver="lbfgs")
+        # Fit model (tune C via inner CV for calibrated propensity scores)
+        clf = LogisticRegressionCV(
+            Cs=10, cv=3, penalty="l2", solver="lbfgs",
+            scoring="neg_log_loss", max_iter=1000, random_state=1234,
+        )
         clf.fit(X_train, y_train.values.ravel())
 
         # Predict

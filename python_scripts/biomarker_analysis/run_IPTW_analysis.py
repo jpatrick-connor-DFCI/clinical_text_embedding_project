@@ -35,17 +35,6 @@ def classify(row):
     # no clear signal
     return "no_signal"
 
-# ---------------------------------------
-# Summary classifier (same logic)
-# ---------------------------------------
-def classify_noiptw(row):
-    if row['significant_predictive']:
-        return "predictive_ICI_benefit" if row['HR_markerxICI'] < 1 else "predictive_ICI_harm"
-    if row['significant_in_ICI'] and not row['significant_prognostic_nonICI']:
-        return "ICI_specific_effect"
-    if row['significant_prognostic_nonICI'] and not row['significant_in_ICI']:
-        return "prognostic_nonICI"
-    return "no_signal"
 
 def merge_rare_cancer_types_into_other(
     df: pd.DataFrame,
@@ -266,13 +255,12 @@ for cancer_type in types_to_test:
     # Stabilized ATE IPTW with truncation
     # ---------------------------------------
     p_treated = type_specific_interaction_ICI_df['PX_on_ICI'].mean()
-    p_control = 1 - p_treated
 
     if p_treated <= 0 or p_treated >= 1:
         print(f"[{cancer_type}] Skipping: invalid treated proportion ({p_treated:.4f}).")
         continue
-    
-    w = np.where(type_specific_interaction_ICI_df['PX_on_ICI']==1, p_treated/ps, p_control/(1-ps))
+
+    w = np.where(type_specific_interaction_ICI_df['PX_on_ICI']==1, 1.0, ps/(1-ps))
 
     if len(w) == 0:
         print(f"[{cancer_type}] Skipping: no IPTW weights computed.")
@@ -286,6 +274,14 @@ for cancer_type in types_to_test:
     w_trunc = np.clip(w, low, high)
     w_trunc = np.clip(w_trunc, 0, MAX_IPTW)
     type_specific_interaction_ICI_df['IPTW'] = w_trunc
+
+    # Effective sample size per arm
+    treat_mask = type_specific_interaction_ICI_df['PX_on_ICI'] == 1
+    w_t, w_c = w_trunc[treat_mask], w_trunc[~treat_mask]
+    ess_t = w_t.sum() ** 2 / (w_t ** 2).sum()
+    ess_c = w_c.sum() ** 2 / (w_c ** 2).sum()
+    print(f"[{cancer_type}] N treated={treat_mask.sum()}, N control={(~treat_mask).sum()} | "
+          f"ESS treated={ess_t:.0f}, ESS control={ess_c:.0f}")
     
     # ---------------------------------------
     # Cox IPTW marker screening
@@ -482,5 +478,5 @@ for cancer_type in types_to_test:
         print(f"[{cancer_type}] no-IPTW failures: {len(failed_noiptw)} markers. First: {first_marker} -> {first_error}")
 
     results_noiptw_df = pd.DataFrame(results_noiptw, columns=result_cols)
-    results_noiptw_df = add_fdr_and_labels(results_noiptw_df, classify_noiptw)
+    results_noiptw_df = add_fdr_and_labels(results_noiptw_df, classify)
     results_noiptw_df.to_csv(os.path.join(IPTW_RUN_PATH, f'{cancer_type}_noIPTW_ICI_predictive_markers.csv'), index=False)
