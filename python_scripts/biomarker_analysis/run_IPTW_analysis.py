@@ -111,7 +111,7 @@ required_vars = ['DFCI_MRN', 'tt_death', 'death']
 base_covars = ['GENDER', 'AGE_AT_TREATMENTSTART']
 panel_cols = [col for col in interaction_ICI_df.columns if col.upper().startswith('PANEL_VERSION_')]
 cancer_type_cols = [col for col in interaction_ICI_df.columns if col.startswith('CANCER_TYPE_')]
-excluded_cols = required_vars + base_covars + panel_cols + cancer_type_cols + ['PX_on_ICI', 'ICI_prediction']
+excluded_cols = required_vars + base_covars + panel_cols + cancer_type_cols + ['PX_on_ICI', 'ICI_prediction', 'text_risk_score']
 mutation_tags = ('_SNV', '_SV', '_FUSION', '_DEL', '_AMP', '_CNV')
 biomarker_cols = [
     col for col in interaction_ICI_df.columns
@@ -380,26 +380,30 @@ for cancer_type in types_to_test:
         ):
             markers_to_test.append(marker)
     
-    # --- IPTW marker screening (parallel) ---
-    results_iptw, failed_iptw = _run_marker_screen(
-        type_specific_interaction_ICI_df, markers_to_test, base_vars,
-        weights_col='IPTW', n_jobs=N_JOBS, label=f"{cancer_type} IPTW",
-    )
-    if failed_iptw:
-        print(f"[{cancer_type}] IPTW failures: {len(failed_iptw)}. First: {failed_iptw[0][0]} -> {failed_iptw[0][1]}")
+    # --- 4 sensitivity specifications: ±IPTW × ±text_risk_score ---
+    has_risk = 'text_risk_score' in type_specific_interaction_ICI_df.columns and \
+               type_specific_interaction_ICI_df['text_risk_score'].notna().any()
+    base_vars_no_risk = list(base_vars)
+    base_vars_with_risk = base_vars_no_risk + (['text_risk_score'] if has_risk else [])
 
-    results_df = pd.DataFrame(results_iptw, columns=result_cols)
-    results_df = add_fdr_and_labels(results_df, classify)
-    results_df.to_csv(os.path.join(IPTW_RUN_PATH, f'{cancer_type}_IPTW_ICI_predictive_markers.csv'), index=False)
+    specs = [
+        ('IPTW_risk',     base_vars_with_risk, 'IPTW'),
+        ('IPTW_norisk',   base_vars_no_risk,   'IPTW'),
+        ('noIPTW_risk',   base_vars_with_risk, None),
+        ('noIPTW_norisk', base_vars_no_risk,   None),
+    ]
+    if not has_risk:
+        print(f"[{cancer_type}] text_risk_score not available; running 2 specs (±IPTW only).")
+        specs = [s for s in specs if 'norisk' in s[0]]
 
-    # --- No-IPTW marker screening (parallel) ---
-    results_noiptw, failed_noiptw = _run_marker_screen(
-        type_specific_interaction_ICI_df, markers_to_test, base_vars,
-        weights_col=None, n_jobs=N_JOBS, label=f"{cancer_type} no-IPTW",
-    )
-    if failed_noiptw:
-        print(f"[{cancer_type}] no-IPTW failures: {len(failed_noiptw)}. First: {failed_noiptw[0][0]} -> {failed_noiptw[0][1]}")
+    for spec_name, spec_base_vars, spec_weights in specs:
+        results, failed = _run_marker_screen(
+            type_specific_interaction_ICI_df, markers_to_test, spec_base_vars,
+            weights_col=spec_weights, n_jobs=N_JOBS, label=f"{cancer_type} {spec_name}",
+        )
+        if failed:
+            print(f"[{cancer_type}] {spec_name} failures: {len(failed)}. First: {failed[0][0]} -> {failed[0][1]}")
 
-    results_noiptw_df = pd.DataFrame(results_noiptw, columns=result_cols)
-    results_noiptw_df = add_fdr_and_labels(results_noiptw_df, classify)
-    results_noiptw_df.to_csv(os.path.join(IPTW_RUN_PATH, f'{cancer_type}_noIPTW_ICI_predictive_markers.csv'), index=False)
+        spec_df = pd.DataFrame(results, columns=result_cols)
+        spec_df = add_fdr_and_labels(spec_df, classify)
+        spec_df.to_csv(os.path.join(IPTW_RUN_PATH, f'{cancer_type}_{spec_name}_ICI_predictive_markers.csv'), index=False)

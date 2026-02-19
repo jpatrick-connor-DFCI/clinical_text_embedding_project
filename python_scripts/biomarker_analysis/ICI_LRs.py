@@ -60,7 +60,7 @@ cohort_treatment_df = cohort_treatment_df[cols_to_include]
 # Sort for cumulative tracking
 cohort_treatment_df = cohort_treatment_df.sort_values(["MRN", "treatment_line"])
 
-# --- Classify patients: any-line ICI (via manual IO_START) vs never-ICI ---
+# --- Classify patients: first-line ICI vs never-ICI ---
 ever_ici = (cohort_treatment_df.groupby("MRN")["PX_on_ICI"]
             .max()
             .rename("ever_ici"))
@@ -71,17 +71,32 @@ line1 = cohort_treatment_df.loc[cohort_treatment_df["treatment_line"] == 1].copy
 # Never-ICI patients: no ICI at any treatment line AND not in manual ICI file
 never_ici_mrns = set(ever_ici.loc[ever_ici == 0].index) - manual_ever_ici
 
-# ICI patients: all patients in the manual IO_START file who are in the cohort
+# First-line ICI: patients in manual IO_START who also have ICI at line 1
+# Restricting to first-line avoids immortal time bias from later-line ICI patients
 cohort_mrns = set(cohort_treatment_df["MRN"].unique())
-all_ici_mrns = manual_ever_ici & cohort_mrns
+line1_ici_mrns = set(line1.loc[line1["PX_on_ICI"] == 1, "MRN"]) & manual_ever_ici & cohort_mrns
+later_line_ici_mrns = (manual_ever_ici & cohort_mrns) - line1_ici_mrns
 
-print(f"ICI (from IO_START):          {len(all_ici_mrns)}")
+print(f"First-line ICI:               {len(line1_ici_mrns)}")
+print(f"Later-line ICI (excluded):    {len(later_line_ici_mrns)}")
 print(f"Never ICI:                    {len(never_ici_mrns)}")
 
-# Build dataset: ICI patients use IO_START date; controls use line 1 start
-ici_df = (manual_ICI_start_df
-          .loc[manual_ICI_start_df["DFCI_MRN"].isin(all_ici_mrns), ["DFCI_MRN", "IO_START"]]
-          .rename(columns={"IO_START": "treatment_start_date"})
+# --- Verify group assignments ---
+assert line1_ici_mrns.isdisjoint(later_line_ici_mrns), \
+    "ERROR: overlap between first-line and later-line ICI groups"
+assert never_ici_mrns.isdisjoint(manual_ever_ici), \
+    "ERROR: never-ICI group contains patients from IO_START file"
+assert never_ici_mrns.isdisjoint(later_line_ici_mrns), \
+    "ERROR: never-ICI group contains later-line ICI patients"
+
+# IO_START patients not in cohort (informational)
+io_not_in_cohort = manual_ever_ici - cohort_mrns
+if io_not_in_cohort:
+    print(f"IO_START not in cohort:       {len(io_not_in_cohort)}")
+
+# Build dataset: all patients use line 1 LOT_start_date as time origin
+ici_df = (line1.loc[line1["MRN"].isin(line1_ici_mrns), ["MRN", "LOT_start_date"]]
+          .rename(columns={"MRN": "DFCI_MRN", "LOT_start_date": "treatment_start_date"})
           .drop_duplicates(subset="DFCI_MRN", keep="first"))
 ici_df["PX_on_ICI"] = 1
 
