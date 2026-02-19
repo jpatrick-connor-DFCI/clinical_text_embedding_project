@@ -1,8 +1,7 @@
 """Shared utilities for biomarker analysis workflows.
 
 Provides standardized data loading functions for note embeddings, survival
-cohort, cohort treatments, confounders (demographics, cancer type, panel
-version), and treatment line helpers.
+cohort, and confounders (demographics, cancer type, panel version).
 """
 
 import os
@@ -14,7 +13,6 @@ import pandas as pd
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
 NOTES_PATH = os.path.join(DATA_PATH, 'batched_datasets/processed_datasets/')
-TREATMENT_FILE = '/data/gusev/USERS/mjsaleh/profile_lines_of_rx/profile_rxlines.csv'
 
 
 def load_note_embeddings():
@@ -25,31 +23,6 @@ def load_note_embeddings():
 
 def load_survival_cohort(cohort_file='death_met_surv_df.csv'):
     return pd.read_csv(os.path.join(SURV_PATH, cohort_file))
-
-
-def load_cohort_treatments(
-    treatment_file=TREATMENT_FILE,
-    cohort_file='death_met_surv_df.csv',
-):
-    treatment_df = pd.read_csv(treatment_file)
-    cohort_df = pd.read_csv(os.path.join(SURV_PATH, cohort_file), usecols=['DFCI_MRN'])
-
-    cohort_treatment_df = treatment_df.loc[
-        treatment_df['MRN'].isin(cohort_df['DFCI_MRN'].unique())
-    ].copy()
-    return cohort_treatment_df
-
-
-def add_treatment_line_columns(
-    df,
-    mrn_col='MRN',
-    start_col='LOT_start_date',
-):
-    out = df.copy()
-    out[start_col] = pd.to_datetime(out[start_col])
-    out = out.sort_values([mrn_col, start_col])
-    out['treatment_line'] = out.groupby(mrn_col).cumcount() + 1
-    return out
 
 
 def load_confounders():

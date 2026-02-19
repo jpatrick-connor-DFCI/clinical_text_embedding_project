@@ -1,8 +1,14 @@
-"""ICI propensity score generation: first-line ICI vs never-ICI.
+"""ICI propensity score generation: ICI vs never-ICI.
+
+ICI patients are defined by presence in IO_START.csv.
+Never-ICI patients are all remaining patients in the survival cohort
+(death_met_surv_df.csv) not found in IO_START.csv.
+
+Time origin for all patients is first_treatment_date from the survival cohort.
 
 Trains logistic regression propensity models using clinical note embeddings
 plus confounders (demographics, cancer type, panel version) to predict
-first-line ICI receipt. Patients with ICI only at later lines are excluded.
+ICI receipt.
 """
 
 # %% [code cell 1]
@@ -19,95 +25,45 @@ from sklearn.linear_model import LogisticRegressionCV
 from sklearn.metrics import roc_auc_score, roc_curve
 
 from biomarker_common import (
-    DATA_PATH, load_note_embeddings, load_cohort_treatments,
-    add_treatment_line_columns, load_confounders,
+    DATA_PATH, SURV_PATH, load_note_embeddings, load_confounders,
 )
 
 # Paths
 ICI_DATA_PATH = os.path.join(DATA_PATH, 'treatment_prediction/line_ICI_prediction_data/')
 ICI_PROP_PATH = os.path.join(DATA_PATH, 'treatment_prediction/ICI_propensity/')
 
-manual_ICI_start_df = pd.read_csv('/data/gusev/USERS/mjsaleh/IO_START.csv',index_col=0).rename(columns={'MRN' : 'DFCI_MRN'})
+# --- Define ICI patients from IO_START.csv ---
+manual_ICI_start_df = pd.read_csv('/data/gusev/USERS/mjsaleh/IO_START.csv', index_col=0).rename(columns={'MRN': 'DFCI_MRN'})
+ici_mrns = set(manual_ICI_start_df['DFCI_MRN'].unique())
 
-# --- Load cohort ---
-cohort_treatment_df = load_cohort_treatments()
+# --- Load survival cohort for first_treatment_date and non-ICI patients ---
+surv_df = pd.read_csv(os.path.join(SURV_PATH, 'death_met_surv_df.csv'))
+surv_df['first_treatment_date'] = pd.to_datetime(surv_df['first_treatment_date'])
+cohort_mrns = set(surv_df['DFCI_MRN'].unique())
 
-# --- One-hot encode treatment subtypes ---
-treatments = (
-    cohort_treatment_df["Treatment_type"]
-    .str.replace(";", "", regex=False)
-    .str.split()
-    .explode()
-)
-dummies = pd.get_dummies(treatments, prefix="PX_on").groupby(level=0).max()
-cohort_treatment_df = pd.concat([cohort_treatment_df, dummies], axis=1)
+# --- Classify patients ---
+# ICI: patients in IO_START that are also in the survival cohort
+ici_mrns_in_cohort = ici_mrns & cohort_mrns
+# Never-ICI: survival cohort patients NOT in IO_START
+never_ici_mrns = cohort_mrns - ici_mrns
 
-# --- Treatment line + time-to-next ---
-cohort_treatment_df = add_treatment_line_columns(cohort_treatment_df)
-cohort_treatment_df["time_to_next_treatment"] = (
-    cohort_treatment_df.groupby("MRN")["LOT_start_date"].diff(-1).dt.days.abs()
-)
-
-# --- Columns of interest ---
-px_cols = [c for c in cohort_treatment_df if c.startswith("PX_on_")]
-cols_to_include = [
-    "MRN", "DIAGNOSIS_DT", "STAGE", "LOT_start_date",
-    "Treatment_type", "Treatment_subtype", "Medications",
-    "time_to_treatment", "treatment_line", "time_to_next_treatment"
-] + px_cols
-cohort_treatment_df = cohort_treatment_df[cols_to_include]
-
-# Sort for cumulative tracking
-cohort_treatment_df = cohort_treatment_df.sort_values(["MRN", "treatment_line"])
-
-# --- Classify patients: first-line ICI vs never-ICI ---
-ever_ici = (cohort_treatment_df.groupby("MRN")["PX_on_ICI"]
-            .max()
-            .rename("ever_ici"))
-manual_ever_ici = set(manual_ICI_start_df['DFCI_MRN'].tolist())
-
-line1 = cohort_treatment_df.loc[cohort_treatment_df["treatment_line"] == 1].copy()
-
-# Never-ICI patients: no ICI at any treatment line AND not in manual ICI file
-never_ici_mrns = set(ever_ici.loc[ever_ici == 0].index) - manual_ever_ici
-
-# First-line ICI: patients in manual IO_START who also have ICI at line 1
-# Restricting to first-line avoids immortal time bias from later-line ICI patients
-cohort_mrns = set(cohort_treatment_df["MRN"].unique())
-line1_ici_mrns = set(line1.loc[line1["PX_on_ICI"] == 1, "MRN"]) & manual_ever_ici & cohort_mrns
-later_line_ici_mrns = (manual_ever_ici & cohort_mrns) - line1_ici_mrns
-
-print(f"First-line ICI:               {len(line1_ici_mrns)}")
-print(f"Later-line ICI (excluded):    {len(later_line_ici_mrns)}")
+print(f"ICI (IO_START ∩ cohort):      {len(ici_mrns_in_cohort)}")
 print(f"Never ICI:                    {len(never_ici_mrns)}")
+print(f"IO_START not in cohort:       {len(ici_mrns - cohort_mrns)}")
 
-# --- Verify group assignments ---
-assert line1_ici_mrns.isdisjoint(later_line_ici_mrns), \
-    "ERROR: overlap between first-line and later-line ICI groups"
-assert never_ici_mrns.isdisjoint(manual_ever_ici), \
-    "ERROR: never-ICI group contains patients from IO_START file"
-assert never_ici_mrns.isdisjoint(later_line_ici_mrns), \
-    "ERROR: never-ICI group contains later-line ICI patients"
+# --- Build prediction dataset using first_treatment_date as time origin ---
+surv_dates = surv_df[['DFCI_MRN', 'first_treatment_date']].drop_duplicates(subset='DFCI_MRN', keep='first')
 
-# IO_START patients not in cohort (informational)
-io_not_in_cohort = manual_ever_ici - cohort_mrns
-if io_not_in_cohort:
-    print(f"IO_START not in cohort:       {len(io_not_in_cohort)}")
+ici_df = surv_dates.loc[surv_dates['DFCI_MRN'].isin(ici_mrns_in_cohort)].copy()
+ici_df['PX_on_ICI'] = 1
 
-# Build dataset: all patients use line 1 LOT_start_date as time origin
-ici_df = (line1.loc[line1["MRN"].isin(line1_ici_mrns), ["MRN", "LOT_start_date"]]
-          .rename(columns={"MRN": "DFCI_MRN", "LOT_start_date": "treatment_start_date"})
-          .drop_duplicates(subset="DFCI_MRN", keep="first"))
-ici_df["PX_on_ICI"] = 1
-
-non_ici_df = (line1.loc[line1["MRN"].isin(never_ici_mrns), ["MRN", "LOT_start_date"]]
-              .rename(columns={"MRN": "DFCI_MRN", "LOT_start_date": "treatment_start_date"}))
-non_ici_df["PX_on_ICI"] = 0
+non_ici_df = surv_dates.loc[surv_dates['DFCI_MRN'].isin(never_ici_mrns)].copy()
+non_ici_df['PX_on_ICI'] = 0
 
 IO_prediction_dataset = pd.concat([ici_df, non_ici_df])
-IO_prediction_dataset["treatment_start_date"] = pd.to_datetime(IO_prediction_dataset["treatment_start_date"])
+IO_prediction_dataset = IO_prediction_dataset.rename(columns={'first_treatment_date': 'treatment_start_date'})
 
-# Save prediction times for downstream use (generate_IPTW_df.py)
+# Save prediction times for downstream use (generate_IPTW_df.py, generate_risk_based_df.py)
 IO_prediction_dataset.to_csv(os.path.join(ICI_DATA_PATH, 'prediction_times.csv'), index=False)
 
 # --- Load note embeddings ---
@@ -229,7 +185,7 @@ for y, buffer in enumerate(buffers):
     sns.lineplot(x=fpr, y=tpr, ax=ax, label=f'AUC = {auc : 0.3f}')
     sns.lineplot(x=[0,1], y=[0,1], ax=ax, linestyle='--', color='gray')
 
-    ax.set_title(f'First-line ICI vs Never ICI, buffer = {buffer} days')
+    ax.set_title(f'ICI vs Never ICI, buffer = {buffer} days')
     ax.set_xlabel('False Positive Rate')
     ax.set_ylabel('True Positive Rate')
     ax.legend(loc='lower right')

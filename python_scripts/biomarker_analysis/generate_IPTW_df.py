@@ -1,10 +1,11 @@
-"""Generate IPTW dataset for biomarker analysis (first-line ICI vs never-ICI).
+"""Generate IPTW dataset for biomarker analysis (ICI vs never-ICI).
 
 Treatment groups:
-  - ICI:     patients who receive ICI at first line of treatment
-  - non-ICI: patients who NEVER receive ICI at any line of treatment
+  - ICI:     patients in IO_START.csv
+  - non-ICI: patients in survival cohort NOT in IO_START.csv
 
-Time origin for all patients is line 1 LOT_start_date.
+Time origin for all patients is first_treatment_date (= treatment_start_date
+saved by ICI_LRs.py), so no time-origin shift is needed.
 
 Includes text-embedding risk scores (purely prognostic, no treatment indicator)
 trained on ALL patients via cross-validated penalized CoxPH, for use as a
@@ -38,6 +39,7 @@ tt_death_df = tt_death_df[['DFCI_MRN', 'first_treatment_date', 'tt_death', 'deat
                             'GENDER', 'AGE_AT_TREATMENTSTART']].copy()
 
 # --- Load per-patient prediction times (saved by ICI_LRs.py) ---
+# treatment_start_date = first_treatment_date for all patients
 prediction_times = pd.read_csv(os.path.join(ICI_DATA_PATH, 'prediction_times.csv'))
 prediction_times['treatment_start_date'] = pd.to_datetime(prediction_times['treatment_start_date'])
 prediction_times = prediction_times[['DFCI_MRN', 'treatment_start_date']].drop_duplicates(subset='DFCI_MRN', keep='first')
@@ -52,7 +54,7 @@ somatic_keep_cols = ['DFCI_MRN'] + panel_cols + mutation_cols
 somatic_keep_cols = list(dict.fromkeys(somatic_keep_cols))
 somatic_df = somatic_df[somatic_keep_cols].copy()
 
-# --- Load propensity predictions (line 1, 30-day buffer) ---
+# --- Load propensity predictions (30-day buffer) ---
 line1_preds = pd.read_csv(os.path.join(ICI_PATH, 'line_1_predictions.csv'))
 required_pred_cols = {'DFCI_MRN', 'ground_truth', 'model_probs'}
 if not required_pred_cols.issubset(set(line1_preds.columns)):
@@ -62,6 +64,7 @@ line1_preds['ground_truth'] = line1_preds['ground_truth'].astype(int)
 
 # --- Build unified patient dataframe ---
 # Merge all data sources; restrict to patients with propensity predictions
+# No time-origin shift needed: treatment_start_date = first_treatment_date
 patient_df = pd.get_dummies(tt_death_df
               .merge(prediction_times, on='DFCI_MRN')
               .merge(somatic_df, on='DFCI_MRN')
@@ -69,12 +72,7 @@ patient_df = pd.get_dummies(tt_death_df
               .merge(line1_preds, on='DFCI_MRN')
               .drop_duplicates(subset=['DFCI_MRN'], keep='first'), columns=['PANEL_VERSION'], drop_first=True)
 
-# --- Recompute tt_death from line 1 start ---
-# Original tt_death is measured from first_treatment_date; shift to treatment_start_date
-days_offset = (patient_df['treatment_start_date'] - patient_df['first_treatment_date']).dt.days
-patient_df['tt_death'] = patient_df['tt_death'] - days_offset
-
-# Drop patients with non-positive survival from their prediction time
+# Drop patients with non-positive survival
 patient_df = patient_df.loc[patient_df['tt_death'] > 0].copy()
 
 # --- Assign treatment group and propensity scores ---
@@ -90,7 +88,7 @@ print("Loading note embeddings for text risk score computation...")
 notes_meta = pd.read_csv(os.path.join(NOTES_PATH, 'full_VTE_embeddings_metadata.csv'))
 embeddings = np.load(os.path.join(NOTES_PATH, 'full_VTE_embeddings_as_array.npy'))
 
-# Build note timing relative to treatment_start_date (line 1 for all patients)
+# Build note timing relative to treatment_start_date (= first_treatment_date)
 start_date_map = dict(zip(prediction_times['DFCI_MRN'], prediction_times['treatment_start_date']))
 notes_meta['ANALYSIS_START_DT'] = notes_meta['DFCI_MRN'].map(start_date_map)
 notes_meta['NOTE_TIME_REL_ANALYSIS_START_DT'] = (

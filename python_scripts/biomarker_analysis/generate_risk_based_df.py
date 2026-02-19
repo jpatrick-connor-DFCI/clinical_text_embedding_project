@@ -1,10 +1,10 @@
 """Generate risk-based biomarker discovery dataset with text-embedding risk scores.
 
-Restricted to first-line ICI patients only (patients with ICI only at later
-lines are excluded upstream in ICI_LRs.py).
+Restricted to ICI patients only (defined by IO_START.csv, identified here
+via ground_truth == 1 in propensity predictions from ICI_LRs.py).
 
-Time origin for all patients is LOT_start_date for line 1, matching the
-prediction time used to generate propensity scores in ICI_LRs.py.
+Time origin for all patients is first_treatment_date (= treatment_start_date
+saved by ICI_LRs.py in prediction_times.csv).
 """
 
 import os
@@ -18,6 +18,7 @@ random.seed(42)  # set seed for reproducibility
 # Paths
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 ICI_PATH = os.path.join(DATA_PATH, 'treatment_prediction/ICI_propensity/w_30_day_buffer/')
+ICI_DATA_PATH = os.path.join(DATA_PATH, 'treatment_prediction/line_ICI_prediction_data/')
 NOTES_PATH = os.path.join(DATA_PATH, 'batched_datasets/processed_datasets/')
 SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
 MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
@@ -26,14 +27,11 @@ MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
 tt_death_df = pd.read_csv(os.path.join(SURV_PATH, 'death_met_surv_df.csv'))
 tt_death_df['first_treatment_date'] = pd.to_datetime(tt_death_df['first_treatment_date'])
 
-# --- Load line 1 treatment start dates (propensity score time origin) ---
-treatment_df = pd.read_csv('/data/gusev/USERS/mjsaleh/profile_lines_of_rx/profile_rxlines.csv')
-treatment_df['LOT_start_date'] = pd.to_datetime(treatment_df['LOT_start_date'])
-treatment_df = treatment_df.sort_values(['MRN', 'LOT_start_date'])
-treatment_df['treatment_line'] = treatment_df.groupby('MRN').cumcount() + 1
-line1_starts = (treatment_df
-                .loc[treatment_df['treatment_line'] == 1, ['MRN', 'LOT_start_date']]
-                .rename(columns={'MRN': 'DFCI_MRN', 'LOT_start_date': 'line1_start_date'}))
+# --- Load treatment start dates from prediction_times.csv (saved by ICI_LRs.py) ---
+# treatment_start_date = first_treatment_date for all patients
+prediction_times = pd.read_csv(os.path.join(ICI_DATA_PATH, 'prediction_times.csv'))
+prediction_times['treatment_start_date'] = pd.to_datetime(prediction_times['treatment_start_date'])
+prediction_times = prediction_times[['DFCI_MRN', 'treatment_start_date']].drop_duplicates(subset='DFCI_MRN', keep='first')
 
 # --- Load note embeddings ---
 notes_meta = pd.read_csv(os.path.join(NOTES_PATH, 'full_VTE_embeddings_metadata.csv'))
@@ -55,15 +53,13 @@ line1_preds = line1_preds[['DFCI_MRN', 'ground_truth']].dropna().copy()
 line1_preds['ground_truth'] = line1_preds['ground_truth'].astype(int)
 ICI_mrns = line1_preds.loc[line1_preds['ground_truth'] == 1, 'DFCI_MRN'].unique()
 
-# --- Merge line 1 start dates and recompute tt_death ---
-surv_df = tt_death_df.merge(line1_starts, on='DFCI_MRN')
-days_offset = (surv_df['line1_start_date'] - surv_df['first_treatment_date']).dt.days
-surv_df['tt_death'] = surv_df['tt_death'] - days_offset
+# --- Merge treatment start dates (no time-origin shift needed) ---
+surv_df = tt_death_df.merge(prediction_times, on='DFCI_MRN')
 surv_df = surv_df.loc[surv_df['tt_death'] > 0].copy()
 
-# --- Build note timing relative to line 1 start date for ALL patients ---
-line1_start_map = dict(zip(line1_starts['DFCI_MRN'], line1_starts['line1_start_date']))
-notes_meta['ANALYSIS_START_DT'] = notes_meta['DFCI_MRN'].map(line1_start_map)
+# --- Build note timing relative to treatment_start_date (= first_treatment_date) ---
+start_date_map = dict(zip(prediction_times['DFCI_MRN'], prediction_times['treatment_start_date']))
+notes_meta['ANALYSIS_START_DT'] = notes_meta['DFCI_MRN'].map(start_date_map)
 notes_meta['NOTE_TIME_REL_ANALYSIS_START_DT'] = (
     pd.to_datetime(notes_meta['NOTE_DATETIME']) - pd.to_datetime(notes_meta['ANALYSIS_START_DT'])
 ).dt.days
