@@ -60,33 +60,40 @@ cohort_treatment_df = cohort_treatment_df[cols_to_include]
 # Sort for cumulative tracking
 cohort_treatment_df = cohort_treatment_df.sort_values(["MRN", "treatment_line"])
 
-# --- Classify patients: first-line ICI vs never-ICI (exclude later-line-only ICI) ---
-# Identify whether each patient ever receives ICI at any line
+# --- Classify patients: any-line ICI (via manual IO_START) vs never-ICI ---
 ever_ici = (cohort_treatment_df.groupby("MRN")["PX_on_ICI"]
             .max()
             .rename("ever_ici"))
 manual_ever_ici = set(manual_ICI_start_df['DFCI_MRN'].tolist())
 
-# Identify patients with ICI at line 1
 line1 = cohort_treatment_df.loc[cohort_treatment_df["treatment_line"] == 1].copy()
-line1_ici_mrns = set(line1.loc[line1["PX_on_ICI"] == 1, "MRN"])
 
-# Never-ICI patients: no ICI at any treatment line
+# Never-ICI patients: no ICI at any treatment line AND not in manual ICI file
 never_ici_mrns = set(ever_ici.loc[ever_ici == 0].index) - manual_ever_ici
 
-# Excluded: patients who receive ICI but NOT at line 1 (i.e. only at later lines)
-later_line_ici_mrns = (set(ever_ici.loc[ever_ici == 1].index) | manual_ever_ici) - line1_ici_mrns
+# ICI patients: all patients in the manual IO_START file who are in the cohort
+cohort_mrns = set(cohort_treatment_df["MRN"].unique())
+all_ici_mrns = manual_ever_ici & cohort_mrns
 
-print(f"First-line ICI: {len(line1_ici_mrns)}")
-print(f"Never ICI:      {len(never_ici_mrns)}")
-print(f"Excluded (ICI at later line only): {len(later_line_ici_mrns)}")
+print(f"ICI (from IO_START):          {len(all_ici_mrns)}")
+print(f"Never ICI:                    {len(never_ici_mrns)}")
 
-# Build the comparison dataset using line 1 records only
-ici_df = line1.loc[line1["MRN"].isin(line1_ici_mrns)].copy()
-non_ici_df = line1.loc[line1["MRN"].isin(never_ici_mrns)].copy()
+# Build dataset: ICI patients use IO_START date; controls use line 1 start
+ici_df = (manual_ICI_start_df
+          .loc[manual_ICI_start_df["DFCI_MRN"].isin(all_ici_mrns), ["DFCI_MRN", "IO_START"]]
+          .rename(columns={"IO_START": "treatment_start_date"})
+          .drop_duplicates(subset="DFCI_MRN", keep="first"))
+ici_df["PX_on_ICI"] = 1
 
-IO_prediction_dataset = (pd.concat([ici_df, non_ici_df])[['MRN', 'LOT_start_date', 'PX_on_ICI']]
-                         .rename(columns={'MRN': 'DFCI_MRN', 'LOT_start_date': 'treatment_start_date'}))
+non_ici_df = (line1.loc[line1["MRN"].isin(never_ici_mrns), ["MRN", "LOT_start_date"]]
+              .rename(columns={"MRN": "DFCI_MRN", "LOT_start_date": "treatment_start_date"}))
+non_ici_df["PX_on_ICI"] = 0
+
+IO_prediction_dataset = pd.concat([ici_df, non_ici_df])
+IO_prediction_dataset["treatment_start_date"] = pd.to_datetime(IO_prediction_dataset["treatment_start_date"])
+
+# Save prediction times for downstream use (generate_IPTW_df.py)
+IO_prediction_dataset.to_csv(os.path.join(ICI_DATA_PATH, 'prediction_times.csv'), index=False)
 
 # --- Load note embeddings ---
 notes_meta, embeddings_data = load_note_embeddings()

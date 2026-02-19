@@ -1,12 +1,11 @@
 """Generate IPTW dataset for biomarker analysis (ICI vs non-ICI with propensity scores).
 
 Treatment groups:
-  - ICI:     patients who receive ICI at first line of treatment
+  - ICI:     patients who receive ICI at any line (IO_START date from manual review)
   - non-ICI: patients who NEVER receive ICI at any line of treatment
-  - Excluded (upstream in ICI_LRs.py): patients with ICI only at later lines
 
-Time origin for all patients is LOT_start_date for line 1, matching the
-prediction time used to generate propensity scores in ICI_LRs.py.
+Time origin is per-patient: IO_START for ICI patients, line 1 LOT_start_date
+for never-ICI controls, matching ICI_LRs.py prediction times.
 """
 
 import os
@@ -26,14 +25,11 @@ tt_death_df['first_treatment_date'] = pd.to_datetime(tt_death_df['first_treatmen
 tt_death_df = tt_death_df[['DFCI_MRN', 'first_treatment_date', 'tt_death', 'death',
                             'GENDER', 'AGE_AT_TREATMENTSTART']].copy()
 
-# --- Load line 1 treatment start dates (propensity score time origin) ---
-treatment_df = pd.read_csv('/data/gusev/USERS/mjsaleh/profile_lines_of_rx/profile_rxlines.csv')
-treatment_df['LOT_start_date'] = pd.to_datetime(treatment_df['LOT_start_date'])
-treatment_df = treatment_df.sort_values(['MRN', 'LOT_start_date'])
-treatment_df['treatment_line'] = treatment_df.groupby('MRN').cumcount() + 1
-line1_starts = (treatment_df
-                .loc[treatment_df['treatment_line'] == 1, ['MRN', 'LOT_start_date']]
-                .rename(columns={'MRN': 'DFCI_MRN', 'LOT_start_date': 'line1_start_date'}))
+# --- Load per-patient prediction times (saved by ICI_LRs.py) ---
+ICI_DATA_PATH = os.path.join(DATA_PATH, 'treatment_prediction/line_ICI_prediction_data/')
+prediction_times = pd.read_csv(os.path.join(ICI_DATA_PATH, 'prediction_times.csv'))
+prediction_times['treatment_start_date'] = pd.to_datetime(prediction_times['treatment_start_date'])
+prediction_times = prediction_times[['DFCI_MRN', 'treatment_start_date']].drop_duplicates(subset='DFCI_MRN', keep='first')
 
 # --- Load genomic / clinical features ---
 cancer_type_df = pd.read_csv(os.path.join(DATA_PATH, 'clinical_and_genomic_features/cancer_type_df.csv'))
@@ -56,18 +52,18 @@ line1_preds['ground_truth'] = line1_preds['ground_truth'].astype(int)
 # --- Build unified patient dataframe ---
 # Merge all data sources; restrict to patients with propensity predictions
 patient_df = pd.get_dummies(tt_death_df
-              .merge(line1_starts, on='DFCI_MRN')
+              .merge(prediction_times, on='DFCI_MRN')
               .merge(somatic_df, on='DFCI_MRN')
               .merge(cancer_type_df, on='DFCI_MRN')
               .merge(line1_preds, on='DFCI_MRN')
               .drop_duplicates(subset=['DFCI_MRN'], keep='first'), columns=['PANEL_VERSION'], drop_first=True)
 
-# --- Recompute tt_death from line 1 start date ---
-# Original tt_death is measured from first_treatment_date; shift to line1_start_date
-days_offset = (patient_df['line1_start_date'] - patient_df['first_treatment_date']).dt.days
+# --- Recompute tt_death from per-patient prediction time ---
+# Original tt_death is measured from first_treatment_date; shift to treatment_start_date
+days_offset = (patient_df['treatment_start_date'] - patient_df['first_treatment_date']).dt.days
 patient_df['tt_death'] = patient_df['tt_death'] - days_offset
 
-# Drop patients with non-positive survival from line 1 start
+# Drop patients with non-positive survival from their prediction time
 patient_df = patient_df.loc[patient_df['tt_death'] > 0].copy()
 
 # --- Assign treatment group and propensity scores ---
@@ -78,7 +74,7 @@ patient_df['ICI_prediction'] = patient_df['model_probs']
 required_cols = ['DFCI_MRN', 'tt_death', 'death']
 base_vars = ['GENDER', 'AGE_AT_TREATMENTSTART']
 drop_cols = set(required_cols + base_vars + ['PX_on_ICI', 'ICI_prediction',
-                'first_treatment_date', 'line1_start_date', 'ground_truth', 'model_probs'])
+                'first_treatment_date', 'treatment_start_date', 'ground_truth', 'model_probs'])
 biomarker_cols = [col for col in patient_df.columns if col not in drop_cols]
 
 interaction_ICI_df = patient_df[required_cols + base_vars + biomarker_cols
