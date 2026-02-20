@@ -7,8 +7,7 @@ Never-ICI patients are all remaining patients in the survival cohort
 Time origin for all patients is first_treatment_date from the survival cohort.
 
 Trains logistic regression propensity models using clinical note embeddings
-plus confounders (demographics, cancer type, panel version) to predict
-ICI receipt.
+to predict ICI receipt.
 """
 
 # %% [code cell 1]
@@ -21,7 +20,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LogisticRegressionCV
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score, roc_curve
 
 from biomarker_common import (
@@ -74,7 +73,6 @@ pool_fx = {nt: 'time_decay_mean' for nt in note_types}
 
 # --- Load confounders (demographics, cancer type, panel version) ---
 confounders = load_confounders()
-confounder_cols = [c for c in confounders.columns if c != 'DFCI_MRN']
 
 # %% [code cell 2]
 # Generate embedding datasets for each buffer
@@ -101,7 +99,7 @@ for buffer in tqdm(buffers, desc="Generating embedding datasets"):
         os.path.join(buffer_path, f'line_1_ICI_prediction_df_w_{buffer}_day_buffer.csv'), index=False)
 
 # %% [code cell 3]
-# Train propensity models with embeddings + confounders
+# Train propensity models with embeddings only
 for buffer in tqdm(buffers, desc="Training propensity models"):
     buffer_input_path = os.path.join(ICI_DATA_PATH, f'w_{buffer}_day_buffer/')
     buffer_output_path = os.path.join(ICI_PROP_PATH, f'w_{buffer}_day_buffer/')
@@ -110,11 +108,9 @@ for buffer in tqdm(buffers, desc="Training propensity models"):
     full_ICI_pred_df = pd.read_csv(
         os.path.join(buffer_input_path, f'line_1_ICI_prediction_df_w_{buffer}_day_buffer.csv'))
 
-    # Features: embeddings + confounders
-    embed_cols = [col for col in full_ICI_pred_df.columns
-                  if ('IMAGING' in col) or ('PATHOLOGY' in col) or ('CLINICIAN' in col)]
-    confounder_feature_cols = [c for c in confounder_cols if c in full_ICI_pred_df.columns]
-    feature_cols = embed_cols + confounder_feature_cols
+    # Features: embeddings only
+    feature_cols = [col for col in full_ICI_pred_df.columns
+                    if ('IMAGING' in col) or ('PATHOLOGY' in col) or ('CLINICIAN' in col)]
 
     X = full_ICI_pred_df[['DFCI_MRN'] + feature_cols]
     y = full_ICI_pred_df[['PX_on_ICI']].astype(int)
@@ -143,10 +139,10 @@ for buffer in tqdm(buffers, desc="Training propensity models"):
         X_train = scaler.transform(X_train)
         X_test = scaler.transform(X_test)
 
-        # Fit model (tune C via inner CV for calibrated propensity scores)
-        clf = LogisticRegressionCV(
-            Cs=10, cv=3, penalty="l2", solver="lbfgs",
-            scoring="neg_log_loss", max_iter=1000, random_state=1234,
+        # Fit model
+        clf = LogisticRegression(
+            penalty="l2", solver="lbfgs",
+            max_iter=1000, random_state=1234,
             n_jobs=-1,
         )
         clf.fit(X_train, y_train.values.ravel())
