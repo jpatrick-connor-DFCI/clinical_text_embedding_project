@@ -13,6 +13,7 @@ from statsmodels.stats.multitest import multipletests
 from lifelines import CoxPHFitter
 from lifelines.exceptions import ConvergenceWarning
 from joblib import Parallel, delayed
+from sklearn.linear_model import LogisticRegression
 from biomarker_common import get_mutation_type
 random.seed(42)  # set seed for reproducibility
 
@@ -128,6 +129,20 @@ def compute_smd(df, covariates, treat_col='PX_on_ICI', weights=None):
     return pd.DataFrame(rows)
 
 
+def recalibrate_propensity_within_subset(df, ps_col='ICI_prediction', treat_col='PX_on_ICI'):
+    """Recalibrate pan-cancer propensity scores within a cancer-type subset via Platt scaling.
+
+    Fits a logistic regression of treatment status on the pan-cancer propensity score
+    within the subset, producing recalibrated probabilities that reflect within-type
+    covariate balance rather than the pan-cancer distribution.
+    """
+    ps = df[[ps_col]].values
+    y = df[treat_col].values.astype(int)
+    lr = LogisticRegression(penalty=None, solver='lbfgs', max_iter=1000)
+    lr.fit(ps, y)
+    return lr.predict_proba(ps)[:, 1]
+
+
 # Paths
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
@@ -147,6 +162,7 @@ biomarker_cols = [
     if (col not in excluded_cols) and any(tag in col.upper() for tag in mutation_tags)
 ]
 MIN_CANCER_TYPE_TOTAL = 30
+COMMON_SUPPORT_PCT = (1, 99)
 IPTW_TRUNC_PCT = (5, 95)
 MAX_IPTW = 20.0
 MIN_MARKER_PREVALENCE = 0.05
@@ -329,6 +345,13 @@ for cancer_type in types_to_test:
         base_vars = base_covars + panel_cols_for_fit + cancer_type_cols_for_fit
     else:
         type_specific_interaction_ICI_df = interaction_ICI_df.loc[interaction_ICI_df[f'CANCER_TYPE_{cancer_type}']].copy()
+        # Recalibrate pan-cancer propensity scores within this cancer-type subset
+        if type_specific_interaction_ICI_df['PX_on_ICI'].nunique() >= 2 and len(type_specific_interaction_ICI_df) > 10:
+            ps_before = type_specific_interaction_ICI_df['ICI_prediction'].copy()
+            type_specific_interaction_ICI_df['ICI_prediction'] = recalibrate_propensity_within_subset(
+                type_specific_interaction_ICI_df)
+            print(f"[{cancer_type}] Recalibrated propensity scores within subset "
+                  f"(mean {ps_before.mean():.3f} -> {type_specific_interaction_ICI_df['ICI_prediction'].mean():.3f})")
         panel_cols_for_fit = [col for col in type_specific_interaction_ICI_df if 'PANEL' in col]
         base_vars = base_covars + panel_cols_for_fit
 
@@ -353,7 +376,10 @@ for cancer_type in types_to_test:
         print(f"[{cancer_type}] Skipping: missing treated or control patients for common support.")
         continue
 
-    lower, upper = max(ps_t.min(), ps_c.min()), min(ps_t.max(), ps_c.max())
+    lower = max(np.percentile(ps_t, COMMON_SUPPORT_PCT[0]),
+                np.percentile(ps_c, COMMON_SUPPORT_PCT[0]))
+    upper = min(np.percentile(ps_t, COMMON_SUPPORT_PCT[1]),
+                np.percentile(ps_c, COMMON_SUPPORT_PCT[1]))
 
     if pd.isna(lower) or pd.isna(upper) or lower >= upper:
         print(f"[{cancer_type}] Skipping: no propensity overlap after common-support checks.")

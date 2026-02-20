@@ -22,7 +22,7 @@ import seaborn as sns
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LogisticRegressionCV
 from sklearn.metrics import roc_auc_score, roc_curve
 
 warnings.filterwarnings('ignore', category=ConvergenceWarning)
@@ -154,9 +154,9 @@ for buffer in tqdm(buffers, desc="Training propensity models"):
         X_test = scaler.transform(X_test)
 
         # Fit model
-        clf = LogisticRegression(
-            penalty="l2", solver="lbfgs",
-            max_iter=1000, random_state=1234,
+        clf = LogisticRegressionCV(
+            penalty="l2", solver="lbfgs", Cs=10,
+            cv=3, max_iter=1000, random_state=1234,
             n_jobs=-1,
         )
         clf.fit(X_train, y_train.values.ravel())
