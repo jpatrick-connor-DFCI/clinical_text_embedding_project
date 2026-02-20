@@ -134,28 +134,44 @@ result_cols = [
 ]
 
 
+def _get_mutation_type(marker_name):
+    """Extract mutation type suffix (e.g., '_SNV', '_AMP') from marker name."""
+    marker_upper = marker_name.upper()
+    for tag in ('_SNV', '_SV', '_FUSION', '_DEL', '_AMP', '_CNV'):
+        if marker_upper.endswith(tag):
+            return tag
+    return '_OTHER'
+
+
+def _fdr_within_mutation_type(results_df, p_col, fdr_col, sig_col):
+    """Apply FDR correction within each mutation type."""
+    results_df[fdr_col] = np.nan
+    results_df[sig_col] = False
+    for mut_type in results_df['mutation_type'].unique():
+        mask = results_df['mutation_type'] == mut_type
+        pvals = results_df.loc[mask, p_col]
+        if pvals.empty:
+            continue
+        rej, fdr, _, _ = multipletests(pvals, alpha=0.05, method='fdr_bh')
+        results_df.loc[mask, fdr_col] = fdr
+        results_df.loc[mask, sig_col] = rej
+
+
 def add_fdr_and_labels(results_df, classifier_fn):
     if results_df.empty:
-        results_df['FDR_markerxICI'] = pd.Series(dtype=float)
-        results_df['significant_predictive'] = pd.Series(dtype=bool)
-        results_df['FDR_marker_ICI'] = pd.Series(dtype=float)
-        results_df['significant_in_ICI'] = pd.Series(dtype=bool)
-        results_df['FDR_marker_nonICI'] = pd.Series(dtype=float)
-        results_df['significant_prognostic_nonICI'] = pd.Series(dtype=bool)
-        results_df['classifier'] = pd.Series(dtype=str)
+        for col in ['mutation_type', 'classifier']:
+            results_df[col] = pd.Series(dtype=str)
+        for col in ['FDR_markerxICI', 'FDR_marker_ICI', 'FDR_marker_nonICI']:
+            results_df[col] = pd.Series(dtype=float)
+        for col in ['significant_predictive', 'significant_in_ICI', 'significant_prognostic_nonICI']:
+            results_df[col] = pd.Series(dtype=bool)
         return results_df
 
-    rej_int, fdr_int, _, _ = multipletests(results_df['p_markerxICI'], alpha=0.05, method='fdr_bh')
-    results_df['FDR_markerxICI'] = fdr_int
-    results_df['significant_predictive'] = rej_int
+    results_df['mutation_type'] = results_df['marker'].apply(_get_mutation_type)
 
-    rej_ici, fdr_ici, _, _ = multipletests(results_df['p_marker_ICI'], alpha=0.05, method='fdr_bh')
-    results_df['FDR_marker_ICI'] = fdr_ici
-    results_df['significant_in_ICI'] = rej_ici
-
-    rej_nonici, fdr_nonici, _, _ = multipletests(results_df['p_marker_nonICI'], alpha=0.05, method='fdr_bh')
-    results_df['FDR_marker_nonICI'] = fdr_nonici
-    results_df['significant_prognostic_nonICI'] = rej_nonici
+    _fdr_within_mutation_type(results_df, 'p_markerxICI', 'FDR_markerxICI', 'significant_predictive')
+    _fdr_within_mutation_type(results_df, 'p_marker_ICI', 'FDR_marker_ICI', 'significant_in_ICI')
+    _fdr_within_mutation_type(results_df, 'p_marker_nonICI', 'FDR_marker_nonICI', 'significant_prognostic_nonICI')
 
     results_df['classifier'] = results_df.apply(classifier_fn, axis=1)
     return results_df

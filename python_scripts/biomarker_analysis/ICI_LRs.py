@@ -1,8 +1,8 @@
 """ICI propensity score generation: ICI vs never-ICI.
 
 ICI patients are defined by presence in IO_START.csv.
-Never-ICI patients are patients in the survival cohort with confirmed
-non-ICI treatment records (profile_rxlines.csv) who are not in IO_START.csv.
+Never-ICI patients are all remaining patients in the survival cohort
+(death_met_surv_df.csv) not found in IO_START.csv.
 
 Time origin for all patients is first_treatment_date from the survival cohort.
 
@@ -12,16 +12,20 @@ to predict ICI receipt.
 
 # %% [code cell 1]
 import os
+import warnings
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from embed_surv_utils import generate_survival_embedding_df
 import matplotlib.pyplot as plt
 import seaborn as sns
+from sklearn.exceptions import ConvergenceWarning
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score, roc_curve
+
+warnings.filterwarnings('ignore', category=ConvergenceWarning)
 
 from biomarker_common import (
     DATA_PATH, SURV_PATH, load_note_embeddings, load_confounders,
@@ -40,19 +44,14 @@ surv_df = pd.read_csv(os.path.join(SURV_PATH, 'death_met_surv_df.csv'))
 surv_df['first_treatment_date'] = pd.to_datetime(surv_df['first_treatment_date'])
 cohort_mrns = set(surv_df['DFCI_MRN'].unique())
 
-# --- Load treatment records to identify patients with confirmed non-ICI treatment ---
-TREATMENT_FILE = '/data/gusev/USERS/mjsaleh/profile_lines_of_rx/profile_rxlines.csv'
-treatment_df = pd.read_csv(TREATMENT_FILE)
-treated_mrns = set(treatment_df['MRN'].unique())
-
 # --- Classify patients ---
 # ICI: patients in IO_START that are also in the survival cohort
 ici_mrns_in_cohort = ici_mrns & cohort_mrns
-# Never-ICI: survival cohort patients with treatment records but NOT in IO_START
-never_ici_mrns = (cohort_mrns & treated_mrns) - ici_mrns
+# Never-ICI: all survival cohort patients NOT in IO_START
+never_ici_mrns = cohort_mrns - ici_mrns
 
 print(f"ICI (IO_START ∩ cohort):      {len(ici_mrns_in_cohort)}")
-print(f"Never ICI (treated, no ICI):  {len(never_ici_mrns)}")
+print(f"Never ICI:                    {len(never_ici_mrns)}")
 print(f"IO_START not in cohort:       {len(ici_mrns - cohort_mrns)}")
 
 # --- Build prediction dataset using first_treatment_date as time origin ---

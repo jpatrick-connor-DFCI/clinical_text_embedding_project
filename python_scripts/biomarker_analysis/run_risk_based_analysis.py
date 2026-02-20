@@ -116,14 +116,33 @@ for cancer_type in cancer_types_to_test:
         print(f'{cancer_type} finished. Time elapsed = {(time.time() - start_time) / 60 : 0.2f}')
         continue
 
-    reject, pvals_corrected, _, _ = multipletests(type_IO_marker_df["p_without_text_risk"], alpha=0.05, method="fdr_bh")
-    risk_reject, risk_pvals_corrected, _, _ = multipletests(type_IO_marker_df["p_with_text_risk"], alpha=0.05, method="fdr_bh")
-    
-    type_IO_marker_df['corrected_p_without_text_risk'] = pvals_corrected
-    type_IO_marker_df['corrected_p_with_text_risk'] = risk_pvals_corrected
-    
-    type_IO_marker_df['significant_without_text_risk'] = reject
-    type_IO_marker_df['significant_with_text_risk'] = risk_reject
+    # FDR correction within each mutation type
+    def _get_mutation_type(marker_name):
+        marker_upper = marker_name.upper()
+        for tag in ('_SNV', '_SV', '_FUSION', '_DEL', '_AMP', '_CNV'):
+            if marker_upper.endswith(tag):
+                return tag
+        return '_OTHER'
+
+    type_IO_marker_df['mutation_type'] = type_IO_marker_df['covariate'].apply(_get_mutation_type)
+
+    type_IO_marker_df['corrected_p_without_text_risk'] = float('nan')
+    type_IO_marker_df['significant_without_text_risk'] = False
+    type_IO_marker_df['corrected_p_with_text_risk'] = float('nan')
+    type_IO_marker_df['significant_with_text_risk'] = False
+
+    for mut_type in type_IO_marker_df['mutation_type'].unique():
+        mask = type_IO_marker_df['mutation_type'] == mut_type
+        pvals = type_IO_marker_df.loc[mask, 'p_without_text_risk']
+        risk_pvals = type_IO_marker_df.loc[mask, 'p_with_text_risk']
+        if pvals.empty:
+            continue
+        rej, fdr, _, _ = multipletests(pvals, alpha=0.05, method='fdr_bh')
+        type_IO_marker_df.loc[mask, 'corrected_p_without_text_risk'] = fdr
+        type_IO_marker_df.loc[mask, 'significant_without_text_risk'] = rej
+        risk_rej, risk_fdr, _, _ = multipletests(risk_pvals, alpha=0.05, method='fdr_bh')
+        type_IO_marker_df.loc[mask, 'corrected_p_with_text_risk'] = risk_fdr
+        type_IO_marker_df.loc[mask, 'significant_with_text_risk'] = risk_rej
     
     all_sig_type_hits = type_IO_marker_df.loc[(type_IO_marker_df['significant_without_text_risk']) |
                                          (type_IO_marker_df['significant_with_text_risk'])]
