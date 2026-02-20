@@ -7,6 +7,7 @@ from tqdm import tqdm
 import pandas as pd
 from lifelines import CoxPHFitter
 from statsmodels.stats.multitest import multipletests
+from biomarker_common import get_mutation_type
 
 random.seed(42)  # set seed for reproducibility
 
@@ -70,7 +71,7 @@ for cancer_type in cancer_types_to_test:
     markers_to_test = []
     for marker in genomics_cols:
         prevalence = pd.to_numeric(type_df[marker], errors='coerce').sum(skipna=True) / len(type_df)
-        if prevalence >= 0.01:
+        if prevalence >= 0.05:
             markers_to_test.append(marker)
 
     failed_markers = []
@@ -117,14 +118,7 @@ for cancer_type in cancer_types_to_test:
         continue
 
     # FDR correction within each mutation type
-    def _get_mutation_type(marker_name):
-        marker_upper = marker_name.upper()
-        for tag in ('_SNV', '_SV', '_FUSION', '_DEL', '_AMP', '_CNV'):
-            if marker_upper.endswith(tag):
-                return tag
-        return '_OTHER'
-
-    type_IO_marker_df['mutation_type'] = type_IO_marker_df['covariate'].apply(_get_mutation_type)
+    type_IO_marker_df['mutation_type'] = type_IO_marker_df['covariate'].apply(get_mutation_type)
 
     type_IO_marker_df['corrected_p_without_text_risk'] = float('nan')
     type_IO_marker_df['significant_without_text_risk'] = False

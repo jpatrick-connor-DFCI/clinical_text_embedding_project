@@ -42,3 +42,15 @@ def load_confounders():
                    .merge(cancer_type_df, on='DFCI_MRN')
                    .merge(somatic_df, on='DFCI_MRN'))
     return confounders
+
+
+MUTATION_TAGS = ('_SNV', '_SV', '_FUSION', '_DEL', '_AMP', '_CNV')
+
+
+def get_mutation_type(marker_name):
+    """Extract mutation type suffix (e.g., '_SNV', '_AMP') from marker name."""
+    marker_upper = marker_name.upper()
+    for tag in MUTATION_TAGS:
+        if marker_upper.endswith(tag):
+            return tag
+    return '_OTHER'

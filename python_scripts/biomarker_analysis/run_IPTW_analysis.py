@@ -1,6 +1,7 @@
 """Run Iptw Analysis script for biomarker analysis workflows."""
 
 import os
+import logging
 import random
 import warnings
 from tqdm import tqdm
@@ -12,7 +13,11 @@ from statsmodels.stats.multitest import multipletests
 from lifelines import CoxPHFitter
 from lifelines.exceptions import ConvergenceWarning
 from joblib import Parallel, delayed
+from biomarker_common import get_mutation_type
 random.seed(42)  # set seed for reproducibility
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+logger = logging.getLogger(__name__)
 
 N_JOBS = int(os.getenv("SLURM_CPUS_PER_TASK", "-1"))
 
@@ -99,6 +104,30 @@ def marker_has_within_arm_support(
     return True
 
 
+def compute_smd(df, covariates, treat_col='PX_on_ICI', weights=None):
+    """Compute standardized mean differences (unweighted and optionally weighted)."""
+    t_mask = df[treat_col] == 1
+    rows = []
+    for cov in covariates:
+        x = pd.to_numeric(df[cov], errors='coerce').fillna(0).values
+        x_t, x_c = x[t_mask], x[~t_mask]
+
+        # Unweighted SMD
+        pooled_sd = np.sqrt((x_t.var() + x_c.var()) / 2)
+        smd_raw = (x_t.mean() - x_c.mean()) / pooled_sd if pooled_sd > 0 else 0.0
+
+        # Weighted SMD
+        smd_w = np.nan
+        if weights is not None:
+            w_t, w_c = weights[t_mask], weights[~t_mask]
+            wm_t = np.average(x_t, weights=w_t) if w_t.sum() > 0 else x_t.mean()
+            wm_c = np.average(x_c, weights=w_c) if w_c.sum() > 0 else x_c.mean()
+            smd_w = (wm_t - wm_c) / pooled_sd if pooled_sd > 0 else 0.0
+
+        rows.append({'covariate': cov, 'SMD_unweighted': smd_raw, 'SMD_weighted': smd_w})
+    return pd.DataFrame(rows)
+
+
 # Paths
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
@@ -134,15 +163,6 @@ result_cols = [
 ]
 
 
-def _get_mutation_type(marker_name):
-    """Extract mutation type suffix (e.g., '_SNV', '_AMP') from marker name."""
-    marker_upper = marker_name.upper()
-    for tag in ('_SNV', '_SV', '_FUSION', '_DEL', '_AMP', '_CNV'):
-        if marker_upper.endswith(tag):
-            return tag
-    return '_OTHER'
-
-
 def _fdr_within_mutation_type(results_df, p_col, fdr_col, sig_col):
     """Apply FDR correction within each mutation type."""
     results_df[fdr_col] = np.nan
@@ -167,7 +187,7 @@ def add_fdr_and_labels(results_df, classifier_fn):
             results_df[col] = pd.Series(dtype=bool)
         return results_df
 
-    results_df['mutation_type'] = results_df['marker'].apply(_get_mutation_type)
+    results_df['mutation_type'] = results_df['marker'].apply(get_mutation_type)
 
     _fdr_within_mutation_type(results_df, 'p_markerxICI', 'FDR_markerxICI', 'significant_predictive')
     _fdr_within_mutation_type(results_df, 'p_marker_ICI', 'FDR_marker_ICI', 'significant_in_ICI')
@@ -176,18 +196,18 @@ def add_fdr_and_labels(results_df, classifier_fn):
     results_df['classifier'] = results_df.apply(classifier_fn, axis=1)
     return results_df
 
-def fit_cph_suppress_warnings(
+def fit_cph_log_warnings(
     cph: CoxPHFitter,
     df_fit: pd.DataFrame,
     duration_col: str,
     event_col: str,
     weights_col: str | None = None,
     robust: bool = True,
+    marker_name: str = "",
 ) -> CoxPHFitter:
-    """Fit CoxPH while suppressing lifelines convergence warnings."""
-    with warnings.catch_warnings():
-        warnings.filterwarnings('ignore', category=ConvergenceWarning)
-        warnings.filterwarnings('ignore', category=LinAlgWarning)
+    """Fit CoxPH, logging convergence/LinAlg warnings instead of silencing them."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
         if weights_col is not None:
             cph.fit(
                 df_fit,
@@ -203,6 +223,9 @@ def fit_cph_suppress_warnings(
                 event_col=event_col,
                 robust=robust,
             )
+    for w in caught:
+        if issubclass(w.category, (ConvergenceWarning, LinAlgWarning)):
+            logger.warning("marker=%s: %s: %s", marker_name, w.category.__name__, w.message)
     return cph
 
 
@@ -222,10 +245,11 @@ def _fit_one_marker(
     df_fit[mx] = df_fit['PX_on_ICI'] * df_fit[marker]
 
     cph = CoxPHFitter()
-    cph = fit_cph_suppress_warnings(
+    cph = fit_cph_log_warnings(
         cph, df_fit,
         duration_col='tt_death', event_col='death',
         weights_col=weights_col, robust=True,
+        marker_name=marker,
     )
 
     summ = cph.summary.reset_index()
@@ -348,7 +372,10 @@ for cancer_type in types_to_test:
     ps = type_specific_interaction_ICI_df['ICI_prediction'].clip(eps, 1 - eps)
     
     # ---------------------------------------
-    # ATT IPTW with truncation
+    # ATT (Average Treatment effect on the Treated) IPTW with truncation
+    # Treated patients receive weight 1; controls receive ps/(1-ps)
+    # so the pseudo-population reflects the covariate distribution
+    # of the treated group.
     # ---------------------------------------
     p_treated = type_specific_interaction_ICI_df['PX_on_ICI'].mean()
 
@@ -378,7 +405,31 @@ for cancer_type in types_to_test:
     ess_c = w_c.sum() ** 2 / (w_c ** 2).sum()
     print(f"[{cancer_type}] N treated={treat_mask.sum()}, N control={(~treat_mask).sum()} | "
           f"ESS treated={ess_t:.0f}, ESS control={ess_c:.0f}")
-    
+
+    # ---------------------------------------
+    # Overlap diagnostics
+    # ---------------------------------------
+    diag_path = os.path.join(IPTW_RUN_PATH, f'{cancer_type}_diagnostics/')
+    os.makedirs(diag_path, exist_ok=True)
+
+    # Propensity score summary by arm
+    ps_diag = type_specific_interaction_ICI_df[['PX_on_ICI', 'ICI_prediction']].copy()
+    ps_diag['IPTW'] = w_trunc
+    ps_summary = ps_diag.groupby('PX_on_ICI')['ICI_prediction'].describe()
+    ps_summary.to_csv(os.path.join(diag_path, 'propensity_score_summary.csv'))
+
+    # ESS
+    pd.DataFrame([{
+        'N_treated': int(treat_mask.sum()), 'N_control': int((~treat_mask).sum()),
+        'ESS_treated': ess_t, 'ESS_control': ess_c,
+    }]).to_csv(os.path.join(diag_path, 'effective_sample_sizes.csv'), index=False)
+
+    # Covariate balance (SMD before and after weighting)
+    balance_covars = base_covars + [c for c in type_specific_interaction_ICI_df.columns
+                                    if c.startswith('CANCER_TYPE_') or c.upper().startswith('PANEL_VERSION_')]
+    smd_df = compute_smd(type_specific_interaction_ICI_df, balance_covars, weights=w_trunc)
+    smd_df.to_csv(os.path.join(diag_path, 'covariate_balance_smd.csv'), index=False)
+
     # ---------------------------------------
     # Cox IPTW marker screening
     # ---------------------------------------

@@ -64,22 +64,24 @@ notes_meta['NOTE_TIME_REL_ANALYSIS_START_DT'] = (
     pd.to_datetime(notes_meta['NOTE_DATETIME']) - pd.to_datetime(notes_meta['ANALYSIS_START_DT'])
 ).dt.days
 
-# --- Generate embedding features with time-decay-mean pooling ---
+# --- Generate embedding features with time-decay-mean pooling (ICI patients only) ---
+ICI_surv_df = surv_df.loc[surv_df['DFCI_MRN'].isin(ICI_mrns)].copy()
+
 note_types = ['Clinician', 'Imaging', 'Pathology']
 ICI_prediction_df = (generate_survival_embedding_df(
-                        notes_meta, surv_df[['DFCI_MRN', 'death', 'tt_death']], embeddings,
+                        notes_meta, ICI_surv_df[['DFCI_MRN', 'death', 'tt_death']], embeddings,
                         note_types=note_types,
                         pool_fx={key: 'time_decay_mean' for key in note_types},
                         decay_param=0.01,
                         note_timing_col='NOTE_TIME_REL_ANALYSIS_START_DT')
-                    .merge(surv_df[['DFCI_MRN', 'GENDER', 'AGE_AT_TREATMENTSTART']], on='DFCI_MRN')
+                    .merge(ICI_surv_df[['DFCI_MRN', 'GENDER', 'AGE_AT_TREATMENTSTART']], on='DFCI_MRN')
                     .merge(cancer_type_df, on='DFCI_MRN')).dropna()
 
 base_vars = ['GENDER', 'AGE_AT_TREATMENTSTART'] + [col for col in ICI_prediction_df if col.startswith('CANCER_TYPE')]
 embed_cols = [c for c in ICI_prediction_df.columns if 'EMBEDDING' in c or '2015' in c]
 continuous_vars = ['AGE_AT_TREATMENTSTART'] + embed_cols
 
-# Grid search for best penalized CoxPH hyperparameters (trained on ALL patients)
+# Grid search for best penalized CoxPH hyperparameters (ICI patients only)
 event = 'death'
 alphas_to_test = np.logspace(-5, 0, 25)
 l1_ratios = [0.5, 1.0]
@@ -90,7 +92,7 @@ _, ICI_val_results, _ = run_grid_CoxPH_parallel(
 
 ICI_l1_ratio, ICI_alpha = ICI_val_results.sort_values(by='mean_auc(t)', ascending=False).iloc[0][['l1_ratio', 'alpha']]
 
-# Get held-out risk scores using best hyperparameters
+# Get held-out risk scores using best hyperparameters (ICI patients only)
 trained_ICI = (get_heldout_risk_scores_CoxPH(
                   ICI_prediction_df, base_vars, continuous_vars, embed_cols,
                   event_col=event, tstop_col=f'tt_{event}', penalized=True,

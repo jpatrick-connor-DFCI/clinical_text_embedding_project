@@ -1,8 +1,8 @@
 """ICI propensity score generation: ICI vs never-ICI.
 
 ICI patients are defined by presence in IO_START.csv.
-Never-ICI patients are all remaining patients in the survival cohort
-(death_met_surv_df.csv) not found in IO_START.csv.
+Never-ICI patients are patients in the survival cohort with confirmed
+non-ICI treatment records (profile_rxlines.csv) who are not in IO_START.csv.
 
 Time origin for all patients is first_treatment_date from the survival cohort.
 
@@ -44,14 +44,19 @@ surv_df = pd.read_csv(os.path.join(SURV_PATH, 'death_met_surv_df.csv'))
 surv_df['first_treatment_date'] = pd.to_datetime(surv_df['first_treatment_date'])
 cohort_mrns = set(surv_df['DFCI_MRN'].unique())
 
+# --- Load treatment records to identify patients with confirmed non-ICI treatment ---
+TREATMENT_FILE = '/data/gusev/USERS/mjsaleh/profile_lines_of_rx/profile_rxlines.csv'
+treatment_df = pd.read_csv(TREATMENT_FILE)
+treated_mrns = set(treatment_df['MRN'].unique())
+
 # --- Classify patients ---
 # ICI: patients in IO_START that are also in the survival cohort
 ici_mrns_in_cohort = ici_mrns & cohort_mrns
-# Never-ICI: all survival cohort patients NOT in IO_START
-never_ici_mrns = cohort_mrns - ici_mrns
+# Never-ICI: survival cohort patients with treatment records but NOT in IO_START
+never_ici_mrns = (cohort_mrns & treated_mrns) - ici_mrns
 
 print(f"ICI (IO_START ∩ cohort):      {len(ici_mrns_in_cohort)}")
-print(f"Never ICI:                    {len(never_ici_mrns)}")
+print(f"Never ICI (treated, no ICI):  {len(never_ici_mrns)}")
 print(f"IO_START not in cohort:       {len(ici_mrns - cohort_mrns)}")
 
 # --- Build prediction dataset using first_treatment_date as time origin ---
@@ -112,9 +117,14 @@ for buffer in tqdm(buffers, desc="Training propensity models"):
     full_ICI_pred_df = pd.read_csv(
         os.path.join(buffer_input_path, f'line_1_ICI_prediction_df_w_{buffer}_day_buffer.csv'))
 
-    # Features: embeddings only
-    feature_cols = [col for col in full_ICI_pred_df.columns
-                    if ('IMAGING' in col) or ('PATHOLOGY' in col) or ('CLINICIAN' in col)]
+    # Features: embeddings + confounders (demographics, cancer type, panel version)
+    embedding_cols = [col for col in full_ICI_pred_df.columns
+                      if ('IMAGING' in col) or ('PATHOLOGY' in col) or ('CLINICIAN' in col)]
+    confounder_cols = [col for col in full_ICI_pred_df.columns
+                       if col in ('GENDER', 'AGE_AT_TREATMENTSTART')
+                       or col.startswith('CANCER_TYPE_')
+                       or col.upper().startswith('PANEL_VERSION')]
+    feature_cols = embedding_cols + confounder_cols
 
     X = full_ICI_pred_df[['DFCI_MRN'] + feature_cols]
     y = full_ICI_pred_df[['PX_on_ICI']].astype(int)
