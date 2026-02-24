@@ -1,6 +1,12 @@
-"""Run Iptw Analysis script for biomarker analysis workflows."""
+"""Run IPTW Analysis script for biomarker analysis workflows.
+
+Usage:
+  python run_IPTW_analysis.py --cohort all_ICI --estimand ATT
+  python run_IPTW_analysis.py --cohort first_line --estimand ATE
+"""
 
 import os
+import argparse
 import logging
 import random
 import warnings
@@ -16,6 +22,16 @@ from joblib import Parallel, delayed
 from sklearn.linear_model import LogisticRegression
 from biomarker_common import get_mutation_type
 random.seed(42)  # set seed for reproducibility
+
+parser = argparse.ArgumentParser(description='Run IPTW biomarker analysis.')
+parser.add_argument('--cohort', choices=['all_ICI', 'first_line'], required=True,
+                    help='ICI cohort definition: all_ICI (any line) or first_line (first-line only)')
+parser.add_argument('--estimand', choices=['ATT', 'ATE'], required=True,
+                    help='Causal estimand: ATT or ATE')
+args = parser.parse_args()
+
+COHORT = args.cohort
+ESTIMAND = args.estimand
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
@@ -146,10 +162,13 @@ def recalibrate_propensity_within_subset(df, ps_col='ICI_prediction', treat_col=
 # Paths
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
-IPTW_RUN_PATH = os.path.join(MARKER_PATH, 'IPTW_runs/')
+IPTW_RUN_PATH = os.path.join(MARKER_PATH, f'IPTW_runs_{COHORT}_{ESTIMAND}/')
 os.makedirs(IPTW_RUN_PATH, exist_ok=True)
 
-interaction_ICI_df = pd.read_csv(os.path.join(MARKER_PATH, 'IPTW_ICI_interaction_runs_df.csv'))
+print(f"[run_IPTW_analysis] Cohort: {COHORT}, Estimand: {ESTIMAND}")
+print(f"[run_IPTW_analysis] Output: {IPTW_RUN_PATH}")
+
+interaction_ICI_df = pd.read_csv(os.path.join(MARKER_PATH, f'IPTW_ICI_interaction_runs_df_{COHORT}.csv'))
 
 required_vars = ['DFCI_MRN', 'tt_death', 'death']
 base_covars = ['GENDER', 'AGE_AT_TREATMENTSTART']
@@ -398,10 +417,9 @@ for cancer_type in types_to_test:
     ps = type_specific_interaction_ICI_df['ICI_prediction'].clip(eps, 1 - eps)
     
     # ---------------------------------------
-    # ATT (Average Treatment effect on the Treated) IPTW with truncation
-    # Treated patients receive weight 1; controls receive ps/(1-ps)
-    # so the pseudo-population reflects the covariate distribution
-    # of the treated group.
+    # IPTW weights (estimand-dependent)
+    # ATT: treated=1, controls=ps/(1-ps)  → treated covariate distribution
+    # ATE: treated=1/ps, controls=1/(1-ps) → overall population distribution
     # ---------------------------------------
     p_treated = type_specific_interaction_ICI_df['PX_on_ICI'].mean()
 
@@ -409,7 +427,10 @@ for cancer_type in types_to_test:
         print(f"[{cancer_type}] Skipping: invalid treated proportion ({p_treated:.4f}).")
         continue
 
-    w = np.where(type_specific_interaction_ICI_df['PX_on_ICI']==1, 1.0, ps/(1-ps))
+    if ESTIMAND == 'ATT':
+        w = np.where(type_specific_interaction_ICI_df['PX_on_ICI']==1, 1.0, ps/(1-ps))
+    else:  # ATE
+        w = np.where(type_specific_interaction_ICI_df['PX_on_ICI']==1, 1.0/ps, 1.0/(1-ps))
 
     if len(w) == 0:
         print(f"[{cancer_type}] Skipping: no IPTW weights computed.")

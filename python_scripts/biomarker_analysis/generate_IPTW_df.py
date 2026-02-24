@@ -6,9 +6,14 @@ Treatment groups:
 
 Time origin for all patients is first_treatment_date (= treatment_start_date
 saved by ICI_LRs.py), so no time-origin shift is needed.
+
+Usage:
+  python generate_IPTW_df.py --cohort all_ICI
+  python generate_IPTW_df.py --cohort first_line
 """
 
 import os
+import argparse
 import random
 import numpy as np
 import pandas as pd
@@ -16,13 +21,34 @@ from embed_surv_utils import run_grid_CoxPH_parallel, get_heldout_risk_scores_Co
 
 random.seed(42)
 
+parser = argparse.ArgumentParser(description='Generate IPTW dataset for biomarker analysis.')
+parser.add_argument('--cohort', choices=['all_ICI', 'first_line'], required=True,
+                    help='ICI cohort definition: all_ICI (any line) or first_line (first-line only)')
+args = parser.parse_args()
+
+COHORT = args.cohort
+
 # Paths
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
-ICI_PATH = os.path.join(DATA_PATH, 'treatment_prediction/ICI_propensity/w_30_day_buffer/')
-ICI_DATA_PATH = os.path.join(DATA_PATH, 'treatment_prediction/line_ICI_prediction_data/')
+COHORT_PATHS = {
+    'all_ICI': {
+        'propensity': 'treatment_prediction/all_ICI_propensity/w_30_day_buffer/',
+        'prediction_data': 'treatment_prediction/all_ICI_prediction_data/',
+    },
+    'first_line': {
+        'propensity': 'treatment_prediction/first_line_ICI_propensity/w_30_day_buffer/',
+        'prediction_data': 'treatment_prediction/first_line_ICI_prediction_data/',
+    },
+}
+ICI_PATH = os.path.join(DATA_PATH, COHORT_PATHS[COHORT]['propensity'])
+ICI_DATA_PATH = os.path.join(DATA_PATH, COHORT_PATHS[COHORT]['prediction_data'])
 NOTES_PATH = os.path.join(DATA_PATH, 'batched_datasets/processed_datasets/')
 SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
 MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
+
+print(f"[generate_IPTW_df] Cohort: {COHORT}")
+print(f"[generate_IPTW_df] Propensity path: {ICI_PATH}")
+print(f"[generate_IPTW_df] Prediction data path: {ICI_DATA_PATH}")
 
 # --- Load base survival data (tt_death measured from first_treatment_date) ---
 tt_death_df = pd.read_csv(os.path.join(SURV_PATH, 'death_met_surv_df.csv'))
@@ -127,4 +153,6 @@ interaction_ICI_df = interaction_ICI_df.dropna(subset=['ICI_prediction', 'tt_dea
 interaction_ICI_df['PX_on_ICI'] = interaction_ICI_df['PX_on_ICI'].astype(int)
 interaction_ICI_df['death'] = interaction_ICI_df['death'].astype(int)
 
-interaction_ICI_df.to_csv(os.path.join(MARKER_PATH, 'IPTW_ICI_interaction_runs_df.csv'), index=False)
+output_file = os.path.join(MARKER_PATH, f'IPTW_ICI_interaction_runs_df_{COHORT}.csv')
+interaction_ICI_df.to_csv(output_file, index=False)
+print(f"[generate_IPTW_df] Saved {len(interaction_ICI_df)} patients to {output_file}")
