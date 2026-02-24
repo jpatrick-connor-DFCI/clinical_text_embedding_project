@@ -162,6 +162,7 @@ def recalibrate_propensity_within_subset(df, ps_col='ICI_prediction', treat_col=
 # Paths
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
+os.makedirs(MARKER_PATH, exist_ok=True)
 IPTW_RUN_PATH = os.path.join(MARKER_PATH, f'IPTW_runs_{COHORT}_{ESTIMAND}/')
 os.makedirs(IPTW_RUN_PATH, exist_ok=True)
 

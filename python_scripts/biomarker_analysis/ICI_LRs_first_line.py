@@ -35,6 +35,8 @@ from biomarker_common import (
 # Paths
 ICI_DATA_PATH = os.path.join(DATA_PATH, 'treatment_prediction/first_line_ICI_prediction_data/')
 ICI_PROP_PATH = os.path.join(DATA_PATH, 'treatment_prediction/first_line_ICI_propensity/')
+os.makedirs(ICI_DATA_PATH, exist_ok=True)
+os.makedirs(ICI_PROP_PATH, exist_ok=True)
 
 # --- Define ICI patients from IO_START.csv ---
 manual_ICI_start_df = pd.read_csv('/data/gusev/USERS/mjsaleh/IO_START.csv', index_col=0).rename(columns={'MRN': 'DFCI_MRN'})

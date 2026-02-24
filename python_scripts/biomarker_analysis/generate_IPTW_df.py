@@ -45,6 +45,7 @@ ICI_DATA_PATH = os.path.join(DATA_PATH, COHORT_PATHS[COHORT]['prediction_data'])
 NOTES_PATH = os.path.join(DATA_PATH, 'batched_datasets/processed_datasets/')
 SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
 MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
+os.makedirs(MARKER_PATH, exist_ok=True)
 
 print(f"[generate_IPTW_df] Cohort: {COHORT}")
 print(f"[generate_IPTW_df] Propensity path: {ICI_PATH}")
