@@ -28,7 +28,8 @@ cd "$PROJECT_ROOT"
 
 module load miniforge3
 eval "$(conda shell.bash hook)"
-conda activate clinical_notes_project
+conda activate clinical_notes_project || { echo "Failed to activate conda env clinical_notes_project"; exit 1; }
+python -c "import embed_surv_utils" 2>/dev/null || { echo "embed_surv_utils not importable - check conda env"; exit 1; }
 
 set -euo pipefail
 
@@ -89,7 +90,8 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
     --n-jobs "${SLURM_CPUS_PER_TASK:-1}" \
     --max-iter "${COXNET_MAX_ITER:-1000}" \
     --backend "${COXNET_BACKEND:-threading}" \
-    ${OVERWRITE_FLAG[@]+"${OVERWRITE_FLAG[@]}"}
+    ${OVERWRITE_FLAG[@]+"${OVERWRITE_FLAG[@]}"} \
+    || echo "[error] row ${LINE_NUM} failed: scheme=${SCHEME}, event=${EVENT}"
 done
 
 conda deactivate
