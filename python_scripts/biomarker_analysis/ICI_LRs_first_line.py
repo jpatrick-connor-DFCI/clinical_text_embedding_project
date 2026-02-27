@@ -23,7 +23,7 @@ import seaborn as sns
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LogisticRegressionCV
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score, roc_curve
 
 warnings.filterwarnings('ignore', category=ConvergenceWarning)
@@ -133,14 +133,10 @@ for buffer in tqdm(buffers, desc="Training propensity models"):
     full_ICI_pred_df = pd.read_csv(
         os.path.join(buffer_input_path, f'line_1_ICI_prediction_df_w_{buffer}_day_buffer.csv'))
 
-    # Features: embeddings + confounders (demographics, cancer type, panel version)
+    # Features: embeddings only
     embedding_cols = [col for col in full_ICI_pred_df.columns
                       if ('IMAGING' in col) or ('PATHOLOGY' in col) or ('CLINICIAN' in col)]
-    confounder_cols = [col for col in full_ICI_pred_df.columns
-                       if col in ('GENDER', 'AGE_AT_TREATMENTSTART')
-                       or col.startswith('CANCER_TYPE_')
-                       or col.upper().startswith('PANEL_VERSION')]
-    feature_cols = embedding_cols + confounder_cols
+    feature_cols = embedding_cols
 
     X = full_ICI_pred_df[['DFCI_MRN'] + feature_cols]
     y = full_ICI_pred_df[['PX_on_ICI']].astype(int)
@@ -170,11 +166,7 @@ for buffer in tqdm(buffers, desc="Training propensity models"):
         X_test = scaler.transform(X_test)
 
         # Fit model
-        clf = LogisticRegressionCV(
-            penalty="l2", solver="lbfgs", Cs=10,
-            cv=3, max_iter=1000, random_state=1234,
-            n_jobs=-1,
-        )
+        clf = LogisticRegression(max_iter=1000, solver="lbfgs")
         clf.fit(X_train, y_train.values.ravel())
 
         # Predict
