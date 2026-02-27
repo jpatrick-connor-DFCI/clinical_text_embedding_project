@@ -15,9 +15,7 @@ Usage:
 import os
 import argparse
 import random
-import numpy as np
 import pandas as pd
-from embed_surv_utils import run_grid_CoxPH_parallel, get_heldout_risk_scores_CoxPH, generate_survival_embedding_df
 
 random.seed(42)
 
@@ -42,7 +40,6 @@ COHORT_PATHS = {
 }
 ICI_PATH = os.path.join(DATA_PATH, COHORT_PATHS[COHORT]['propensity'])
 ICI_DATA_PATH = os.path.join(DATA_PATH, COHORT_PATHS[COHORT]['prediction_data'])
-NOTES_PATH = os.path.join(DATA_PATH, 'batched_datasets/processed_datasets/')
 SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
 MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
 os.makedirs(MARKER_PATH, exist_ok=True)
@@ -97,57 +94,14 @@ patient_df = patient_df.loc[patient_df['tt_death'] > 0].copy()
 patient_df['PX_on_ICI'] = patient_df['ground_truth'].astype(int)
 patient_df['ICI_prediction'] = patient_df['model_probs']
 
-# --- Compute text_risk_score from note embeddings (all patients) ---
-notes_meta = pd.read_csv(os.path.join(NOTES_PATH, 'full_VTE_embeddings_metadata.csv'))
-embeddings = np.load(os.path.join(NOTES_PATH, 'full_VTE_embeddings_as_array.npy'))
-
-start_date_map = dict(zip(prediction_times['DFCI_MRN'], prediction_times['treatment_start_date']))
-notes_meta['ANALYSIS_START_DT'] = notes_meta['DFCI_MRN'].map(start_date_map)
-notes_meta['NOTE_TIME_REL_ANALYSIS_START_DT'] = (
-    pd.to_datetime(notes_meta['NOTE_DATETIME']) - pd.to_datetime(notes_meta['ANALYSIS_START_DT'])
-).dt.days
-
-note_types = ['Clinician', 'Imaging', 'Pathology']
-embedding_df = (generate_survival_embedding_df(
-                    notes_meta, patient_df[['DFCI_MRN', 'death', 'tt_death']], embeddings,
-                    note_types=note_types,
-                    pool_fx={key: 'time_decay_mean' for key in note_types},
-                    decay_param=0.01,
-                    note_timing_col='NOTE_TIME_REL_ANALYSIS_START_DT')
-                .merge(patient_df[['DFCI_MRN', 'GENDER', 'AGE_AT_TREATMENTSTART']], on='DFCI_MRN')
-                .merge(cancer_type_df, on='DFCI_MRN')).dropna()
-
-risk_base_vars = ['GENDER', 'AGE_AT_TREATMENTSTART'] + [c for c in embedding_df if c.startswith('CANCER_TYPE')]
-embed_cols = [c for c in embedding_df.columns if 'EMBEDDING' in c or '2015' in c]
-continuous_vars = ['AGE_AT_TREATMENTSTART'] + embed_cols
-
-alphas_to_test = np.logspace(-5, 0, 25)
-l1_ratios = [0.5, 1.0]
-
-_, val_results, _ = run_grid_CoxPH_parallel(
-    embedding_df, risk_base_vars, continuous_vars, embed_cols,
-    l1_ratios, alphas_to_test, event_col='death', tstop_col='tt_death', max_iter=5000, verbose=5)
-
-best_l1, best_alpha = val_results.sort_values(by='mean_auc(t)', ascending=False).iloc[0][['l1_ratio', 'alpha']]
-
-risk_scores = (get_heldout_risk_scores_CoxPH(
-                  embedding_df, risk_base_vars, continuous_vars, embed_cols,
-                  event_col='death', tstop_col='tt_death', penalized=True,
-                  l1_ratio=best_l1, alpha=best_alpha, max_iter=5000)
-              .rename(columns={'risk_score': 'text_risk_score'}))
-
-patient_df = patient_df.merge(risk_scores[['DFCI_MRN', 'text_risk_score']], on='DFCI_MRN', how='left')
-
 # --- Select final columns ---
 required_cols = ['DFCI_MRN', 'tt_death', 'death']
 base_vars = ['GENDER', 'AGE_AT_TREATMENTSTART']
-drop_cols = set(required_cols + base_vars + ['PX_on_ICI', 'ICI_prediction', 'text_risk_score',
+drop_cols = set(required_cols + base_vars + ['PX_on_ICI', 'ICI_prediction',
                 'first_treatment_date', 'treatment_start_date', 'ground_truth', 'model_probs'])
 biomarker_cols = [col for col in patient_df.columns if col not in drop_cols]
 
 output_cols = required_cols + base_vars + biomarker_cols + ['PX_on_ICI', 'ICI_prediction']
-if 'text_risk_score' in patient_df.columns:
-    output_cols.append('text_risk_score')
 interaction_ICI_df = patient_df[output_cols].copy()
 
 interaction_ICI_df = interaction_ICI_df.dropna(subset=['ICI_prediction', 'tt_death', 'death']).copy()

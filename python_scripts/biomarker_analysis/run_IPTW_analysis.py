@@ -1,8 +1,8 @@
 """Run IPTW Analysis script for biomarker analysis workflows.
 
 Usage:
-  python run_IPTW_analysis.py --cohort all_ICI --estimand ATT
-  python run_IPTW_analysis.py --cohort first_line --estimand ATE
+  python run_IPTW_analysis.py --cohort all_ICI
+  python run_IPTW_analysis.py --cohort first_line
 """
 
 import os
@@ -26,12 +26,9 @@ random.seed(42)  # set seed for reproducibility
 parser = argparse.ArgumentParser(description='Run IPTW biomarker analysis.')
 parser.add_argument('--cohort', choices=['all_ICI', 'first_line'], required=True,
                     help='ICI cohort definition: all_ICI (any line) or first_line (first-line only)')
-parser.add_argument('--estimand', choices=['ATT', 'ATE'], required=True,
-                    help='Causal estimand: ATT or ATE')
 args = parser.parse_args()
 
 COHORT = args.cohort
-ESTIMAND = args.estimand
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
@@ -163,10 +160,10 @@ def recalibrate_propensity_within_subset(df, ps_col='ICI_prediction', treat_col=
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
 os.makedirs(MARKER_PATH, exist_ok=True)
-IPTW_RUN_PATH = os.path.join(MARKER_PATH, f'IPTW_runs_{COHORT}_{ESTIMAND}/')
+IPTW_RUN_PATH = os.path.join(MARKER_PATH, f'IPTW_runs_{COHORT}/')
 os.makedirs(IPTW_RUN_PATH, exist_ok=True)
 
-print(f"[run_IPTW_analysis] Cohort: {COHORT}, Estimand: {ESTIMAND}")
+print(f"[run_IPTW_analysis] Cohort: {COHORT}")
 print(f"[run_IPTW_analysis] Output: {IPTW_RUN_PATH}")
 
 interaction_ICI_df = pd.read_csv(os.path.join(MARKER_PATH, f'IPTW_ICI_interaction_runs_df_{COHORT}.csv'))
@@ -175,7 +172,7 @@ required_vars = ['DFCI_MRN', 'tt_death', 'death']
 base_covars = ['GENDER', 'AGE_AT_TREATMENTSTART']
 panel_cols = [col for col in interaction_ICI_df.columns if col.upper().startswith('PANEL_VERSION_')]
 cancer_type_cols = [col for col in interaction_ICI_df.columns if col.startswith('CANCER_TYPE_')]
-excluded_cols = required_vars + base_covars + panel_cols + cancer_type_cols + ['PX_on_ICI', 'ICI_prediction', 'text_risk_score']
+excluded_cols = required_vars + base_covars + panel_cols + cancer_type_cols + ['PX_on_ICI', 'ICI_prediction']
 mutation_tags = ('_SNV', '_SV', '_FUSION', '_DEL', '_AMP', '_CNV')
 biomarker_cols = [
     col for col in interaction_ICI_df.columns
@@ -183,9 +180,8 @@ biomarker_cols = [
 ]
 MIN_CANCER_TYPE_TOTAL = 30
 COMMON_SUPPORT_PCT = (1, 99)
-IPTW_TRUNC_PCT = (5, 95)
-MAX_IPTW = 20.0
-MIN_MARKER_PREVALENCE = 0.05
+IPTW_TRUNC_PCT = (1, 99)
+MIN_MARKER_PREVALENCE = 0.01
 MIN_MARKER_POS_PER_ARM = 5
 MIN_MARKER_NEG_PER_ARM = 5
 
@@ -418,9 +414,9 @@ for cancer_type in types_to_test:
     ps = type_specific_interaction_ICI_df['ICI_prediction'].clip(eps, 1 - eps)
     
     # ---------------------------------------
-    # IPTW weights (estimand-dependent)
-    # ATT: treated=1, controls=ps/(1-ps)  → treated covariate distribution
-    # ATE: treated=1/ps, controls=1/(1-ps) → overall population distribution
+    # Stabilized ATE IPTW weights
+    # treated: p_treated / ps
+    # control: (1 - p_treated) / (1 - ps)
     # ---------------------------------------
     p_treated = type_specific_interaction_ICI_df['PX_on_ICI'].mean()
 
@@ -428,31 +424,46 @@ for cancer_type in types_to_test:
         print(f"[{cancer_type}] Skipping: invalid treated proportion ({p_treated:.4f}).")
         continue
 
-    if ESTIMAND == 'ATT':
-        w = np.where(type_specific_interaction_ICI_df['PX_on_ICI']==1, 1.0, ps/(1-ps))
-    else:  # ATE
-        w = np.where(type_specific_interaction_ICI_df['PX_on_ICI']==1, 1.0/ps, 1.0/(1-ps))
+    treat_mask = type_specific_interaction_ICI_df['PX_on_ICI'] == 1
 
-    if len(w) == 0:
+    # Stabilized ATE weights
+    w_ate = np.where(treat_mask, p_treated / ps, (1 - p_treated) / (1 - ps))
+    # Stabilized ATT weights (controls reweighted to match treated distribution)
+    w_att = np.where(treat_mask, 1.0, ((1 - p_treated) / p_treated) * (ps / (1 - ps)))
+
+    if len(w_ate) == 0:
         print(f"[{cancer_type}] Skipping: no IPTW weights computed.")
         continue
 
-    low, high = np.percentile(w, IPTW_TRUNC_PCT)
+    # Truncate ATE weights
+    low, high = np.percentile(w_ate, IPTW_TRUNC_PCT)
     if not np.isfinite(low) or not np.isfinite(high):
-        print(f"[{cancer_type}] Skipping: non-finite IPTW truncation bounds.")
+        print(f"[{cancer_type}] Skipping: non-finite ATE IPTW truncation bounds.")
         continue
+    w_ate_trunc = np.clip(w_ate, low, high)
+    type_specific_interaction_ICI_df['IPTW_ATE'] = w_ate_trunc
 
-    w_trunc = np.clip(w, low, high)
-    w_trunc = np.clip(w_trunc, 0, MAX_IPTW)
-    type_specific_interaction_ICI_df['IPTW'] = w_trunc
+    # Truncate ATT weights
+    low_att, high_att = np.percentile(w_att, IPTW_TRUNC_PCT)
+    if not np.isfinite(low_att) or not np.isfinite(high_att):
+        print(f"[{cancer_type}] Skipping: non-finite ATT IPTW truncation bounds.")
+        continue
+    w_att_trunc = np.clip(w_att, low_att, high_att)
+    type_specific_interaction_ICI_df['IPTW_ATT'] = w_att_trunc
 
-    # Effective sample size per arm
-    treat_mask = type_specific_interaction_ICI_df['PX_on_ICI'] == 1
-    w_t, w_c = w_trunc[treat_mask], w_trunc[~treat_mask]
+    # Effective sample size per arm (ATE)
+    w_t, w_c = w_ate_trunc[treat_mask], w_ate_trunc[~treat_mask]
     ess_t = w_t.sum() ** 2 / (w_t ** 2).sum()
     ess_c = w_c.sum() ** 2 / (w_c ** 2).sum()
-    print(f"[{cancer_type}] N treated={treat_mask.sum()}, N control={(~treat_mask).sum()} | "
+    print(f"[{cancer_type}] ATE: N treated={treat_mask.sum()}, N control={(~treat_mask).sum()} | "
           f"ESS treated={ess_t:.0f}, ESS control={ess_c:.0f}")
+
+    # Effective sample size per arm (ATT)
+    w_t_att, w_c_att = w_att_trunc[treat_mask], w_att_trunc[~treat_mask]
+    ess_t_att = w_t_att.sum() ** 2 / (w_t_att ** 2).sum()
+    ess_c_att = w_c_att.sum() ** 2 / (w_c_att ** 2).sum()
+    print(f"[{cancer_type}] ATT: N treated={treat_mask.sum()}, N control={(~treat_mask).sum()} | "
+          f"ESS treated={ess_t_att:.0f}, ESS control={ess_c_att:.0f}")
 
     # ---------------------------------------
     # Overlap diagnostics
@@ -462,21 +473,25 @@ for cancer_type in types_to_test:
 
     # Propensity score summary by arm
     ps_diag = type_specific_interaction_ICI_df[['PX_on_ICI', 'ICI_prediction']].copy()
-    ps_diag['IPTW'] = w_trunc
+    ps_diag['IPTW_ATE'] = w_ate_trunc
+    ps_diag['IPTW_ATT'] = w_att_trunc
     ps_summary = ps_diag.groupby('PX_on_ICI')['ICI_prediction'].describe()
     ps_summary.to_csv(os.path.join(diag_path, 'propensity_score_summary.csv'))
 
     # ESS
     pd.DataFrame([{
         'N_treated': int(treat_mask.sum()), 'N_control': int((~treat_mask).sum()),
-        'ESS_treated': ess_t, 'ESS_control': ess_c,
+        'ESS_ATE_treated': ess_t, 'ESS_ATE_control': ess_c,
+        'ESS_ATT_treated': ess_t_att, 'ESS_ATT_control': ess_c_att,
     }]).to_csv(os.path.join(diag_path, 'effective_sample_sizes.csv'), index=False)
 
     # Covariate balance (SMD before and after weighting)
     balance_covars = base_covars + [c for c in type_specific_interaction_ICI_df.columns
                                     if c.startswith('CANCER_TYPE_') or c.upper().startswith('PANEL_VERSION_')]
-    smd_df = compute_smd(type_specific_interaction_ICI_df, balance_covars, weights=w_trunc)
-    smd_df.to_csv(os.path.join(diag_path, 'covariate_balance_smd.csv'), index=False)
+    smd_ate_df = compute_smd(type_specific_interaction_ICI_df, balance_covars, weights=w_ate_trunc)
+    smd_ate_df.to_csv(os.path.join(diag_path, 'covariate_balance_smd_ATE.csv'), index=False)
+    smd_att_df = compute_smd(type_specific_interaction_ICI_df, balance_covars, weights=w_att_trunc)
+    smd_att_df.to_csv(os.path.join(diag_path, 'covariate_balance_smd_ATT.csv'), index=False)
 
     # ---------------------------------------
     # Cox IPTW marker screening
@@ -495,21 +510,12 @@ for cancer_type in types_to_test:
         ):
             markers_to_test.append(marker)
     
-    # --- 4 sensitivity specifications: ±IPTW × ±text_risk_score ---
-    has_risk = 'text_risk_score' in type_specific_interaction_ICI_df.columns and \
-               type_specific_interaction_ICI_df['text_risk_score'].notna().any()
-    base_vars_no_risk = list(base_vars)
-    base_vars_with_risk = base_vars_no_risk + (['text_risk_score'] if has_risk else [])
-
+    # --- 3 sensitivity specifications: ATE, ATT, noIPTW ---
     specs = [
-        ('IPTW_risk',     base_vars_with_risk, 'IPTW'),
-        ('IPTW_norisk',   base_vars_no_risk,   'IPTW'),
-        ('noIPTW_risk',   base_vars_with_risk, None),
-        ('noIPTW_norisk', base_vars_no_risk,   None),
+        ('ATE',      list(base_vars), 'IPTW_ATE'),
+        ('ATT',      list(base_vars), 'IPTW_ATT'),
+        ('noIPTW',   list(base_vars), None),
     ]
-    if not has_risk:
-        print(f"[{cancer_type}] text_risk_score not available; running 2 specs (±IPTW only).")
-        specs = [s for s in specs if 'norisk' in s[0]]
 
     for spec_name, spec_base_vars, spec_weights in specs:
         results, failed = _run_marker_screen(
