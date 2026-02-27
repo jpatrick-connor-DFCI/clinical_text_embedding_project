@@ -28,7 +28,7 @@ from sklearn.metrics import roc_auc_score, roc_curve
 warnings.filterwarnings('ignore', category=ConvergenceWarning)
 
 from biomarker_common import (
-    DATA_PATH, SURV_PATH, load_note_embeddings, load_confounders,
+    DATA_PATH, SURV_PATH, load_note_embeddings,
 )
 
 # Paths
@@ -82,9 +82,6 @@ notes_meta, embeddings_data = load_note_embeddings()
 note_types = ['Clinician', 'Imaging', 'Pathology']
 pool_fx = {nt: 'time_decay_mean' for nt in note_types}
 
-# --- Load confounders (demographics, cancer type, panel version) ---
-confounders = load_confounders()
-
 # %% [code cell 2]
 # Generate embedding datasets for each buffer
 buffers = [0, 15, 30, 45]
@@ -103,8 +100,7 @@ for buffer in tqdm(buffers, desc="Generating embedding datasets"):
         max_note_window=-buffer, pool_fx=pool_fx, decay_param=0.01, continuous_window=False)
 
     full_IO_prediction_dataset = (IO_prediction_dataset
-                                  .merge(IO_prediction_embedding_vals.dropna(), on='DFCI_MRN')
-                                  .merge(confounders, on='DFCI_MRN'))
+                                  .merge(IO_prediction_embedding_vals.dropna(), on='DFCI_MRN'))
 
     full_IO_prediction_dataset.to_csv(
         os.path.join(buffer_path, f'line_1_ICI_prediction_df_w_{buffer}_day_buffer.csv'), index=False)

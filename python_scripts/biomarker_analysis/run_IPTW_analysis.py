@@ -338,7 +338,16 @@ def _run_marker_screen(df, markers, base_vars, weights_col, n_jobs, label=""):
     failed = [f for _, f in raw if f is not None]
     return results, failed
 
-types_to_test = ['pan_cancer', 'SKIN', 'LUNG']
+MIN_CANCER_TYPE_FOR_SUBGROUP = 100
+cancer_type_counts = interaction_ICI_df[
+    [col for col in cancer_type_cols if 'OTHER' not in col]
+].sum(axis=0).sort_values(ascending=False)
+subgroup_cancer_types = [
+    col.replace('CANCER_TYPE_', '')
+    for col in cancer_type_counts[cancer_type_counts >= MIN_CANCER_TYPE_FOR_SUBGROUP].index
+]
+types_to_test = ['pan_cancer'] + subgroup_cancer_types
+print(f"[run_IPTW_analysis] Cancer types to test: {types_to_test}")
 
 for cancer_type in types_to_test:
     if cancer_type == 'pan_cancer':
