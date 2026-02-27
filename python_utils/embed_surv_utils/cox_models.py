@@ -9,11 +9,18 @@ import joblib
 import numpy as np
 import pandas as pd
 from sklearn.decomposition import PCA
+from sklearn.exceptions import ConvergenceWarning
 from sklearn.model_selection import train_test_split, StratifiedKFold
 from sklearn.preprocessing import StandardScaler
 
 from sksurv.linear_model import CoxPHSurvivalAnalysis, CoxnetSurvivalAnalysis
 from sksurv.metrics import cumulative_dynamic_auc, integrated_brier_score
+
+_SUPPRESSED_WARNINGS = [
+    (ConvergenceWarning, ""),
+    (RuntimeWarning, ""),
+    (DeprecationWarning, ".*`trapz` is deprecated.*"),
+]
 
 def scale_model_data(X_train: pd.DataFrame, X_test: pd.DataFrame, continuous_vars: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
@@ -84,7 +91,8 @@ def run_base_CoxPH(df: pd.DataFrame, base_cols: list[str], continuous_vars: list
     - Cross-validation is performed on the remaining data.
     """
     if ignore_warnings:
-        warnings.filterwarnings('ignore')
+        for _cat, _msg in _SUPPRESSED_WARNINGS:
+            warnings.filterwarnings("ignore", category=_cat, message=_msg)
 
     df = df[df[tstop_col] > 0].copy()
 
@@ -270,7 +278,8 @@ def run_grid_CoxPH_parallel(
     """
 
     if ignore_warnings:
-        warnings.filterwarnings("ignore")
+        for _cat, _msg in _SUPPRESSED_WARNINGS:
+            warnings.filterwarnings("ignore", category=_cat, message=_msg)
 
     if pca_config is None:
         pca_config = {}
@@ -346,48 +355,22 @@ def run_grid_CoxPH_parallel(
             y_va = y_train_val[va]
 
             with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*`trapz` is deprecated.*")
+                for _cat, _msg in _SUPPRESSED_WARNINGS:
+                    warnings.filterwarnings("ignore", category=_cat, message=_msg)
 
-                try:
-                    model = CoxnetSurvivalAnalysis(
-                        alphas=alphas_desc,
-                        l1_ratio=l1_ratio,
-                        max_iter=max_iter,
-                        fit_baseline_model=False,
-                        penalty_factor=penalty_no_pca,
-                    )
-                    model.fit(X_tr, y_tr)
-
-                    risk_all = model.predict(X_va)
-                    if risk_all.ndim == 1:
-                        risk_all = risk_all[:, np.newaxis]
-
-                    if risk_all.shape[1] >= n_alphas:
-                        for ai in range(n_alphas):
-                            try:
-                                _, fold_auc[ai] = cumulative_dynamic_auc(
-                                    y_tr, y_va, risk_all[:, ai], eval_times
-                                )
-                            except Exception:
-                                pass
-                    else:
-                        raise ValueError("path returned fewer alphas than requested")
-                except Exception:
-                    # Path failed or returned partial results; fall back to individual fits
-                    error_flag = True
-                    for ai, a in enumerate(alphas_desc):
-                        try:
-                            m = CoxnetSurvivalAnalysis(
-                                alphas=[a], l1_ratio=l1_ratio,
-                                max_iter=max_iter, fit_baseline_model=False,
-                                penalty_factor=penalty_no_pca,
-                            )
-                            m.fit(X_tr, y_tr)
-                            _, fold_auc[ai] = cumulative_dynamic_auc(
-                                y_tr, y_va, m.predict(X_va), eval_times
-                            )
-                        except Exception:
-                            pass
+                for ai, a in enumerate(alphas_desc):
+                    try:
+                        m = CoxnetSurvivalAnalysis(
+                            alphas=[a], l1_ratio=l1_ratio,
+                            max_iter=max_iter, fit_baseline_model=False,
+                            penalty_factor=penalty_no_pca,
+                        )
+                        m.fit(X_tr, y_tr)
+                        _, fold_auc[ai] = cumulative_dynamic_auc(
+                            y_tr, y_va, m.predict(X_va), eval_times
+                        )
+                    except Exception:
+                        error_flag = True
 
             return fi, fold_auc, time.time() - start, error_flag
 
@@ -503,7 +486,8 @@ def run_grid_CoxPH_parallel(
             colnames = list(colnames0)
 
             with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*`trapz` is deprecated.*")
+                for _cat, _msg in _SUPPRESSED_WARNINGS:
+                    warnings.filterwarnings("ignore", category=_cat, message=_msg)
 
                 for gname, (cols, k) in pca_config.items():
                     X_tr, X_va, colnames, _ = apply_group_pca_np(
@@ -554,48 +538,22 @@ def run_grid_CoxPH_parallel(
             penalty = meta["penalty"]
 
             with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*`trapz` is deprecated.*")
+                for _cat, _msg in _SUPPRESSED_WARNINGS:
+                    warnings.filterwarnings("ignore", category=_cat, message=_msg)
 
-                try:
-                    model = CoxnetSurvivalAnalysis(
-                        alphas=alphas_desc_b,
-                        l1_ratio=l1_ratio,
-                        max_iter=max_iter,
-                        fit_baseline_model=False,
-                        penalty_factor=penalty,
-                    )
-                    model.fit(X_tr_np, y_tr)
-
-                    risk_all = model.predict(X_va_np)
-                    if risk_all.ndim == 1:
-                        risk_all = risk_all[:, np.newaxis]
-
-                    if risk_all.shape[1] >= n_alphas_b:
-                        for ai in range(n_alphas_b):
-                            try:
-                                _, fold_auc[ai] = cumulative_dynamic_auc(
-                                    y_tr, y_va, risk_all[:, ai], eval_times
-                                )
-                            except Exception:
-                                pass
-                    else:
-                        raise ValueError("path returned fewer alphas than requested")
-                except Exception:
-                    # Path failed or returned partial results; fall back to individual fits
-                    error_flag = True
-                    for ai, a in enumerate(alphas_desc_b):
-                        try:
-                            m_fb = CoxnetSurvivalAnalysis(
-                                alphas=[a], l1_ratio=l1_ratio,
-                                max_iter=max_iter, fit_baseline_model=False,
-                                penalty_factor=penalty,
-                            )
-                            m_fb.fit(X_tr_np, y_tr)
-                            _, fold_auc[ai] = cumulative_dynamic_auc(
-                                y_tr, y_va, m_fb.predict(X_va_np), eval_times
-                            )
-                        except Exception:
-                            pass
+                for ai, a in enumerate(alphas_desc_b):
+                    try:
+                        m = CoxnetSurvivalAnalysis(
+                            alphas=[a], l1_ratio=l1_ratio,
+                            max_iter=max_iter, fit_baseline_model=False,
+                            penalty_factor=penalty,
+                        )
+                        m.fit(X_tr_np, y_tr)
+                        _, fold_auc[ai] = cumulative_dynamic_auc(
+                            y_tr, y_va, m.predict(X_va_np), eval_times
+                        )
+                    except Exception:
+                        error_flag = True
 
             return fi, fold_auc, time.time() - start, error_flag
 
@@ -685,7 +643,8 @@ def run_grid_CoxPH_parallel(
         colnames = list(colnames0)
 
         with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*`trapz` is deprecated.*")
+            for _cat, _msg in _SUPPRESSED_WARNINGS:
+                warnings.filterwarnings("ignore", category=_cat, message=_msg)
 
             for gname, (cols, k) in pca_config.items():
                 X_trval, X_te, colnames, _ = apply_group_pca_np(
@@ -751,7 +710,8 @@ def get_heldout_risk_scores_CoxPH(
     """
 
     if ignore_warnings:
-        warnings.filterwarnings("ignore")
+        for _cat, _msg in _SUPPRESSED_WARNINGS:
+            warnings.filterwarnings("ignore", category=_cat, message=_msg)
 
     if pca_config is None:
         pca_config = {}
@@ -795,7 +755,8 @@ def get_heldout_risk_scores_CoxPH(
             y_tr = y[train_idx]
 
             with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*`trapz` is deprecated.*")
+                for _cat, _msg in _SUPPRESSED_WARNINGS:
+                    warnings.filterwarnings("ignore", category=_cat, message=_msg)
 
                 try:
                     if penalized:
@@ -846,7 +807,8 @@ def get_heldout_risk_scores_CoxPH(
             colnames = list(colnames0)
 
             with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*`trapz` is deprecated.*")
+                for _cat, _msg in _SUPPRESSED_WARNINGS:
+                    warnings.filterwarnings("ignore", category=_cat, message=_msg)
 
                 for group_name, (cols, k) in pca_config.items():
                     X_tr, X_te, colnames, _ = apply_group_pca_np(
@@ -897,7 +859,8 @@ def get_heldout_risk_scores_CoxPH(
             penalty = meta["penalty"]
 
             with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*`trapz` is deprecated.*")
+                for _cat, _msg in _SUPPRESSED_WARNINGS:
+                    warnings.filterwarnings("ignore", category=_cat, message=_msg)
 
                 try:
                     if penalized:

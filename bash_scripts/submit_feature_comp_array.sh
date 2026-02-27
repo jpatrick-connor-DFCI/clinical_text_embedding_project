@@ -3,8 +3,8 @@
 set -euo pipefail
 
 PROJECT_ROOT=${PROJECT_ROOT:-/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project}
-MANIFEST=${MANIFEST:-$PROJECT_ROOT/bash_scripts/slurm_manifests/full_cohort_tasks.tsv}
-MAX_CONCURRENT=${MAX_CONCURRENT:-20}
+MANIFEST=${MANIFEST:-$PROJECT_ROOT/bash_scripts/slurm_manifests/feature_comp_tasks.tsv}
+MAX_CONCURRENT=${MAX_CONCURRENT:-24}
 ROWS_PER_TASK=${ROWS_PER_TASK:-20}
 
 if [[ ! -d "$PROJECT_ROOT" ]]; then
@@ -13,7 +13,7 @@ if [[ ! -d "$PROJECT_ROOT" ]]; then
 fi
 
 mkdir -p "$(dirname "$MANIFEST")"
-mkdir -p "$PROJECT_ROOT/bash_scripts/output/array_full_cohort" "$PROJECT_ROOT/bash_scripts/error/array_full_cohort"
+mkdir -p "$PROJECT_ROOT/bash_scripts/output/array_feature_comp" "$PROJECT_ROOT/bash_scripts/error/array_feature_comp"
 
 cd "$PROJECT_ROOT"
 
@@ -30,9 +30,9 @@ fi
 
 NUM_TASKS=$(( (NUM_ROWS + ROWS_PER_TASK - 1) / ROWS_PER_TASK ))
 ARRAY_SPEC="0-$((NUM_TASKS - 1))%${MAX_CONCURRENT}"
-echo "Submitting full-cohort array with ${NUM_TASKS} tasks for ${NUM_ROWS} rows (${ARRAY_SPEC}), ${ROWS_PER_TASK} rows/task"
+echo "Submitting feature-comp array with ${NUM_TASKS} tasks for ${NUM_ROWS} rows (${ARRAY_SPEC}), ${ROWS_PER_TASK} rows/task"
 
 sbatch \
   --array="$ARRAY_SPEC" \
   --export=ALL,PROJECT_ROOT="$PROJECT_ROOT",MANIFEST="$MANIFEST",ROWS_PER_TASK="$ROWS_PER_TASK" \
-  "$PROJECT_ROOT/bash_scripts/array_full_cohort_run.sh"
+  "$PROJECT_ROOT/bash_scripts/array_feature_comp.sh"

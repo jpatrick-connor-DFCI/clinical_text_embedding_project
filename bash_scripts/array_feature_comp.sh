@@ -1,16 +1,16 @@
 #!/bin/bash
 
-#SBATCH --job-name=coxnet_full_event
+#SBATCH --job-name=coxnet_feat_comp
 #SBATCH --partition=normal
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=24G
 #SBATCH --array=0-0%1
-#SBATCH --output=bash_scripts/output/array_full_cohort/%A_%a.out
-#SBATCH --error=bash_scripts/error/array_full_cohort/%A_%a.err
+#SBATCH --output=bash_scripts/output/array_feature_comp/%A_%a.out
+#SBATCH --error=bash_scripts/error/array_feature_comp/%A_%a.err
 
 PROJECT_ROOT=${PROJECT_ROOT:-/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project}
-MANIFEST=${MANIFEST:-$PROJECT_ROOT/bash_scripts/slurm_manifests/full_cohort_tasks.tsv}
+MANIFEST=${MANIFEST:-$PROJECT_ROOT/bash_scripts/slurm_manifests/feature_comp_tasks.tsv}
 ROWS_PER_TASK=${ROWS_PER_TASK:-20}
 
 if [[ ! -d "$PROJECT_ROOT" ]]; then
@@ -37,7 +37,7 @@ export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 
-mkdir -p bash_scripts/output/array_full_cohort bash_scripts/error/array_full_cohort
+mkdir -p bash_scripts/output/array_feature_comp bash_scripts/error/array_feature_comp
 
 OVERWRITE_FLAG=()
 if [[ "${OVERWRITE:-0}" == "1" ]]; then
@@ -68,7 +68,7 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
     continue
   fi
 
-  IFS=$'\t' read -r SCHEME EVENT <<< "${TASK_LINE}"
+  IFS=$'\t' read -r SCHEME EVENT MODALITY <<< "${TASK_LINE}"
 
   case "$SCHEME" in
     icd3) SCHEME_RESULTS_DIR="level_3_ICD_results" ;;
@@ -80,12 +80,13 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
       exit 1
       ;;
   esac
-  mkdir -p "$RESULTS_ROOT/$SCHEME_RESULTS_DIR/full_cohort/$EVENT"
+  mkdir -p "$RESULTS_ROOT/$SCHEME_RESULTS_DIR/feature_comps/$EVENT"
 
-  echo "Running row ${LINE_NUM}: scheme=${SCHEME}, event=${EVENT}"
-  python "$PROJECT_ROOT/python_scripts/model_training/run_full_cohort_event.py" \
+  echo "Running row ${LINE_NUM}: scheme=${SCHEME}, event=${EVENT}, modality=${MODALITY}"
+  python "$PROJECT_ROOT/python_scripts/model_training/run_feature_comp_task.py" \
     --scheme "$SCHEME" \
     --event "$EVENT" \
+    --modality "$MODALITY" \
     --n-jobs "${SLURM_CPUS_PER_TASK:-1}" \
     --max-iter "${COXNET_MAX_ITER:-1000}" \
     --backend "${COXNET_BACKEND:-threading}" \

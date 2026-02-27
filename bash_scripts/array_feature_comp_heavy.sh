@@ -26,8 +26,8 @@ fi
 
 cd "$PROJECT_ROOT"
 
-source /PHShome/jpc91/.bashrc
 module load miniforge3
+eval "$(conda shell.bash hook)"
 conda activate clinical_notes_project
 
 set -euo pipefail
@@ -88,7 +88,7 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
     --event "$EVENT" \
     --modality "$MODALITY" \
     --n-jobs "${SLURM_CPUS_PER_TASK:-1}" \
-    --max-iter "${COXNET_MAX_ITER:-2500}" \
+    --max-iter "${COXNET_MAX_ITER:-1000}" \
     --backend "${COXNET_BACKEND:-threading}" \
     ${OVERWRITE_FLAG[@]+"${OVERWRITE_FLAG[@]}"}
 done
