@@ -1,3 +1,11 @@
+death_met	death
+death_met	adrenalM
+death_met	boneM
+death_met	brainM
+death_met	liverM
+death_met	lungM
+death_met	nodeM
+death_met	peritonealM
 icd3	I48
 icd3	I50
 icd3	I21
@@ -275,11 +283,3 @@ phecode	790.5
 phecode	289.9
 phecode	486
 phecode	518.81
-death_met	death
-death_met	adrenalM
-death_met	boneM
-death_met	brainM
-death_met	liverM
-death_met	lungM
-death_met	nodeM
-death_met	peritonealM
