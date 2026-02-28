@@ -1,5 +1,6 @@
 """Cox Models utilities for the embed surv utils package."""
 
+import logging
 import os
 import shutil
 import time
@@ -15,6 +16,8 @@ from sklearn.preprocessing import StandardScaler
 
 from sksurv.linear_model import CoxPHSurvivalAnalysis, CoxnetSurvivalAnalysis
 from sksurv.metrics import cumulative_dynamic_auc, integrated_brier_score
+
+logger = logging.getLogger(__name__)
 
 _SUPPRESSED_WARNINGS = [
     (ConvergenceWarning, ""),
@@ -67,15 +70,26 @@ def evaluate_surv_model(surv_model, X_eval, y_train, y_eval, eval_times: np.ndar
         _, mean_auc_t = cumulative_dynamic_auc(y_train, y_eval, risk_scores, eval_times)
         ibs = integrated_brier_score(y_train, y_eval, surv_probs, eval_times)
         c_index = surv_model.score(X_eval, y_eval)
-    except Exception:
+    except Exception as e:
+        logger.warning("evaluate_surv_model failed: %s", e)
         mean_auc_t, ibs, c_index = np.nan, np.nan, np.nan
     return mean_auc_t, ibs, c_index
 
 def _make_surv_array(event: np.ndarray, time: np.ndarray) -> np.ndarray:
     """Build a sksurv-compatible structured survival array without list(zip(...)) overhead."""
+    event = np.asarray(event)
+    time = np.asarray(time, dtype=np.float64)
+    n_nan_event = np.isnan(event.astype(float)).sum()
+    n_nan_time = np.isnan(time).sum()
+    n_neg_time = (time < 0).sum()
+    if n_nan_event > 0 or n_nan_time > 0 or n_neg_time > 0:
+        logger.warning(
+            "_make_surv_array: %d NaN events, %d NaN times, %d negative times (out of %d rows)",
+            n_nan_event, n_nan_time, n_neg_time, len(event),
+        )
     y = np.empty(len(event), dtype=[("Status", "?"), ("Survival_in_days", "<f8")])
-    y["Status"] = np.asarray(event, dtype=bool)
-    y["Survival_in_days"] = np.asarray(time, dtype=np.float64)
+    y["Status"] = event.astype(bool)
+    y["Survival_in_days"] = time
     return y
 
 
@@ -94,11 +108,16 @@ def run_base_CoxPH(df: pd.DataFrame, base_cols: list[str], continuous_vars: list
         for _cat, _msg in _SUPPRESSED_WARNINGS:
             warnings.filterwarnings("ignore", category=_cat, message=_msg)
 
-    df = df[df[tstop_col] > 0].copy()
+    # Drop rows with NaN/non-positive time-to-event or NaN event indicators
+    n_before = len(df)
+    df = df[df[tstop_col].notna() & (df[tstop_col] > 0) & df[event_col].notna()].copy()
+    n_dropped = n_before - len(df)
+    if n_dropped > 0:
+        logger.info("run_base_CoxPH: dropped %d/%d rows with invalid tstop/event", n_dropped, n_before)
 
     # Split into train+val and held-out test set
     strat_labels = df[event_col].astype(int)
-    df_trainval, df_test = train_test_split(df, test_size=test_size, 
+    df_trainval, df_test = train_test_split(df, test_size=test_size,
                                             stratify=strat_labels, random_state=1234)
 
     Xt_trainval = df_trainval[base_cols]
@@ -126,7 +145,8 @@ def run_base_CoxPH(df: pd.DataFrame, base_cols: list[str], continuous_vars: list
         try:
             cox_model.fit(X_train, y_train)
             mean_auc_t, ibs, c_index = evaluate_surv_model(cox_model, X_val, y_train, y_val, eval_times)
-        except Exception:
+        except Exception as e:
+            logger.warning("run_base_CoxPH CV fold failed: %s", e)
             mean_auc_t, ibs, c_index = np.nan, np.nan, np.nan
 
         c_index_vals.append(c_index)
@@ -141,7 +161,8 @@ def run_base_CoxPH(df: pd.DataFrame, base_cols: list[str], continuous_vars: list
         cox_model_final.fit(Xt_trainval_scaled, y_trainval)
         mean_auc_t_test, ibs_test, c_index_test = evaluate_surv_model(
             cox_model_final, Xt_test_scaled, y_trainval, y_test, eval_times)
-    except Exception:
+    except Exception as e:
+        logger.warning("run_base_CoxPH final model failed: %s", e)
         mean_auc_t_test, ibs_test, c_index_test = np.nan, np.nan, np.nan
 
     # Return summary
@@ -154,7 +175,7 @@ def run_base_CoxPH(df: pd.DataFrame, base_cols: list[str], continuous_vars: list
 # Fast NumPy preprocessing
 # =========================
 
-def _standardize_train_test(Xtr: np.ndarray, Xte: np.ndarray, eps: float = 1e-12):
+def _standardize_train_test(Xtr: np.ndarray, Xte: np.ndarray, eps: float = 1e-6):
     mu = Xtr.mean(axis=0, dtype=np.float32)
     sig = Xtr.std(axis=0, dtype=np.float32)
     sig = np.maximum(sig, eps).astype(np.float32, copy=False)
@@ -214,7 +235,7 @@ def _scale_continuous_train_test_np(
     X_te: np.ndarray,
     colnames: list[str],
     continuous_vars: list[str],
-    eps: float = 1e-12,
+    eps: float = 1e-6,
 ):
     name_to_idx = {c: i for i, c in enumerate(colnames)}
     idx = [name_to_idx[c] for c in continuous_vars if c in name_to_idx]
@@ -285,14 +306,22 @@ def run_grid_CoxPH_parallel(
         pca_config = {}
     use_memmap = len(pca_config) > 0  # <-- automatic switch
 
-    # ---- Filter invalid ----
-    df = df[df[tstop_col] > 0].copy()
+    # ---- Filter invalid (NaN/non-positive tstop, NaN event) ----
+    n_before = len(df)
+    df = df[df[tstop_col].notna() & (df[tstop_col] > 0) & df[event_col].notna()].copy()
+    n_dropped = n_before - len(df)
+    if n_dropped > 0:
+        logger.info("run_grid_CoxPH_parallel: dropped %d/%d rows with invalid tstop/event", n_dropped, n_before)
 
     all_cols = base_cols + penalized_cols
     base_col_set = set(base_cols)
 
-    # ---- X in RAM (float32) ----
+    # ---- Check for NaN in feature columns ----
     X_full = df[all_cols].to_numpy(dtype=np.float32, copy=False)
+    n_nan_features = np.isnan(X_full).sum()
+    if n_nan_features > 0:
+        logger.warning("run_grid_CoxPH_parallel: %d NaN values in feature matrix (%d rows x %d cols)",
+                       n_nan_features, X_full.shape[0], X_full.shape[1])
 
     # ---- Structured survival array ----
     y_struct = _make_surv_array(df[event_col].to_numpy(), df[tstop_col].to_numpy())
@@ -349,10 +378,13 @@ def run_grid_CoxPH_parallel(
             start = time.time()
             error_flag = False
 
-            X_tr = X_train_val[tr]
-            X_va = X_train_val[va]
+            X_tr = np.array(X_train_val[tr], dtype=np.float32, copy=True)
+            X_va = np.array(X_train_val[va], dtype=np.float32, copy=True)
             y_tr = y_train_val[tr]
             y_va = y_train_val[va]
+
+            # Scale continuous variables per fold
+            X_tr, X_va = _scale_continuous_train_test_np(X_tr, X_va, all_cols, continuous_vars)
 
             with warnings.catch_warnings():
                 for _cat, _msg in _SUPPRESSED_WARNINGS:
@@ -369,7 +401,8 @@ def run_grid_CoxPH_parallel(
                         _, fold_auc[ai] = cumulative_dynamic_auc(
                             y_tr, y_va, m.predict(X_va), eval_times
                         )
-                    except Exception:
+                    except Exception as e:
+                        logger.debug("Grid CV fold %d, alpha=%.2e, l1=%.2f failed: %s", fi, a, l1_ratio, e)
                         error_flag = True
 
             return fi, fold_auc, time.time() - start, error_flag
@@ -454,6 +487,12 @@ def run_grid_CoxPH_parallel(
         opt = valid_cv.sort_values("mean_auc(t)", ascending=False).iloc[0]
         opt_l1, opt_alpha = float(opt.l1_ratio), float(opt.alpha)
 
+        # Scale continuous variables for final fit
+        X_trval_scaled = np.array(X_train_val, dtype=np.float32, copy=True)
+        X_test_scaled = np.array(X_test, dtype=np.float32, copy=True)
+        X_trval_scaled, X_test_scaled = _scale_continuous_train_test_np(
+            X_trval_scaled, X_test_scaled, all_cols, continuous_vars)
+
         try:
             final_model = CoxnetSurvivalAnalysis(
                 alphas=[opt_alpha],
@@ -462,9 +501,10 @@ def run_grid_CoxPH_parallel(
                 fit_baseline_model=True,
                 penalty_factor=penalty_no_pca,
             )
-            final_model.fit(X_train_val, y_train_val)
-            mean_auc, ibs, cidx = evaluate_surv_model(final_model, X_test, y_train_val, y_test, eval_times)
-        except Exception:
+            final_model.fit(X_trval_scaled, y_train_val)
+            mean_auc, ibs, cidx = evaluate_surv_model(final_model, X_test_scaled, y_train_val, y_test, eval_times)
+        except Exception as e:
+            logger.warning("Grid search final model (no PCA) failed: %s", e)
             final_model, mean_auc, ibs, cidx = None, np.nan, np.nan, np.nan
 
         test_df = pd.DataFrame({"mean_auc(t)": [mean_auc], "mean_ibs": [ibs], "mean_c_index": [cidx]})
@@ -552,7 +592,8 @@ def run_grid_CoxPH_parallel(
                         _, fold_auc[ai] = cumulative_dynamic_auc(
                             y_tr, y_va, m.predict(X_va_np), eval_times
                         )
-                    except Exception:
+                    except Exception as e:
+                        logger.debug("Grid CV fold %d (PCA), alpha=%.2e, l1=%.2f failed: %s", fi, a, l1_ratio, e)
                         error_flag = True
 
             return fi, fold_auc, time.time() - start, error_flag
@@ -667,7 +708,8 @@ def run_grid_CoxPH_parallel(
             )
             final_model.fit(X_trval, y_train_val)
             mean_auc, ibs, cidx = evaluate_surv_model(final_model, X_te, y_train_val, y_test, eval_times)
-        except Exception:
+        except Exception as e:
+            logger.warning("Grid search final model (PCA) failed: %s", e)
             final_model, mean_auc, ibs, cidx = None, np.nan, np.nan, np.nan
 
         test_df = pd.DataFrame({"mean_auc(t)": [mean_auc], "mean_ibs": [ibs], "mean_c_index": [cidx]})
@@ -717,8 +759,12 @@ def get_heldout_risk_scores_CoxPH(
         pca_config = {}
     use_memmap = len(pca_config) > 0  # <-- automatic switch
 
-    # ---- Filter invalid ----
-    df = df[df[tstop_col] > 0].copy()
+    # ---- Filter invalid (NaN/non-positive tstop, NaN event) ----
+    n_before = len(df)
+    df = df[df[tstop_col].notna() & (df[tstop_col] > 0) & df[event_col].notna()].copy()
+    n_dropped = n_before - len(df)
+    if n_dropped > 0:
+        logger.info("get_heldout_risk_scores: dropped %d/%d rows with invalid tstop/event", n_dropped, n_before)
 
     all_cols = base_cols + penalized_cols
     base_col_set = set(base_cols)
@@ -750,9 +796,12 @@ def get_heldout_risk_scores_CoxPH(
         penalty = np.fromiter((0.0 if c in base_col_set else 1.0 for c in all_cols), dtype=np.float32)
 
         def fit_predict_fold_no_pca(train_idx, test_idx):
-            X_tr = X[train_idx]
-            X_te = X[test_idx]
+            X_tr = np.array(X[train_idx], dtype=np.float32, copy=True)
+            X_te = np.array(X[test_idx], dtype=np.float32, copy=True)
             y_tr = y[train_idx]
+
+            # Scale continuous variables per fold
+            X_tr, X_te = _scale_continuous_train_test_np(X_tr, X_te, all_cols, continuous_vars)
 
             with warnings.catch_warnings():
                 for _cat, _msg in _SUPPRESSED_WARNINGS:

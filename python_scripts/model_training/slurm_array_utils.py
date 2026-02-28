@@ -85,7 +85,12 @@ def filter_event_rows(full_prediction_df: pd.DataFrame, event: str) -> pd.DataFr
     tt_col = f"tt_{event}"
     if tt_col not in full_prediction_df.columns:
         raise ValueError(f"Missing column '{tt_col}' in prediction dataframe.")
-    event_pred_df = full_prediction_df.loc[full_prediction_df[tt_col] > 0].copy()
+    # Drop rows with NaN or non-positive time-to-event values
+    mask = full_prediction_df[tt_col].notna() & (full_prediction_df[tt_col] > 0)
+    # Also drop rows where the event indicator itself is NaN
+    if event in full_prediction_df.columns:
+        mask = mask & full_prediction_df[event].notna()
+    event_pred_df = full_prediction_df.loc[mask].copy()
     if event == "brainM" and "CANCER_TYPE_BRAIN" in event_pred_df.columns:
         event_pred_df = event_pred_df.loc[~event_pred_df["CANCER_TYPE_BRAIN"]].copy()
     return event_pred_df
