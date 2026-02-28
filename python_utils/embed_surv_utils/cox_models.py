@@ -111,9 +111,11 @@ def run_base_CoxPH(df: pd.DataFrame, base_cols: list[str], continuous_vars: list
     # Drop rows with NaN/non-positive time-to-event or NaN event indicators
     n_before = len(df)
     df = df[df[tstop_col].notna() & (df[tstop_col] > 0) & df[event_col].notna()].copy()
+    # Drop rows with NaN in any feature column
+    df = df.dropna(subset=base_cols + continuous_vars)
     n_dropped = n_before - len(df)
     if n_dropped > 0:
-        logger.info("run_base_CoxPH: dropped %d/%d rows with invalid tstop/event", n_dropped, n_before)
+        logger.info("run_base_CoxPH: dropped %d/%d rows with invalid tstop/event/features", n_dropped, n_before)
 
     # Split into train+val and held-out test set
     strat_labels = df[event_col].astype(int)
@@ -309,19 +311,18 @@ def run_grid_CoxPH_parallel(
     # ---- Filter invalid (NaN/non-positive tstop, NaN event) ----
     n_before = len(df)
     df = df[df[tstop_col].notna() & (df[tstop_col] > 0) & df[event_col].notna()].copy()
-    n_dropped = n_before - len(df)
-    if n_dropped > 0:
-        logger.info("run_grid_CoxPH_parallel: dropped %d/%d rows with invalid tstop/event", n_dropped, n_before)
 
     all_cols = base_cols + penalized_cols
     base_col_set = set(base_cols)
 
-    # ---- Check for NaN in feature columns ----
+    # ---- Drop rows with NaN in any feature column ----
+    df = df.dropna(subset=all_cols)
+    n_dropped = n_before - len(df)
+    if n_dropped > 0:
+        logger.info("run_grid_CoxPH_parallel: dropped %d/%d rows with invalid tstop/event/features", n_dropped, n_before)
+
+    # ---- X in RAM (float32) ----
     X_full = df[all_cols].to_numpy(dtype=np.float32, copy=False)
-    n_nan_features = np.isnan(X_full).sum()
-    if n_nan_features > 0:
-        logger.warning("run_grid_CoxPH_parallel: %d NaN values in feature matrix (%d rows x %d cols)",
-                       n_nan_features, X_full.shape[0], X_full.shape[1])
 
     # ---- Structured survival array ----
     y_struct = _make_surv_array(df[event_col].to_numpy(), df[tstop_col].to_numpy())
@@ -762,12 +763,15 @@ def get_heldout_risk_scores_CoxPH(
     # ---- Filter invalid (NaN/non-positive tstop, NaN event) ----
     n_before = len(df)
     df = df[df[tstop_col].notna() & (df[tstop_col] > 0) & df[event_col].notna()].copy()
-    n_dropped = n_before - len(df)
-    if n_dropped > 0:
-        logger.info("get_heldout_risk_scores: dropped %d/%d rows with invalid tstop/event", n_dropped, n_before)
 
     all_cols = base_cols + penalized_cols
     base_col_set = set(base_cols)
+
+    # ---- Drop rows with NaN in any feature column ----
+    df = df.dropna(subset=all_cols)
+    n_dropped = n_before - len(df)
+    if n_dropped > 0:
+        logger.info("get_heldout_risk_scores: dropped %d/%d rows with invalid tstop/event/features", n_dropped, n_before)
 
     # ---- X in RAM (float32) ----
     X = df[all_cols].to_numpy(dtype=np.float32, copy=False)
