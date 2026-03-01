@@ -75,7 +75,7 @@ def get_events_from_df(df: pd.DataFrame) -> list[str]:
 def build_full_prediction_df(scheme: str) -> tuple[pd.DataFrame, list[str], list[str], list[str]]:
     emb_df = load_embedding_prediction_df(scheme)
     cancer_type_df, type_cols = load_cancer_type_df()
-    full_prediction_df = emb_df.merge(cancer_type_df[["DFCI_MRN"] + type_cols], on="DFCI_MRN", how="left")
+    full_prediction_df = emb_df.merge(cancer_type_df[["DFCI_MRN"] + type_cols], on="DFCI_MRN")
     embed_cols = [col for col in full_prediction_df.columns if ("EMBEDDING" in col or "2015" in col)]
     events = get_events_from_df(full_prediction_df)
     return full_prediction_df, type_cols, embed_cols, events
@@ -92,7 +92,7 @@ def filter_event_rows(full_prediction_df: pd.DataFrame, event: str) -> pd.DataFr
         mask = mask & full_prediction_df[event].notna()
     event_pred_df = full_prediction_df.loc[mask].copy()
     if event == "brainM" and "CANCER_TYPE_BRAIN" in event_pred_df.columns:
-        event_pred_df = event_pred_df.loc[~event_pred_df["CANCER_TYPE_BRAIN"]].copy()
+        event_pred_df = event_pred_df.loc[event_pred_df["CANCER_TYPE_BRAIN"].fillna(0).astype(bool) == False].copy()
     return event_pred_df
 
 
