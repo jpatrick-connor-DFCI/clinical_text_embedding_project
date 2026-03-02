@@ -179,11 +179,10 @@ biomarker_cols = [
     if (col not in excluded_cols) and any(tag in col.upper() for tag in mutation_tags)
 ]
 MIN_CANCER_TYPE_TOTAL = 30
-COMMON_SUPPORT_PCT = (1, 99)
+COMMON_SUPPORT_PCT = (0.5, 99.5)
 IPTW_TRUNC_PCT = (1, 99)
-MIN_MARKER_PREVALENCE = 0.01
-MIN_MARKER_POS_PER_ARM = 5
-MIN_MARKER_NEG_PER_ARM = 5
+MIN_MARKER_POS_PER_ARM = 3
+MIN_MARKER_NEG_PER_ARM = 3
 
 result_cols = [
     'marker', 'beta_markerxICI', 'HR_markerxICI', 'p_markerxICI',
@@ -221,9 +220,15 @@ def add_fdr_and_labels(results_df, classifier_fn):
 
     results_df['mutation_type'] = results_df['marker'].apply(get_mutation_type)
 
-    _fdr_within_mutation_type(results_df, 'p_markerxICI', 'FDR_markerxICI', 'significant_predictive')
-    _fdr_within_mutation_type(results_df, 'p_marker_ICI', 'FDR_marker_ICI', 'significant_in_ICI')
-    _fdr_within_mutation_type(results_df, 'p_marker_nonICI', 'FDR_marker_nonICI', 'significant_prognostic_nonICI')
+    for p_col, fdr_col, sig_col in [
+        ('p_markerxICI', 'FDR_markerxICI', 'significant_predictive'),
+        ('p_marker_ICI', 'FDR_marker_ICI', 'significant_in_ICI'),
+        ('p_marker_nonICI', 'FDR_marker_nonICI', 'significant_prognostic_nonICI'),
+    ]:
+        pvals = results_df[p_col]
+        rej, fdr, _, _ = multipletests(pvals, alpha=0.05, method='fdr_bh')
+        results_df[fdr_col] = fdr
+        results_df[sig_col] = rej
 
     results_df['classifier'] = results_df.apply(classifier_fn, axis=1)
     return results_df
@@ -276,7 +281,7 @@ def _fit_one_marker(
     mx = f"{marker}_x_ICI"
     df_fit[mx] = df_fit['PX_on_ICI'] * df_fit[marker]
 
-    cph = CoxPHFitter()
+    cph = CoxPHFitter(penalizer=0.01)
     cph = fit_cph_log_warnings(
         cph, df_fit,
         duration_col='tt_death', event_col='death',
@@ -338,16 +343,7 @@ def _run_marker_screen(df, markers, base_vars, weights_col, n_jobs, label=""):
     failed = [f for _, f in raw if f is not None]
     return results, failed
 
-MIN_CANCER_TYPE_FOR_SUBGROUP = 100
-cancer_type_counts = interaction_ICI_df[
-    [col for col in cancer_type_cols if 'OTHER' not in col]
-].sum(axis=0).sort_values(ascending=False)
-subgroup_cancer_types = [
-    col.replace('CANCER_TYPE_', '')
-    for col in cancer_type_counts[cancer_type_counts >= MIN_CANCER_TYPE_FOR_SUBGROUP].index
-]
-types_to_test = ['pan_cancer'] + subgroup_cancer_types
-print(f"[run_IPTW_analysis] Cancer types to test: {types_to_test}")
+types_to_test = ['pan_cancer', 'SKIN', 'LUNG']
 
 for cancer_type in types_to_test:
     if cancer_type == 'pan_cancer':
@@ -507,9 +503,6 @@ for cancer_type in types_to_test:
     # ---------------------------------------
     markers_to_test = []
     for marker in biomarker_cols:
-        prevalence = pd.to_numeric(type_specific_interaction_ICI_df[marker], errors='coerce').sum(skipna=True) / len(type_specific_interaction_ICI_df)
-        if prevalence < MIN_MARKER_PREVALENCE:
-            continue
         if marker_has_within_arm_support(
             type_specific_interaction_ICI_df,
             marker,
