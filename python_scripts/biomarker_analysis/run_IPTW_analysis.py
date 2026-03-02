@@ -220,15 +220,9 @@ def add_fdr_and_labels(results_df, classifier_fn):
 
     results_df['mutation_type'] = results_df['marker'].apply(get_mutation_type)
 
-    for p_col, fdr_col, sig_col in [
-        ('p_markerxICI', 'FDR_markerxICI', 'significant_predictive'),
-        ('p_marker_ICI', 'FDR_marker_ICI', 'significant_in_ICI'),
-        ('p_marker_nonICI', 'FDR_marker_nonICI', 'significant_prognostic_nonICI'),
-    ]:
-        pvals = results_df[p_col]
-        rej, fdr, _, _ = multipletests(pvals, alpha=0.05, method='fdr_bh')
-        results_df[fdr_col] = fdr
-        results_df[sig_col] = rej
+    _fdr_within_mutation_type(results_df, 'p_markerxICI', 'FDR_markerxICI', 'significant_predictive')
+    _fdr_within_mutation_type(results_df, 'p_marker_ICI', 'FDR_marker_ICI', 'significant_in_ICI')
+    _fdr_within_mutation_type(results_df, 'p_marker_nonICI', 'FDR_marker_nonICI', 'significant_prognostic_nonICI')
 
     results_df['classifier'] = results_df.apply(classifier_fn, axis=1)
     return results_df
