@@ -1,7 +1,7 @@
 """Build a comprehensive ICD-10-CM to phecode mapping from the Dana-Farber dataset.
 
-Downloads the official Phecode v1.2 (ICD-10-CM) and PhecodeX v1.0 mappings,
-then maps every unique ICD-10 code observed in the cohort to phecodes.
+Uses the phetk package (pip install phetk) which bundles the official
+Phecode v1.2 and PhecodeX v1.0 ICD-10-CM mapping tables.
 Uses v1.2 as the primary mapping and fills gaps with PhecodeX.
 
 Outputs:
@@ -12,28 +12,17 @@ Usage:
     python generate_icd10_to_phecode_mapping.py
 """
 
-import io
 import os
 import re
-import zipfile
 from typing import Optional
 
 import pandas as pd
-import requests
+from phetk._utils import get_phecode_mapping_table
 
 # ── paths ────────────────────────────────────────────────────────────────────
 DATA_PATH = "/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/"
 CODE_PATH = os.path.join(DATA_PATH, "code_data/")
 SURV_PATH = os.path.join(DATA_PATH, "time-to-event_analysis/")
-
-# ── download URLs ────────────────────────────────────────────────────────────
-PHECODE_V12_URL = (
-    "https://phewascatalog.org/files/Phecode_map_v1_2_icd10cm_beta.csv.zip"
-)
-PHECODEX_URL = (
-    "https://raw.githubusercontent.com/PheWAS/PhecodeXVocabulary/main/"
-    "PhecodeX%20(version%201.0)/phecodeX_ICD_CM_map_flat.csv"
-)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -53,49 +42,45 @@ def _normalize_phecode(code) -> Optional[str]:
     code = re.sub(r"[^0-9.]", "", code)
     if not code:
         return None
-    # fix multiple dots
     if code.count(".") > 1:
         left, right = code.split(".", 1)
         code = f"{left}.{right.replace('.', '')}"
     return code
 
 
-def _download_v12_mapping() -> pd.DataFrame:
-    """Download Phecode v1.2 ICD-10-CM mapping (zipped CSV)."""
-    print("Downloading Phecode v1.2 ICD-10-CM mapping …")
-    resp = requests.get(PHECODE_V12_URL, timeout=120)
-    resp.raise_for_status()
-    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
-        csv_names = [n for n in zf.namelist() if n.endswith(".csv")]
-        if not csv_names:
-            raise RuntimeError(f"No CSV found inside zip: {zf.namelist()}")
-        with zf.open(csv_names[0]) as f:
-            df = pd.read_csv(f)
+def _load_v12_mapping() -> pd.DataFrame:
+    """Load Phecode v1.2 ICD-10-CM mapping from phetk bundled data."""
+    print("Loading Phecode v1.2 ICD-10-CM mapping from phetk …")
+    df = get_phecode_mapping_table(
+        phecode_version="1.2",
+        icd_version="US",
+        phecode_map_file_path=None,
+        keep_all_columns=True,
+    )
     print(f"  v1.2 mapping: {len(df)} rows, columns = {list(df.columns)}")
     return df
 
 
-def _download_phecodex_mapping() -> pd.DataFrame:
-    """Download PhecodeX v1.0 ICD-CM flat mapping from GitHub."""
-    print("Downloading PhecodeX v1.0 ICD-CM mapping …")
-    resp = requests.get(PHECODEX_URL, timeout=120)
-    resp.raise_for_status()
-    df = pd.read_csv(io.StringIO(resp.text))
-    # keep only ICD-10-CM rows
-    if "vocabulary_id" in df.columns:
-        df = df.loc[df["vocabulary_id"] == "ICD10CM"].copy()
-    print(f"  PhecodeX mapping: {len(df)} ICD-10-CM rows, columns = {list(df.columns)}")
+def _load_phecodex_mapping() -> pd.DataFrame:
+    """Load PhecodeX v1.0 ICD-10-CM mapping from phetk bundled data."""
+    print("Loading PhecodeX v1.0 ICD-10-CM mapping from phetk …")
+    df = get_phecode_mapping_table(
+        phecode_version="X",
+        icd_version="US",
+        phecode_map_file_path=None,
+        keep_all_columns=True,
+    )
+    print(f"  PhecodeX mapping: {len(df)} rows, columns = {list(df.columns)}")
     return df
 
 
-def _resolve_column(df: pd.DataFrame, expected: str) -> str:
-    col_map = {col.strip().lower().replace(" ", "_"): col for col in df.columns}
-    for candidate in [expected, expected.replace("-", ""), expected.replace("_", "")]:
-        if candidate in col_map:
-            return col_map[candidate]
-    raise ValueError(
-        f"Cannot find column '{expected}' in {list(df.columns)}"
-    )
+def _find_column(df: pd.DataFrame, candidates: list[str]) -> str:
+    """Find the first matching column name (case-insensitive)."""
+    col_map = {col.strip().lower(): col for col in df.columns}
+    for c in candidates:
+        if c.lower() in col_map:
+            return col_map[c.lower()]
+    raise ValueError(f"None of {candidates} found in {list(df.columns)}")
 
 
 # ── main ─────────────────────────────────────────────────────────────────────
@@ -109,7 +94,6 @@ def main() -> None:
     raw_codes = icd_df["DIAGNOSIS_ICD10_CD"].dropna().unique()
     print(f"  {len(raw_codes)} unique raw ICD-10 codes in dataset")
 
-    # Build a lookup: normalized code → original code (keep first seen)
     norm_to_raw: dict[str, str] = {}
     for raw in raw_codes:
         norm = _normalize_icd10(raw)
@@ -118,13 +102,14 @@ def main() -> None:
     unique_norms = set(norm_to_raw.keys())
     print(f"  {len(unique_norms)} unique normalized ICD-10 codes")
 
-    # 2. Download mapping files
-    v12_df = _download_v12_mapping()
-    phecodeX_df = _download_phecodex_mapping()
+    # 2. Load mapping tables from phetk
+    v12_df = _load_v12_mapping()
+    phecodeX_df = _load_phecodex_mapping()
 
     # 3. Normalize the v1.2 mapping
-    v12_icd_col = _resolve_column(v12_df, "icd10cm")
-    v12_phe_col = _resolve_column(v12_df, "phecode")
+    # v1.2 columns: phecode_unrolled, ICD, flag, exclude_range, ...
+    v12_icd_col = _find_column(v12_df, ["ICD", "icd10cm", "icd"])
+    v12_phe_col = _find_column(v12_df, ["phecode_unrolled", "phecode"])
     v12_map = v12_df[[v12_icd_col, v12_phe_col]].copy()
     v12_map.columns = ["icd10_raw", "phecode_raw"]
     v12_map["icd10_norm"] = v12_map["icd10_raw"].map(_normalize_icd10)
@@ -136,8 +121,9 @@ def main() -> None:
     print(f"  v1.2 normalized: {len(v12_map)} unique (ICD, phecode) pairs")
 
     # 4. Normalize the PhecodeX mapping
-    px_icd_col = _resolve_column(phecodeX_df, "icd")
-    px_phe_col = _resolve_column(phecodeX_df, "phecode")
+    # PhecodeX columns: phecode, ICD, flag, code_val
+    px_icd_col = _find_column(phecodeX_df, ["ICD", "icd"])
+    px_phe_col = _find_column(phecodeX_df, ["phecode"])
     px_map = phecodeX_df[[px_icd_col, px_phe_col]].copy()
     px_map.columns = ["icd10_raw", "phecode_raw"]
     px_map["icd10_norm"] = px_map["icd10_raw"].map(_normalize_icd10)
@@ -157,7 +143,7 @@ def main() -> None:
         f"({len(v12_map)} from v1.2 + {len(px_gap_fill)} gap-filled from PhecodeX)"
     )
 
-    # 6. Also try parent-code matching for unmapped codes
+    # 6. Parent-code fallback for unmapped codes
     # If a specific code like E1165 isn't mapped, try its parent E116, then E11
     combined_norms = set(combined["icd10_norm"])
     unmapped = unique_norms - combined_norms
@@ -166,7 +152,6 @@ def main() -> None:
     parent_rows = []
     newly_mapped = 0
     for norm_code in sorted(unmapped):
-        # Try progressively shorter prefixes: e.g. E1165 → E116 → E11
         for prefix_len in range(len(norm_code) - 1, 2, -1):
             parent = norm_code[:prefix_len]
             parent_matches = combined.loc[combined["icd10_norm"] == parent, "phecode"].unique()
@@ -204,7 +189,6 @@ def main() -> None:
 
     # 8. Write outputs
     out_cols = ["icd10_norm", "phecode", "source"]
-    # rename to match the column names expected downstream
     output = final[out_cols].copy()
     output.columns = ["icd10_code", "phecode", "source"]
     output = output.sort_values(["icd10_code", "phecode"]).reset_index(drop=True)
