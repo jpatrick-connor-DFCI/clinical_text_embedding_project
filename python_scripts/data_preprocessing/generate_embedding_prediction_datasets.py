@@ -321,6 +321,19 @@ icd_data_base = icd_data_base.loc[~icd_data_base['ICD10_LEVEL_3_CD'].map(_is_exc
 icd_data_base['START_DT'] = pd.to_datetime(icd_data_base['START_DT'], errors='coerce')
 icds_to_analyze = _dedupe_in_order(icd_data_base['ICD10_LEVEL_3_CD'].tolist())
 
+# Pre-filter: compute union of codes passing min_events across both variants
+cohort_mrns = set(base_vte_data_sub['DFCI_MRN'])
+_shared_icd3_codes: set[str] = set()
+for _label, _tf in [('first_instance', None), ('first_post_treatment', lambda df: df['TIME_TO_ICD'] > 0)]:
+    _icd_tmp = icd_data_base.copy()
+    if _tf is not None:
+        _icd_tmp = _icd_tmp.loc[_tf(_icd_tmp)].copy()
+    _icd_tmp = _icd_tmp.sort_values(['DFCI_MRN', 'ICD10_LEVEL_3_CD', 'START_DT']).drop_duplicates(subset=['DFCI_MRN', 'ICD10_LEVEL_3_CD'], keep='first')
+    _passed = _prefilter_events_by_min_count(_icd_tmp, cohort_mrns, 'ICD10_LEVEL_3_CD', 'TIME_TO_ICD', icds_to_analyze, min_events=100)
+    _shared_icd3_codes.update(_passed)
+shared_icd3_list = [c for c in icds_to_analyze if c in _shared_icd3_codes]
+print(f"  Shared level-3 ICD code list: {len(shared_icd3_list)} codes (union across variants)")
+
 for variant, time_filter, surv_fn, emb_fn in [
     ('first_instance', None, 'level_3_ICD_surv_df.csv', 'level_3_ICD_embedding_prediction_df.csv'),
     ('first_post_treatment', lambda df: df['TIME_TO_ICD'] > 0, 'level_3_ICD_post_surv_df.csv', 'level_3_ICD_post_embedding_prediction_df.csv'),
@@ -334,21 +347,17 @@ for variant, time_filter, surv_fn, emb_fn in [
         .sort_values(['DFCI_MRN', 'ICD10_LEVEL_3_CD', 'START_DT'])
         .drop_duplicates(subset=['DFCI_MRN', 'ICD10_LEVEL_3_CD'], keep='first')
     )
-    cohort_mrns = set(vte_data_sub['DFCI_MRN'])
-    variant_icds = _prefilter_events_by_min_count(
-        icd_data, cohort_mrns, 'ICD10_LEVEL_3_CD', 'TIME_TO_ICD', icds_to_analyze, min_events=100,
-    )
     icd_event_cols = _map_events_to_columns(
         vte_data_sub=vte_data_sub,
         event_data=icd_data,
-        events_to_analyze=variant_icds,
+        events_to_analyze=shared_icd3_list,
         event_col='ICD10_LEVEL_3_CD',
         time_col='TIME_TO_ICD',
         progress_desc=f'Generating level-3 ICD events ({variant})',
     )
     vte_data_sub = pd.concat([vte_data_sub, icd_event_cols], axis=1)
     _finalize_base_covariates(vte_data_sub)
-    kept = _filter_endpoint_events_by_min_post_baseline_count(vte_data_sub, variant_icds, min_events=100)
+    kept = _filter_endpoint_events_by_min_post_baseline_count(vte_data_sub, shared_icd3_list, min_events=100)
     _write_outputs(
         vte_data_sub=vte_data_sub,
         endpoint_events=kept,
@@ -368,6 +377,19 @@ icd_data_base = icd_data_base.loc[~icd_data_base['ICD10_LEVEL_4_CD'].map(_is_exc
 icd_data_base['START_DT'] = pd.to_datetime(icd_data_base['START_DT'], errors='coerce')
 icds_to_analyze = _dedupe_in_order(icd_data_base['ICD10_LEVEL_4_CD'].tolist())
 
+# Pre-filter: compute union of codes passing min_events across both variants
+cohort_mrns = set(base_vte_data_sub['DFCI_MRN'])
+_shared_icd4_codes: set[str] = set()
+for _label, _tf in [('first_instance', None), ('first_post_treatment', lambda df: df['TIME_TO_ICD'] > 0)]:
+    _icd_tmp = icd_data_base.copy()
+    if _tf is not None:
+        _icd_tmp = _icd_tmp.loc[_tf(_icd_tmp)].copy()
+    _icd_tmp = _icd_tmp.sort_values(['DFCI_MRN', 'ICD10_LEVEL_4_CD', 'START_DT']).drop_duplicates(subset=['DFCI_MRN', 'ICD10_LEVEL_4_CD'], keep='first')
+    _passed = _prefilter_events_by_min_count(_icd_tmp, cohort_mrns, 'ICD10_LEVEL_4_CD', 'TIME_TO_ICD', icds_to_analyze, min_events=100)
+    _shared_icd4_codes.update(_passed)
+shared_icd4_list = [c for c in icds_to_analyze if c in _shared_icd4_codes]
+print(f"  Shared level-4 ICD code list: {len(shared_icd4_list)} codes (union across variants)")
+
 for variant, time_filter, surv_fn, emb_fn in [
     ('first_instance', None, 'level_4_ICD_surv_df.csv', 'level_4_ICD_embedding_prediction_df.csv'),
     ('first_post_treatment', lambda df: df['TIME_TO_ICD'] > 0, 'level_4_ICD_post_surv_df.csv', 'level_4_ICD_post_embedding_prediction_df.csv'),
@@ -381,21 +403,17 @@ for variant, time_filter, surv_fn, emb_fn in [
         .sort_values(['DFCI_MRN', 'ICD10_LEVEL_4_CD', 'START_DT'])
         .drop_duplicates(subset=['DFCI_MRN', 'ICD10_LEVEL_4_CD'], keep='first')
     )
-    cohort_mrns = set(vte_data_sub['DFCI_MRN'])
-    variant_icds = _prefilter_events_by_min_count(
-        icd_data, cohort_mrns, 'ICD10_LEVEL_4_CD', 'TIME_TO_ICD', icds_to_analyze, min_events=100,
-    )
     icd_event_cols = _map_events_to_columns(
         vte_data_sub=vte_data_sub,
         event_data=icd_data,
-        events_to_analyze=variant_icds,
+        events_to_analyze=shared_icd4_list,
         event_col='ICD10_LEVEL_4_CD',
         time_col='TIME_TO_ICD',
         progress_desc=f'Generating level-4 ICD events ({variant})',
     )
     vte_data_sub = pd.concat([vte_data_sub, icd_event_cols], axis=1)
     _finalize_base_covariates(vte_data_sub)
-    kept = _filter_endpoint_events_by_min_post_baseline_count(vte_data_sub, variant_icds, min_events=100)
+    kept = _filter_endpoint_events_by_min_post_baseline_count(vte_data_sub, shared_icd4_list, min_events=100)
     _write_outputs(
         vte_data_sub=vte_data_sub,
         endpoint_events=kept,
@@ -429,6 +447,19 @@ phecodes_to_analyze = _dedupe_in_order(phecode_data_base['PHECODE'].dropna().tol
 phecodes_to_analyze = [p for p in phecodes_to_analyze if not _is_excluded_phecode(p)]
 phecode_data_base = phecode_data_base.loc[~phecode_data_base['PHECODE'].map(_is_excluded_phecode)].copy()
 
+# Pre-filter: compute union of codes passing min_events across both variants
+cohort_mrns = set(base_vte_data_sub['DFCI_MRN'])
+_shared_phecodes: set[str] = set()
+for _label, _tf in [('first_instance', None), ('first_post_treatment', lambda df: df['TIME_TO_ICD'] > 0)]:
+    _phe_tmp = phecode_data_base.copy()
+    if _tf is not None:
+        _phe_tmp = _phe_tmp.loc[_tf(_phe_tmp)].copy()
+    _phe_tmp = _phe_tmp.sort_values(['DFCI_MRN', 'PHECODE', 'START_DT']).drop_duplicates(subset=['DFCI_MRN', 'PHECODE'], keep='first')
+    _passed = _prefilter_events_by_min_count(_phe_tmp, cohort_mrns, 'PHECODE', 'TIME_TO_ICD', phecodes_to_analyze, min_events=100)
+    _shared_phecodes.update(_passed)
+shared_phecode_list = [c for c in phecodes_to_analyze if c in _shared_phecodes]
+print(f"  Shared phecode list: {len(shared_phecode_list)} codes (union across variants)")
+
 for variant, time_filter, surv_fn, emb_fn in [
     ('first_instance', None, 'phecode_surv_df.csv', 'phecode_embedding_prediction_df.csv'),
     ('first_post_treatment', lambda df: df['TIME_TO_ICD'] > 0, 'phecode_post_surv_df.csv', 'phecode_post_embedding_prediction_df.csv'),
@@ -442,21 +473,17 @@ for variant, time_filter, surv_fn, emb_fn in [
         .sort_values(['DFCI_MRN', 'PHECODE', 'START_DT'])
         .drop_duplicates(subset=['DFCI_MRN', 'PHECODE'], keep='first')
     )
-    cohort_mrns = set(vte_data_sub['DFCI_MRN'])
-    variant_phecodes = _prefilter_events_by_min_count(
-        phecode_data, cohort_mrns, 'PHECODE', 'TIME_TO_ICD', phecodes_to_analyze, min_events=100,
-    )
     phecode_event_cols = _map_events_to_columns(
         vte_data_sub=vte_data_sub,
         event_data=phecode_data,
-        events_to_analyze=variant_phecodes,
+        events_to_analyze=shared_phecode_list,
         event_col='PHECODE',
         time_col='TIME_TO_ICD',
         progress_desc=f'Generating phecode events ({variant})',
     )
     vte_data_sub = pd.concat([vte_data_sub, phecode_event_cols], axis=1)
     _finalize_base_covariates(vte_data_sub)
-    kept = _filter_endpoint_events_by_min_post_baseline_count(vte_data_sub, variant_phecodes, min_events=100)
+    kept = _filter_endpoint_events_by_min_post_baseline_count(vte_data_sub, shared_phecode_list, min_events=100)
     _write_outputs(
         vte_data_sub=vte_data_sub,
         endpoint_events=kept,
