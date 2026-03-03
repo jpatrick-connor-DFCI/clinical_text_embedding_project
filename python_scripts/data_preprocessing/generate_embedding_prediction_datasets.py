@@ -160,6 +160,27 @@ def _load_shared_inputs() -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray, pd.Da
     return base_vte_data_sub, split_ehr_icd_subset, embeddings_data, notes_meta
 
 
+def _prefilter_events_by_min_count(
+    event_data: pd.DataFrame,
+    cohort_mrns: set,
+    event_col: str,
+    time_col: str,
+    events_to_analyze: list[str],
+    min_events: int = 100,
+) -> list[str]:
+    """Fast pre-filter: keep only codes with >= min_events unique patients
+    in the cohort who have a post-baseline (time > 0) occurrence."""
+    # restrict to cohort and post-baseline
+    mask = event_data['DFCI_MRN'].isin(cohort_mrns) & (event_data[time_col] > 0)
+    counts = event_data.loc[mask].drop_duplicates(
+        subset=['DFCI_MRN', event_col]
+    )[event_col].value_counts()
+    kept = [e for e in events_to_analyze if counts.get(e, 0) >= min_events]
+    n_dropped = len(events_to_analyze) - len(kept)
+    print(f"  Pre-filter: {len(kept)}/{len(events_to_analyze)} codes have >= {min_events} post-baseline events ({n_dropped} dropped)")
+    return kept
+
+
 def _map_events_to_columns(
     vte_data_sub: pd.DataFrame,
     event_data: pd.DataFrame,
@@ -313,17 +334,21 @@ for variant, time_filter, surv_fn, emb_fn in [
         .sort_values(['DFCI_MRN', 'ICD10_LEVEL_3_CD', 'START_DT'])
         .drop_duplicates(subset=['DFCI_MRN', 'ICD10_LEVEL_3_CD'], keep='first')
     )
+    cohort_mrns = set(vte_data_sub['DFCI_MRN'])
+    variant_icds = _prefilter_events_by_min_count(
+        icd_data, cohort_mrns, 'ICD10_LEVEL_3_CD', 'TIME_TO_ICD', icds_to_analyze, min_events=100,
+    )
     icd_event_cols = _map_events_to_columns(
         vte_data_sub=vte_data_sub,
         event_data=icd_data,
-        events_to_analyze=icds_to_analyze,
+        events_to_analyze=variant_icds,
         event_col='ICD10_LEVEL_3_CD',
         time_col='TIME_TO_ICD',
         progress_desc=f'Generating level-3 ICD events ({variant})',
     )
     vte_data_sub = pd.concat([vte_data_sub, icd_event_cols], axis=1)
     _finalize_base_covariates(vte_data_sub)
-    kept = _filter_endpoint_events_by_min_post_baseline_count(vte_data_sub, icds_to_analyze, min_events=100)
+    kept = _filter_endpoint_events_by_min_post_baseline_count(vte_data_sub, variant_icds, min_events=100)
     _write_outputs(
         vte_data_sub=vte_data_sub,
         endpoint_events=kept,
@@ -356,17 +381,21 @@ for variant, time_filter, surv_fn, emb_fn in [
         .sort_values(['DFCI_MRN', 'ICD10_LEVEL_4_CD', 'START_DT'])
         .drop_duplicates(subset=['DFCI_MRN', 'ICD10_LEVEL_4_CD'], keep='first')
     )
+    cohort_mrns = set(vte_data_sub['DFCI_MRN'])
+    variant_icds = _prefilter_events_by_min_count(
+        icd_data, cohort_mrns, 'ICD10_LEVEL_4_CD', 'TIME_TO_ICD', icds_to_analyze, min_events=100,
+    )
     icd_event_cols = _map_events_to_columns(
         vte_data_sub=vte_data_sub,
         event_data=icd_data,
-        events_to_analyze=icds_to_analyze,
+        events_to_analyze=variant_icds,
         event_col='ICD10_LEVEL_4_CD',
         time_col='TIME_TO_ICD',
         progress_desc=f'Generating level-4 ICD events ({variant})',
     )
     vte_data_sub = pd.concat([vte_data_sub, icd_event_cols], axis=1)
     _finalize_base_covariates(vte_data_sub)
-    kept = _filter_endpoint_events_by_min_post_baseline_count(vte_data_sub, icds_to_analyze, min_events=100)
+    kept = _filter_endpoint_events_by_min_post_baseline_count(vte_data_sub, variant_icds, min_events=100)
     _write_outputs(
         vte_data_sub=vte_data_sub,
         endpoint_events=kept,
@@ -413,17 +442,21 @@ for variant, time_filter, surv_fn, emb_fn in [
         .sort_values(['DFCI_MRN', 'PHECODE', 'START_DT'])
         .drop_duplicates(subset=['DFCI_MRN', 'PHECODE'], keep='first')
     )
+    cohort_mrns = set(vte_data_sub['DFCI_MRN'])
+    variant_phecodes = _prefilter_events_by_min_count(
+        phecode_data, cohort_mrns, 'PHECODE', 'TIME_TO_ICD', phecodes_to_analyze, min_events=100,
+    )
     phecode_event_cols = _map_events_to_columns(
         vte_data_sub=vte_data_sub,
         event_data=phecode_data,
-        events_to_analyze=phecodes_to_analyze,
+        events_to_analyze=variant_phecodes,
         event_col='PHECODE',
         time_col='TIME_TO_ICD',
         progress_desc=f'Generating phecode events ({variant})',
     )
     vte_data_sub = pd.concat([vte_data_sub, phecode_event_cols], axis=1)
     _finalize_base_covariates(vte_data_sub)
-    kept = _filter_endpoint_events_by_min_post_baseline_count(vte_data_sub, phecodes_to_analyze, min_events=100)
+    kept = _filter_endpoint_events_by_min_post_baseline_count(vte_data_sub, variant_phecodes, min_events=100)
     _write_outputs(
         vte_data_sub=vte_data_sub,
         endpoint_events=kept,
