@@ -13,6 +13,7 @@ from slurm_array_utils import (
     build_full_prediction_df,
     filter_event_rows,
     get_output_dir,
+    validate_cox_inputs,
 )
 
 
@@ -56,6 +57,11 @@ def main() -> None:
         return
 
     base_vars = ["GENDER", "AGE_AT_TREATMENTSTART"]
+    all_feature_cols = base_vars + type_cols + embed_cols
+    label = f"{args.scheme}:{args.event}"
+    event_pred_df = validate_cox_inputs(
+        event_pred_df, args.event, f"tt_{args.event}", all_feature_cols, label=label,
+    )
     n_jobs = _get_n_jobs(args.n_jobs)
 
     text_test, text_val, _ = run_grid_CoxPH_parallel(

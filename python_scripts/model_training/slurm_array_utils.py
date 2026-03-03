@@ -179,6 +179,80 @@ def load_feature_modalities_df(
     return full_prediction_df, type_cols, embed_cols, modality_cfg, feature_cols
 
 
+MIN_EVENTS_FOR_CV = 10
+MIN_NON_EVENTS_FOR_CV = 10
+
+
+def validate_cox_inputs(
+    df: pd.DataFrame,
+    event_col: str,
+    tstop_col: str,
+    feature_cols: list[str],
+    label: str = "",
+) -> pd.DataFrame:
+    """Validate data suitability for Cox PH models before fitting.
+
+    Returns the (possibly filtered) DataFrame. Raises ValueError for
+    conditions that make fitting impossible.
+    """
+    tag = f"[{label}] " if label else ""
+
+    # --- survival columns ---
+    assert tstop_col in df.columns, f"{tag}Missing time column '{tstop_col}'"
+    assert event_col in df.columns, f"{tag}Missing event column '{event_col}'"
+
+    n_nan_time = df[tstop_col].isna().sum()
+    n_nan_event = df[event_col].isna().sum()
+    if n_nan_time > 0 or n_nan_event > 0:
+        raise ValueError(
+            f"{tag}{n_nan_time} NaN times, {n_nan_event} NaN events — "
+            "filter_event_rows should have removed these"
+        )
+
+    if (df[tstop_col] <= 0).any():
+        n_bad = (df[tstop_col] <= 0).sum()
+        raise ValueError(f"{tag}{n_bad} rows with non-positive time-to-event")
+
+    # event must be binary 0/1
+    unique_events = set(df[event_col].unique())
+    if not unique_events.issubset({0, 1, 0.0, 1.0, True, False}):
+        raise ValueError(
+            f"{tag}Event column '{event_col}' has non-binary values: "
+            f"{sorted(unique_events - {0, 1, 0.0, 1.0, True, False})}"
+        )
+
+    n_events = int(df[event_col].sum())
+    n_non_events = len(df) - n_events
+    if n_events < MIN_EVENTS_FOR_CV:
+        raise ValueError(
+            f"{tag}Only {n_events} positive events (need >= {MIN_EVENTS_FOR_CV} "
+            "for stratified 5-fold CV)"
+        )
+    if n_non_events < MIN_NON_EVENTS_FOR_CV:
+        raise ValueError(
+            f"{tag}Only {n_non_events} censored observations (need >= {MIN_NON_EVENTS_FOR_CV} "
+            "for stratified 5-fold CV)"
+        )
+
+    # --- feature columns ---
+    present = [c for c in feature_cols if c in df.columns]
+    missing = set(feature_cols) - set(present)
+    if missing:
+        raise ValueError(f"{tag}Missing feature columns: {sorted(missing)}")
+
+    constant_cols = [c for c in present if df[c].nunique(dropna=False) <= 1]
+    if constant_cols:
+        print(f"{tag}Dropping {len(constant_cols)} constant feature columns: {constant_cols}")
+        df = df.drop(columns=constant_cols)
+
+    # NaN in features: warn (run_grid_CoxPH_parallel drops these internally)
+    n_feat_nan = df[present].isna().any(axis=1).sum()
+    if n_feat_nan > 0:
+        print(f"{tag}Warning: {n_feat_nan}/{len(df)} rows have NaN in feature columns")
+
+    return df
+
+
 def parse_manifest_line(line: str, expected_fields: int) -> list[str]:
     fields = line.rstrip("\n").split("\t")
     if len(fields) != expected_fields:
@@ -202,4 +276,5 @@ __all__ = [
     "load_embedding_prediction_df",
     "load_feature_modalities_df",
     "parse_manifest_line",
+    "validate_cox_inputs",
 ]

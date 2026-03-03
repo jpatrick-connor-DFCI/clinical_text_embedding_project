@@ -14,6 +14,7 @@ from slurm_array_utils import (
     get_events_from_df,
     get_output_dir,
     load_feature_modalities_df,
+    validate_cox_inputs,
 )
 
 
@@ -62,6 +63,14 @@ def main() -> None:
 
     base_vars = ["GENDER", "AGE_AT_TREATMENTSTART"]
     cfg = modality_cfg[args.modality]
+    all_feature_cols = base_vars + type_cols + cfg["continuous_vars"] + cfg["penalized_cols"]
+    # deduplicate while preserving order
+    seen = set()
+    all_feature_cols = [c for c in all_feature_cols if not (c in seen or seen.add(c))]
+    label = f"{args.scheme}:{args.event}:{args.modality}"
+    event_pred_df = validate_cox_inputs(
+        event_pred_df, args.event, f"tt_{args.event}", all_feature_cols, label=label,
+    )
     n_jobs = _get_n_jobs(args.n_jobs)
 
     test_df, val_df, _ = run_grid_CoxPH_parallel(
