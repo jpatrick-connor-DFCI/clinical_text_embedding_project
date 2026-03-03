@@ -242,8 +242,7 @@ def validate_cox_inputs(
 
     constant_cols = [c for c in present if df[c].nunique(dropna=False) <= 1]
     if constant_cols:
-        print(f"{tag}Dropping {len(constant_cols)} constant feature columns: {constant_cols}")
-        df = df.drop(columns=constant_cols)
+        print(f"{tag}Warning: {len(constant_cols)} constant feature columns (will get zero coefficients): {constant_cols}")
 
     # NaN in features: warn (run_grid_CoxPH_parallel drops these internally)
     n_feat_nan = df[present].isna().any(axis=1).sum()
