@@ -164,10 +164,13 @@ for gene in genes_without_major:
     gene_mask = (sv_data['GENE_A'] == gene) | (sv_data['GENE_B'] == gene)
     feature_dict[colname].update(set(sv_data.loc[gene_mask, 'sample_id']))
 
-all_samples = sv_data['sample_id'].dropna().unique()
-feature_df = pd.DataFrame(0, index=all_samples, columns=list(feature_dict.keys()), dtype='int8')
+# Build SV feature matrix using ALL mutation-data samples as the universe,
+# so samples without any SV/fusion are treated as negative (0).
+all_mutation_samples = complete_mutation_data['sample_id'].unique()
+feature_df = pd.DataFrame(0, index=all_mutation_samples, columns=list(feature_dict.keys()), dtype='int8')
 for col, sample_set in feature_dict.items():
-    feature_df.loc[list(sample_set), col] = 1
+    present = [s for s in sample_set if s in feature_df.index]
+    feature_df.loc[present, col] = 1
 feature_df = feature_df.reset_index().rename(columns={'index': 'sample_id'})
 
 if feature_df.shape[1] > 1:
@@ -176,16 +179,18 @@ if feature_df.shape[1] > 1:
 else:
     valid_cols = []
 
-complete_sv_data = (
-    feature_df[['sample_id'] + valid_cols]
-    .merge(px_metadata_min, on='sample_id', how='inner')
-)
-sv_columns = [col for col in complete_sv_data.columns if col.endswith('_SV') or col.endswith('_FUSION')]
-complete_sv_data = complete_sv_data[metadata_columns + sv_columns]
-if sv_columns:
-    complete_sv_data[sv_columns] = complete_sv_data[sv_columns].astype(int)
+sv_columns = [c for c in valid_cols if c.endswith('_SV') or c.endswith('_FUSION')]
 
-complete_sv_data.to_csv(os.path.join(CLINICAL_FEATURE_PATH, 'complete_sv_data_df.csv'), index=False)
+# Merge SV/fusion features into the somatic mutation data
+if sv_columns:
+    complete_mutation_data = complete_mutation_data.merge(
+        feature_df[['sample_id'] + sv_columns], on='sample_id', how='left')
+    complete_mutation_data[sv_columns] = complete_mutation_data[sv_columns].fillna(0).astype(int)
+
+# Re-save complete somatic data with SV/fusion columns included
+all_feature_cols = mutation_columns + sv_columns
+complete_mutation_data = complete_mutation_data[metadata_columns + all_feature_cols]
+complete_mutation_data.to_csv(os.path.join(CLINICAL_FEATURE_PATH, 'complete_somatic_data_df.csv'), index=False)
 
 # === Categorical treatment by line ===
 med_classes = pd.read_csv(os.path.join(DATA_PATH, 'GPT_generated_med_classes.csv'))
