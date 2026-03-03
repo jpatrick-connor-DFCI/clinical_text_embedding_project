@@ -8,6 +8,7 @@ from embed_surv_utils import run_grid_CoxPH_parallel
 from slurm_array_utils import (
     DEFAULT_ALPHAS,
     DEFAULT_L1_RATIOS,
+    SCHEME_CONFIG,
     _get_n_jobs,
     filter_event_rows,
     get_events_from_df,
@@ -18,7 +19,7 @@ from slurm_array_utils import (
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run one feature-comparison modality for one endpoint event.")
-    parser.add_argument("--scheme", required=True, choices=["icd3", "icd4", "phecode", "death_met"])
+    parser.add_argument("--scheme", required=True, choices=sorted(SCHEME_CONFIG.keys()))
     parser.add_argument("--event", required=True)
     parser.add_argument(
         "--modality",
@@ -26,7 +27,7 @@ def _parse_args() -> argparse.Namespace:
         choices=["stage", "treatment", "labs", "somatic", "prs", "text"],
     )
     parser.add_argument("--n-jobs", type=int, default=None)
-    parser.add_argument("--max-iter", type=int, default=1000)
+    parser.add_argument("--max-iter", type=int, default=2500)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--backend", default="threading", choices=["threading", "loky"])
     return parser.parse_args()

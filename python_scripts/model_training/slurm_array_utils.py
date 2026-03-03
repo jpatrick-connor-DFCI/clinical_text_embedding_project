@@ -27,6 +27,18 @@ SCHEME_CONFIG: dict[str, dict[str, str]] = {
         "embedding_file": "death_met_embedding_prediction_df.csv",
         "results_dir": "death_met_results",
     },
+    "icd3_post": {
+        "embedding_file": "level_3_ICD_post_embedding_prediction_df.csv",
+        "results_dir": "level_3_ICD_post_results",
+    },
+    "icd4_post": {
+        "embedding_file": "level_4_ICD_post_embedding_prediction_df.csv",
+        "results_dir": "level_4_ICD_post_results",
+    },
+    "phecode_post": {
+        "embedding_file": "phecode_post_embedding_prediction_df.csv",
+        "results_dir": "phecode_post_results",
+    },
 }
 
 MET_EVENTS = {"brainM", "boneM", "adrenalM", "liverM", "lungM", "nodeM", "peritonealM"}
@@ -110,7 +122,7 @@ def load_feature_modalities_df(
 
     stage_cols = [col for col in mrn_stage_df.columns if col.startswith("CANCER_STAGE_")]
     type_cols = [col for col in cancer_type_df.columns if col.startswith("CANCER_TYPE_")]
-    somatic_cols = [col for col in somatic_df.columns if col.endswith(('_AMP', '_DEL', '_CNV', '_SNV'))]
+    somatic_cols = [col for col in somatic_df.columns if col.endswith(('_AMP', '_DEL', '_CNV', '_SNV', '_SV', '_FUSION'))]
     prs_cols = [col for col in prs_df.columns if "PGS" in col]
     treatment_cols = [col for col in treatment_df.columns if col.startswith("PX_on_")]
     embed_cols = [col for col in emb_df.columns if ("EMBEDDING" in col or "2015" in col)]

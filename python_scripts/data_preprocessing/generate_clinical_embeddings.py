@@ -5,6 +5,7 @@ import os
 import re
 import json
 import time
+from pathlib import Path
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -36,7 +37,7 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 embedding_model = AutoModel.from_pretrained('yikuan8/Clinical-Longformer').to(device)
 
 # Get batch indices
-batch_indices = {int(re.split('_', f)[4]) for f in TOKEN_PATH.iterdir() if f.name.startswith('VTE_notes_tokenized_batch_')}
+batch_indices = {int(re.split('_', f)[4]) for f in Path(TOKEN_PATH).iterdir() if f.name.startswith('VTE_notes_tokenized_batch_')}
 
 # Process batches
 for batch_idx in sorted(batch_indices):

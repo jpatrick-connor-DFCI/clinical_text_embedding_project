@@ -82,7 +82,7 @@ for idx in tqdm(range(len(batch_files))):
     batch_file = f"VTE_notes_with_full_metadata_batch_{idx}.json"
     batch_path = os.path.join(BATCHED_DATA_PATH, "batched_text", batch_file)
 
-    batched_data = json.load(open(batch_path), 'r')
+    batched_data = json.load(open(batch_path, 'r'))
 
     clinical_texts = batched_data.pop("CLINICAL_TEXT")
     tokenized = TOKENIZER(clinical_texts, padding="max_length", truncation=True)
@@ -93,5 +93,5 @@ for idx in tqdm(range(len(batch_files))):
     with open(os.path.join(BATCHED_TOKEN_PATH, "tokens", f"VTE_notes_tokenized_batch_{idx}_tokens.json"), 'w') as f:
         json.dump(tokenized_dict, f)
     
-    with open(os.path.join(BATCHED_TOKEN_PATH, "metadata",f"VTE_notes_tokenized_batch_{idx}_metadata.json")) as f:
+    with open(os.path.join(BATCHED_TOKEN_PATH, "metadata",f"VTE_notes_tokenized_batch_{idx}_metadata.json"), 'w') as f:
         json.dump(batched_data, f)

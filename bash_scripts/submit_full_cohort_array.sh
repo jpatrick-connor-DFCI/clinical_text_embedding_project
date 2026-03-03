@@ -5,7 +5,7 @@ set -euo pipefail
 PROJECT_ROOT=${PROJECT_ROOT:-/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project}
 MANIFEST=${MANIFEST:-$PROJECT_ROOT/bash_scripts/slurm_manifests/full_cohort_tasks.tsv}
 MAX_CONCURRENT=${MAX_CONCURRENT:-20}
-ROWS_PER_TASK=${ROWS_PER_TASK:-20}
+ROWS_PER_TASK=${ROWS_PER_TASK:-10}
 
 if [[ ! -d "$PROJECT_ROOT" ]]; then
   echo "Project root not found: $PROJECT_ROOT"

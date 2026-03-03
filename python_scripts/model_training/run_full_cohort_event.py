@@ -3,11 +3,12 @@
 import argparse
 import os
 
-from embed_surv_utils import run_base_CoxPH, run_grid_CoxPH_parallel
+from embed_surv_utils import run_grid_CoxPH_parallel
 
 from slurm_array_utils import (
     DEFAULT_ALPHAS,
     DEFAULT_L1_RATIOS,
+    SCHEME_CONFIG,
     _get_n_jobs,
     build_full_prediction_df,
     filter_event_rows,
@@ -17,10 +18,10 @@ from slurm_array_utils import (
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run one full-cohort model for a single endpoint event.")
-    parser.add_argument("--scheme", required=True, choices=["icd3", "icd4", "phecode", "death_met"])
+    parser.add_argument("--scheme", required=True, choices=sorted(SCHEME_CONFIG.keys()))
     parser.add_argument("--event", required=True)
     parser.add_argument("--n-jobs", type=int, default=None)
-    parser.add_argument("--max-iter", type=int, default=1000)
+    parser.add_argument("--max-iter", type=int, default=2500)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--backend", default="threading", choices=["threading", "loky"])
     return parser.parse_args()
@@ -42,8 +43,10 @@ def main() -> None:
 
     text_test_fp = os.path.join(out_dir, "text_test.csv")
     text_val_fp = os.path.join(out_dir, "text_val.csv")
-    base_fp = os.path.join(out_dir, "type_model_metrics.csv")
-    if (not args.overwrite) and all(os.path.exists(fp) for fp in [text_test_fp, text_val_fp, base_fp]):
+    base_test_fp = os.path.join(out_dir, "base_test.csv")
+    base_val_fp = os.path.join(out_dir, "base_val.csv")
+    all_fps = [text_test_fp, text_val_fp, base_test_fp, base_val_fp]
+    if (not args.overwrite) and all(os.path.exists(fp) for fp in all_fps):
         print(f"[skip] Existing outputs found for {args.scheme}:{args.event}")
         return
 
@@ -71,14 +74,21 @@ def main() -> None:
     text_test.to_csv(text_test_fp, index=False)
     text_val.to_csv(text_val_fp, index=False)
 
-    base_results = run_base_CoxPH(
+    base_test, base_val, _ = run_grid_CoxPH_parallel(
         event_pred_df,
         base_vars + type_cols,
         ["AGE_AT_TREATMENTSTART"],
+        [],
+        [1.0],
+        [1e-10],
         event_col=args.event,
         tstop_col=f"tt_{args.event}",
+        max_iter=args.max_iter,
+        n_jobs=n_jobs,
+        backend=args.backend,
     )
-    base_results.to_csv(base_fp, index=False)
+    base_test.to_csv(base_test_fp, index=False)
+    base_val.to_csv(base_val_fp, index=False)
 
     print(f"[done] {args.scheme}:{args.event} -> {out_dir}")
 
