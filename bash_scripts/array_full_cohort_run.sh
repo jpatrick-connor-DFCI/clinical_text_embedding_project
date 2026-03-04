@@ -4,7 +4,7 @@
 #SBATCH --partition=normal
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=6
-#SBATCH --mem=24G
+#SBATCH --mem=8G
 #SBATCH --time=48:00:00
 #SBATCH --array=0-0%1
 #SBATCH --output=bash_scripts/output/array_full_cohort/%A_%a.out
@@ -92,7 +92,7 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
     --scheme "$SCHEME" \
     --event "$EVENT" \
     --n-jobs "${SLURM_CPUS_PER_TASK:-1}" \
-    --max-iter "${COXNET_MAX_ITER:-2500}" \
+    --max-iter "${COXNET_MAX_ITER:-10000}" \
     --backend "${COXNET_BACKEND:-threading}" \
     ${OVERWRITE_FLAG[@]+"${OVERWRITE_FLAG[@]}"} \
     || echo "[error] row ${LINE_NUM} failed: scheme=${SCHEME}, event=${EVENT}"

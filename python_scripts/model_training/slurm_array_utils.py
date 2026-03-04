@@ -179,8 +179,8 @@ def load_feature_modalities_df(
     return full_prediction_df, type_cols, embed_cols, modality_cfg, feature_cols
 
 
-MIN_EVENTS_FOR_CV = 10
-MIN_NON_EVENTS_FOR_CV = 10
+MIN_EVENTS_FOR_CV = 50
+MIN_NON_EVENTS_FOR_CV = 50
 
 
 def validate_cox_inputs(
@@ -189,11 +189,11 @@ def validate_cox_inputs(
     tstop_col: str,
     feature_cols: list[str],
     label: str = "",
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, set[str]]:
     """Validate data suitability for Cox PH models before fitting.
 
-    Returns the (possibly filtered) DataFrame. Raises ValueError for
-    conditions that make fitting impossible.
+    Returns (possibly filtered DataFrame, set of dropped constant columns).
+    Raises ValueError for conditions that make fitting impossible.
     """
     tag = f"[{label}] " if label else ""
 
@@ -240,16 +240,18 @@ def validate_cox_inputs(
     if missing:
         raise ValueError(f"{tag}Missing feature columns: {sorted(missing)}")
 
-    constant_cols = [c for c in present if df[c].nunique(dropna=False) <= 1]
+    constant_cols = set(c for c in present if df[c].nunique(dropna=False) <= 1)
     if constant_cols:
-        print(f"{tag}Warning: {len(constant_cols)} constant feature columns (will get zero coefficients): {constant_cols}")
+        print(f"{tag}Dropping {len(constant_cols)} constant feature columns: {sorted(constant_cols)}")
+        df = df.drop(columns=constant_cols)
 
     # NaN in features: warn (run_grid_CoxPH_parallel drops these internally)
-    n_feat_nan = df[present].isna().any(axis=1).sum()
+    non_constant = [c for c in present if c not in constant_cols]
+    n_feat_nan = df[non_constant].isna().any(axis=1).sum()
     if n_feat_nan > 0:
         print(f"{tag}Warning: {n_feat_nan}/{len(df)} rows have NaN in feature columns")
 
-    return df
+    return df, constant_cols
 
 
 def parse_manifest_line(line: str, expected_fields: int) -> list[str]:

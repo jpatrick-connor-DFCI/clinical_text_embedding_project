@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import time
 
 from embed_surv_utils import run_grid_CoxPH_parallel
 
@@ -28,7 +29,7 @@ def _parse_args() -> argparse.Namespace:
         choices=["stage", "treatment", "labs", "somatic", "prs", "text"],
     )
     parser.add_argument("--n-jobs", type=int, default=None)
-    parser.add_argument("--max-iter", type=int, default=2500)
+    parser.add_argument("--max-iter", type=int, default=10000)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--backend", default="threading", choices=["threading", "loky"])
     return parser.parse_args()
@@ -68,11 +69,21 @@ def main() -> None:
     seen = set()
     all_feature_cols = [c for c in all_feature_cols if not (c in seen or seen.add(c))]
     label = f"{args.scheme}:{args.event}:{args.modality}"
-    event_pred_df = validate_cox_inputs(
+    event_pred_df, dropped_cols = validate_cox_inputs(
         event_pred_df, args.event, f"tt_{args.event}", all_feature_cols, label=label,
     )
+    type_cols = [c for c in type_cols if c not in dropped_cols]
+    cfg["continuous_vars"] = [c for c in cfg["continuous_vars"] if c not in dropped_cols]
+    cfg["penalized_cols"] = [c for c in cfg["penalized_cols"] if c not in dropped_cols]
+    all_feature_cols = [c for c in all_feature_cols if c not in dropped_cols]
+    n_before = len(event_pred_df)
+    event_pred_df = event_pred_df.dropna(subset=all_feature_cols + [args.event, f"tt_{args.event}"])
+    n_dropped = n_before - len(event_pred_df)
+    if n_dropped > 0:
+        print(f"{label} Dropped {n_dropped}/{n_before} rows with NaN values")
     n_jobs = _get_n_jobs(args.n_jobs)
 
+    t0 = time.time()
     test_df, val_df, _ = run_grid_CoxPH_parallel(
         event_pred_df,
         base_vars + type_cols,
@@ -89,6 +100,7 @@ def main() -> None:
     )
     test_df.to_csv(test_fp, index=False)
     val_df.to_csv(val_fp, index=False)
+    print(f"[time] {label}: {(time.time() - t0) / 60:.1f}m")
     print(f"[done] {args.scheme}:{args.event}:{args.modality} -> {out_dir}")
 
 

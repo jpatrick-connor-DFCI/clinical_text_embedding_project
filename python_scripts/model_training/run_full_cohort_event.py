@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import time
 
 from embed_surv_utils import run_grid_CoxPH_parallel
 
@@ -22,7 +23,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--scheme", required=True, choices=sorted(SCHEME_CONFIG.keys()))
     parser.add_argument("--event", required=True)
     parser.add_argument("--n-jobs", type=int, default=None)
-    parser.add_argument("--max-iter", type=int, default=2500)
+    parser.add_argument("--max-iter", type=int, default=10000)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--backend", default="threading", choices=["threading", "loky"])
     return parser.parse_args()
@@ -59,11 +60,20 @@ def main() -> None:
     base_vars = ["GENDER", "AGE_AT_TREATMENTSTART"]
     all_feature_cols = base_vars + type_cols + embed_cols
     label = f"{args.scheme}:{args.event}"
-    event_pred_df = validate_cox_inputs(
+    event_pred_df, dropped_cols = validate_cox_inputs(
         event_pred_df, args.event, f"tt_{args.event}", all_feature_cols, label=label,
     )
+    type_cols = [c for c in type_cols if c not in dropped_cols]
+    embed_cols = [c for c in embed_cols if c not in dropped_cols]
+    all_feature_cols = [c for c in all_feature_cols if c not in dropped_cols]
+    n_before = len(event_pred_df)
+    event_pred_df = event_pred_df.dropna(subset=all_feature_cols + [args.event, f"tt_{args.event}"])
+    n_dropped = n_before - len(event_pred_df)
+    if n_dropped > 0:
+        print(f"{label} Dropped {n_dropped}/{n_before} rows with NaN values")
     n_jobs = _get_n_jobs(args.n_jobs)
 
+    t0 = time.time()
     text_test, text_val, _ = run_grid_CoxPH_parallel(
         event_pred_df,
         base_vars + type_cols,
@@ -79,7 +89,9 @@ def main() -> None:
     )
     text_test.to_csv(text_test_fp, index=False)
     text_val.to_csv(text_val_fp, index=False)
+    print(f"[time] {label} text model: {(time.time() - t0) / 60:.1f}m")
 
+    t0 = time.time()
     base_test, base_val, _ = run_grid_CoxPH_parallel(
         event_pred_df,
         base_vars + type_cols,
@@ -95,6 +107,7 @@ def main() -> None:
     )
     base_test.to_csv(base_test_fp, index=False)
     base_val.to_csv(base_val_fp, index=False)
+    print(f"[time] {label} base model: {(time.time() - t0) / 60:.1f}m")
 
     print(f"[done] {args.scheme}:{args.event} -> {out_dir}")
 

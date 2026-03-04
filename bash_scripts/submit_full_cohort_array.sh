@@ -4,7 +4,7 @@ set -euo pipefail
 
 PROJECT_ROOT=${PROJECT_ROOT:-/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project}
 MANIFEST=${MANIFEST:-$PROJECT_ROOT/bash_scripts/slurm_manifests/full_cohort_tasks.tsv}
-MAX_CONCURRENT=${MAX_CONCURRENT:-20}
+MAX_CONCURRENT=${MAX_CONCURRENT:-5}
 ROWS_PER_TASK=${ROWS_PER_TASK:-10}
 
 if [[ ! -d "$PROJECT_ROOT" ]]; then
@@ -34,5 +34,6 @@ echo "Submitting full-cohort array with ${NUM_TASKS} tasks for ${NUM_ROWS} rows 
 
 sbatch \
   --array="$ARRAY_SPEC" \
+  --ntasks-per-node=1 \
   --export=ALL,PROJECT_ROOT="$PROJECT_ROOT",MANIFEST="$MANIFEST",ROWS_PER_TASK="$ROWS_PER_TASK" \
   "$PROJECT_ROOT/bash_scripts/array_full_cohort_run.sh"
