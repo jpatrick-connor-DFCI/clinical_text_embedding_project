@@ -1,6 +1,6 @@
 # Clinical Text Embedding Project
 
-This repository builds clinical-text embeddings from EHR notes using Clinical-Longformer, then trains and evaluates penalized Cox survival models across multiple endpoint schemes (ICD-10 level 3/4, phecodes, death/metastasis). It also includes ICI propensity scoring and biomarker discovery pipelines.
+This repository builds clinical-text embeddings from EHR notes using Clinical-Longformer, then trains and evaluates penalized Cox survival models across multiple endpoint schemes (ICD-10 level 3/4, phecodes, death/metastasis). It also includes a line-matched ICI propensity scoring and biomarker discovery pipeline with IPTW-weighted Cox models.
 
 ## Repository Layout
 
@@ -10,13 +10,17 @@ clinical_text_embedding_project/
 │   ├── data_preprocessing/       # Text processing, embedding generation, covariate creation
 │   ├── model_training/           # CoxPH model training with SLURM array jobs
 │   ├── model_evaluation/         # Risk scoring, mortality trajectories, model comparisons
-│   └── biomarker_analysis/       # ICI propensity scoring, IPTW and risk-based biomarker discovery
+│   └── biomarker_analysis/       # Line-matched ICI propensity scoring, IPTW biomarker discovery
 ├── python_utils/
 │   └── embed_surv_utils/         # Shared preprocessing and Cox model utilities (installable package)
 ├── bash_scripts/                 # SLURM submission and worker scripts
 │   └── slurm_manifests/          # Generated task TSV files
 └── jupyter_notebooks/
-    └── metrics/                  # Trajectory analysis and visualization
+    ├── metrics/                  # Survival model performance analysis and trajectory clustering
+    ├── biomarker_analysis/       # IPTW KM curves and marker-propensity association testing
+    ├── note_embedding_EDA/       # Embedding exploratory data analysis and PCA associations
+    ├── manuscript_figures/        # Publication-quality figures
+    └── meeting_figures/          # Lab meeting and conference presentations
 ```
 
 ---
@@ -31,8 +35,9 @@ clinical_text_embedding_project/
 | `generate_clinical_embeddings.py` | Generates 768-dimensional embeddings from tokenized notes using Clinical-Longformer on GPU. Processes in batches and saves embeddings as PyTorch tensors. |
 | `knit_longformer_embeddings.py` | Combines batched embeddings and metadata into unified NumPy arrays. Adds derived columns (note datetime, time relative to treatment start) for downstream temporal analysis. |
 | `extract_ICD_times.py` | Extracts ICD-10 diagnosis codes with timestamps from EHR records. Unpacks multiple codes per record and calculates time-to-ICD relative to first treatment date. |
+| `generate_icd10_to_phecode_mapping.R` | Builds a comprehensive ICD-10-CM to phecode mapping using the R `Phecode` package (v1.2 primary, PhecodeX v1.0 gap-fill). Outputs a mapping CSV and a list of unmapped codes. |
 | `generate_embedding_prediction_datasets.py` | Creates survival prediction datasets by merging time-decayed pooled embeddings with clinical outcomes (death, metastasis, ICD-10 events) at three endpoint granularity levels (level 3, level 4, phecodes). |
-| `generate_all_non_text_covariates.py` | Compiles non-text clinical and genomic feature matrices (cancer type, stage, somatic mutations, PRS, lab values, treatment types, structural variants) for use as covariates in survival models. |
+| `generate_all_non_text_covariates.py` | Compiles non-text clinical and genomic feature matrices: cancer type, cancer stage, somatic mutations (SNV/AMP/CNV/DEL), structural variants and fusions (from SOMATIC_SV_RESULTS), PRS, mean pre-treatment lab values, treatment classes by line, and panel version. SV/Fusion features use all mutation-tested samples as the universe (positive-only SV data; absence = 0 for tested samples). |
 
 ### `python_scripts/model_training/`
 
@@ -55,14 +60,26 @@ clinical_text_embedding_project/
 
 ### `python_scripts/biomarker_analysis/`
 
+The biomarker pipeline uses line-matched cohorts to compare ICI vs. never-ICI patients, with two propensity score models and two analysis tracks run as sensitivity analyses.
+
+**Matching schemes:** 1:1 (one control per case) and 1:k (up to 3 controls per case), matched exactly on (cancer_type, line_category) where line_category bins treatment lines as 1, 2, 3, or 4+.
+
+**Propensity score models:** (1) embeddings-only LR; (2) all-covariates LR (embeddings + demographics + cancer type + panel version + line dummies).
+
+**Analysis tracks:**
+- **Track 1** (ICI-only, generalizability-weighted): `S(t) ~ base_vars + line_dummies + marker`. Effect = marker coefficient. IPTW weight = 1/ps to rebalance ICI patients toward the full eligible population.
+- **Track 2** (full cohort, IPTW-weighted): `S(t) ~ base_vars + line_dummies + marker + PX_on_ICI + marker×ICI`. Effect = interaction coefficient. Uses stabilized ATE/ATT weights with common-support trimming.
+
+Both tracks run across pan-cancer, SKIN, and LUNG cohorts with FDR correction within mutation type.
+
 | File | Description |
 |------|-------------|
-| `biomarker_common.py` | Shared utilities for loading note embeddings, cohort treatment data, survival outcomes, and confounder matrices (demographics, cancer type, panel version) used across biomarker analysis scripts. |
-| `ICI_LRs.py` | Trains logistic regression propensity score models predicting first-line ICI vs. never-ICI receipt using clinical note embeddings plus confounders (demographics, cancer type, panel version). Generates held-out propensity scores via stratified 5-fold CV at multiple buffer windows (0, 15, 30, 45 days before treatment). Patients with ICI only at later treatment lines are excluded. |
-| `generate_IPTW_df.py` | Creates the IPTW analysis dataset by merging propensity scores (from 30-day buffer predictions) with genomic markers (somatic mutations, PRS) and clinical covariates for ICI vs. non-ICI comparison. |
-| `generate_risk_based_df.py` | Generates the biomarker discovery dataset for first-line ICI patients, combining text-embedding-derived risk scores with genomic and clinical features. |
-| `run_IPTW_analysis.py` | Performs IPTW analysis to identify predictive and prognostic biomarkers for ICI benefit. Applies common support trimming, stabilized ATE weights (truncated at 5th/95th percentile, capped at 20), Cox PH models with marker-treatment interactions, and Benjamini-Hochberg FDR correction. Runs on pan-cancer, SKIN, and LUNG cohorts. |
-| `run_risk_based_analysis.py` | Tests whether genomic markers retain significance for mortality after adjustment for text-embedding-derived risk scores in first-line ICI patients. Auto-selects cancer types with sufficient sample size. |
+| `biomarker_common.py` | Shared utilities for loading note embeddings, survival cohort data, and confounder matrices (demographics, cancer type, panel version). Defines mutation type tags for marker classification. |
+| `build_line_matched_cohort.py` | Builds line-matched ICI vs. never-ICI cohorts. For ICI patients, extracts the earliest treatment line with ICI (from `ALL_MEDICATION_LINES.csv`). For never-ICI controls, uses max treatment line reached. Bins lines into 1/2/3/4+ categories and performs exact matching on (cancer_type, line_category) without replacement. Produces both 1:1 and 1:k (k=3) matched cohort CSVs. |
+| `ICI_LRs.py` | Trains logistic regression propensity models predicting ICI receipt within a line-matched cohort. Accepts `--matching {1to1,1tok}` argument. For each matching scheme, trains two models: embeddings-only and all-covariates (embeddings + demographics + cancer type + panel version + line dummies). Generates held-out propensity scores via 5-fold stratified CV at multiple buffer windows (0, 15, 30, 45 days). Saves ROC curves for the 30-day buffer. |
+| `generate_IPTW_df.py` | Creates the IPTW analysis dataset by merging propensity scores (30-day buffer) with genomic markers (somatic mutations including SV/Fusions), cancer type, panel version, and line category dummies (line 1 as reference). Accepts `--matching` and `--ps_model` arguments to select the specification. |
+| `run_IPTW_analysis.py` | Runs both analysis tracks for a given {matching, ps_model} specification. Track 2 (full-cohort interaction) runs with ATE, ATT, and unweighted sensitivity specs. Track 1 (ICI-only) runs weighted (1/ps generalizability) and unweighted. Includes common-support trimming, stabilized IPTW weight truncation, Platt-scaling recalibration for cancer-type subsets (SKIN, LUNG), covariate balance diagnostics (SMD), and effective sample size reporting. Accepts `--matching` and `--ps_model` arguments. |
+| `run_biomarker_pipeline.ipynb` | Orchestration notebook that runs the full pipeline in sequence: (1) data regeneration via `generate_all_non_text_covariates.py`, (2) line-matched cohort construction, (3) propensity score generation for both matching schemes, (4) IPTW dataset generation for all 4 specs, (5) Cox model analysis for all 4 specs, (6) results compilation aggregating significant hits across specifications. |
 
 ### `python_utils/embed_surv_utils/`
 
@@ -84,16 +101,47 @@ clinical_text_embedding_project/
 |------|-------------|
 | `submit_full_cohort_array.sh` | Reads the full-cohort manifest, calculates the number of array tasks needed, and submits the array job with configurable concurrency limits. |
 | `array_full_cohort_run.sh` | SLURM worker script for full-cohort training. Processes manifest rows assigned to its array task ID, calling `run_full_cohort_event.py` for each scheme-event combination. Pins threads to 1 to avoid oversubscription. |
-| `submit_feature_comp_light_array.sh` | Submits feature-comparison array jobs for lightweight modalities (stage, treatment). Configurable rows per task and max concurrent jobs. |
-| `array_feature_comp_light.sh` | SLURM worker for light feature-comparison tasks (6 CPUs, 24 GB). Iterates over assigned manifest rows calling `run_feature_comp_task.py` for each scheme-event-modality triple. |
-| `submit_feature_comp_heavy_array.sh` | Submits feature-comparison array jobs for heavyweight modalities (text, PRS, labs, somatic) with lower concurrency due to higher resource requirements. |
-| `array_feature_comp_heavy.sh` | SLURM worker for heavy feature-comparison tasks (higher memory/CPU allocation). Same manifest-driven logic as the light variant but with 1 row per task. |
+| `submit_feature_comp_array.sh` | Submits feature-comparison array jobs. Reads the feature-comparison manifest and submits with configurable rows per task and max concurrent jobs. |
+| `array_feature_comp.sh` | SLURM worker for feature-comparison tasks. Iterates over assigned manifest rows calling `run_feature_comp_task.py` for each scheme-event-modality triple. |
 
 ### `jupyter_notebooks/metrics/`
 
 | File | Description |
 |------|-------------|
-| `analyze_mortality_trajectories.py` | Analysis script for mortality risk trajectories: K-means clustering with elbow plots, spaghetti plots of trajectory clusters, and heatmaps comparing baseline vs. trajectory-adjusted cluster patterns. |
+| `analyze_landmark_results.ipynb` | Analysis of landmark survival model performance across time horizons. |
+| `analyze_mortality_trajectories.ipynb` | Interactive analysis and visualization of mortality risk score trajectories over time. |
+| `analyze_mortality_trajectories.py` | Script version: K-means clustering with elbow plots, spaghetti plots of trajectory clusters, and heatmaps comparing baseline vs. trajectory-adjusted cluster patterns. |
+| `compile_ICD_level_3_results.ipynb` | Compiles and visualizes full-cohort CoxPH results across ICD-10 level 3 endpoints. |
+| `compile_feature_comps_ICD_level_3.ipynb` | Compiles feature-comparison results (text vs. somatic vs. labs vs. PRS vs. stage vs. treatment) for ICD-10 level 3 endpoints. |
+| `debug_individual_events.ipynb` | Debugging notebook for inspecting individual event-level model fits. |
+| `trajectories_vs_stage.ipynb` | Compares mortality trajectory clusters against cancer stage to assess whether trajectories capture information beyond staging. |
+
+### `jupyter_notebooks/biomarker_analysis/`
+
+| File | Description |
+|------|-------------|
+| `IPTW_KM_curves.ipynb` | Kaplan-Meier survival curves comparing ICI vs. non-ICI patients, weighted by IPTW propensity scores. |
+| `test_marker_propensity_association.ipynb` | Tests for associations between genomic markers and propensity scores to check for residual confounding. |
+
+### `jupyter_notebooks/note_embedding_EDA/`
+
+| File | Description |
+|------|-------------|
+| `embedding_EDA.ipynb` | Exploratory data analysis of clinical note embeddings: distributions, dimensionality, clustering patterns. |
+| `association_testing_for_PCA.ipynb` | Tests associations between PCA components of note embeddings and clinical variables. |
+
+### `jupyter_notebooks/manuscript_figures/`
+
+| File | Description |
+|------|-------------|
+| `figure_1.ipynb` | Generates Figure 1 for the manuscript. |
+
+### `jupyter_notebooks/meeting_figures/`
+
+| File | Description |
+|------|-------------|
+| `07_14_2025_lab_meeting.ipynb` | Figures for the July 14, 2025 lab meeting presentation. |
+| `ASHG_figures.ipynb` | Figures for the ASHG conference presentation. |
 
 ---
 
@@ -108,6 +156,7 @@ python python_scripts/data_preprocessing/text_preprocessing_and_tokenization.py
 python python_scripts/data_preprocessing/generate_clinical_embeddings.py
 python python_scripts/data_preprocessing/knit_longformer_embeddings.py
 python python_scripts/data_preprocessing/extract_ICD_times.py
+Rscript python_scripts/data_preprocessing/generate_icd10_to_phecode_mapping.R
 python python_scripts/data_preprocessing/generate_embedding_prediction_datasets.py
 python python_scripts/data_preprocessing/generate_all_non_text_covariates.py
 ```
@@ -124,26 +173,43 @@ Writes manifests to `bash_scripts/slurm_manifests/`.
 
 ```bash
 bash bash_scripts/submit_full_cohort_array.sh
-bash bash_scripts/submit_feature_comp_light_array.sh
-bash bash_scripts/submit_feature_comp_heavy_array.sh
+bash bash_scripts/submit_feature_comp_array.sh
 ```
 
 ### 4) Evaluate Models
 
 Use scripts under `python_scripts/model_evaluation/` for held-out risk scoring, mortality trajectory generation/clustering, and within-vs-pan cohort comparisons.
 
-### 5) Biomarker Analysis (Propensity Scoring + Biomarker Discovery)
+### 5) Biomarker Analysis
+
+Run via the orchestration notebook or as individual scripts:
 
 ```bash
-python python_scripts/biomarker_analysis/ICI_LRs.py
-python python_scripts/biomarker_analysis/generate_IPTW_df.py
-python python_scripts/biomarker_analysis/run_IPTW_analysis.py
-python python_scripts/biomarker_analysis/generate_risk_based_df.py
-python python_scripts/biomarker_analysis/run_risk_based_analysis.py
+# Step 1: Regenerate covariates (ensures SV/Fusion columns are correct)
+python python_scripts/data_preprocessing/generate_all_non_text_covariates.py
+
+# Step 2: Build line-matched cohorts (1:1 and 1:k)
+python python_scripts/biomarker_analysis/build_line_matched_cohort.py
+
+# Step 3: Train propensity models for each matching scheme
+python python_scripts/biomarker_analysis/ICI_LRs.py --matching 1to1
+python python_scripts/biomarker_analysis/ICI_LRs.py --matching 1tok
+
+# Step 4: Generate IPTW datasets (4 specs: 2 matching x 2 PS models)
+python python_scripts/biomarker_analysis/generate_IPTW_df.py --matching 1to1 --ps_model embeddings_only
+python python_scripts/biomarker_analysis/generate_IPTW_df.py --matching 1to1 --ps_model all_covariates
+python python_scripts/biomarker_analysis/generate_IPTW_df.py --matching 1tok --ps_model embeddings_only
+python python_scripts/biomarker_analysis/generate_IPTW_df.py --matching 1tok --ps_model all_covariates
+
+# Step 5: Run Cox models (Track 1 + Track 2 for each spec)
+python python_scripts/biomarker_analysis/run_IPTW_analysis.py --matching 1to1 --ps_model embeddings_only
+python python_scripts/biomarker_analysis/run_IPTW_analysis.py --matching 1to1 --ps_model all_covariates
+python python_scripts/biomarker_analysis/run_IPTW_analysis.py --matching 1tok --ps_model embeddings_only
+python python_scripts/biomarker_analysis/run_IPTW_analysis.py --matching 1tok --ps_model all_covariates
 ```
 
 ## Notes
 
 - Most scripts use hardcoded HPC data paths (configurable via constants at the top of each file).
 - The `embed_surv_utils` package should be installed in development mode (`pip install -e python_utils/`).
-- Key dependencies: `pandas`, `numpy`, `scikit-learn`, `sksurv`, `lifelines`, `statsmodels`, `torch`, `transformers`, `icd10`.
+- Key dependencies: `pandas`, `numpy`, `scikit-learn`, `sksurv`, `lifelines`, `statsmodels`, `torch`, `transformers`, `joblib`, `tqdm`.
