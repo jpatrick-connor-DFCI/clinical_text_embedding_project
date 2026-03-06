@@ -28,6 +28,7 @@ from lifelines import CoxPHFitter
 from lifelines.exceptions import ConvergenceWarning
 from joblib import Parallel, delayed
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score
 from biomarker_common import get_mutation_type
 
 random.seed(42)
@@ -77,9 +78,10 @@ biomarker_cols = [
 MIN_CANCER_TYPE_TOTAL = 30
 COMMON_SUPPORT_PCT = (0.5, 99.5)
 IPTW_TRUNC_PCT = (1, 99)
-MIN_MARKER_POS_PER_ARM = 3
-MIN_MARKER_NEG_PER_ARM = 3
-MIN_MARKER_POS_ICI_ONLY = 5
+MIN_MARKER_POS_PER_ARM = 10
+MIN_MARKER_NEG_PER_ARM = 10
+MIN_MARKER_POS_ICI_ONLY = 10
+MIN_EVENTS_PER_MARKER_GROUP = 5   # minimum deaths among marker+ patients
 
 
 # === Utility functions ===
@@ -127,7 +129,8 @@ def merge_rare_cancer_types_into_other(df, min_total=30):
 
 
 def marker_has_within_arm_support(df, marker, treat_col='PX_on_ICI',
-                                  min_pos_per_arm=5, min_neg_per_arm=5):
+                                  min_pos_per_arm=10, min_neg_per_arm=10,
+                                  min_events_per_group=5):
     marker_bin = (pd.to_numeric(df[marker], errors='coerce').fillna(0) > 0).astype(int)
     treatment = pd.to_numeric(df[treat_col], errors='coerce').fillna(0).astype(int)
     for arm in (0, 1):
@@ -138,15 +141,36 @@ def marker_has_within_arm_support(df, marker, treat_col='PX_on_ICI',
         arm_neg = int(arm_mask.sum() - arm_pos)
         if arm_pos < min_pos_per_arm or arm_neg < min_neg_per_arm:
             return False
+        events_pos = int(df.loc[arm_mask & (marker_bin == 1), 'death'].sum())
+        if events_pos < min_events_per_group:
+            return False
     return True
 
 
-def marker_has_ici_only_support(df, marker, min_pos=5):
-    """Check if marker has enough positive cases within ICI patients only."""
+def get_marker_event_counts(df, marker, treat_col='PX_on_ICI'):
+    """Return event counts for a marker across treatment arms."""
+    marker_bin = (pd.to_numeric(df[marker], errors='coerce').fillna(0) > 0).astype(int)
+    treatment = pd.to_numeric(df[treat_col], errors='coerce').fillna(0).astype(int)
+    counts = {}
+    for arm, arm_label in [(1, 'ICI'), (0, 'nonICI')]:
+        arm_mask = treatment == arm
+        pos_mask = arm_mask & (marker_bin == 1)
+        neg_mask = arm_mask & (marker_bin == 0)
+        counts[f'n_{arm_label}_pos'] = int(pos_mask.sum())
+        counts[f'n_{arm_label}_neg'] = int(neg_mask.sum())
+        counts[f'events_{arm_label}_pos'] = int(df.loc[pos_mask, 'death'].sum())
+        counts[f'events_{arm_label}_neg'] = int(df.loc[neg_mask, 'death'].sum())
+    return counts
+
+
+def marker_has_ici_only_support(df, marker, min_pos=10, min_events=5):
+    """Check if marker has enough positive cases and events within ICI patients."""
     ici_df = df.loc[df['PX_on_ICI'] == 1]
-    marker_pos = (pd.to_numeric(ici_df[marker], errors='coerce').fillna(0) > 0).sum()
+    marker_bin = (pd.to_numeric(ici_df[marker], errors='coerce').fillna(0) > 0)
+    marker_pos = marker_bin.sum()
     marker_neg = len(ici_df) - marker_pos
-    return marker_pos >= min_pos and marker_neg >= min_pos
+    events_pos = int(ici_df.loc[marker_bin, 'death'].sum())
+    return marker_pos >= min_pos and marker_neg >= min_pos and events_pos >= min_events
 
 
 def compute_smd(df, covariates, treat_col='PX_on_ICI', weights=None):
@@ -213,7 +237,11 @@ TRACK2_RESULT_COLS = [
     'beta_marker_nonICI', 'HR_marker_nonICI', 'CI95_marker_nonICI_low',
     'CI95_marker_nonICI_high', 'p_marker_nonICI',
     'beta_ICI_at_marker0', 'p_ICI_at_marker0',
+    'n_ICI_pos', 'n_ICI_neg', 'events_ICI_pos', 'events_ICI_neg',
+    'n_nonICI_pos', 'n_nonICI_neg', 'events_nonICI_pos', 'events_nonICI_neg',
 ]
+
+HR_EXTREME_THRESHOLD = 50
 
 
 def _fit_track2_marker(df, marker, base_vars, weights_col):
@@ -222,6 +250,9 @@ def _fit_track2_marker(df, marker, base_vars, weights_col):
     if weights_col is not None:
         cols.append(weights_col)
     df_fit = df[cols].dropna().copy()
+
+    # Compute event counts before fitting
+    event_counts = get_marker_event_counts(df_fit, marker)
 
     mx = f"{marker}_x_ICI"
     df_fit[mx] = df_fit['PX_on_ICI'] * df_fit[marker]
@@ -257,7 +288,7 @@ def _fit_track2_marker(df, marker, base_vars, weights_col):
     p_IO0 = (float(summ.loc[summ['covariate'] == 'PX_on_ICI', 'p'].values[0])
              if 'PX_on_ICI' in summ['covariate'].values else np.nan)
 
-    return {
+    result = {
         "marker": marker,
         "beta_markerxICI": beta_mx, "HR_markerxICI": np.exp(beta_mx), "p_markerxICI": p_mx,
         "beta_marker_ICI": beta_ici, "HR_marker_ICI": hr_ici,
@@ -267,6 +298,8 @@ def _fit_track2_marker(df, marker, base_vars, weights_col):
         "p_marker_nonICI": p_m,
         "beta_ICI_at_marker0": beta_IO0, "p_ICI_at_marker0": p_IO0,
     }
+    result.update(event_counts)
+    return result
 
 
 def add_track2_fdr_and_labels(results_df):
@@ -281,6 +314,17 @@ def add_track2_fdr_and_labels(results_df):
     _fdr_within_mutation_type(results_df, 'p_marker_nonICI', 'FDR_marker_nonICI',
                               'significant_prognostic_nonICI')
     results_df['classifier'] = results_df.apply(classify, axis=1)
+
+    # Flag extreme HRs indicating possible model separation
+    results_df['extreme_hr_flag'] = (
+        (~np.isfinite(results_df['HR_markerxICI'])) |
+        (results_df['HR_markerxICI'] > HR_EXTREME_THRESHOLD) |
+        (results_df['HR_markerxICI'] < 1.0 / HR_EXTREME_THRESHOLD)
+    )
+    n_extreme = results_df['extreme_hr_flag'].sum()
+    if n_extreme > 0:
+        logger.warning(f"  {n_extreme} markers flagged with extreme interaction HRs (>{HR_EXTREME_THRESHOLD} or <{1/HR_EXTREME_THRESHOLD:.4f})")
+
     return results_df
 
 
@@ -290,6 +334,7 @@ def add_track2_fdr_and_labels(results_df):
 
 TRACK1_RESULT_COLS = [
     'marker', 'beta_marker', 'HR_marker', 'CI95_marker_low', 'CI95_marker_high', 'p_marker',
+    'n_marker_pos', 'n_marker_neg', 'events_marker_pos', 'events_marker_neg',
 ]
 
 
@@ -299,6 +344,13 @@ def _fit_track1_marker(df, marker, base_vars, weights_col):
     if weights_col is not None:
         cols.append(weights_col)
     df_fit = df[cols].dropna().copy()
+
+    # Compute event counts
+    marker_bin = (pd.to_numeric(df_fit[marker], errors='coerce').fillna(0) > 0)
+    n_pos = int(marker_bin.sum())
+    n_neg = int((~marker_bin).sum())
+    events_pos = int(df_fit.loc[marker_bin, 'death'].sum())
+    events_neg = int(df_fit.loc[~marker_bin, 'death'].sum())
 
     cph = CoxPHFitter(penalizer=0.01)
     cph = fit_cph_log_warnings(cph, df_fit, 'tt_death', 'death',
@@ -319,6 +371,8 @@ def _fit_track1_marker(df, marker, base_vars, weights_col):
         "beta_marker": beta_m, "HR_marker": hr_m,
         "CI95_marker_low": ci_m[0], "CI95_marker_high": ci_m[1],
         "p_marker": p_m,
+        "n_marker_pos": n_pos, "n_marker_neg": n_neg,
+        "events_marker_pos": events_pos, "events_marker_neg": events_neg,
     }
 
 
@@ -328,6 +382,15 @@ def add_track1_fdr(results_df):
         return results_df
     results_df['mutation_type'] = results_df['marker'].apply(get_mutation_type)
     _fdr_within_mutation_type(results_df, 'p_marker', 'FDR_marker', 'significant_marker')
+
+    results_df['extreme_hr_flag'] = (
+        (results_df['HR_marker'] > HR_EXTREME_THRESHOLD) |
+        (results_df['HR_marker'] < 1.0 / HR_EXTREME_THRESHOLD)
+    )
+    n_extreme = results_df['extreme_hr_flag'].sum()
+    if n_extreme > 0:
+        logger.warning(f"  {n_extreme} markers flagged with extreme HRs (>{HR_EXTREME_THRESHOLD} or <{1/HR_EXTREME_THRESHOLD:.4f})")
+
     return results_df
 
 
@@ -466,8 +529,25 @@ for cancer_type in types_to_test:
     ps_diag.groupby('PX_on_ICI')['ICI_prediction'].describe().to_csv(
         os.path.join(diag_path, 'propensity_score_summary.csv'))
 
+    # PS AUC within this cancer type subset
+    ps_auc = roc_auc_score(type_df['PX_on_ICI'], type_df['ICI_prediction'])
+    print(f"  PS AUC ({cancer_type}): {ps_auc:.4f}")
+
+    # Cohort summary with event rates
+    n_treated = int(treat_mask.sum())
+    n_control = int((~treat_mask).sum())
+    events_treated = int(type_df.loc[treat_mask, 'death'].sum())
+    events_control = int(type_df.loc[~treat_mask, 'death'].sum())
+    print(f"  Cohort: {n_treated} ICI ({events_treated} deaths, {events_treated/max(n_treated,1)*100:.1f}%), "
+          f"{n_control} non-ICI ({events_control} deaths, {events_control/max(n_control,1)*100:.1f}%)")
+
     pd.DataFrame([{
-        'N_treated': int(treat_mask.sum()), 'N_control': int((~treat_mask).sum()),
+        'cancer_type': cancer_type,
+        'N_treated': n_treated, 'N_control': n_control,
+        'events_treated': events_treated, 'events_control': events_control,
+        'event_rate_treated': events_treated / max(n_treated, 1),
+        'event_rate_control': events_control / max(n_control, 1),
+        'PS_AUC': ps_auc,
         'ESS_ATE_treated': ess_t, 'ESS_ATE_control': ess_c,
         'ESS_ATT_treated': ess_t_att, 'ESS_ATT_control': ess_c_att,
     }]).to_csv(os.path.join(diag_path, 'effective_sample_sizes.csv'), index=False)
@@ -480,11 +560,20 @@ for cancer_type in types_to_test:
     smd_att = compute_smd(type_df, balance_covars, weights=w_att_trunc)
     smd_att.to_csv(os.path.join(diag_path, 'covariate_balance_smd_ATT.csv'), index=False)
 
+    # Max SMD check (balance quality indicator)
+    max_smd_ate = smd_ate['SMD_weighted'].abs().max()
+    max_smd_att = smd_att['SMD_weighted'].abs().max()
+    n_imbalanced_ate = (smd_ate['SMD_weighted'].abs() > 0.1).sum()
+    n_imbalanced_att = (smd_att['SMD_weighted'].abs() > 0.1).sum()
+    print(f"  ATE balance: max|SMD|={max_smd_ate:.4f}, {n_imbalanced_ate}/{len(smd_ate)} covariates with |SMD|>0.1")
+    print(f"  ATT balance: max|SMD|={max_smd_att:.4f}, {n_imbalanced_att}/{len(smd_att)} covariates with |SMD|>0.1")
+
     # === Track 2: full-cohort interaction ===
     track2_markers = [
         m for m in biomarker_cols
         if marker_has_within_arm_support(type_df, m, min_pos_per_arm=MIN_MARKER_POS_PER_ARM,
-                                         min_neg_per_arm=MIN_MARKER_NEG_PER_ARM)
+                                         min_neg_per_arm=MIN_MARKER_NEG_PER_ARM,
+                                         min_events_per_group=MIN_EVENTS_PER_MARKER_GROUP)
     ]
     print(f"  Track 2 markers to test: {len(track2_markers)}")
 
@@ -517,7 +606,8 @@ for cancer_type in types_to_test:
 
     track1_markers = [
         m for m in biomarker_cols
-        if marker_has_ici_only_support(type_df, m, min_pos=MIN_MARKER_POS_ICI_ONLY)
+        if marker_has_ici_only_support(type_df, m, min_pos=MIN_MARKER_POS_ICI_ONLY,
+                                       min_events=MIN_EVENTS_PER_MARKER_GROUP)
     ]
     print(f"  Track 1 markers to test: {len(track1_markers)}")
 
