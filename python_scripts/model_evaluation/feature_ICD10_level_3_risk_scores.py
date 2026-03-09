@@ -36,7 +36,7 @@ labs_df = pd.read_csv(os.path.join(FEATURE_PATH, 'mean_lab_vals_pre_first_treatm
 # feature classes
 stage_cols = [col for col in mrn_stage_df.columns if 'CANCER_STAGE_' in col]
 type_cols = [col for col in cancer_type_df.columns if 'CANCER_TYPE_' in col]
-somatic_cols = [col for col in somatic_df.columns if col.endswith(('_AMP', '_DEL', '_CNV', '_SNV'))]
+somatic_cols = [col for col in somatic_df.columns if col.endswith(('_AMP', '_DEL', '_SNV'))]
 prs_cols = [col for col in prs_df.columns if 'PGS' in col]
 treatment_cols = [col for col in treatment_df.columns if 'PX_on_' in col]
 embed_cols = [col for col in time_decayed_events_df.columns if ('EMBEDDING' in col or '2015' in col)]

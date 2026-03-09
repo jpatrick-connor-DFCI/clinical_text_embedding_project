@@ -68,7 +68,7 @@ panel_cols = [col for col in full_df.columns if col.upper().startswith('PANEL_VE
 cancer_type_cols = [col for col in full_df.columns if col.startswith('CANCER_TYPE_')]
 excluded_cols = (required_vars + base_covars + line_cols + panel_cols +
                  cancer_type_cols + ['PX_on_ICI', 'ICI_prediction'])
-mutation_tags = ('_SNV', '_SV', '_FUSION', '_DEL', '_AMP', '_CNV')
+mutation_tags = ('_SNV', '_SV', '_FUSION', '_DEL', '_AMP')
 biomarker_cols = [
     col for col in full_df.columns
     if (col not in excluded_cols) and any(tag in col.upper() for tag in mutation_tags)

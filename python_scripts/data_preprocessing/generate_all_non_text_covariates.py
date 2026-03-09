@@ -58,7 +58,7 @@ px_metadata_min = (px_metadata
                    .reset_index(drop=True))
 
 dfs_to_merge = []
-for mut_type in ['AMP', 'CNV', 'DEL', 'SNV']:
+for mut_type in ['AMP', 'DEL', 'SNV']:
     if mut_type == 'SNV':
         cur_df = pd.read_csv(os.path.join(PROFILE_PATH, 'PROFILE_2024.MUTATION_CARRIERS.csv'), index_col=0)
     else:
@@ -74,7 +74,7 @@ complete_mutation_data = (reduce(lambda left, right : pd.merge(left, right, on='
                           .fillna(0)
                           .merge(px_metadata_min, on='sample_id'))
 
-mutation_columns = [col for col in complete_mutation_data.columns if ('_AMP' in col) or ('_CNV' in col) or ('_DEL' in col) or ('_SNV' in col)]
+mutation_columns = [col for col in complete_mutation_data.columns if ('_AMP' in col) or ('_DEL' in col) or ('_SNV' in col)]
 metadata_columns = px_metadata_min.columns.tolist()
 
 complete_mutation_data = complete_mutation_data[metadata_columns + mutation_columns]

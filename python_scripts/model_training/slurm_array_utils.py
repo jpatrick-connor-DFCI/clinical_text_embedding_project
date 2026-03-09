@@ -122,7 +122,7 @@ def load_feature_modalities_df(
 
     stage_cols = [col for col in mrn_stage_df.columns if col.startswith("CANCER_STAGE_")]
     type_cols = [col for col in cancer_type_df.columns if col.startswith("CANCER_TYPE_")]
-    somatic_cols = [col for col in somatic_df.columns if col.endswith(('_AMP', '_DEL', '_CNV', '_SNV', '_SV', '_FUSION'))]
+    somatic_cols = [col for col in somatic_df.columns if col.endswith(('_AMP', '_DEL', '_SNV', '_SV', '_FUSION'))]
     prs_cols = [col for col in prs_df.columns if "PGS" in col]
     treatment_cols = [col for col in treatment_df.columns if col.startswith("PX_on_")]
     embed_cols = [col for col in emb_df.columns if ("EMBEDDING" in col or "2015" in col)]

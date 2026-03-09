@@ -44,7 +44,7 @@ def load_confounders():
     return confounders
 
 
-MUTATION_TAGS = ('_SNV', '_SV', '_FUSION', '_DEL', '_AMP', '_CNV')
+MUTATION_TAGS = ('_SNV', '_SV', '_FUSION', '_DEL', '_AMP')
 
 
 def get_mutation_type(marker_name):
