@@ -417,7 +417,11 @@ def _run_marker_screen(df, markers, base_vars, weights_col, fit_fn, n_jobs, labe
 # Main loop over cancer types
 # =============================================
 
-types_to_test = ['pan_cancer', 'SKIN', 'LUNG']
+MIN_MARKERS_TO_TEST = 1
+types_to_test = ['pan_cancer'] + [
+    col.replace('CANCER_TYPE_', '') for col in cancer_type_cols
+    if col != 'CANCER_TYPE_OTHER'
+]
 
 for cancer_type in types_to_test:
     print(f"\n{'='*60}")
@@ -577,18 +581,21 @@ for cancer_type in types_to_test:
     ]
     print(f"  Track 2 markers to test: {len(track2_markers)}")
 
-    for spec_name, spec_weights in [('ATE', 'IPTW_ATE'), ('ATT', 'IPTW_ATT'), ('noIPTW', None)]:
-        results, failed = _run_marker_screen(
-            type_df, track2_markers, base_vars, spec_weights,
-            _fit_track2_marker, N_JOBS, label=f"T2 {cancer_type} {spec_name}")
-        if failed:
-            print(f"  Track 2 {spec_name} failures: {len(failed)}. "
-                  f"First: {failed[0][0]} -> {failed[0][1]}")
-        spec_df = pd.DataFrame(results, columns=TRACK2_RESULT_COLS)
-        spec_df = add_track2_fdr_and_labels(spec_df)
-        spec_df.to_csv(
-            os.path.join(RUN_PATH, f'{cancer_type}_track2_{spec_name}_interaction.csv'),
-            index=False)
+    if len(track2_markers) < MIN_MARKERS_TO_TEST:
+        print(f"  Skipping Track 2: fewer than {MIN_MARKERS_TO_TEST} markers with sufficient support.")
+    else:
+        for spec_name, spec_weights in [('ATE', 'IPTW_ATE'), ('ATT', 'IPTW_ATT'), ('noIPTW', None)]:
+            results, failed = _run_marker_screen(
+                type_df, track2_markers, base_vars, spec_weights,
+                _fit_track2_marker, N_JOBS, label=f"T2 {cancer_type} {spec_name}")
+            if failed:
+                print(f"  Track 2 {spec_name} failures: {len(failed)}. "
+                      f"First: {failed[0][0]} -> {failed[0][1]}")
+            spec_df = pd.DataFrame(results, columns=TRACK2_RESULT_COLS)
+            spec_df = add_track2_fdr_and_labels(spec_df)
+            spec_df.to_csv(
+                os.path.join(RUN_PATH, f'{cancer_type}_track2_{spec_name}_interaction.csv'),
+                index=False)
 
     # === Track 1: ICI-only generalizability-weighted ===
     ici_only_df = type_df.loc[type_df['PX_on_ICI'] == 1].copy()
@@ -611,21 +618,24 @@ for cancer_type in types_to_test:
     ]
     print(f"  Track 1 markers to test: {len(track1_markers)}")
 
-    # ICI-only base vars (no cancer type interaction needed for type-specific,
-    # include for pan-cancer)
-    ici_base_vars = list(base_vars)
+    if len(track1_markers) < MIN_MARKERS_TO_TEST:
+        print(f"  Skipping Track 1: fewer than {MIN_MARKERS_TO_TEST} markers with sufficient support.")
+    else:
+        # ICI-only base vars (no cancer type interaction needed for type-specific,
+        # include for pan-cancer)
+        ici_base_vars = list(base_vars)
 
-    for spec_name, spec_weights in [('weighted', 'IPTW_GEN'), ('unweighted', None)]:
-        results, failed = _run_marker_screen(
-            ici_only_df, track1_markers, ici_base_vars, spec_weights,
-            _fit_track1_marker, N_JOBS, label=f"T1 {cancer_type} {spec_name}")
-        if failed:
-            print(f"  Track 1 {spec_name} failures: {len(failed)}. "
-                  f"First: {failed[0][0]} -> {failed[0][1]}")
-        spec_df = pd.DataFrame(results, columns=TRACK1_RESULT_COLS)
-        spec_df = add_track1_fdr(spec_df)
-        spec_df.to_csv(
-            os.path.join(RUN_PATH, f'{cancer_type}_track1_{spec_name}_ICI_only.csv'),
-            index=False)
+        for spec_name, spec_weights in [('weighted', 'IPTW_GEN'), ('unweighted', None)]:
+            results, failed = _run_marker_screen(
+                ici_only_df, track1_markers, ici_base_vars, spec_weights,
+                _fit_track1_marker, N_JOBS, label=f"T1 {cancer_type} {spec_name}")
+            if failed:
+                print(f"  Track 1 {spec_name} failures: {len(failed)}. "
+                      f"First: {failed[0][0]} -> {failed[0][1]}")
+            spec_df = pd.DataFrame(results, columns=TRACK1_RESULT_COLS)
+            spec_df = add_track1_fdr(spec_df)
+            spec_df.to_csv(
+                os.path.join(RUN_PATH, f'{cancer_type}_track1_{spec_name}_ICI_only.csv'),
+                index=False)
 
 print(f"\n[run_IPTW_analysis] Done. Results in {RUN_PATH}")

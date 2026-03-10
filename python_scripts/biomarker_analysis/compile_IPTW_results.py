@@ -12,6 +12,7 @@ Usage:
 """
 
 import os
+import re
 import argparse
 import numpy as np
 import pandas as pd
@@ -30,7 +31,18 @@ os.makedirs(args.output_dir, exist_ok=True)
 
 MATCHINGS = ['1to1', '1tok']
 PS_MODELS = ['embeddings_only', 'all_covariates']
-CANCER_TYPES = ['pan_cancer', 'SKIN', 'LUNG']
+# Discover cancer types from result filenames across all run directories
+_cancer_types = set()
+for _m in MATCHINGS:
+    for _p in PS_MODELS:
+        _run = os.path.join(MARKER_PATH, f'IPTW_runs_{_m}_{_p}/')
+        if not os.path.isdir(_run):
+            continue
+        for fname in os.listdir(_run):
+            match = re.match(r'(.+)_track[12]_', fname)
+            if match:
+                _cancer_types.add(match.group(1))
+CANCER_TYPES = sorted(_cancer_types)
 TRACK2_WEIGHTS = ['ATE', 'ATT', 'noIPTW']
 TRACK1_WEIGHTS = ['weighted', 'unweighted']
 
