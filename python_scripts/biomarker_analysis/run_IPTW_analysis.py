@@ -9,8 +9,8 @@ Track 2 (full cohort, IPTW-weighted):
   Effect: interaction coefficient
 
 Usage:
-  python run_IPTW_analysis.py --matching 1to1 --ps_model embeddings_only
-  python run_IPTW_analysis.py --matching 1tok --ps_model all_covariates
+  python run_IPTW_analysis.py --ps_model embeddings_only
+  python run_IPTW_analysis.py --ps_model all_covariates
 """
 
 import os
@@ -27,18 +27,20 @@ from statsmodels.stats.multitest import multipletests
 from lifelines import CoxPHFitter
 from lifelines.exceptions import ConvergenceWarning
 from joblib import Parallel, delayed
+from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import StratifiedKFold
+from sklearn.preprocessing import StandardScaler
 from biomarker_common import get_mutation_type
 
 random.seed(42)
 
 parser = argparse.ArgumentParser(description='Run IPTW biomarker analysis.')
-parser.add_argument('--matching', choices=['1to1', '1tok'], required=True)
 parser.add_argument('--ps_model', choices=['embeddings_only', 'all_covariates'], required=True)
 args = parser.parse_args()
 
-MATCHING = args.matching
+MATCHING = '1to1'
 PS_MODEL = args.ps_model
 SPEC_LABEL = f'{MATCHING}_{PS_MODEL}'
 
@@ -74,7 +76,15 @@ biomarker_cols = [
     if (col not in excluded_cols) and any(tag in col.upper() for tag in mutation_tags)
 ]
 
+# === Identify embedding columns for prognostic score ===
+embedding_cols = [col for col in full_df.columns
+                  if ('IMAGING' in col) or ('PATHOLOGY' in col) or ('CLINICIAN' in col)]
+print(f"[run_IPTW_analysis] {len(embedding_cols)} embedding columns found for prognostic score")
+
 # === Constants ===
+PROG_SCORE_N_PCS = 20  # PCA components for prognostic score model
+PROG_SCORE_CV_FOLDS = 5
+PROG_SCORE_PENALIZER = 0.1  # stronger ridge for high-dim prognostic model
 MIN_CANCER_TYPE_TOTAL = 30
 COMMON_SUPPORT_PCT = (0.5, 99.5)
 IPTW_TRUNC_PCT = (1, 99)
@@ -224,6 +234,92 @@ def _fdr_within_mutation_type(results_df, p_col, fdr_col, sig_col):
         rej, fdr, _, _ = multipletests(pvals, alpha=0.05, method='fdr_bh')
         results_df.loc[mask, fdr_col] = fdr
         results_df.loc[mask, sig_col] = rej
+
+
+def compute_prognostic_score_cv(df, embed_cols, base_covars_list, n_pcs=20,
+                                n_folds=5, penalizer=0.1, seed=1234):
+    """Compute held-out prognostic scores via CV using PCA-reduced embeddings.
+
+    Fits a penalized CoxPH on PCA(embeddings) + base_vars (no markers) within
+    each CV fold, then predicts linear predictor on the held-out fold.
+
+    Returns: Series of prognostic scores indexed like df, or None if insufficient data.
+    """
+    # Check we have enough embedding data
+    available_embeds = [c for c in embed_cols if c in df.columns and df[c].notna().any()]
+    if len(available_embeds) < n_pcs:
+        logger.warning(f"  Prognostic score: only {len(available_embeds)} embedding cols "
+                       f"available (need {n_pcs}). Skipping.")
+        return None
+
+    # Build feature matrix: embeddings + base covariates
+    fit_cols = available_embeds + [c for c in base_covars_list if c in df.columns]
+    required = fit_cols + ['tt_death', 'death']
+    df_clean = df[['DFCI_MRN'] + required].dropna().copy()
+
+    if len(df_clean) < 50:
+        logger.warning(f"  Prognostic score: only {len(df_clean)} complete cases. Skipping.")
+        return None
+
+    # PCA on embeddings
+    embed_matrix = df_clean[available_embeds].values
+    actual_pcs = min(n_pcs, embed_matrix.shape[1], embed_matrix.shape[0] - 1)
+    scaler = StandardScaler()
+    embed_scaled = scaler.fit_transform(embed_matrix)
+    pca = PCA(n_components=actual_pcs, random_state=seed)
+    embed_pcs = pca.fit_transform(embed_scaled)
+    pc_col_names = [f'_PROG_PC{i}' for i in range(actual_pcs)]
+    for i, pc_name in enumerate(pc_col_names):
+        df_clean[pc_name] = embed_pcs[:, i]
+
+    print(f"  Prognostic score: {actual_pcs} PCs "
+          f"({pca.explained_variance_ratio_.sum()*100:.1f}% var explained), "
+          f"{len(df_clean)} patients")
+
+    # CV prognostic score generation
+    prog_covars = pc_col_names + [c for c in base_covars_list if c in df_clean.columns]
+    cox_cols = ['tt_death', 'death'] + prog_covars
+
+    # Use death as stratification variable for balanced folds
+    event_indicator = df_clean['death'].astype(int).values
+    skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
+
+    prog_scores = pd.Series(np.nan, index=df_clean.index, dtype=float)
+
+    for fold, (train_idx, test_idx) in enumerate(skf.split(df_clean, event_indicator), 1):
+        train_df = df_clean.iloc[train_idx][cox_cols].copy()
+        test_df = df_clean.iloc[test_idx][cox_cols].copy()
+
+        # Standardize PCs within fold
+        fold_scaler = StandardScaler()
+        train_df[pc_col_names] = fold_scaler.fit_transform(train_df[pc_col_names])
+        test_df[pc_col_names] = fold_scaler.transform(test_df[pc_col_names])
+
+        try:
+            cph = CoxPHFitter(penalizer=penalizer)
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', category=ConvergenceWarning)
+                warnings.filterwarnings('ignore', category=LinAlgWarning)
+                cph.fit(train_df, duration_col='tt_death', event_col='death')
+
+            # Linear predictor = prognostic score
+            lp = cph.predict_partial_hazard(test_df[prog_covars])
+            prog_scores.iloc[test_idx] = np.log(lp.values.ravel())
+        except Exception as e:
+            logger.warning(f"  Prognostic score fold {fold} failed: {e}")
+            continue
+
+    n_valid = prog_scores.notna().sum()
+    if n_valid < len(df_clean) * 0.5:
+        logger.warning(f"  Prognostic score: only {n_valid}/{len(df_clean)} valid. Skipping.")
+        return None
+
+    # Map back to original df index via DFCI_MRN
+    mrn_to_score = pd.Series(prog_scores.values, index=df_clean['DFCI_MRN'].values)
+    result = df['DFCI_MRN'].map(mrn_to_score)
+    print(f"  Prognostic score: {n_valid} valid scores, "
+          f"range [{result.min():.2f}, {result.max():.2f}]")
+    return result
 
 
 # =============================================
@@ -511,6 +607,11 @@ for cancer_type in types_to_test:
     w_att_trunc = np.clip(w_att, low_att, high_att)
     type_df['IPTW_ATT'] = w_att_trunc
 
+    # --- Overlap weights (Li, Morgan & Zaslavsky, JASA 2018) ---
+    # Targets the equipoise population; no truncation needed (bounded 0-1)
+    w_overlap = np.where(treat_mask, 1 - ps, ps)
+    type_df['IPTW_OVL'] = w_overlap.values
+
     # --- ESS ---
     w_t, w_c = w_ate_trunc[treat_mask], w_ate_trunc[~treat_mask]
     ess_t = w_t.sum() ** 2 / (w_t ** 2).sum()
@@ -524,6 +625,12 @@ for cancer_type in types_to_test:
     print(f"  ATT: N treated={treat_mask.sum()}, N control={(~treat_mask).sum()} | "
           f"ESS treated={ess_t_att:.0f}, ESS control={ess_c_att:.0f}")
 
+    w_t_ovl, w_c_ovl = w_overlap[treat_mask], w_overlap[~treat_mask]
+    ess_t_ovl = w_t_ovl.sum() ** 2 / (w_t_ovl ** 2).sum()
+    ess_c_ovl = w_c_ovl.sum() ** 2 / (w_c_ovl ** 2).sum()
+    print(f"  OVL: N treated={treat_mask.sum()}, N control={(~treat_mask).sum()} | "
+          f"ESS treated={ess_t_ovl:.0f}, ESS control={ess_c_ovl:.0f}")
+
     # --- Diagnostics ---
     diag_path = os.path.join(RUN_PATH, f'{cancer_type}_diagnostics/')
     os.makedirs(diag_path, exist_ok=True)
@@ -531,6 +638,7 @@ for cancer_type in types_to_test:
     ps_diag = type_df[['PX_on_ICI', 'ICI_prediction']].copy()
     ps_diag['IPTW_ATE'] = w_ate_trunc
     ps_diag['IPTW_ATT'] = w_att_trunc
+    ps_diag['IPTW_OVL'] = w_overlap
     ps_diag.groupby('PX_on_ICI')['ICI_prediction'].describe().to_csv(
         os.path.join(diag_path, 'propensity_score_summary.csv'))
 
@@ -555,6 +663,7 @@ for cancer_type in types_to_test:
         'PS_AUC': ps_auc,
         'ESS_ATE_treated': ess_t, 'ESS_ATE_control': ess_c,
         'ESS_ATT_treated': ess_t_att, 'ESS_ATT_control': ess_c_att,
+        'ESS_OVL_treated': ess_t_ovl, 'ESS_OVL_control': ess_c_ovl,
     }]).to_csv(os.path.join(diag_path, 'effective_sample_sizes.csv'), index=False)
 
     balance_covars = base_covars + line_cols + [
@@ -564,14 +673,19 @@ for cancer_type in types_to_test:
     smd_ate.to_csv(os.path.join(diag_path, 'covariate_balance_smd_ATE.csv'), index=False)
     smd_att = compute_smd(type_df, balance_covars, weights=w_att_trunc)
     smd_att.to_csv(os.path.join(diag_path, 'covariate_balance_smd_ATT.csv'), index=False)
+    smd_ovl = compute_smd(type_df, balance_covars, weights=w_overlap)
+    smd_ovl.to_csv(os.path.join(diag_path, 'covariate_balance_smd_OVL.csv'), index=False)
 
     # Max SMD check (balance quality indicator)
     max_smd_ate = smd_ate['SMD_weighted'].abs().max()
     max_smd_att = smd_att['SMD_weighted'].abs().max()
+    max_smd_ovl = smd_ovl['SMD_weighted'].abs().max()
     n_imbalanced_ate = (smd_ate['SMD_weighted'].abs() > 0.1).sum()
     n_imbalanced_att = (smd_att['SMD_weighted'].abs() > 0.1).sum()
+    n_imbalanced_ovl = (smd_ovl['SMD_weighted'].abs() > 0.1).sum()
     print(f"  ATE balance: max|SMD|={max_smd_ate:.4f}, {n_imbalanced_ate}/{len(smd_ate)} covariates with |SMD|>0.1")
     print(f"  ATT balance: max|SMD|={max_smd_att:.4f}, {n_imbalanced_att}/{len(smd_att)} covariates with |SMD|>0.1")
+    print(f"  OVL balance: max|SMD|={max_smd_ovl:.4f}, {n_imbalanced_ovl}/{len(smd_ovl)} covariates with |SMD|>0.1")
 
     # === Track 2: full-cohort interaction ===
     track2_markers = [
@@ -585,7 +699,7 @@ for cancer_type in types_to_test:
     if len(track2_markers) < MIN_MARKERS_TO_TEST:
         print(f"  Skipping Track 2: fewer than {MIN_MARKERS_TO_TEST} markers with sufficient support.")
     else:
-        for spec_name, spec_weights in [('ATE', 'IPTW_ATE'), ('ATT', 'IPTW_ATT'), ('noIPTW', None)]:
+        for spec_name, spec_weights in [('ATE', 'IPTW_ATE'), ('ATT', 'IPTW_ATT'), ('OVL', 'IPTW_OVL'), ('noIPTW', None)]:
             results, failed = _run_marker_screen(
                 type_df, track2_markers, base_vars, spec_weights,
                 _fit_track2_marker, N_JOBS, label=f"T2 {cancer_type} {spec_name}")
@@ -612,6 +726,11 @@ for cancer_type in types_to_test:
         w_gen_trunc = np.ones(len(ici_only_df))
     ici_only_df['IPTW_GEN'] = w_gen_trunc.values
 
+    # Overlap weights for ICI subset: weight = 1 - ps
+    # (up-weight ICI patients who were least likely to receive ICI — equipoise population)
+    w_gen_ovl = (1 - ici_ps).values
+    ici_only_df['IPTW_GEN_OVL'] = w_gen_ovl
+
     track1_markers = [
         m for m in biomarker_cols
         if marker_has_ici_only_support(type_df, m, min_pos=MIN_MARKER_POS_ICI_ONLY,
@@ -626,7 +745,7 @@ for cancer_type in types_to_test:
         # include for pan-cancer)
         ici_base_vars = list(base_vars)
 
-        for spec_name, spec_weights in [('weighted', 'IPTW_GEN'), ('unweighted', None)]:
+        for spec_name, spec_weights in [('weighted', 'IPTW_GEN'), ('OVL', 'IPTW_GEN_OVL'), ('unweighted', None)]:
             results, failed = _run_marker_screen(
                 ici_only_df, track1_markers, ici_base_vars, spec_weights,
                 _fit_track1_marker, N_JOBS, label=f"T1 {cancer_type} {spec_name}")
@@ -638,5 +757,43 @@ for cancer_type in types_to_test:
             spec_df.to_csv(
                 os.path.join(RUN_PATH, f'{cancer_type}_track1_{spec_name}_ICI_only.csv'),
                 index=False)
+
+    # === Track 1 prognostic-score-adjusted: S(t) ~ base_vars + prog_score + marker ===
+    # Adjusts for unmeasured confounders (disease severity, comorbidities) captured
+    # in clinical text embeddings via a CV-derived prognostic score.
+    if len(track1_markers) >= MIN_MARKERS_TO_TEST and len(embedding_cols) >= PROG_SCORE_N_PCS:
+        print(f"  Computing prognostic score for {cancer_type}...")
+        prog_scores = compute_prognostic_score_cv(
+            ici_only_df, embedding_cols, base_covars,
+            n_pcs=PROG_SCORE_N_PCS, n_folds=PROG_SCORE_CV_FOLDS,
+            penalizer=PROG_SCORE_PENALIZER)
+
+        if prog_scores is not None:
+            ici_prog_df = ici_only_df.copy()
+            ici_prog_df['PROG_SCORE'] = prog_scores.values
+            # Drop patients without a valid prognostic score
+            ici_prog_df = ici_prog_df.dropna(subset=['PROG_SCORE']).copy()
+            print(f"  Track 1 prognostic-adjusted: {len(ici_prog_df)} patients with valid scores")
+
+            # Adjusted base vars include the prognostic score
+            ici_prog_base_vars = list(base_vars) + ['PROG_SCORE']
+
+            for spec_name, spec_weights in [('progAdj', None), ('progAdj_weighted', 'IPTW_GEN')]:
+                results, failed = _run_marker_screen(
+                    ici_prog_df, track1_markers, ici_prog_base_vars, spec_weights,
+                    _fit_track1_marker, N_JOBS, label=f"T1 {cancer_type} {spec_name}")
+                if failed:
+                    print(f"  Track 1 {spec_name} failures: {len(failed)}. "
+                          f"First: {failed[0][0]} -> {failed[0][1]}")
+                spec_df = pd.DataFrame(results, columns=TRACK1_RESULT_COLS)
+                spec_df = add_track1_fdr(spec_df)
+                spec_df.to_csv(
+                    os.path.join(RUN_PATH, f'{cancer_type}_track1_{spec_name}_ICI_only.csv'),
+                    index=False)
+        else:
+            print(f"  Skipping prognostic-adjusted Track 1: score computation failed.")
+    else:
+        if len(embedding_cols) < PROG_SCORE_N_PCS:
+            print(f"  Skipping prognostic-adjusted Track 1: insufficient embedding columns.")
 
 print(f"\n[run_IPTW_analysis] Done. Results in {RUN_PATH}")

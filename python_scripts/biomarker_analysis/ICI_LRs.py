@@ -7,12 +7,10 @@ Trains two propensity models per matched cohort:
 Uses 5-fold stratified CV to produce held-out propensity scores.
 
 Usage:
-  python ICI_LRs.py --matching 1to1
-  python ICI_LRs.py --matching 1tok
+  python ICI_LRs.py
 """
 
 import os
-import argparse
 import warnings
 import numpy as np
 import pandas as pd
@@ -32,12 +30,7 @@ from biomarker_common import (
     DATA_PATH, SURV_PATH, load_note_embeddings, load_confounders,
 )
 
-parser = argparse.ArgumentParser(description='Train ICI propensity models on a line-matched cohort.')
-parser.add_argument('--matching', choices=['1to1', '1tok'], required=True,
-                    help='Matching scheme: 1to1 or 1tok')
-args = parser.parse_args()
-
-MATCHING = args.matching
+MATCHING = '1to1'
 
 # === Paths ===
 COHORT_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/matched_cohorts/')

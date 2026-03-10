@@ -2,9 +2,7 @@
 
 For each ICI patient, determines the line at which they received ICI (1, 2, 3, or 4+).
 For each never-ICI patient, determines their max line of therapy (1, 2, 3, or 4+).
-Performs exact matching on (cancer_type, line_category) with two schemes:
-  - 1:1 matching (one control per case, without replacement)
-  - 1:k matching (up to k=3 controls per case, without replacement)
+Performs exact 1:1 matching on (cancer_type, line_category) without replacement.
 
 Usage:
   python build_line_matched_cohort.py
@@ -29,7 +27,6 @@ MED_LINES_FILE = '/data/gusev/USERS/mjsaleh/profile_lines_of_rx/ALL_MEDICATION_L
 IO_START_FILE = '/data/gusev/USERS/mjsaleh/IO_START.csv'
 TREATMENT_FILE = '/data/gusev/USERS/mjsaleh/profile_lines_of_rx/profile_rxlines.csv'
 
-MAX_K = 3  # max controls per case for 1:k matching
 
 # === Load data ===
 surv_df = pd.read_csv(os.path.join(SURV_PATH, 'death_met_surv_df.csv'))
@@ -155,28 +152,22 @@ def match_cohort(cases_df, controls_df, max_controls_per_case):
 print("\n=== 1:1 Matching ===")
 matched_1to1 = match_cohort(ici_lines, control_lines, max_controls_per_case=1)
 
-# --- 1:k matching ---
-print(f"\n=== 1:{MAX_K} Matching ===")
-matched_1tok = match_cohort(ici_lines, control_lines, max_controls_per_case=MAX_K)
-
 # === Add first_treatment_date back for downstream use ===
 surv_dates = (surv_df[['DFCI_MRN', 'first_treatment_date']]
               .drop_duplicates(subset='DFCI_MRN', keep='first'))
 
-for label, matched_df in [('1to1', matched_1to1), ('1tok', matched_1tok)]:
-    if matched_df.empty:
-        print(f"\n{label}: No matched patients, skipping.")
-        continue
-
-    out = matched_df[['DFCI_MRN', 'PX_on_ICI', 'line_category', 'cancer_type']].merge(
+if matched_1to1.empty:
+    print("\n1to1: No matched patients.")
+else:
+    out = matched_1to1[['DFCI_MRN', 'PX_on_ICI', 'line_category', 'cancer_type']].merge(
         surv_dates, on='DFCI_MRN')
     out = out.rename(columns={'first_treatment_date': 'treatment_start_date'})
 
     n_ici = out['PX_on_ICI'].sum()
     n_ctrl = len(out) - n_ici
-    print(f"\n{label}: {int(n_ici)} ICI + {int(n_ctrl)} controls = {len(out)} total")
+    print(f"\n1to1: {int(n_ici)} ICI + {int(n_ctrl)} controls = {len(out)} total")
     print(f"  Line distribution:")
     print(out.groupby(['PX_on_ICI', 'line_category']).size().unstack(fill_value=0))
 
-    out.to_csv(os.path.join(COHORT_PATH, f'matched_cohort_{label}.csv'), index=False)
-    print(f"  Saved to {os.path.join(COHORT_PATH, f'matched_cohort_{label}.csv')}")
+    out.to_csv(os.path.join(COHORT_PATH, 'matched_cohort_1to1.csv'), index=False)
+    print(f"  Saved to {os.path.join(COHORT_PATH, 'matched_cohort_1to1.csv')}")

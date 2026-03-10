@@ -29,7 +29,7 @@ args = parser.parse_args()
 MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
 os.makedirs(args.output_dir, exist_ok=True)
 
-MATCHINGS = ['1to1', '1tok']
+MATCHINGS = ['1to1']
 PS_MODELS = ['embeddings_only', 'all_covariates']
 # Discover cancer types from result filenames across all run directories
 _cancer_types = set()
@@ -43,8 +43,8 @@ for _m in MATCHINGS:
             if match:
                 _cancer_types.add(match.group(1))
 CANCER_TYPES = sorted(_cancer_types)
-TRACK2_WEIGHTS = ['ATE', 'ATT', 'noIPTW']
-TRACK1_WEIGHTS = ['weighted', 'unweighted']
+TRACK2_WEIGHTS = ['ATE', 'ATT', 'OVL', 'noIPTW']
+TRACK1_WEIGHTS = ['weighted', 'OVL', 'unweighted', 'progAdj', 'progAdj_weighted']
 
 # ================================================
 # 1. Compile all results

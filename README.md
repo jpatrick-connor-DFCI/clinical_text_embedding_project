@@ -141,11 +141,11 @@ Discovers genomic biomarkers associated with ICI treatment response using propen
 
 ### Design overview
 
-The pipeline addresses confounding in observational ICI data through a multi-specification sensitivity analysis: 2 matching schemes × 2 propensity models × 2 analysis tracks × multiple weighting strategies. Markers significant across specifications are considered robust.
+The pipeline addresses confounding in observational ICI data through a multi-specification sensitivity analysis: 1:1 matching × 2 propensity models × 2 analysis tracks × multiple weighting strategies. Markers significant across specifications are considered robust.
 
 ### Logic and design decisions
 
-**Line-matched cohort construction** (`build_line_matched_cohort.py`): ICI receipt is confounded by treatment line (later lines more likely to include ICI). Patients are matched exactly on (cancer_type, line_category) where line is binned as 1/2/3/4+. For ICI patients, line = earliest line with ICI; for never-ICI controls, line = max line of therapy reached. Two schemes: 1:1 (one control per case) and 1:k (up to k=3 controls per case, without replacement). This ensures treated and control groups have similar disease severity and treatment history.
+**Line-matched cohort construction** (`build_line_matched_cohort.py`): ICI receipt is confounded by treatment line (later lines more likely to include ICI). Patients are matched exactly on (cancer_type, line_category) where line is binned as 1/2/3/4+. For ICI patients, line = earliest line with ICI; for never-ICI controls, line = max line of therapy reached. Uses 1:1 matching (one control per case, without replacement). This ensures treated and control groups have similar disease severity and treatment history.
 
 **Propensity score generation** (`ICI_LRs.py`): Trains logistic regression models predicting ICI receipt within each matched cohort. Two model specifications:
 1. **Embeddings-only**: Text embeddings capture clinical context (disease severity, comorbidities, physician assessment) that drives treatment selection.
@@ -181,21 +181,16 @@ python python_scripts/data_preprocessing/generate_all_non_text_covariates.py
 python python_scripts/biomarker_analysis/build_line_matched_cohort.py
 
 # Step 3: Train propensity models
-python python_scripts/biomarker_analysis/ICI_LRs.py --matching 1to1
-python python_scripts/biomarker_analysis/ICI_LRs.py --matching 1tok
+python python_scripts/biomarker_analysis/ICI_LRs.py
 
-# Step 4: Generate IPTW datasets (4 specs)
-for m in 1to1 1tok; do
-  for p in embeddings_only all_covariates; do
-    python python_scripts/biomarker_analysis/generate_IPTW_df.py --matching $m --ps_model $p
-  done
+# Step 4: Generate IPTW datasets (2 PS models)
+for p in embeddings_only all_covariates; do
+  python python_scripts/biomarker_analysis/generate_IPTW_df.py --ps_model $p
 done
 
-# Step 5: Run Cox models (4 specs)
-for m in 1to1 1tok; do
-  for p in embeddings_only all_covariates; do
-    python python_scripts/biomarker_analysis/run_IPTW_analysis.py --matching $m --ps_model $p
-  done
+# Step 5: Run Cox models (2 PS models)
+for p in embeddings_only all_covariates; do
+  python python_scripts/biomarker_analysis/run_IPTW_analysis.py --ps_model $p
 done
 
 # Step 6: Compile results
