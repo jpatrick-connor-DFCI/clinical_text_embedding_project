@@ -418,9 +418,10 @@ def _run_marker_screen(df, markers, base_vars, weights_col, fit_fn, n_jobs, labe
 # =============================================
 
 MIN_MARKERS_TO_TEST = 1
+EXCLUDE_TYPES = {'OTHER', 'CUP'}
 types_to_test = ['pan_cancer'] + [
     col.replace('CANCER_TYPE_', '') for col in cancer_type_cols
-    if col != 'CANCER_TYPE_OTHER'
+    if col.replace('CANCER_TYPE_', '') not in EXCLUDE_TYPES
 ]
 
 for cancer_type in types_to_test:
