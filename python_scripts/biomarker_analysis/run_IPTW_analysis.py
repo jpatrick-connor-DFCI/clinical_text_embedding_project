@@ -703,7 +703,7 @@ for cancer_type in types_to_test:
     if len(track2_markers) < MIN_MARKERS_TO_TEST:
         print(f"  Skipping Track 2: fewer than {MIN_MARKERS_TO_TEST} markers with sufficient support.")
     else:
-        for spec_name, spec_weights in [('ATE', 'IPTW_ATE'), ('ATT', 'IPTW_ATT'), ('OVL', 'IPTW_OVL'), ('noIPTW', None)]:
+        for spec_name, spec_weights in [('OVL', 'IPTW_OVL'), ('noIPTW', None)]:
             results, failed = _run_marker_screen(
                 type_df, track2_markers, base_vars, spec_weights,
                 _fit_track2_marker, N_JOBS, label=f"T2 {cancer_type} {spec_name}")
@@ -749,7 +749,7 @@ for cancer_type in types_to_test:
         # include for pan-cancer)
         ici_base_vars = list(base_vars)
 
-        for spec_name, spec_weights in [('weighted', 'IPTW_GEN'), ('OVL', 'IPTW_GEN_OVL'), ('unweighted', None)]:
+        for spec_name, spec_weights in [('OVL', 'IPTW_GEN_OVL'), ('unweighted', None)]:
             results, failed = _run_marker_screen(
                 ici_only_df, track1_markers, ici_base_vars, spec_weights,
                 _fit_track1_marker, N_JOBS, label=f"T1 {cancer_type} {spec_name}")
@@ -782,7 +782,7 @@ for cancer_type in types_to_test:
             # Adjusted base vars include the prognostic score
             ici_prog_base_vars = list(base_vars) + ['PROG_SCORE']
 
-            for spec_name, spec_weights in [('progAdj', None), ('progAdj_weighted', 'IPTW_GEN')]:
+            for spec_name, spec_weights in [('progAdj', None)]:
                 results, failed = _run_marker_screen(
                     ici_prog_df, track1_markers, ici_prog_base_vars, spec_weights,
                     _fit_track1_marker, N_JOBS, label=f"T1 {cancer_type} {spec_name}")

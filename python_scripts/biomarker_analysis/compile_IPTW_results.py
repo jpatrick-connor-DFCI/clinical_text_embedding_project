@@ -24,11 +24,11 @@ from biomarker_common import DATA_PATH
 parser = argparse.ArgumentParser()
 parser.add_argument('--output_dir', required=True, help='Directory for compiled output')
 parser.add_argument('--min_schemes_track1a', type=int, default=3,
-                    help='Min schemes for Track 1a cross-scheme robustness (default: 3, out of 6)')
-parser.add_argument('--min_schemes_track1b', type=int, default=3,
-                    help='Min schemes for Track 1b cross-scheme robustness (default: 3, out of 4)')
-parser.add_argument('--min_schemes_track2', type=int, default=4,
-                    help='Min schemes for Track 2 cross-scheme robustness (default: 4, out of 8)')
+                    help='Min schemes for Track 1a cross-scheme robustness (default: 3, out of 4)')
+parser.add_argument('--min_schemes_track1b', type=int, default=2,
+                    help='Min schemes for Track 1b cross-scheme robustness (default: 2, out of 2)')
+parser.add_argument('--min_schemes_track2', type=int, default=3,
+                    help='Min schemes for Track 2 cross-scheme robustness (default: 3, out of 4)')
 args = parser.parse_args()
 
 MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
@@ -49,12 +49,12 @@ for _m in MATCHINGS:
                 _cancer_types.add(match.group(1))
 CANCER_TYPES = sorted(_cancer_types)
 
-# Track 1a: standard weighting variants (no prognostic adjustment)
-TRACK1A_WEIGHTS = ['weighted', 'OVL', 'unweighted']
-# Track 1b: prognostic-score-adjusted variants
-TRACK1B_WEIGHTS = ['progAdj', 'progAdj_weighted']
-# Track 2: full-cohort interaction
-TRACK2_WEIGHTS = ['ATE', 'ATT', 'OVL', 'noIPTW']
+# Track 1a: standard (unweighted + overlap)
+TRACK1A_WEIGHTS = ['unweighted', 'OVL']
+# Track 1b: prognostic-score-adjusted (unweighted only)
+TRACK1B_WEIGHTS = ['progAdj']
+# Track 2: full-cohort interaction (overlap + unweighted)
+TRACK2_WEIGHTS = ['OVL', 'noIPTW']
 
 # ================================================
 # 1. Compile all results
@@ -267,5 +267,70 @@ if diag_rows:
     diag_df = pd.concat(diag_rows, ignore_index=True)
     diag_df.to_csv(os.path.join(args.output_dir, 'scheme_diagnostics_summary.csv'), index=False)
     print(f"\nDiagnostics summary saved ({len(diag_df)} rows)")
+
+# ================================================
+# 4. Patient counts per track
+# ================================================
+count_rows = []
+for matching in MATCHINGS:
+    for ps_model in PS_MODELS:
+        spec = f'{matching}_{ps_model}'
+        run_path = os.path.join(MARKER_PATH, f'IPTW_runs_{spec}/')
+        if not os.path.isdir(run_path):
+            continue
+        for cancer_type in CANCER_TYPES:
+            ess_file = os.path.join(run_path, f'{cancer_type}_diagnostics/',
+                                    'effective_sample_sizes.csv')
+            if not os.path.isfile(ess_file):
+                continue
+            ess = pd.read_csv(ess_file)
+            row = ess.iloc[0] if len(ess) else None
+            if row is None:
+                continue
+
+            n_ici = int(row.get('N_treated', 0))
+            n_ctrl = int(row.get('N_control', 0))
+            ev_ici = int(row.get('events_treated', 0))
+            ev_ctrl = int(row.get('events_control', 0))
+
+            # Track 1a/1b: ICI-only
+            t1a_markers = len(t1a[
+                (t1a['cancer_type'] == cancer_type) &
+                (t1a['matching'] == matching) &
+                (t1a['ps_model'] == ps_model)
+            ]) if not t1a.empty else 0
+            t1b_markers = len(t1b[
+                (t1b['cancer_type'] == cancer_type) &
+                (t1b['matching'] == matching) &
+                (t1b['ps_model'] == ps_model)
+            ]) if not t1b.empty else 0
+
+            # Track 2: full cohort
+            t2_markers = len(t2[
+                (t2['cancer_type'] == cancer_type) &
+                (t2['matching'] == matching) &
+                (t2['ps_model'] == ps_model)
+            ]) if not t2.empty else 0
+
+            count_rows.append({
+                'cancer_type': cancer_type,
+                'matching': matching,
+                'ps_model': ps_model,
+                'n_ICI': n_ici,
+                'n_nonICI': n_ctrl,
+                'n_total': n_ici + n_ctrl,
+                'events_ICI': ev_ici,
+                'events_nonICI': ev_ctrl,
+                'event_rate_ICI': ev_ici / max(n_ici, 1),
+                'event_rate_nonICI': ev_ctrl / max(n_ctrl, 1),
+                'track1a_sig_hits': t1a_markers,
+                'track1b_sig_hits': t1b_markers,
+                'track2_sig_hits': t2_markers,
+            })
+
+if count_rows:
+    counts_df = pd.DataFrame(count_rows)
+    counts_df.to_csv(os.path.join(args.output_dir, 'patient_counts_by_track.csv'), index=False)
+    print(f"\nPatient counts saved ({len(counts_df)} rows)")
 
 print(f"\nAll outputs saved to {args.output_dir}")
