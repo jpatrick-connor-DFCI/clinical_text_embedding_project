@@ -1,9 +1,12 @@
 """Compile IPTW biomarker results across all schemes with cross-scheme filtering.
 
 Reads per-scheme CSVs from IPTW_runs_*/ directories and produces:
-  - track1_all_significant_hits.csv: all FDR-significant Track 1 results
+  - track1a_all_significant_hits.csv: all FDR-significant Track 1a (standard) results
+  - track1b_all_significant_hits.csv: all FDR-significant Track 1b (prognostic-adjusted) results
   - track2_all_significant_hits.csv: all FDR-significant Track 2 results
-  - track1_cross_scheme_robust.csv: markers significant in >= min_schemes with consistent direction
+  - track1a_cross_scheme_robust.csv: Track 1a markers robust across weighting schemes
+  - track1b_cross_scheme_robust.csv: Track 1b markers robust across weighting schemes
+  - track1_confounding_robust.csv: markers robust in both 1a AND 1b (survives prognostic adjustment)
   - track2_cross_scheme_robust.csv: markers significant in >= min_schemes with consistent direction
   - scheme_diagnostics_summary.csv: PS AUC, ESS, SMD summaries per scheme
 
@@ -20,10 +23,12 @@ from biomarker_common import DATA_PATH
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--output_dir', required=True, help='Directory for compiled output')
-parser.add_argument('--min_schemes_track1', type=int, default=2,
-                    help='Min schemes for Track 1 cross-scheme robustness (default: 2)')
-parser.add_argument('--min_schemes_track2', type=int, default=2,
-                    help='Min schemes for Track 2 cross-scheme robustness (default: 2)')
+parser.add_argument('--min_schemes_track1a', type=int, default=3,
+                    help='Min schemes for Track 1a cross-scheme robustness (default: 3, out of 6)')
+parser.add_argument('--min_schemes_track1b', type=int, default=3,
+                    help='Min schemes for Track 1b cross-scheme robustness (default: 3, out of 4)')
+parser.add_argument('--min_schemes_track2', type=int, default=4,
+                    help='Min schemes for Track 2 cross-scheme robustness (default: 4, out of 8)')
 args = parser.parse_args()
 
 MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
@@ -43,13 +48,19 @@ for _m in MATCHINGS:
             if match:
                 _cancer_types.add(match.group(1))
 CANCER_TYPES = sorted(_cancer_types)
+
+# Track 1a: standard weighting variants (no prognostic adjustment)
+TRACK1A_WEIGHTS = ['weighted', 'OVL', 'unweighted']
+# Track 1b: prognostic-score-adjusted variants
+TRACK1B_WEIGHTS = ['progAdj', 'progAdj_weighted']
+# Track 2: full-cohort interaction
 TRACK2_WEIGHTS = ['ATE', 'ATT', 'OVL', 'noIPTW']
-TRACK1_WEIGHTS = ['weighted', 'OVL', 'unweighted', 'progAdj', 'progAdj_weighted']
 
 # ================================================
 # 1. Compile all results
 # ================================================
-all_t1 = []
+all_t1a = []
+all_t1b = []
 all_t2 = []
 diag_rows = []
 
@@ -72,8 +83,8 @@ for matching in MATCHINGS:
                 ess['ps_model'] = ps_model
                 diag_rows.append(ess)
 
-            # Track 1
-            for weight in TRACK1_WEIGHTS:
+            # Track 1a (standard)
+            for weight in TRACK1A_WEIGHTS:
                 fname = f'{cancer_type}_track1_{weight}_ICI_only.csv'
                 fpath = os.path.join(run_path, fname)
                 if os.path.isfile(fpath):
@@ -83,7 +94,20 @@ for matching in MATCHINGS:
                     sig['ps_model'] = ps_model
                     sig['weight_type'] = weight
                     sig['cancer_type'] = cancer_type
-                    all_t1.append(sig)
+                    all_t1a.append(sig)
+
+            # Track 1b (prognostic-adjusted)
+            for weight in TRACK1B_WEIGHTS:
+                fname = f'{cancer_type}_track1_{weight}_ICI_only.csv'
+                fpath = os.path.join(run_path, fname)
+                if os.path.isfile(fpath):
+                    df = pd.read_csv(fpath)
+                    sig = df[df.get('significant_marker', pd.Series(dtype=bool)) == True].copy()
+                    sig['matching'] = matching
+                    sig['ps_model'] = ps_model
+                    sig['weight_type'] = weight
+                    sig['cancer_type'] = cancer_type
+                    all_t1b.append(sig)
 
             # Track 2
             for weight in TRACK2_WEIGHTS:
@@ -99,14 +123,17 @@ for matching in MATCHINGS:
                     all_t2.append(sig)
 
 # Concatenate
-t1 = pd.concat(all_t1, ignore_index=True) if all_t1 else pd.DataFrame()
+t1a = pd.concat(all_t1a, ignore_index=True) if all_t1a else pd.DataFrame()
+t1b = pd.concat(all_t1b, ignore_index=True) if all_t1b else pd.DataFrame()
 t2 = pd.concat(all_t2, ignore_index=True) if all_t2 else pd.DataFrame()
 
-print(f"Track 1: {len(t1)} total significant hits")
+print(f"Track 1a (standard): {len(t1a)} total significant hits")
+print(f"Track 1b (prognostic-adjusted): {len(t1b)} total significant hits")
 print(f"Track 2: {len(t2)} total significant hits")
 
 # Save all hits
-t1.to_csv(os.path.join(args.output_dir, 'track1_all_significant_hits.csv'), index=False)
+t1a.to_csv(os.path.join(args.output_dir, 'track1a_all_significant_hits.csv'), index=False)
+t1b.to_csv(os.path.join(args.output_dir, 'track1b_all_significant_hits.csv'), index=False)
 t2.to_csv(os.path.join(args.output_dir, 'track2_all_significant_hits.csv'), index=False)
 
 # ================================================
@@ -117,6 +144,7 @@ def cross_scheme_filter_track1(df, min_schemes=2):
     """Keep markers significant in >= min_schemes with consistent HR direction."""
     if df.empty:
         return df
+    df = df.copy()
     df['scheme'] = df['matching'] + '|' + df['ps_model'] + '|' + df['weight_type']
     grouped = df.groupby(['marker', 'cancer_type'])
 
@@ -151,6 +179,7 @@ def cross_scheme_filter_track2(df, min_schemes=2):
     """Keep markers significant in >= min_schemes with consistent classifier."""
     if df.empty:
         return df
+    df = df.copy()
     df['scheme'] = df['matching'] + '|' + df['ps_model'] + '|' + df['weight_type']
     grouped = df.groupby(['marker', 'cancer_type'])
 
@@ -193,13 +222,42 @@ def cross_scheme_filter_track2(df, min_schemes=2):
     return pd.DataFrame(robust)
 
 
-t1_robust = cross_scheme_filter_track1(t1, min_schemes=args.min_schemes_track1)
+# --- Track 1a: weighting robustness (standard, no prognostic adjustment) ---
+t1a_robust = cross_scheme_filter_track1(t1a, min_schemes=args.min_schemes_track1a)
+
+# --- Track 1b: weighting robustness (prognostic-adjusted) ---
+t1b_robust = cross_scheme_filter_track1(t1b, min_schemes=args.min_schemes_track1b)
+
+# --- Track 1 confounding robustness: markers robust in BOTH 1a and 1b ---
+# A marker passes this filter if it appears in both t1a_robust and t1b_robust
+# with consistent direction across the two sub-tracks.
+if not t1a_robust.empty and not t1b_robust.empty:
+    merge_cols = ['marker', 'cancer_type']
+    t1_combined = t1a_robust[merge_cols + ['direction', 'HR_median', 'HR_min', 'HR_max',
+                                            'FDR_min', 'FDR_max', 'n_schemes', 'mutation_type']].merge(
+        t1b_robust[merge_cols + ['direction', 'HR_median', 'HR_min', 'HR_max',
+                                  'FDR_min', 'FDR_max', 'n_schemes']],
+        on=merge_cols, suffixes=('_1a', '_1b'))
+    # Require consistent direction across 1a and 1b
+    t1_confounding_robust = t1_combined[
+        t1_combined['direction_1a'] == t1_combined['direction_1b']
+    ].copy()
+    t1_confounding_robust.rename(columns={'direction_1a': 'direction'}, inplace=True)
+    t1_confounding_robust.drop(columns=['direction_1b'], inplace=True)
+else:
+    t1_confounding_robust = pd.DataFrame()
+
+# --- Track 2 ---
 t2_robust = cross_scheme_filter_track2(t2, min_schemes=args.min_schemes_track2)
 
-print(f"\nTrack 1 cross-scheme robust markers (>={args.min_schemes_track1} schemes): {len(t1_robust)}")
-print(f"Track 2 cross-scheme robust markers (>={args.min_schemes_track2} schemes): {len(t2_robust)}")
+print(f"\nTrack 1a cross-scheme robust (>={args.min_schemes_track1a} weighting schemes): {len(t1a_robust)}")
+print(f"Track 1b cross-scheme robust (>={args.min_schemes_track1b} weighting schemes): {len(t1b_robust)}")
+print(f"Track 1 confounding-robust (in both 1a AND 1b, consistent direction): {len(t1_confounding_robust)}")
+print(f"Track 2 cross-scheme robust (>={args.min_schemes_track2} schemes): {len(t2_robust)}")
 
-t1_robust.to_csv(os.path.join(args.output_dir, 'track1_cross_scheme_robust.csv'), index=False)
+t1a_robust.to_csv(os.path.join(args.output_dir, 'track1a_cross_scheme_robust.csv'), index=False)
+t1b_robust.to_csv(os.path.join(args.output_dir, 'track1b_cross_scheme_robust.csv'), index=False)
+t1_confounding_robust.to_csv(os.path.join(args.output_dir, 'track1_confounding_robust.csv'), index=False)
 t2_robust.to_csv(os.path.join(args.output_dir, 'track2_cross_scheme_robust.csv'), index=False)
 
 # ================================================

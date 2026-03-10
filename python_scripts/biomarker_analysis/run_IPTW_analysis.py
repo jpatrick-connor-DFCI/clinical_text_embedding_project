@@ -85,7 +85,8 @@ print(f"[run_IPTW_analysis] {len(embedding_cols)} embedding columns found for pr
 PROG_SCORE_N_PCS = 20  # PCA components for prognostic score model
 PROG_SCORE_CV_FOLDS = 5
 PROG_SCORE_PENALIZER = 0.1  # stronger ridge for high-dim prognostic model
-MIN_CANCER_TYPE_TOTAL = 30
+MIN_CANCER_TYPE_TOTAL = 30   # for merging rare types into OTHER in pan-cancer
+MIN_CANCER_TYPE_N = 100      # minimum total patients to run cancer-type-specific analysis
 COMMON_SUPPORT_PCT = (0.5, 99.5)
 IPTW_TRUNC_PCT = (1, 99)
 MIN_MARKER_POS_PER_ARM = 10
@@ -541,6 +542,9 @@ for cancer_type in types_to_test:
             print(f"  Skipping: column {ct_col} not found.")
             continue
         type_df = full_df.loc[full_df[ct_col].astype(bool)].copy()
+        if len(type_df) < MIN_CANCER_TYPE_N:
+            print(f"  Skipping: only {len(type_df)} patients (minimum {MIN_CANCER_TYPE_N}).")
+            continue
         # Recalibrate propensity within subset
         if type_df['PX_on_ICI'].nunique() >= 2 and len(type_df) > 10:
             ps_before = type_df['ICI_prediction'].copy()
@@ -610,7 +614,7 @@ for cancer_type in types_to_test:
     # --- Overlap weights (Li, Morgan & Zaslavsky, JASA 2018) ---
     # Targets the equipoise population; no truncation needed (bounded 0-1)
     w_overlap = np.where(treat_mask, 1 - ps, ps)
-    type_df['IPTW_OVL'] = w_overlap.values
+    type_df['IPTW_OVL'] = w_overlap
 
     # --- ESS ---
     w_t, w_c = w_ate_trunc[treat_mask], w_ate_trunc[~treat_mask]
@@ -724,7 +728,7 @@ for cancer_type in types_to_test:
         w_gen_trunc = np.clip(w_gen, low_gen, high_gen)
     else:
         w_gen_trunc = np.ones(len(ici_only_df))
-    ici_only_df['IPTW_GEN'] = w_gen_trunc.values
+    ici_only_df['IPTW_GEN'] = np.asarray(w_gen_trunc)
 
     # Overlap weights for ICI subset: weight = 1 - ps
     # (up-weight ICI patients who were least likely to receive ICI — equipoise population)
