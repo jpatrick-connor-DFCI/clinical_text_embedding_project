@@ -21,7 +21,7 @@ import seaborn as sns
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LogisticRegressionCV
 from sklearn.metrics import roc_auc_score, roc_curve
 
 warnings.filterwarnings('ignore', category=ConvergenceWarning)
@@ -94,7 +94,13 @@ cohort_df[['DFCI_MRN', 'treatment_start_date', 'PX_on_ICI', 'line_category']].to
 
 # === Train propensity models ===
 def train_propensity_cv(pred_df, feature_cols, label):
-    """Train 5-fold stratified CV logistic regression and return held-out predictions."""
+    """Train elastic-net logistic regression with nested CV for hyperparameter
+    tuning and held-out propensity scores.
+
+    Outer loop: 5-fold stratified CV produces held-out predictions.
+    Inner loop: LogisticRegressionCV tunes C and l1_ratio via 3-fold CV
+                within each outer training fold.
+    """
     X = pred_df[['DFCI_MRN'] + feature_cols].copy()
     y = pred_df['PX_on_ICI'].astype(int)
 
@@ -114,8 +120,23 @@ def train_propensity_cv(pred_df, feature_cols, label):
         X_train_s = scaler.transform(X_train)
         X_test_s = scaler.transform(X_test)
 
-        clf = LogisticRegression(max_iter=1000, solver="lbfgs")
+        clf = LogisticRegressionCV(
+            penalty='elasticnet',
+            solver='saga',
+            Cs=10,
+            l1_ratios=[0.1, 0.3, 0.5, 0.7, 0.9],
+            cv=3,
+            scoring='roc_auc',
+            max_iter=5000,
+            random_state=1234,
+            n_jobs=-1,
+        )
         clf.fit(X_train_s, y_train.values.ravel())
+
+        n_nonzero = np.sum(clf.coef_ != 0)
+        n_total = clf.coef_.size
+        print(f"    fold {fold}: C={clf.C_[0]:.4f}, l1_ratio={clf.l1_ratio_[0]:.2f}, "
+              f"features={n_nonzero}/{n_total}")
 
         cv_preds += clf.predict(X_test_s).tolist()
         cv_probs += clf.predict_proba(X_test_s)[:, 1].tolist()

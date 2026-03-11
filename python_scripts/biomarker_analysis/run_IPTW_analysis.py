@@ -27,7 +27,6 @@ from statsmodels.stats.multitest import multipletests
 from lifelines import CoxPHFitter
 from lifelines.exceptions import ConvergenceWarning
 from joblib import Parallel, delayed
-from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedKFold
@@ -82,9 +81,6 @@ embedding_cols = [col for col in full_df.columns
 print(f"[run_IPTW_analysis] {len(embedding_cols)} embedding columns found for prognostic score")
 
 # === Constants ===
-PROG_SCORE_N_PCS = 20  # PCA components for prognostic score model
-PROG_SCORE_CV_FOLDS = 5
-PROG_SCORE_PENALIZER = 0.1  # stronger ridge for high-dim prognostic model
 MIN_CANCER_TYPE_TOTAL = 30   # for merging rare types into OTHER in pan-cancer
 MIN_CANCER_TYPE_N = 100      # minimum total patients to run cancer-type-specific analysis
 COMMON_SUPPORT_PCT = (0.5, 99.5)
@@ -235,92 +231,6 @@ def _fdr_within_mutation_type(results_df, p_col, fdr_col, sig_col):
         rej, fdr, _, _ = multipletests(pvals, alpha=0.05, method='fdr_bh')
         results_df.loc[mask, fdr_col] = fdr
         results_df.loc[mask, sig_col] = rej
-
-
-def compute_prognostic_score_cv(df, embed_cols, base_covars_list, n_pcs=20,
-                                n_folds=5, penalizer=0.1, seed=1234):
-    """Compute held-out prognostic scores via CV using PCA-reduced embeddings.
-
-    Fits a penalized CoxPH on PCA(embeddings) + base_vars (no markers) within
-    each CV fold, then predicts linear predictor on the held-out fold.
-
-    Returns: Series of prognostic scores indexed like df, or None if insufficient data.
-    """
-    # Check we have enough embedding data
-    available_embeds = [c for c in embed_cols if c in df.columns and df[c].notna().any()]
-    if len(available_embeds) < n_pcs:
-        logger.warning(f"  Prognostic score: only {len(available_embeds)} embedding cols "
-                       f"available (need {n_pcs}). Skipping.")
-        return None
-
-    # Build feature matrix: embeddings + base covariates
-    fit_cols = available_embeds + [c for c in base_covars_list if c in df.columns]
-    required = fit_cols + ['tt_death', 'death']
-    df_clean = df[['DFCI_MRN'] + required].dropna().copy()
-
-    if len(df_clean) < 50:
-        logger.warning(f"  Prognostic score: only {len(df_clean)} complete cases. Skipping.")
-        return None
-
-    # PCA on embeddings
-    embed_matrix = df_clean[available_embeds].values
-    actual_pcs = min(n_pcs, embed_matrix.shape[1], embed_matrix.shape[0] - 1)
-    scaler = StandardScaler()
-    embed_scaled = scaler.fit_transform(embed_matrix)
-    pca = PCA(n_components=actual_pcs, random_state=seed)
-    embed_pcs = pca.fit_transform(embed_scaled)
-    pc_col_names = [f'_PROG_PC{i}' for i in range(actual_pcs)]
-    for i, pc_name in enumerate(pc_col_names):
-        df_clean[pc_name] = embed_pcs[:, i]
-
-    print(f"  Prognostic score: {actual_pcs} PCs "
-          f"({pca.explained_variance_ratio_.sum()*100:.1f}% var explained), "
-          f"{len(df_clean)} patients")
-
-    # CV prognostic score generation
-    prog_covars = pc_col_names + [c for c in base_covars_list if c in df_clean.columns]
-    cox_cols = ['tt_death', 'death'] + prog_covars
-
-    # Use death as stratification variable for balanced folds
-    event_indicator = df_clean['death'].astype(int).values
-    skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
-
-    prog_scores = pd.Series(np.nan, index=df_clean.index, dtype=float)
-
-    for fold, (train_idx, test_idx) in enumerate(skf.split(df_clean, event_indicator), 1):
-        train_df = df_clean.iloc[train_idx][cox_cols].copy()
-        test_df = df_clean.iloc[test_idx][cox_cols].copy()
-
-        # Standardize PCs within fold
-        fold_scaler = StandardScaler()
-        train_df[pc_col_names] = fold_scaler.fit_transform(train_df[pc_col_names])
-        test_df[pc_col_names] = fold_scaler.transform(test_df[pc_col_names])
-
-        try:
-            cph = CoxPHFitter(penalizer=penalizer)
-            with warnings.catch_warnings():
-                warnings.filterwarnings('ignore', category=ConvergenceWarning)
-                warnings.filterwarnings('ignore', category=LinAlgWarning)
-                cph.fit(train_df, duration_col='tt_death', event_col='death')
-
-            # Linear predictor = prognostic score
-            lp = cph.predict_partial_hazard(test_df[prog_covars])
-            prog_scores.iloc[test_idx] = np.log(lp.values.ravel())
-        except Exception as e:
-            logger.warning(f"  Prognostic score fold {fold} failed: {e}")
-            continue
-
-    n_valid = prog_scores.notna().sum()
-    if n_valid < len(df_clean) * 0.5:
-        logger.warning(f"  Prognostic score: only {n_valid}/{len(df_clean)} valid. Skipping.")
-        return None
-
-    # Map back to original df index via DFCI_MRN
-    mrn_to_score = pd.Series(prog_scores.values, index=df_clean['DFCI_MRN'].values)
-    result = df['DFCI_MRN'].map(mrn_to_score)
-    print(f"  Prognostic score: {n_valid} valid scores, "
-          f"range [{result.min():.2f}, {result.max():.2f}]")
-    return result
 
 
 # =============================================
@@ -703,7 +613,7 @@ for cancer_type in types_to_test:
     if len(track2_markers) < MIN_MARKERS_TO_TEST:
         print(f"  Skipping Track 2: fewer than {MIN_MARKERS_TO_TEST} markers with sufficient support.")
     else:
-        for spec_name, spec_weights in [('OVL', 'IPTW_OVL'), ('noIPTW', None)]:
+        for spec_name, spec_weights in [('ATE', 'IPTW_ATE'), ('noIPTW', None)]:
             results, failed = _run_marker_screen(
                 type_df, track2_markers, base_vars, spec_weights,
                 _fit_track2_marker, N_JOBS, label=f"T2 {cancer_type} {spec_name}")
@@ -730,11 +640,6 @@ for cancer_type in types_to_test:
         w_gen_trunc = np.ones(len(ici_only_df))
     ici_only_df['IPTW_GEN'] = np.asarray(w_gen_trunc)
 
-    # Overlap weights for ICI subset: weight = 1 - ps
-    # (up-weight ICI patients who were least likely to receive ICI — equipoise population)
-    w_gen_ovl = (1 - ici_ps).values
-    ici_only_df['IPTW_GEN_OVL'] = w_gen_ovl
-
     track1_markers = [
         m for m in biomarker_cols
         if marker_has_ici_only_support(type_df, m, min_pos=MIN_MARKER_POS_ICI_ONLY,
@@ -749,7 +654,7 @@ for cancer_type in types_to_test:
         # include for pan-cancer)
         ici_base_vars = list(base_vars)
 
-        for spec_name, spec_weights in [('OVL', 'IPTW_GEN_OVL'), ('unweighted', None)]:
+        for spec_name, spec_weights in [('ATE', 'IPTW_GEN'), ('unweighted', None)]:
             results, failed = _run_marker_screen(
                 ici_only_df, track1_markers, ici_base_vars, spec_weights,
                 _fit_track1_marker, N_JOBS, label=f"T1 {cancer_type} {spec_name}")
@@ -761,43 +666,5 @@ for cancer_type in types_to_test:
             spec_df.to_csv(
                 os.path.join(RUN_PATH, f'{cancer_type}_track1_{spec_name}_ICI_only.csv'),
                 index=False)
-
-    # === Track 1 prognostic-score-adjusted: S(t) ~ base_vars + prog_score + marker ===
-    # Adjusts for unmeasured confounders (disease severity, comorbidities) captured
-    # in clinical text embeddings via a CV-derived prognostic score.
-    if len(track1_markers) >= MIN_MARKERS_TO_TEST and len(embedding_cols) >= PROG_SCORE_N_PCS:
-        print(f"  Computing prognostic score for {cancer_type}...")
-        prog_scores = compute_prognostic_score_cv(
-            ici_only_df, embedding_cols, base_covars,
-            n_pcs=PROG_SCORE_N_PCS, n_folds=PROG_SCORE_CV_FOLDS,
-            penalizer=PROG_SCORE_PENALIZER)
-
-        if prog_scores is not None:
-            ici_prog_df = ici_only_df.copy()
-            ici_prog_df['PROG_SCORE'] = prog_scores.values
-            # Drop patients without a valid prognostic score
-            ici_prog_df = ici_prog_df.dropna(subset=['PROG_SCORE']).copy()
-            print(f"  Track 1 prognostic-adjusted: {len(ici_prog_df)} patients with valid scores")
-
-            # Adjusted base vars include the prognostic score
-            ici_prog_base_vars = list(base_vars) + ['PROG_SCORE']
-
-            for spec_name, spec_weights in [('progAdj', None)]:
-                results, failed = _run_marker_screen(
-                    ici_prog_df, track1_markers, ici_prog_base_vars, spec_weights,
-                    _fit_track1_marker, N_JOBS, label=f"T1 {cancer_type} {spec_name}")
-                if failed:
-                    print(f"  Track 1 {spec_name} failures: {len(failed)}. "
-                          f"First: {failed[0][0]} -> {failed[0][1]}")
-                spec_df = pd.DataFrame(results, columns=TRACK1_RESULT_COLS)
-                spec_df = add_track1_fdr(spec_df)
-                spec_df.to_csv(
-                    os.path.join(RUN_PATH, f'{cancer_type}_track1_{spec_name}_ICI_only.csv'),
-                    index=False)
-        else:
-            print(f"  Skipping prognostic-adjusted Track 1: score computation failed.")
-    else:
-        if len(embedding_cols) < PROG_SCORE_N_PCS:
-            print(f"  Skipping prognostic-adjusted Track 1: insufficient embedding columns.")
 
 print(f"\n[run_IPTW_analysis] Done. Results in {RUN_PATH}")
