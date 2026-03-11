@@ -130,7 +130,7 @@ def train_propensity_cv(pred_df, feature_cols, label):
             max_iter=2000,
             tol=1e-3,
             random_state=1234,
-            n_jobs=2,
+            n_jobs=4,
         )
         clf.fit(X_train_s, y_train.values.ravel())
 
