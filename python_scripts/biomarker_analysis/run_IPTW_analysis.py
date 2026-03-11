@@ -85,9 +85,9 @@ MIN_CANCER_TYPE_TOTAL = 30   # for merging rare types into OTHER in pan-cancer
 MIN_CANCER_TYPE_N = 100      # minimum total patients to run cancer-type-specific analysis
 COMMON_SUPPORT_PCT = (0.5, 99.5)
 IPTW_TRUNC_PCT = (1, 99)
-MIN_MARKER_POS_PER_ARM = 10
-MIN_MARKER_NEG_PER_ARM = 10
-MIN_MARKER_POS_ICI_ONLY = 10
+MIN_MARKER_POS_PER_ARM = 5
+MIN_MARKER_NEG_PER_ARM = 5
+MIN_MARKER_POS_ICI_ONLY = 5
 MIN_EVENTS_PER_MARKER_GROUP = 5   # minimum deaths among marker+ patients
 
 
