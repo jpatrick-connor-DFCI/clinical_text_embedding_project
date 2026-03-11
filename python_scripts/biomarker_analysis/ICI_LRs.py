@@ -123,13 +123,14 @@ def train_propensity_cv(pred_df, feature_cols, label):
         clf = LogisticRegressionCV(
             penalty='elasticnet',
             solver='saga',
-            Cs=10,
-            l1_ratios=[0.1, 0.3, 0.5, 0.7, 0.9],
+            Cs=8,
+            l1_ratios=[0.1, 0.5, 0.9],
             cv=3,
             scoring='roc_auc',
-            max_iter=5000,
+            max_iter=2000,
+            tol=1e-3,
             random_state=1234,
-            n_jobs=-1,
+            n_jobs=2,
         )
         clf.fit(X_train_s, y_train.values.ravel())
 
