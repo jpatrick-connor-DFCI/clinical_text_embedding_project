@@ -68,16 +68,20 @@ ici_lines = (
 ici_lines['line_category'] = ici_lines['ici_line'].astype(int)
 ici_lines['PX_on_ICI'] = 1
 
-# === Determine max line for never-ICI patients ===
+# === Determine lines of therapy for never-ICI patients ===
 never_ici_mrns = (cohort_mrns & treated_mrns) - ici_mrns
 
-control_lines = (
+# Max line per control (used for cohort 1 as a covariate, and to determine
+# which lines a control is eligible for in cohort 2 matching)
+control_max_lines = (
     med_lines_df.loc[med_lines_df['DFCI_MRN'].isin(never_ici_mrns)]
     .groupby('DFCI_MRN')['LINE']
     .max()
     .reset_index()
     .rename(columns={'LINE': 'max_line'})
 )
+# For cohort 1 (unmatched), line_category = max line reached
+control_lines = control_max_lines.copy()
 control_lines['line_category'] = control_lines['max_line'].astype(int)
 control_lines['PX_on_ICI'] = 0
 
@@ -104,16 +108,15 @@ output_cols = ['DFCI_MRN', 'PX_on_ICI', 'line_category', 'cancer_type']
 
 
 # ================================================================
-# Cohort 1: First-line only, no matching
+# Cohort 1: First-line ICI vs all never-ICI, no matching
 # ================================================================
 print("\n" + "=" * 60)
-print("Cohort 1: First-line only, unmatched")
+print("Cohort 1: First-line ICI vs all never-ICI, unmatched")
 print("=" * 60)
 
 ici_line1 = ici_lines[ici_lines['line_category'] == 1].copy()
-ctrl_line1 = control_lines[control_lines['line_category'] == 1].copy()
 
-cohort1 = pd.concat([ici_line1[output_cols], ctrl_line1[output_cols]], ignore_index=True)
+cohort1 = pd.concat([ici_line1[output_cols], control_lines[output_cols]], ignore_index=True)
 cohort1 = cohort1.merge(surv_dates, on='DFCI_MRN')
 cohort1 = cohort1.rename(columns={'first_treatment_date': 'treatment_start_date'})
 
@@ -129,27 +132,49 @@ print(f"  Saved to {os.path.join(COHORT_PATH, 'matched_cohort_cohort1.csv')}")
 
 # ================================================================
 # Cohort 2: Lines 1-3, 1:1 matched on (cancer_type, line_category)
+# A control with max_line=3 is eligible at lines 1, 2, and 3.
+# Each control patient can only be used once across all strata.
 # ================================================================
 print("\n" + "=" * 60)
 print("Cohort 2: Lines 1-3, 1:1 matched")
 print("=" * 60)
 
 ici_1to3 = ici_lines[ici_lines['line_category'].isin([1, 2, 3])].copy()
-ctrl_1to3 = control_lines[control_lines['line_category'].isin([1, 2, 3])].copy()
+
+# Expand controls: each control is eligible at every line up to their max_line (capped at 3)
+ctrl_expanded_rows = []
+for _, row in control_max_lines.iterrows():
+    max_l = min(int(row['max_line']), 3)
+    for line in range(1, max_l + 1):
+        ctrl_expanded_rows.append({
+            'DFCI_MRN': row['DFCI_MRN'],
+            'line_category': line,
+            'PX_on_ICI': 0,
+        })
+ctrl_expanded = pd.DataFrame(ctrl_expanded_rows)
+ctrl_expanded['cancer_type'] = ctrl_expanded['DFCI_MRN'].map(cancer_type_map)
+ctrl_expanded = ctrl_expanded.dropna(subset=['cancer_type']).copy()
 
 print(f"Eligible ICI (lines 1-3): {len(ici_1to3)}")
-print(f"Eligible controls (lines 1-3): {len(ctrl_1to3)}")
+print(f"Eligible control-line slots: {len(ctrl_expanded)} "
+      f"({ctrl_expanded['DFCI_MRN'].nunique()} unique controls)")
 
 
 def match_cohort_1to1(cases_df, controls_df):
-    """Exact 1:1 match on (cancer_type, line_category) without replacement."""
+    """Exact 1:1 match on (cancer_type, line_category) without replacement.
+
+    Each control patient (DFCI_MRN) can only be used once globally, even if
+    they appear in multiple line_category slots.
+    """
     matched_cases = []
     matched_controls = []
+    used_control_mrns = set()
 
     for (ctype, lcat), stratum_cases in cases_df.groupby(['cancer_type', 'line_category']):
         stratum_controls = controls_df.loc[
             (controls_df['cancer_type'] == ctype) &
-            (controls_df['line_category'] == lcat)
+            (controls_df['line_category'] == lcat) &
+            (~controls_df['DFCI_MRN'].isin(used_control_mrns))
         ].copy()
 
         if stratum_controls.empty:
@@ -167,12 +192,16 @@ def match_cohort_1to1(cases_df, controls_df):
         if n_matchable < n_cases:
             sampled_cases = stratum_cases.sample(n=n_matchable, random_state=42)
             matched_cases.append(sampled_cases)
-            matched_controls.append(stratum_controls.head(n_matchable))
+            selected_controls = stratum_controls.head(n_matchable)
+            matched_controls.append(selected_controls)
+            used_control_mrns.update(selected_controls['DFCI_MRN'])
             print(f"  ({ctype}, line={lcat}): {n_matchable}/{n_cases} cases matched 1:1 "
                   f"(only {n_available} controls available)")
         else:
             matched_cases.append(stratum_cases)
-            matched_controls.append(stratum_controls.head(n_cases))
+            selected_controls = stratum_controls.head(n_cases)
+            matched_controls.append(selected_controls)
+            used_control_mrns.update(selected_controls['DFCI_MRN'])
             print(f"  ({ctype}, line={lcat}): {n_cases} cases x 1 control "
                   f"({n_available} available)")
 
@@ -184,7 +213,7 @@ def match_cohort_1to1(cases_df, controls_df):
     return pd.concat([all_cases, all_controls], ignore_index=True)
 
 
-cohort2 = match_cohort_1to1(ici_1to3, ctrl_1to3)
+cohort2 = match_cohort_1to1(ici_1to3, ctrl_expanded)
 
 if cohort2.empty:
     print("\nCohort 2: No matched patients.")
