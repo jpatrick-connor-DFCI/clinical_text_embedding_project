@@ -19,8 +19,8 @@ random.seed(42)
 parser = argparse.ArgumentParser(description='Generate IPTW dataset for biomarker analysis.')
 parser.add_argument('--cohort', choices=['cohort1', 'cohort2'], required=True,
                     help='cohort1=first-line unmatched, cohort2=line-matched lines 1-3')
-parser.add_argument('--ps_model', choices=['embeddings_only', 'all_covariates'], required=True,
-                    help='Propensity score model: embeddings_only or all_covariates')
+parser.add_argument('--ps_model', choices=['covariates_only', 'covariates_plus_embeddings'], required=True,
+                    help='Propensity score model: covariates_only or covariates_plus_embeddings')
 args = parser.parse_args()
 
 COHORT = args.cohort

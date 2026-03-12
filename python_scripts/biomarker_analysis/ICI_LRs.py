@@ -1,8 +1,8 @@
 """Unified ICI propensity score generation for biomarker cohorts.
 
 Trains two propensity models per cohort:
-  1. Embeddings-only: LR on text embeddings
-  2. All-covariates: LR on text embeddings + demographics + cancer type + panel version + line_category
+  1. Covariates-only: LR on demographics + cancer type + panel version + line_category
+  2. Covariates + embeddings: LR on covariates + text embeddings
 
 Uses 5-fold stratified CV to produce held-out propensity scores.
 
@@ -61,16 +61,12 @@ notes_meta, embeddings_data = load_note_embeddings()
 note_types = ['Clinician', 'Imaging', 'Pathology']
 pool_fx = {nt: 'time_decay_mean' for nt in note_types}
 
-# === Load confounders for all-covariates model ===
+# === Load confounders for covariates model ===
 confounders = load_confounders()
 
-# === Load cancer type dummies and panel version for all-covariates model ===
+# === Load cancer type dummies ===
 cancer_type_df = pd.read_csv(
     os.path.join(DATA_PATH, 'clinical_and_genomic_features/cancer_type_df.csv'))
-somatic_df = pd.read_csv(
-    os.path.join(DATA_PATH, 'clinical_and_genomic_features/complete_somatic_data_df.csv'))
-panel_cols = [col for col in somatic_df.columns if col.upper().startswith('PANEL_VERSION')]
-somatic_panel = somatic_df[['DFCI_MRN'] + panel_cols].drop_duplicates(subset='DFCI_MRN', keep='first')
 
 # === Generate embedding datasets for each buffer ===
 buffers = [0, 15, 30, 45]
@@ -161,7 +157,7 @@ def train_propensity_cv(pred_df, feature_cols, label):
     })
 
 
-PS_MODELS = ['embeddings_only', 'all_covariates']
+PS_MODELS = ['covariates_only', 'covariates_plus_embeddings']
 
 for buffer in tqdm(buffers, desc="Training propensity models"):
     buffer_input_path = os.path.join(EMBEDDING_DATA_PATH, f'w_{buffer}_day_buffer/')
@@ -173,19 +169,10 @@ for buffer in tqdm(buffers, desc="Training propensity models"):
     embedding_cols = [col for col in pred_df.columns
                       if ('IMAGING' in col) or ('PATHOLOGY' in col) or ('CLINICIAN' in col)]
 
-    # Build all-covariates feature set
-    pred_with_covars = (
-        pred_df
-        .merge(cancer_type_df, on='DFCI_MRN', how='left')
-        .merge(somatic_panel, on='DFCI_MRN', how='left')
-    )
-    # One-hot panel version if not already dummified
-    if 'PANEL_VERSION' in pred_with_covars.columns:
-        pred_with_covars = pd.get_dummies(
-            pred_with_covars, columns=['PANEL_VERSION'], drop_first=True)
+    # Build covariate feature set
+    pred_with_covars = pred_df.merge(cancer_type_df, on='DFCI_MRN', how='left')
 
     cancer_type_feature_cols = [c for c in pred_with_covars.columns if c.startswith('CANCER_TYPE_')]
-    panel_feature_cols = [c for c in pred_with_covars.columns if c.upper().startswith('PANEL_VERSION_')]
     # Line category dummies (drop line 1 as reference)
     pred_with_covars = pd.get_dummies(
         pred_with_covars, columns=['line_category'], prefix='LINE', drop_first=True, dtype=int)
@@ -198,20 +185,21 @@ for buffer in tqdm(buffers, desc="Training propensity models"):
                                 usecols=['DFCI_MRN', 'GENDER', 'AGE_AT_TREATMENTSTART'])
         pred_with_covars = pred_with_covars.merge(surv_demo, on='DFCI_MRN', how='left')
 
-    all_covar_cols = (embedding_cols + demo_cols + cancer_type_feature_cols +
-                      panel_feature_cols + line_feature_cols)
-    # Drop any columns that are all NaN
-    all_covar_cols = [c for c in all_covar_cols if pred_with_covars[c].notna().any()]
+    covar_cols = (demo_cols + cancer_type_feature_cols + line_feature_cols)
+    covar_cols = [c for c in covar_cols if pred_with_covars[c].notna().any()]
+
+    covar_plus_embed_cols = covar_cols + embedding_cols
+    covar_plus_embed_cols = [c for c in covar_plus_embed_cols if pred_with_covars[c].notna().any()]
 
     for ps_model in PS_MODELS:
         output_path = os.path.join(OUTPUT_BASE, f'{ps_model}_propensity/w_{buffer}_day_buffer/')
         os.makedirs(output_path, exist_ok=True)
 
-        if ps_model == 'embeddings_only':
-            features = embedding_cols
-            source_df = pred_df.dropna(subset=embedding_cols)
+        if ps_model == 'covariates_only':
+            features = covar_cols
+            source_df = pred_with_covars.dropna(subset=features)
         else:
-            features = all_covar_cols
+            features = covar_plus_embed_cols
             source_df = pred_with_covars.dropna(subset=features)
 
         label = f"buffer={buffer}, {ps_model}"

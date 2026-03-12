@@ -24,7 +24,7 @@ MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
 os.makedirs(args.output_dir, exist_ok=True)
 
 COHORTS = ['cohort1', 'cohort2']
-PS_MODELS = ['embeddings_only', 'all_covariates']
+PS_MODELS = ['covariates_only', 'covariates_plus_embeddings']
 
 # Discover cancer types from result filenames
 _cancer_types = set()
