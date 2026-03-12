@@ -1,8 +1,14 @@
-"""Build line-matched ICI vs never-ICI cohorts.
+"""Build two ICI vs never-ICI cohorts for biomarker analysis.
 
-For each ICI patient, determines the line at which they received ICI (1, 2, 3, or 4+).
-For each never-ICI patient, determines their max line of therapy (1, 2, 3, or 4+).
-Performs exact 1:1 matching on (cancer_type, line_category) without replacement.
+Cohort 1 (first_line_unmatched):
+  - ICI patients whose first ICI was at line 1
+  - Never-ICI controls whose max line of therapy was 1
+  - No 1:1 matching — all eligible patients included
+
+Cohort 2 (line_matched_1to3):
+  - ICI patients whose first ICI was at line 1, 2, or 3
+  - Never-ICI controls whose max line was 1, 2, or 3
+  - 1:1 exact matching on (cancer_type, line_category) without replacement
 
 Usage:
   python build_line_matched_cohort.py
@@ -47,13 +53,6 @@ cancer_type_df['cancer_type'] = cancer_type_df[cancer_type_cols].idxmax(axis=1)
 cancer_type_map = dict(zip(cancer_type_df['DFCI_MRN'], cancer_type_df['cancer_type']))
 
 
-def bin_line(line_num):
-    """Bin line of therapy into categories: 1, 2, 3, or 4+."""
-    if line_num <= 3:
-        return int(line_num)
-    return 4
-
-
 # === Determine ICI line for ICI patients ===
 # ICI line = the earliest LINE where HAS_ICI == 1 for patients in IO_START
 ici_lines = (
@@ -66,7 +65,7 @@ ici_lines = (
     .reset_index()
     .rename(columns={'LINE': 'ici_line'})
 )
-ici_lines['line_category'] = ici_lines['ici_line'].apply(bin_line)
+ici_lines['line_category'] = ici_lines['ici_line'].astype(int)
 ici_lines['PX_on_ICI'] = 1
 
 # === Determine max line for never-ICI patients ===
@@ -79,7 +78,7 @@ control_lines = (
     .reset_index()
     .rename(columns={'LINE': 'max_line'})
 )
-control_lines['line_category'] = control_lines['max_line'].apply(bin_line)
+control_lines['line_category'] = control_lines['max_line'].astype(int)
 control_lines['PX_on_ICI'] = 0
 
 # === Add cancer type ===
@@ -97,12 +96,53 @@ print(ici_lines['line_category'].value_counts().sort_index())
 print(f"\nControl line_category distribution:")
 print(control_lines['line_category'].value_counts().sort_index())
 
-# === Matching ===
-def match_cohort(cases_df, controls_df, max_controls_per_case):
-    """Exact match on (cancer_type, line_category) without replacement.
+# === Add first_treatment_date for downstream use ===
+surv_dates = (surv_df[['DFCI_MRN', 'first_treatment_date']]
+              .drop_duplicates(subset='DFCI_MRN', keep='first'))
 
-    Returns matched case-control dataframe.
-    """
+output_cols = ['DFCI_MRN', 'PX_on_ICI', 'line_category', 'cancer_type']
+
+
+# ================================================================
+# Cohort 1: First-line only, no matching
+# ================================================================
+print("\n" + "=" * 60)
+print("Cohort 1: First-line only, unmatched")
+print("=" * 60)
+
+ici_line1 = ici_lines[ici_lines['line_category'] == 1].copy()
+ctrl_line1 = control_lines[control_lines['line_category'] == 1].copy()
+
+cohort1 = pd.concat([ici_line1[output_cols], ctrl_line1[output_cols]], ignore_index=True)
+cohort1 = cohort1.merge(surv_dates, on='DFCI_MRN')
+cohort1 = cohort1.rename(columns={'first_treatment_date': 'treatment_start_date'})
+
+n_ici = int(cohort1['PX_on_ICI'].sum())
+n_ctrl = len(cohort1) - n_ici
+print(f"Cohort 1: {n_ici} ICI + {n_ctrl} controls = {len(cohort1)} total")
+print(f"  Cancer type distribution:")
+print(cohort1.groupby(['PX_on_ICI', 'cancer_type']).size().unstack(fill_value=0))
+
+cohort1.to_csv(os.path.join(COHORT_PATH, 'matched_cohort_cohort1.csv'), index=False)
+print(f"  Saved to {os.path.join(COHORT_PATH, 'matched_cohort_cohort1.csv')}")
+
+
+# ================================================================
+# Cohort 2: Lines 1-3, 1:1 matched on (cancer_type, line_category)
+# ================================================================
+print("\n" + "=" * 60)
+print("Cohort 2: Lines 1-3, 1:1 matched")
+print("=" * 60)
+
+ici_1to3 = ici_lines[ici_lines['line_category'].isin([1, 2, 3])].copy()
+ctrl_1to3 = control_lines[control_lines['line_category'].isin([1, 2, 3])].copy()
+
+print(f"Eligible ICI (lines 1-3): {len(ici_1to3)}")
+print(f"Eligible controls (lines 1-3): {len(ctrl_1to3)}")
+
+
+def match_cohort_1to1(cases_df, controls_df):
+    """Exact 1:1 match on (cancer_type, line_category) without replacement."""
     matched_cases = []
     matched_controls = []
 
@@ -122,11 +162,9 @@ def match_cohort(cases_df, controls_df, max_controls_per_case):
 
         n_cases = len(stratum_cases)
         n_available = len(stratum_controls)
-        n_per_case = min(max_controls_per_case, n_available // n_cases) if n_cases > 0 else 0
+        n_matchable = min(n_cases, n_available)
 
-        if n_per_case == 0 and n_available > 0:
-            # Fewer controls than cases: match as many cases as we have controls (1:1)
-            n_matchable = min(n_cases, n_available)
+        if n_matchable < n_cases:
             sampled_cases = stratum_cases.sample(n=n_matchable, random_state=42)
             matched_cases.append(sampled_cases)
             matched_controls.append(stratum_controls.head(n_matchable))
@@ -134,10 +172,8 @@ def match_cohort(cases_df, controls_df, max_controls_per_case):
                   f"(only {n_available} controls available)")
         else:
             matched_cases.append(stratum_cases)
-            # Assign controls evenly across cases without replacement
-            n_total_controls = n_per_case * n_cases
-            matched_controls.append(stratum_controls.head(n_total_controls))
-            print(f"  ({ctype}, line={lcat}): {n_cases} cases x {n_per_case} controls "
+            matched_controls.append(stratum_controls.head(n_cases))
+            print(f"  ({ctype}, line={lcat}): {n_cases} cases x 1 control "
                   f"({n_available} available)")
 
     if not matched_cases:
@@ -148,26 +184,19 @@ def match_cohort(cases_df, controls_df, max_controls_per_case):
     return pd.concat([all_cases, all_controls], ignore_index=True)
 
 
-# --- 1:1 matching ---
-print("\n=== 1:1 Matching ===")
-matched_1to1 = match_cohort(ici_lines, control_lines, max_controls_per_case=1)
+cohort2 = match_cohort_1to1(ici_1to3, ctrl_1to3)
 
-# === Add first_treatment_date back for downstream use ===
-surv_dates = (surv_df[['DFCI_MRN', 'first_treatment_date']]
-              .drop_duplicates(subset='DFCI_MRN', keep='first'))
-
-if matched_1to1.empty:
-    print("\n1to1: No matched patients.")
+if cohort2.empty:
+    print("\nCohort 2: No matched patients.")
 else:
-    out = matched_1to1[['DFCI_MRN', 'PX_on_ICI', 'line_category', 'cancer_type']].merge(
-        surv_dates, on='DFCI_MRN')
-    out = out.rename(columns={'first_treatment_date': 'treatment_start_date'})
+    cohort2 = cohort2[output_cols].merge(surv_dates, on='DFCI_MRN')
+    cohort2 = cohort2.rename(columns={'first_treatment_date': 'treatment_start_date'})
 
-    n_ici = out['PX_on_ICI'].sum()
-    n_ctrl = len(out) - n_ici
-    print(f"\n1to1: {int(n_ici)} ICI + {int(n_ctrl)} controls = {len(out)} total")
+    n_ici = int(cohort2['PX_on_ICI'].sum())
+    n_ctrl = len(cohort2) - n_ici
+    print(f"\nCohort 2: {n_ici} ICI + {n_ctrl} controls = {len(cohort2)} total")
     print(f"  Line distribution:")
-    print(out.groupby(['PX_on_ICI', 'line_category']).size().unstack(fill_value=0))
+    print(cohort2.groupby(['PX_on_ICI', 'line_category']).size().unstack(fill_value=0))
 
-    out.to_csv(os.path.join(COHORT_PATH, 'matched_cohort_1to1.csv'), index=False)
-    print(f"  Saved to {os.path.join(COHORT_PATH, 'matched_cohort_1to1.csv')}")
+    cohort2.to_csv(os.path.join(COHORT_PATH, 'matched_cohort_cohort2.csv'), index=False)
+    print(f"  Saved to {os.path.join(COHORT_PATH, 'matched_cohort_cohort2.csv')}")

@@ -1,9 +1,9 @@
-"""Compile IPTW biomarker results across all schemes.
+"""Compile IPTW biomarker results across all cohorts and PS models.
 
 Reads per-scheme CSVs from IPTW_runs_*/ directories and produces:
   - track1_all_significant_hits.csv: all FDR-significant Track 1 (ICI-only) results
   - track2_all_significant_hits.csv: all FDR-significant Track 2 (interaction) results
-  - cohort_patient_counts.csv: n_ICI and n_control per cancer type in matched cohort
+  - cohort_patient_counts.csv: n_ICI and n_control per cancer type in each cohort
   - scheme_diagnostics_summary.csv: PS AUC, ESS, SMD summaries per scheme
 
 Usage:
@@ -23,14 +23,14 @@ args = parser.parse_args()
 MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
 os.makedirs(args.output_dir, exist_ok=True)
 
-MATCHINGS = ['1to1']
+COHORTS = ['cohort1', 'cohort2']
 PS_MODELS = ['embeddings_only', 'all_covariates']
 
 # Discover cancer types from result filenames
 _cancer_types = set()
-for _m in MATCHINGS:
+for _c in COHORTS:
     for _p in PS_MODELS:
-        _run = os.path.join(MARKER_PATH, f'IPTW_runs_{_m}_{_p}/')
+        _run = os.path.join(MARKER_PATH, f'IPTW_runs_{_c}_{_p}/')
         if not os.path.isdir(_run):
             continue
         for fname in os.listdir(_run):
@@ -51,9 +51,9 @@ all_t1 = []
 all_t2 = []
 diag_rows = []
 
-for matching in MATCHINGS:
+for cohort in COHORTS:
     for ps_model in PS_MODELS:
-        spec = f'{matching}_{ps_model}'
+        spec = f'{cohort}_{ps_model}'
         run_path = os.path.join(MARKER_PATH, f'IPTW_runs_{spec}/')
 
         if not os.path.isdir(run_path):
@@ -66,7 +66,7 @@ for matching in MATCHINGS:
             ess_file = os.path.join(diag_path, 'effective_sample_sizes.csv')
             if os.path.isfile(ess_file):
                 ess = pd.read_csv(ess_file)
-                ess['matching'] = matching
+                ess['cohort'] = cohort
                 ess['ps_model'] = ps_model
                 diag_rows.append(ess)
 
@@ -77,7 +77,7 @@ for matching in MATCHINGS:
                 if os.path.isfile(fpath):
                     df = pd.read_csv(fpath)
                     sig = df[df.get('significant_marker', pd.Series(dtype=bool)) == True].copy()
-                    sig['matching'] = matching
+                    sig['cohort'] = cohort
                     sig['ps_model'] = ps_model
                     sig['weight_type'] = weight
                     sig['cancer_type'] = cancer_type
@@ -90,7 +90,7 @@ for matching in MATCHINGS:
                 if os.path.isfile(fpath):
                     df = pd.read_csv(fpath)
                     sig = df[df.get('significant_predictive', pd.Series(dtype=bool)) == True].copy()
-                    sig['matching'] = matching
+                    sig['cohort'] = cohort
                     sig['ps_model'] = ps_model
                     sig['weight_type'] = weight
                     sig['cancer_type'] = cancer_type
@@ -106,23 +106,25 @@ t1.to_csv(os.path.join(args.output_dir, 'track1_all_significant_hits.csv'), inde
 t2.to_csv(os.path.join(args.output_dir, 'track2_all_significant_hits.csv'), index=False)
 
 # ================================================
-# 2. Matched cohort patient counts by cancer type
+# 2. Cohort patient counts by cancer type
 # ================================================
 COHORT_PATH = os.path.join(MARKER_PATH, 'matched_cohorts/')
 cohort_counts_rows = []
 
-for matching in MATCHINGS:
-    cohort_file = os.path.join(COHORT_PATH, f'matched_cohort_{matching}.csv')
+for cohort in COHORTS:
+    cohort_file = os.path.join(COHORT_PATH, f'matched_cohort_{cohort}.csv')
     if not os.path.isfile(cohort_file):
         print(f"  Cohort file not found: {cohort_file}")
         continue
-    cohort = pd.read_csv(cohort_file)
-    for ct, grp in cohort.groupby('CANCER_TYPE'):
+    cdf = pd.read_csv(cohort_file)
+    # Handle both 'cancer_type' and 'CANCER_TYPE' column names
+    ct_col = 'cancer_type' if 'cancer_type' in cdf.columns else 'CANCER_TYPE'
+    for ct, grp in cdf.groupby(ct_col):
         n_ici = int(grp['PX_on_ICI'].sum())
         n_ctrl = len(grp) - n_ici
         cohort_counts_rows.append({
             'cancer_type': ct,
-            'matching': matching,
+            'cohort': cohort,
             'n_ICI': n_ici,
             'n_control': n_ctrl,
             'n_total': len(grp),
@@ -130,7 +132,7 @@ for matching in MATCHINGS:
 
 cohort_counts = pd.DataFrame(cohort_counts_rows)
 cohort_counts.to_csv(os.path.join(args.output_dir, 'cohort_patient_counts.csv'), index=False)
-print(f"\nCohort patient counts ({len(cohort_counts)} cancer types):")
+print(f"\nCohort patient counts ({len(cohort_counts)} rows):")
 print(cohort_counts.to_string(index=False))
 
 # ================================================

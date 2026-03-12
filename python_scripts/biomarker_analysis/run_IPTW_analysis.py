@@ -9,8 +9,8 @@ Track 2 (full cohort, IPTW-weighted):
   Effect: interaction coefficient
 
 Usage:
-  python run_IPTW_analysis.py --ps_model embeddings_only
-  python run_IPTW_analysis.py --ps_model all_covariates
+  python run_IPTW_analysis.py --cohort cohort1 --ps_model embeddings_only
+  python run_IPTW_analysis.py --cohort cohort2 --ps_model all_covariates
 """
 
 import os
@@ -36,12 +36,14 @@ from biomarker_common import get_mutation_type
 random.seed(42)
 
 parser = argparse.ArgumentParser(description='Run IPTW biomarker analysis.')
+parser.add_argument('--cohort', choices=['cohort1', 'cohort2'], required=True,
+                    help='cohort1=first-line unmatched, cohort2=line-matched lines 1-3')
 parser.add_argument('--ps_model', choices=['embeddings_only', 'all_covariates'], required=True)
 args = parser.parse_args()
 
-MATCHING = '1to1'
+COHORT = args.cohort
 PS_MODEL = args.ps_model
-SPEC_LABEL = f'{MATCHING}_{PS_MODEL}'
+SPEC_LABEL = f'{COHORT}_{PS_MODEL}'
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)

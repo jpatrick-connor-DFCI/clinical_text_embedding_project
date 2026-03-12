@@ -1,12 +1,12 @@
 """Generate IPTW dataset for biomarker analysis (ICI vs never-ICI).
 
-Builds on 1:1 line-matched cohorts with propensity scores from ICI_LRs.py.
+Builds on cohort-specific propensity scores from ICI_LRs.py.
 Includes line_category as a covariate (dummy-coded, line 1 as reference).
 Also includes clinical text embeddings for prognostic score adjustment.
 
 Usage:
-  python generate_IPTW_df.py --ps_model embeddings_only
-  python generate_IPTW_df.py --ps_model all_covariates
+  python generate_IPTW_df.py --cohort cohort1 --ps_model embeddings_only
+  python generate_IPTW_df.py --cohort cohort2 --ps_model all_covariates
 """
 
 import os
@@ -17,23 +17,25 @@ import pandas as pd
 random.seed(42)
 
 parser = argparse.ArgumentParser(description='Generate IPTW dataset for biomarker analysis.')
+parser.add_argument('--cohort', choices=['cohort1', 'cohort2'], required=True,
+                    help='cohort1=first-line unmatched, cohort2=line-matched lines 1-3')
 parser.add_argument('--ps_model', choices=['embeddings_only', 'all_covariates'], required=True,
                     help='Propensity score model: embeddings_only or all_covariates')
 args = parser.parse_args()
 
-MATCHING = '1to1'
+COHORT = args.cohort
 PS_MODEL = args.ps_model
 
 # === Paths ===
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
-PRED_BASE = os.path.join(DATA_PATH, f'treatment_prediction/matched_{MATCHING}/')
+PRED_BASE = os.path.join(DATA_PATH, f'treatment_prediction/{COHORT}/')
 PRED_DATA_PATH = os.path.join(PRED_BASE, 'prediction_data/')
 PS_PATH = os.path.join(PRED_BASE, f'{PS_MODEL}_propensity/w_30_day_buffer/')
 MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
 os.makedirs(MARKER_PATH, exist_ok=True)
 
-print(f"[generate_IPTW_df] Matching: {MATCHING}, PS model: {PS_MODEL}")
+print(f"[generate_IPTW_df] Cohort: {COHORT}, PS model: {PS_MODEL}")
 
 # === Load base survival data ===
 tt_death_df = pd.read_csv(os.path.join(SURV_PATH, 'death_met_surv_df.csv'))
@@ -117,7 +119,7 @@ interaction_ICI_df = interaction_ICI_df.dropna(subset=['ICI_prediction', 'tt_dea
 interaction_ICI_df['PX_on_ICI'] = interaction_ICI_df['PX_on_ICI'].astype(int)
 interaction_ICI_df['death'] = interaction_ICI_df['death'].astype(int)
 
-output_file = os.path.join(MARKER_PATH, f'IPTW_df_{MATCHING}_{PS_MODEL}.csv')
+output_file = os.path.join(MARKER_PATH, f'IPTW_df_{COHORT}_{PS_MODEL}.csv')
 interaction_ICI_df.to_csv(output_file, index=False)
 print(f"[generate_IPTW_df] Saved {len(interaction_ICI_df)} patients to {output_file}")
 print(f"  ICI: {interaction_ICI_df['PX_on_ICI'].sum()}, "

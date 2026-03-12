@@ -1,16 +1,18 @@
-"""Unified ICI propensity score generation for line-matched cohorts.
+"""Unified ICI propensity score generation for biomarker cohorts.
 
-Trains two propensity models per matched cohort:
+Trains two propensity models per cohort:
   1. Embeddings-only: LR on text embeddings
   2. All-covariates: LR on text embeddings + demographics + cancer type + panel version + line_category
 
 Uses 5-fold stratified CV to produce held-out propensity scores.
 
 Usage:
-  python ICI_LRs.py
+  python ICI_LRs.py --cohort cohort1
+  python ICI_LRs.py --cohort cohort2
 """
 
 import os
+import argparse
 import warnings
 import numpy as np
 import pandas as pd
@@ -30,23 +32,28 @@ from biomarker_common import (
     DATA_PATH, SURV_PATH, load_note_embeddings, load_confounders,
 )
 
-MATCHING = '1to1'
+parser = argparse.ArgumentParser(description='Generate propensity scores for a biomarker cohort.')
+parser.add_argument('--cohort', choices=['cohort1', 'cohort2'], required=True,
+                    help='cohort1=first-line unmatched, cohort2=line-matched lines 1-3')
+args = parser.parse_args()
+
+COHORT = args.cohort
 
 # === Paths ===
 COHORT_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/matched_cohorts/')
-OUTPUT_BASE = os.path.join(DATA_PATH, f'treatment_prediction/matched_{MATCHING}/')
+OUTPUT_BASE = os.path.join(DATA_PATH, f'treatment_prediction/{COHORT}/')
 EMBEDDING_DATA_PATH = os.path.join(OUTPUT_BASE, 'prediction_data/')
 os.makedirs(EMBEDDING_DATA_PATH, exist_ok=True)
 
-print(f"[ICI_LRs] Matching: {MATCHING}")
+print(f"[ICI_LRs] Cohort: {COHORT}")
 
 # === Load matched cohort ===
-cohort_df = pd.read_csv(os.path.join(COHORT_PATH, f'matched_cohort_{MATCHING}.csv'))
+cohort_df = pd.read_csv(os.path.join(COHORT_PATH, f'matched_cohort_{COHORT}.csv'))
 cohort_df['treatment_start_date'] = pd.to_datetime(cohort_df['treatment_start_date'])
 
 n_ici = cohort_df['PX_on_ICI'].sum()
 n_ctrl = len(cohort_df) - n_ici
-print(f"Matched cohort: {int(n_ici)} ICI + {int(n_ctrl)} controls = {len(cohort_df)} total")
+print(f"Cohort: {int(n_ici)} ICI + {int(n_ctrl)} controls = {len(cohort_df)} total")
 
 # === Load note embeddings ===
 notes_meta, embeddings_data = load_note_embeddings()
@@ -226,12 +233,12 @@ for i, ps_model in enumerate(PS_MODELS):
     sns.set_style("whitegrid")
     sns.lineplot(x=fpr, y=tpr, ax=ax, label=f'AUC = {auc:.3f}')
     sns.lineplot(x=[0, 1], y=[0, 1], ax=ax, linestyle='--', color='gray')
-    ax.set_title(f'{ps_model} ({MATCHING}, buffer={PLOT_BUFFER}d)')
+    ax.set_title(f'{ps_model} ({COHORT}, buffer={PLOT_BUFFER}d)')
     ax.set_xlabel('False Positive Rate')
     ax.set_ylabel('True Positive Rate')
     ax.legend(loc='lower right')
 
 plt.tight_layout()
-plt.savefig(os.path.join(OUTPUT_BASE, f'propensity_ROC_{MATCHING}.png'), dpi=150)
+plt.savefig(os.path.join(OUTPUT_BASE, f'propensity_ROC_{COHORT}.png'), dpi=150)
 plt.show()
 print(f"[ICI_LRs] Done. Outputs in {OUTPUT_BASE}")
