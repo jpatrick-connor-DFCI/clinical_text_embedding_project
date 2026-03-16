@@ -35,12 +35,13 @@ def _full_cohort_complete(scheme: str, event: str) -> bool:
     return all(os.path.exists(os.path.join(out_dir, f)) for f in FULL_COHORT_FILES)
 
 
-def _feature_comp_complete(scheme: str, event: str, modality: str) -> bool:
-    """Check if both feature-comp result CSVs exist for a scheme/event/modality."""
+def _feature_comp_complete(scheme: str, event: str) -> bool:
+    """Check if all modality result CSVs exist for a scheme/event."""
     out_dir = os.path.join(get_output_dir(scheme, "feature_comps"), event)
-    return (
-        os.path.exists(os.path.join(out_dir, f"{modality}_test.csv"))
-        and os.path.exists(os.path.join(out_dir, f"{modality}_val.csv"))
+    return all(
+        os.path.exists(os.path.join(out_dir, f"{mod}_{split}.csv"))
+        for mod in MODALITIES
+        for split in ("test", "val")
     )
 
 
@@ -102,11 +103,10 @@ def main() -> None:
                 full_skipped += 1
             else:
                 full_rows.append(f"{scheme}\t{event}")
-            for modality in MODALITIES:
-                if args.skip_completed and _feature_comp_complete(scheme, event, modality):
-                    feature_skipped += 1
-                else:
-                    feature_rows.append(f"{scheme}\t{event}\t{modality}")
+            if args.skip_completed and _feature_comp_complete(scheme, event):
+                feature_skipped += 1
+            else:
+                feature_rows.append(f"{scheme}\t{event}")
 
     full_fp = os.path.join(args.output_dir, "full_cohort_tasks.tsv")
     feature_fp = os.path.join(args.output_dir, "feature_comp_tasks.tsv")

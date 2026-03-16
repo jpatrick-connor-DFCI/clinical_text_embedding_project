@@ -77,7 +77,11 @@ def main() -> None:
     cfg["penalized_cols"] = [c for c in cfg["penalized_cols"] if c not in dropped_cols]
     all_feature_cols = [c for c in all_feature_cols if c not in dropped_cols]
     n_before = len(event_pred_df)
-    event_pred_df = event_pred_df.dropna(subset=all_feature_cols + [args.event, f"tt_{args.event}"])
+    # Columns with a paired _missing indicator are raw measurements deferred to per-fold
+    # mean imputation (e.g. lab values). All other feature NaNs are unexpected and drop the row.
+    imputable_cols = {c for c in all_feature_cols if f"{c}_missing" in event_pred_df.columns}
+    drop_subset = [c for c in all_feature_cols if c not in imputable_cols] + [args.event, f"tt_{args.event}"]
+    event_pred_df = event_pred_df.dropna(subset=drop_subset)
     n_dropped = n_before - len(event_pred_df)
     if n_dropped > 0:
         print(f"{label} Dropped {n_dropped}/{n_before} rows with NaN values")

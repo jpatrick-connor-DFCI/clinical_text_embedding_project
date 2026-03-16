@@ -70,7 +70,7 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
     continue
   fi
 
-  IFS=$'\t' read -r SCHEME EVENT MODALITY <<< "${TASK_LINE}"
+  IFS=$'\t' read -r SCHEME EVENT <<< "${TASK_LINE}"
 
   case "$SCHEME" in
     icd3) SCHEME_RESULTS_DIR="level_3_ICD_results" ;;
@@ -85,16 +85,18 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
   esac
   mkdir -p "$RESULTS_ROOT/$SCHEME_RESULTS_DIR/feature_comps/$EVENT"
 
-  echo "Running row ${LINE_NUM}: scheme=${SCHEME}, event=${EVENT}, modality=${MODALITY}"
-  python "$PROJECT_ROOT/python_scripts/model_training/run_feature_comp_task.py" \
-    --scheme "$SCHEME" \
-    --event "$EVENT" \
-    --modality "$MODALITY" \
-    --n-jobs "${SLURM_CPUS_PER_TASK:-1}" \
-    --max-iter "${COXNET_MAX_ITER:-1000}" \
-    --backend "${COXNET_BACKEND:-threading}" \
-    ${OVERWRITE_FLAG[@]+"${OVERWRITE_FLAG[@]}"} \
-    || echo "[error] row ${LINE_NUM} failed: scheme=${SCHEME}, event=${EVENT}, modality=${MODALITY}"
+  echo "Running row ${LINE_NUM}: scheme=${SCHEME}, event=${EVENT}"
+  for MODALITY in stage treatment labs somatic prs text; do
+    python "$PROJECT_ROOT/python_scripts/model_training/run_feature_comp_task.py" \
+      --scheme "$SCHEME" \
+      --event "$EVENT" \
+      --modality "$MODALITY" \
+      --n-jobs "${SLURM_CPUS_PER_TASK:-1}" \
+      --max-iter "${COXNET_MAX_ITER:-1000}" \
+      --backend "${COXNET_BACKEND:-threading}" \
+      ${OVERWRITE_FLAG[@]+"${OVERWRITE_FLAG[@]}"} \
+      || echo "[error] row ${LINE_NUM} failed: scheme=${SCHEME}, event=${EVENT}, modality=${MODALITY}"
+  done
 done
 
 conda deactivate
