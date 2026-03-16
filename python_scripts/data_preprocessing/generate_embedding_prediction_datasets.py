@@ -345,7 +345,7 @@ icds_to_analyze = _dedupe_in_order(icd_data_base['ICD10_LEVEL_3_CD'].tolist())
 # Prevalence filter: keep codes present in >= 1% of the full cohort (any time)
 cohort_mrns = set(base_vte_data_sub['DFCI_MRN'])
 shared_icd3_list = _prefilter_events_by_prevalence(
-    icd_data_base, cohort_mrns, 'ICD10_LEVEL_3_CD', icds_to_analyze, min_prevalence=0.01
+    icd_data_base, cohort_mrns, 'ICD10_LEVEL_3_CD', icds_to_analyze, min_prevalence=0.05
 )
 allowed_icd3_set = set(shared_icd3_list)
 print(f"  Level-3 ICD code list: {len(shared_icd3_list)} codes")
@@ -354,7 +354,7 @@ print(f"  Level-3 ICD code list: {len(shared_icd3_list)} codes")
 # post-treatment so the _post variant endpoint sets are directly comparable.
 _icd_post = icd_data_base.loc[icd_data_base['TIME_TO_ICD'] > 0]
 shared_icd3_post_list = _prefilter_events_by_prevalence(
-    _icd_post, cohort_mrns, 'ICD10_LEVEL_3_CD', shared_icd3_list, min_prevalence=0.01
+    _icd_post, cohort_mrns, 'ICD10_LEVEL_3_CD', shared_icd3_list, min_prevalence=0.05
 )
 allowed_icd3_post_set = set(shared_icd3_post_list)
 print(f"  Level-3 ICD post-treatment code list: {len(shared_icd3_post_list)} codes (AND filter)")
@@ -367,9 +367,9 @@ pd.Series(sorted(allowed_icd3_post_set), name='ICD10_LEVEL_3_CD').to_csv(
     os.path.join(CODE_PATH, 'allowed_icd3_post_codes.csv'), index=False
 )
 
-for variant, time_filter, icd3_list, surv_fn, emb_fn in [
-    ('first_instance', None, shared_icd3_list, 'level_3_ICD_surv_df.csv', 'level_3_ICD_embedding_prediction_df.csv'),
-    ('first_post_treatment', lambda df: df['TIME_TO_ICD'] > 0, shared_icd3_post_list, 'level_3_ICD_post_surv_df.csv', 'level_3_ICD_post_embedding_prediction_df.csv'),
+for variant, time_filter, surv_fn, emb_fn in [
+    ('first_instance', None, 'level_3_ICD_surv_df.csv', 'level_3_ICD_embedding_prediction_df.csv'),
+    ('first_post_treatment', lambda df: df['TIME_TO_ICD'] > 0, 'level_3_ICD_post_surv_df.csv', 'level_3_ICD_post_embedding_prediction_df.csv'),
 ]:
     vte_data_sub = base_vte_data_sub.copy()
     icd_data = icd_data_base.copy()
@@ -383,14 +383,14 @@ for variant, time_filter, icd3_list, surv_fn, emb_fn in [
     icd_event_cols = _map_events_to_columns(
         vte_data_sub=vte_data_sub,
         event_data=icd_data,
-        events_to_analyze=icd3_list,
+        events_to_analyze=shared_icd3_post_list,
         event_col='ICD10_LEVEL_3_CD',
         time_col='TIME_TO_ICD',
         progress_desc=f'Generating level-3 ICD events ({variant})',
     )
     vte_data_sub = pd.concat([vte_data_sub, icd_event_cols], axis=1)
     _finalize_base_covariates(vte_data_sub)
-    kept = _filter_endpoint_events_by_min_post_baseline_count(vte_data_sub, icd3_list, min_events=100)
+    kept = _filter_endpoint_events_by_min_post_baseline_count(vte_data_sub, shared_icd3_post_list, min_events=100)
     _write_outputs(
         vte_data_sub=vte_data_sub,
         endpoint_events=kept,
@@ -428,19 +428,25 @@ def _build_phecode_base(icd3_allowed: set) -> tuple[pd.DataFrame, list[str]]:
     return phe_data, phe_list
 
 
-phecode_data_base, shared_phecode_list = _build_phecode_base(allowed_icd3_set)
-phecode_data_post_base, shared_phecode_post_list = _build_phecode_base(allowed_icd3_post_set)
-print(f"  Phecode first-instance list:      {len(shared_phecode_list)} codes")
-print(f"  Phecode post-treatment list (AND): {len(shared_phecode_post_list)} codes")
+# Build phecode base from the same ICD3 set used by both ICD3 variants.
+# Apply the same AND prevalence filter (any-time >= 5%, post-treatment >= 5%) so
+# the phecode count is roughly comparable to the ICD3 count.
+phecode_data_base, _shared_phecode_raw = _build_phecode_base(allowed_icd3_post_set)
+shared_phecode_list = _prefilter_events_by_prevalence(
+    phecode_data_base, cohort_mrns, 'PHECODE', _shared_phecode_raw, min_prevalence=0.05
+)
+_phe_post = phecode_data_base.loc[phecode_data_base['TIME_TO_ICD'] > 0]
+shared_phecode_list = _prefilter_events_by_prevalence(
+    _phe_post, cohort_mrns, 'PHECODE', shared_phecode_list, min_prevalence=0.05
+)
+print(f"  Phecode list (AND filter, both variants): {len(shared_phecode_list)} codes")
 
-for variant, time_filter, phe_base, phe_list, surv_fn, emb_fn in [
-    ('first_instance', None, phecode_data_base, shared_phecode_list,
-     'phecode_surv_df.csv', 'phecode_embedding_prediction_df.csv'),
-    ('first_post_treatment', lambda df: df['TIME_TO_ICD'] > 0, phecode_data_post_base, shared_phecode_post_list,
-     'phecode_post_surv_df.csv', 'phecode_post_embedding_prediction_df.csv'),
+for variant, time_filter, surv_fn, emb_fn in [
+    ('first_instance', None, 'phecode_surv_df.csv', 'phecode_embedding_prediction_df.csv'),
+    ('first_post_treatment', lambda df: df['TIME_TO_ICD'] > 0, 'phecode_post_surv_df.csv', 'phecode_post_embedding_prediction_df.csv'),
 ]:
     vte_data_sub = base_vte_data_sub.copy()
-    phecode_data = phe_base.copy()
+    phecode_data = phecode_data_base.copy()
     if time_filter is not None:
         phecode_data = phecode_data.loc[time_filter(phecode_data)].copy()
     phecode_data = (
@@ -451,14 +457,14 @@ for variant, time_filter, phe_base, phe_list, surv_fn, emb_fn in [
     phecode_event_cols = _map_events_to_columns(
         vte_data_sub=vte_data_sub,
         event_data=phecode_data,
-        events_to_analyze=phe_list,
+        events_to_analyze=shared_phecode_list,
         event_col='PHECODE',
         time_col='TIME_TO_ICD',
         progress_desc=f'Generating phecode events ({variant})',
     )
     vte_data_sub = pd.concat([vte_data_sub, phecode_event_cols], axis=1)
     _finalize_base_covariates(vte_data_sub)
-    kept = _filter_endpoint_events_by_min_post_baseline_count(vte_data_sub, phe_list, min_events=100)
+    kept = _filter_endpoint_events_by_min_post_baseline_count(vte_data_sub, shared_phecode_list, min_events=100)
     _write_outputs(
         vte_data_sub=vte_data_sub,
         endpoint_events=kept,
