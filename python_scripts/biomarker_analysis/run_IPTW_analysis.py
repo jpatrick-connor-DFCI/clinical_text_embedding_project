@@ -8,13 +8,10 @@ Track 2 (full cohort, IPTW-weighted):
   S(t) ~ base_vars + line_dummies + marker + PX_on_ICI + marker x ICI
   Effect: interaction coefficient
 
-Usage:
-  python run_IPTW_analysis.py --cohort cohort1 --ps_model embeddings_only
-  python run_IPTW_analysis.py --cohort cohort2 --ps_model all_covariates
+Notebook-ready: loops over all cohort x ps_model combinations automatically.
 """
 
 import os
-import argparse
 import logging
 import random
 import warnings
@@ -31,56 +28,23 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
-from biomarker_common import get_mutation_type
+from biomarker_common import DATA_PATH, get_mutation_type
 
 random.seed(42)
-
-parser = argparse.ArgumentParser(description='Run IPTW biomarker analysis.')
-parser.add_argument('--cohort', choices=['cohort1', 'cohort2'], required=True,
-                    help='cohort1=first-line unmatched, cohort2=line-matched lines 1-3')
-parser.add_argument('--ps_model', choices=['covariates_only', 'covariates_plus_embeddings'], required=True)
-args = parser.parse_args()
-
-COHORT = args.cohort
-PS_MODEL = args.ps_model
-SPEC_LABEL = f'{COHORT}_{PS_MODEL}'
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 logger = logging.getLogger(__name__)
 
 N_JOBS = int(os.getenv("SLURM_CPUS_PER_TASK", "-1"))
 
+# ============================================================
+# Configuration — edit these to control which combinations to run
+# ============================================================
+COHORTS = ['cohort1', 'cohort2']
+PS_MODELS = ['covariates_only', 'covariates_plus_embeddings']
+
 # === Paths ===
-DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
-RUN_PATH = os.path.join(MARKER_PATH, f'IPTW_runs_{SPEC_LABEL}/')
-os.makedirs(RUN_PATH, exist_ok=True)
-
-print(f"[run_IPTW_analysis] Spec: {SPEC_LABEL}")
-print(f"[run_IPTW_analysis] Output: {RUN_PATH}")
-
-# === Load data ===
-input_file = os.path.join(MARKER_PATH, f'IPTW_df_{SPEC_LABEL}.csv')
-full_df = pd.read_csv(input_file)
-
-# === Identify column groups ===
-required_vars = ['DFCI_MRN', 'tt_death', 'death']
-base_covars = ['GENDER', 'AGE_AT_TREATMENTSTART']
-line_cols = sorted([col for col in full_df.columns if col.startswith('LINE_')])
-panel_cols = [col for col in full_df.columns if col.upper().startswith('PANEL_VERSION_')]
-cancer_type_cols = [col for col in full_df.columns if col.startswith('CANCER_TYPE_')]
-excluded_cols = (required_vars + base_covars + line_cols + panel_cols +
-                 cancer_type_cols + ['PX_on_ICI', 'ICI_prediction'])
-mutation_tags = ('_SNV', '_SV', '_FUSION', '_DEL', '_AMP')
-biomarker_cols = [
-    col for col in full_df.columns
-    if (col not in excluded_cols) and any(tag in col.upper() for tag in mutation_tags)
-]
-
-# === Identify embedding columns for prognostic score ===
-embedding_cols = [col for col in full_df.columns
-                  if ('IMAGING' in col) or ('PATHOLOGY' in col) or ('CLINICIAN' in col)]
-print(f"[run_IPTW_analysis] {len(embedding_cols)} embedding columns found for prognostic score")
 
 # === Constants ===
 MIN_CANCER_TYPE_TOTAL = 30   # for merging rare types into OTHER in pan-cancer
@@ -91,9 +55,14 @@ MIN_MARKER_POS_PER_ARM = 5
 MIN_MARKER_NEG_PER_ARM = 5
 MIN_MARKER_POS_ICI_ONLY = 5
 MIN_EVENTS_PER_MARKER_GROUP = 5   # minimum deaths among marker+ patients
+MIN_MARKERS_TO_TEST = 1
+EXCLUDE_TYPES = {'OTHER', 'CUP'}
+HR_EXTREME_THRESHOLD = 50
 
 
-# === Utility functions ===
+# =============================================
+# Utility functions
+# =============================================
 
 def classify(row):
     if row['significant_predictive']:
@@ -249,8 +218,6 @@ TRACK2_RESULT_COLS = [
     'n_ICI_pos', 'n_ICI_neg', 'events_ICI_pos', 'events_ICI_neg',
     'n_nonICI_pos', 'n_nonICI_neg', 'events_nonICI_pos', 'events_nonICI_neg',
 ]
-
-HR_EXTREME_THRESHOLD = 50
 
 
 def _fit_track2_marker(df, marker, base_vars, weights_col):
@@ -422,251 +389,283 @@ def _run_marker_screen(df, markers, base_vars, weights_col, fit_fn, n_jobs, labe
     return results, failed
 
 
-# =============================================
-# Main loop over cancer types
-# =============================================
+# ============================================================
+# Main loop: iterate over cohort x ps_model combinations
+# ============================================================
+for COHORT in COHORTS:
+    for PS_MODEL in PS_MODELS:
+        SPEC_LABEL = f'{COHORT}_{PS_MODEL}'
+        RUN_PATH = os.path.join(MARKER_PATH, f'IPTW_runs_{SPEC_LABEL}/')
+        os.makedirs(RUN_PATH, exist_ok=True)
 
-MIN_MARKERS_TO_TEST = 1
-EXCLUDE_TYPES = {'OTHER', 'CUP'}
-types_to_test = ['pan_cancer'] + [
-    col.replace('CANCER_TYPE_', '') for col in cancer_type_cols
-    if col.replace('CANCER_TYPE_', '') not in EXCLUDE_TYPES
-]
+        print(f"\n{'#'*60}")
+        print(f"[run_IPTW_analysis] Spec: {SPEC_LABEL}")
+        print(f"[run_IPTW_analysis] Output: {RUN_PATH}")
+        print(f"{'#'*60}")
 
-for cancer_type in types_to_test:
-    print(f"\n{'='*60}")
-    print(f"Cancer type: {cancer_type}")
-    print(f"{'='*60}")
+        # === Load data ===
+        input_file = os.path.join(MARKER_PATH, f'IPTW_df_{SPEC_LABEL}.csv')
+        full_df = pd.read_csv(input_file)
 
-    if cancer_type == 'pan_cancer':
-        type_df = full_df.copy()
-        type_df, pan_ct_cols, merged_rare = merge_rare_cancer_types_into_other(
-            type_df, min_total=MIN_CANCER_TYPE_TOTAL)
-        if merged_rare:
-            print(f"  Merged {len(merged_rare)} rare cancer types into OTHER: "
-                  + ", ".join(sorted(merged_rare)))
-        panel_cols_fit = [c for c in type_df if 'PANEL' in c]
-        ct_cols_fit = [c for c in type_df if 'CANCER_TYPE' in c]
-        base_vars = base_covars + line_cols + panel_cols_fit + ct_cols_fit
-    else:
-        ct_col = f'CANCER_TYPE_{cancer_type}'
-        if ct_col not in full_df.columns:
-            print(f"  Skipping: column {ct_col} not found.")
-            continue
-        type_df = full_df.loc[full_df[ct_col].astype(bool)].copy()
-        if len(type_df) < MIN_CANCER_TYPE_N:
-            print(f"  Skipping: only {len(type_df)} patients (minimum {MIN_CANCER_TYPE_N}).")
-            continue
-        # Recalibrate propensity within subset
-        if type_df['PX_on_ICI'].nunique() >= 2 and len(type_df) > 10:
-            ps_before = type_df['ICI_prediction'].copy()
-            type_df['ICI_prediction'] = recalibrate_propensity_within_subset(type_df)
-            print(f"  Recalibrated PS (mean {ps_before.mean():.3f} -> "
-                  f"{type_df['ICI_prediction'].mean():.3f})")
-        panel_cols_fit = [c for c in type_df if 'PANEL' in c]
-        base_vars = base_covars + line_cols + panel_cols_fit
+        # === Identify column groups ===
+        required_vars = ['DFCI_MRN', 'tt_death', 'death']
+        base_covars = ['GENDER', 'AGE_AT_TREATMENTSTART']
+        line_cols = sorted([col for col in full_df.columns if col.startswith('LINE_')])
+        panel_cols = [col for col in full_df.columns if col.upper().startswith('PANEL_VERSION_')]
+        cancer_type_cols = [col for col in full_df.columns if col.startswith('CANCER_TYPE_')]
+        excluded_cols = (required_vars + base_covars + line_cols + panel_cols +
+                         cancer_type_cols + ['PX_on_ICI', 'ICI_prediction'])
+        mutation_tags = ('_SNV', '_SV', '_FUSION', '_DEL', '_AMP')
+        biomarker_cols = [
+            col for col in full_df.columns
+            if (col not in excluded_cols) and any(tag in col.upper() for tag in mutation_tags)
+        ]
 
-    if type_df.empty:
-        print(f"  Skipping: no rows.")
-        continue
-    if type_df['PX_on_ICI'].nunique() < 2:
-        print(f"  Skipping: only one treatment group.")
-        continue
+        # === Identify embedding columns for prognostic score ===
+        embedding_cols = [col for col in full_df.columns
+                          if ('IMAGING' in col) or ('PATHOLOGY' in col) or ('CLINICIAN' in col)]
+        print(f"  {len(embedding_cols)} embedding columns found for prognostic score")
 
-    # --- Common support trimming ---
-    eps = 1e-6
-    ps_raw = type_df['ICI_prediction'].clip(eps, 1 - eps)
-    ps_t = ps_raw[type_df['PX_on_ICI'] == 1]
-    ps_c = ps_raw[type_df['PX_on_ICI'] == 0]
+        # === Cancer types to test ===
+        types_to_test = ['pan_cancer'] + [
+            col.replace('CANCER_TYPE_', '') for col in cancer_type_cols
+            if col.replace('CANCER_TYPE_', '') not in EXCLUDE_TYPES
+        ]
 
-    if ps_t.empty or ps_c.empty:
-        print(f"  Skipping: missing treated or control for common support.")
-        continue
+        for cancer_type in types_to_test:
+            print(f"\n{'='*60}")
+            print(f"Cancer type: {cancer_type}")
+            print(f"{'='*60}")
 
-    lower = max(np.percentile(ps_t, COMMON_SUPPORT_PCT[0]),
-                np.percentile(ps_c, COMMON_SUPPORT_PCT[0]))
-    upper = min(np.percentile(ps_t, COMMON_SUPPORT_PCT[1]),
-                np.percentile(ps_c, COMMON_SUPPORT_PCT[1]))
+            if cancer_type == 'pan_cancer':
+                type_df = full_df.copy()
+                type_df, pan_ct_cols, merged_rare = merge_rare_cancer_types_into_other(
+                    type_df, min_total=MIN_CANCER_TYPE_TOTAL)
+                if merged_rare:
+                    print(f"  Merged {len(merged_rare)} rare cancer types into OTHER: "
+                          + ", ".join(sorted(merged_rare)))
+                panel_cols_fit = [c for c in type_df if 'PANEL' in c]
+                ct_cols_fit = [c for c in type_df if 'CANCER_TYPE' in c]
+                base_vars = base_covars + line_cols + panel_cols_fit + ct_cols_fit
+            else:
+                ct_col = f'CANCER_TYPE_{cancer_type}'
+                if ct_col not in full_df.columns:
+                    print(f"  Skipping: column {ct_col} not found.")
+                    continue
+                type_df = full_df.loc[full_df[ct_col].astype(bool)].copy()
+                if len(type_df) < MIN_CANCER_TYPE_N:
+                    print(f"  Skipping: only {len(type_df)} patients (minimum {MIN_CANCER_TYPE_N}).")
+                    continue
+                # Recalibrate propensity within subset
+                if type_df['PX_on_ICI'].nunique() >= 2 and len(type_df) > 10:
+                    ps_before = type_df['ICI_prediction'].copy()
+                    type_df['ICI_prediction'] = recalibrate_propensity_within_subset(type_df)
+                    print(f"  Recalibrated PS (mean {ps_before.mean():.3f} -> "
+                          f"{type_df['ICI_prediction'].mean():.3f})")
+                panel_cols_fit = [c for c in type_df if 'PANEL' in c]
+                base_vars = base_covars + line_cols + panel_cols_fit
 
-    if pd.isna(lower) or pd.isna(upper) or lower >= upper:
-        print(f"  Skipping: no propensity overlap.")
-        continue
+            if type_df.empty:
+                print(f"  Skipping: no rows.")
+                continue
+            if type_df['PX_on_ICI'].nunique() < 2:
+                print(f"  Skipping: only one treatment group.")
+                continue
 
-    type_df = type_df[(ps_raw >= lower) & (ps_raw <= upper)].copy()
-    if type_df.empty or type_df['PX_on_ICI'].nunique() < 2:
-        print(f"  Skipping: no rows or one group after trimming.")
-        continue
+            # --- Common support trimming ---
+            eps = 1e-6
+            ps_raw = type_df['ICI_prediction'].clip(eps, 1 - eps)
+            ps_t = ps_raw[type_df['PX_on_ICI'] == 1]
+            ps_c = ps_raw[type_df['PX_on_ICI'] == 0]
 
-    ps = type_df['ICI_prediction'].clip(eps, 1 - eps)
-    treat_mask = type_df['PX_on_ICI'] == 1
-    p_treated = type_df['PX_on_ICI'].mean()
+            if ps_t.empty or ps_c.empty:
+                print(f"  Skipping: missing treated or control for common support.")
+                continue
 
-    if p_treated <= 0 or p_treated >= 1:
-        print(f"  Skipping: invalid treated proportion ({p_treated:.4f}).")
-        continue
+            lower = max(np.percentile(ps_t, COMMON_SUPPORT_PCT[0]),
+                        np.percentile(ps_c, COMMON_SUPPORT_PCT[0]))
+            upper = min(np.percentile(ps_t, COMMON_SUPPORT_PCT[1]),
+                        np.percentile(ps_c, COMMON_SUPPORT_PCT[1]))
 
-    # --- Stabilized ATE weights ---
-    w_ate = np.where(treat_mask, p_treated / ps, (1 - p_treated) / (1 - ps))
-    low, high = np.percentile(w_ate, IPTW_TRUNC_PCT)
-    if not np.isfinite(low) or not np.isfinite(high):
-        print(f"  Skipping: non-finite ATE truncation bounds.")
-        continue
-    w_ate_trunc = np.clip(w_ate, low, high)
-    type_df['IPTW_ATE'] = w_ate_trunc
+            if pd.isna(lower) or pd.isna(upper) or lower >= upper:
+                print(f"  Skipping: no propensity overlap.")
+                continue
 
-    # --- Stabilized ATT weights ---
-    w_att = np.where(treat_mask, 1.0, ((1 - p_treated) / p_treated) * (ps / (1 - ps)))
-    low_att, high_att = np.percentile(w_att, IPTW_TRUNC_PCT)
-    if not np.isfinite(low_att) or not np.isfinite(high_att):
-        print(f"  Skipping: non-finite ATT truncation bounds.")
-        continue
-    w_att_trunc = np.clip(w_att, low_att, high_att)
-    type_df['IPTW_ATT'] = w_att_trunc
+            type_df = type_df[(ps_raw >= lower) & (ps_raw <= upper)].copy()
+            if type_df.empty or type_df['PX_on_ICI'].nunique() < 2:
+                print(f"  Skipping: no rows or one group after trimming.")
+                continue
 
-    # --- Overlap weights (Li, Morgan & Zaslavsky, JASA 2018) ---
-    # Targets the equipoise population; no truncation needed (bounded 0-1)
-    w_overlap = np.where(treat_mask, 1 - ps, ps)
-    type_df['IPTW_OVL'] = w_overlap
+            ps = type_df['ICI_prediction'].clip(eps, 1 - eps)
+            treat_mask = type_df['PX_on_ICI'] == 1
+            p_treated = type_df['PX_on_ICI'].mean()
 
-    # --- ESS ---
-    w_t, w_c = w_ate_trunc[treat_mask], w_ate_trunc[~treat_mask]
-    ess_t = w_t.sum() ** 2 / (w_t ** 2).sum()
-    ess_c = w_c.sum() ** 2 / (w_c ** 2).sum()
-    print(f"  ATE: N treated={treat_mask.sum()}, N control={(~treat_mask).sum()} | "
-          f"ESS treated={ess_t:.0f}, ESS control={ess_c:.0f}")
+            if p_treated <= 0 or p_treated >= 1:
+                print(f"  Skipping: invalid treated proportion ({p_treated:.4f}).")
+                continue
 
-    w_t_att, w_c_att = w_att_trunc[treat_mask], w_att_trunc[~treat_mask]
-    ess_t_att = w_t_att.sum() ** 2 / (w_t_att ** 2).sum()
-    ess_c_att = w_c_att.sum() ** 2 / (w_c_att ** 2).sum()
-    print(f"  ATT: N treated={treat_mask.sum()}, N control={(~treat_mask).sum()} | "
-          f"ESS treated={ess_t_att:.0f}, ESS control={ess_c_att:.0f}")
+            # --- Stabilized ATE weights ---
+            w_ate = np.where(treat_mask, p_treated / ps, (1 - p_treated) / (1 - ps))
+            low, high = np.percentile(w_ate, IPTW_TRUNC_PCT)
+            if not np.isfinite(low) or not np.isfinite(high):
+                print(f"  Skipping: non-finite ATE truncation bounds.")
+                continue
+            w_ate_trunc = np.clip(w_ate, low, high)
+            type_df['IPTW_ATE'] = w_ate_trunc
 
-    w_t_ovl, w_c_ovl = w_overlap[treat_mask], w_overlap[~treat_mask]
-    ess_t_ovl = w_t_ovl.sum() ** 2 / (w_t_ovl ** 2).sum()
-    ess_c_ovl = w_c_ovl.sum() ** 2 / (w_c_ovl ** 2).sum()
-    print(f"  OVL: N treated={treat_mask.sum()}, N control={(~treat_mask).sum()} | "
-          f"ESS treated={ess_t_ovl:.0f}, ESS control={ess_c_ovl:.0f}")
+            # --- Stabilized ATT weights ---
+            w_att = np.where(treat_mask, 1.0, ((1 - p_treated) / p_treated) * (ps / (1 - ps)))
+            low_att, high_att = np.percentile(w_att, IPTW_TRUNC_PCT)
+            if not np.isfinite(low_att) or not np.isfinite(high_att):
+                print(f"  Skipping: non-finite ATT truncation bounds.")
+                continue
+            w_att_trunc = np.clip(w_att, low_att, high_att)
+            type_df['IPTW_ATT'] = w_att_trunc
 
-    # --- Diagnostics ---
-    diag_path = os.path.join(RUN_PATH, f'{cancer_type}_diagnostics/')
-    os.makedirs(diag_path, exist_ok=True)
+            # --- Overlap weights (Li, Morgan & Zaslavsky, JASA 2018) ---
+            # Targets the equipoise population; no truncation needed (bounded 0-1)
+            w_overlap = np.where(treat_mask, 1 - ps, ps)
+            type_df['IPTW_OVL'] = w_overlap
 
-    ps_diag = type_df[['PX_on_ICI', 'ICI_prediction']].copy()
-    ps_diag['IPTW_ATE'] = w_ate_trunc
-    ps_diag['IPTW_ATT'] = w_att_trunc
-    ps_diag['IPTW_OVL'] = w_overlap
-    ps_diag.groupby('PX_on_ICI')['ICI_prediction'].describe().to_csv(
-        os.path.join(diag_path, 'propensity_score_summary.csv'))
+            # --- ESS ---
+            w_t, w_c = w_ate_trunc[treat_mask], w_ate_trunc[~treat_mask]
+            ess_t = w_t.sum() ** 2 / (w_t ** 2).sum()
+            ess_c = w_c.sum() ** 2 / (w_c ** 2).sum()
+            print(f"  ATE: N treated={treat_mask.sum()}, N control={(~treat_mask).sum()} | "
+                  f"ESS treated={ess_t:.0f}, ESS control={ess_c:.0f}")
 
-    # PS AUC within this cancer type subset
-    ps_auc = roc_auc_score(type_df['PX_on_ICI'], type_df['ICI_prediction'])
-    print(f"  PS AUC ({cancer_type}): {ps_auc:.4f}")
+            w_t_att, w_c_att = w_att_trunc[treat_mask], w_att_trunc[~treat_mask]
+            ess_t_att = w_t_att.sum() ** 2 / (w_t_att ** 2).sum()
+            ess_c_att = w_c_att.sum() ** 2 / (w_c_att ** 2).sum()
+            print(f"  ATT: N treated={treat_mask.sum()}, N control={(~treat_mask).sum()} | "
+                  f"ESS treated={ess_t_att:.0f}, ESS control={ess_c_att:.0f}")
 
-    # Cohort summary with event rates
-    n_treated = int(treat_mask.sum())
-    n_control = int((~treat_mask).sum())
-    events_treated = int(type_df.loc[treat_mask, 'death'].sum())
-    events_control = int(type_df.loc[~treat_mask, 'death'].sum())
-    print(f"  Cohort: {n_treated} ICI ({events_treated} deaths, {events_treated/max(n_treated,1)*100:.1f}%), "
-          f"{n_control} non-ICI ({events_control} deaths, {events_control/max(n_control,1)*100:.1f}%)")
+            w_t_ovl, w_c_ovl = w_overlap[treat_mask], w_overlap[~treat_mask]
+            ess_t_ovl = w_t_ovl.sum() ** 2 / (w_t_ovl ** 2).sum()
+            ess_c_ovl = w_c_ovl.sum() ** 2 / (w_c_ovl ** 2).sum()
+            print(f"  OVL: N treated={treat_mask.sum()}, N control={(~treat_mask).sum()} | "
+                  f"ESS treated={ess_t_ovl:.0f}, ESS control={ess_c_ovl:.0f}")
 
-    pd.DataFrame([{
-        'cancer_type': cancer_type,
-        'N_treated': n_treated, 'N_control': n_control,
-        'events_treated': events_treated, 'events_control': events_control,
-        'event_rate_treated': events_treated / max(n_treated, 1),
-        'event_rate_control': events_control / max(n_control, 1),
-        'PS_AUC': ps_auc,
-        'ESS_ATE_treated': ess_t, 'ESS_ATE_control': ess_c,
-        'ESS_ATT_treated': ess_t_att, 'ESS_ATT_control': ess_c_att,
-        'ESS_OVL_treated': ess_t_ovl, 'ESS_OVL_control': ess_c_ovl,
-    }]).to_csv(os.path.join(diag_path, 'effective_sample_sizes.csv'), index=False)
+            # --- Diagnostics ---
+            diag_path = os.path.join(RUN_PATH, f'{cancer_type}_diagnostics/')
+            os.makedirs(diag_path, exist_ok=True)
 
-    balance_covars = base_covars + line_cols + [
-        c for c in type_df.columns
-        if c.startswith('CANCER_TYPE_') or c.upper().startswith('PANEL_VERSION_')]
-    smd_ate = compute_smd(type_df, balance_covars, weights=w_ate_trunc)
-    smd_ate.to_csv(os.path.join(diag_path, 'covariate_balance_smd_ATE.csv'), index=False)
-    smd_att = compute_smd(type_df, balance_covars, weights=w_att_trunc)
-    smd_att.to_csv(os.path.join(diag_path, 'covariate_balance_smd_ATT.csv'), index=False)
-    smd_ovl = compute_smd(type_df, balance_covars, weights=w_overlap)
-    smd_ovl.to_csv(os.path.join(diag_path, 'covariate_balance_smd_OVL.csv'), index=False)
+            ps_diag = type_df[['PX_on_ICI', 'ICI_prediction']].copy()
+            ps_diag['IPTW_ATE'] = w_ate_trunc
+            ps_diag['IPTW_ATT'] = w_att_trunc
+            ps_diag['IPTW_OVL'] = w_overlap
+            ps_diag.groupby('PX_on_ICI')['ICI_prediction'].describe().to_csv(
+                os.path.join(diag_path, 'propensity_score_summary.csv'))
 
-    # Max SMD check (balance quality indicator)
-    max_smd_ate = smd_ate['SMD_weighted'].abs().max()
-    max_smd_att = smd_att['SMD_weighted'].abs().max()
-    max_smd_ovl = smd_ovl['SMD_weighted'].abs().max()
-    n_imbalanced_ate = (smd_ate['SMD_weighted'].abs() > 0.1).sum()
-    n_imbalanced_att = (smd_att['SMD_weighted'].abs() > 0.1).sum()
-    n_imbalanced_ovl = (smd_ovl['SMD_weighted'].abs() > 0.1).sum()
-    print(f"  ATE balance: max|SMD|={max_smd_ate:.4f}, {n_imbalanced_ate}/{len(smd_ate)} covariates with |SMD|>0.1")
-    print(f"  ATT balance: max|SMD|={max_smd_att:.4f}, {n_imbalanced_att}/{len(smd_att)} covariates with |SMD|>0.1")
-    print(f"  OVL balance: max|SMD|={max_smd_ovl:.4f}, {n_imbalanced_ovl}/{len(smd_ovl)} covariates with |SMD|>0.1")
+            # PS AUC within this cancer type subset
+            ps_auc = roc_auc_score(type_df['PX_on_ICI'], type_df['ICI_prediction'])
+            print(f"  PS AUC ({cancer_type}): {ps_auc:.4f}")
 
-    # === Track 2: full-cohort interaction ===
-    track2_markers = [
-        m for m in biomarker_cols
-        if marker_has_within_arm_support(type_df, m, min_pos_per_arm=MIN_MARKER_POS_PER_ARM,
-                                         min_neg_per_arm=MIN_MARKER_NEG_PER_ARM,
-                                         min_events_per_group=MIN_EVENTS_PER_MARKER_GROUP)
-    ]
-    print(f"  Track 2 markers to test: {len(track2_markers)}")
+            # Cohort summary with event rates
+            n_treated = int(treat_mask.sum())
+            n_control = int((~treat_mask).sum())
+            events_treated = int(type_df.loc[treat_mask, 'death'].sum())
+            events_control = int(type_df.loc[~treat_mask, 'death'].sum())
+            print(f"  Cohort: {n_treated} ICI ({events_treated} deaths, {events_treated/max(n_treated,1)*100:.1f}%), "
+                  f"{n_control} non-ICI ({events_control} deaths, {events_control/max(n_control,1)*100:.1f}%)")
 
-    if len(track2_markers) < MIN_MARKERS_TO_TEST:
-        print(f"  Skipping Track 2: fewer than {MIN_MARKERS_TO_TEST} markers with sufficient support.")
-    else:
-        for spec_name, spec_weights in [('ATE', 'IPTW_ATE'), ('noIPTW', None)]:
-            results, failed = _run_marker_screen(
-                type_df, track2_markers, base_vars, spec_weights,
-                _fit_track2_marker, N_JOBS, label=f"T2 {cancer_type} {spec_name}")
-            if failed:
-                print(f"  Track 2 {spec_name} failures: {len(failed)}. "
-                      f"First: {failed[0][0]} -> {failed[0][1]}")
-            spec_df = pd.DataFrame(results, columns=TRACK2_RESULT_COLS)
-            spec_df = add_track2_fdr_and_labels(spec_df)
-            spec_df.to_csv(
-                os.path.join(RUN_PATH, f'{cancer_type}_track2_{spec_name}_interaction.csv'),
-                index=False)
+            pd.DataFrame([{
+                'cancer_type': cancer_type,
+                'N_treated': n_treated, 'N_control': n_control,
+                'events_treated': events_treated, 'events_control': events_control,
+                'event_rate_treated': events_treated / max(n_treated, 1),
+                'event_rate_control': events_control / max(n_control, 1),
+                'PS_AUC': ps_auc,
+                'ESS_ATE_treated': ess_t, 'ESS_ATE_control': ess_c,
+                'ESS_ATT_treated': ess_t_att, 'ESS_ATT_control': ess_c_att,
+                'ESS_OVL_treated': ess_t_ovl, 'ESS_OVL_control': ess_c_ovl,
+            }]).to_csv(os.path.join(diag_path, 'effective_sample_sizes.csv'), index=False)
 
-    # === Track 1: ICI-only generalizability-weighted ===
-    ici_only_df = type_df.loc[type_df['PX_on_ICI'] == 1].copy()
+            balance_covars = base_covars + line_cols + [
+                c for c in type_df.columns
+                if c.startswith('CANCER_TYPE_') or c.upper().startswith('PANEL_VERSION_')]
+            smd_ate = compute_smd(type_df, balance_covars, weights=w_ate_trunc)
+            smd_ate.to_csv(os.path.join(diag_path, 'covariate_balance_smd_ATE.csv'), index=False)
+            smd_att = compute_smd(type_df, balance_covars, weights=w_att_trunc)
+            smd_att.to_csv(os.path.join(diag_path, 'covariate_balance_smd_ATT.csv'), index=False)
+            smd_ovl = compute_smd(type_df, balance_covars, weights=w_overlap)
+            smd_ovl.to_csv(os.path.join(diag_path, 'covariate_balance_smd_OVL.csv'), index=False)
 
-    # Generalizability weights for ICI subset: weight = 1 / ps
-    # (reweight ICI patients to look like the full eligible population)
-    ici_ps = ici_only_df['ICI_prediction'].clip(eps, 1 - eps)
-    w_gen = 1.0 / ici_ps
-    low_gen, high_gen = np.percentile(w_gen, IPTW_TRUNC_PCT)
-    if np.isfinite(low_gen) and np.isfinite(high_gen):
-        w_gen_trunc = np.clip(w_gen, low_gen, high_gen)
-    else:
-        w_gen_trunc = np.ones(len(ici_only_df))
-    ici_only_df['IPTW_GEN'] = np.asarray(w_gen_trunc)
+            # Max SMD check (balance quality indicator)
+            max_smd_ate = smd_ate['SMD_weighted'].abs().max()
+            max_smd_att = smd_att['SMD_weighted'].abs().max()
+            max_smd_ovl = smd_ovl['SMD_weighted'].abs().max()
+            n_imbalanced_ate = (smd_ate['SMD_weighted'].abs() > 0.1).sum()
+            n_imbalanced_att = (smd_att['SMD_weighted'].abs() > 0.1).sum()
+            n_imbalanced_ovl = (smd_ovl['SMD_weighted'].abs() > 0.1).sum()
+            print(f"  ATE balance: max|SMD|={max_smd_ate:.4f}, {n_imbalanced_ate}/{len(smd_ate)} covariates with |SMD|>0.1")
+            print(f"  ATT balance: max|SMD|={max_smd_att:.4f}, {n_imbalanced_att}/{len(smd_att)} covariates with |SMD|>0.1")
+            print(f"  OVL balance: max|SMD|={max_smd_ovl:.4f}, {n_imbalanced_ovl}/{len(smd_ovl)} covariates with |SMD|>0.1")
 
-    track1_markers = [
-        m for m in biomarker_cols
-        if marker_has_ici_only_support(type_df, m, min_pos=MIN_MARKER_POS_ICI_ONLY,
-                                       min_events=MIN_EVENTS_PER_MARKER_GROUP)
-    ]
-    print(f"  Track 1 markers to test: {len(track1_markers)}")
+            # === Track 2: full-cohort interaction ===
+            track2_markers = [
+                m for m in biomarker_cols
+                if marker_has_within_arm_support(type_df, m, min_pos_per_arm=MIN_MARKER_POS_PER_ARM,
+                                                 min_neg_per_arm=MIN_MARKER_NEG_PER_ARM,
+                                                 min_events_per_group=MIN_EVENTS_PER_MARKER_GROUP)
+            ]
+            print(f"  Track 2 markers to test: {len(track2_markers)}")
 
-    if len(track1_markers) < MIN_MARKERS_TO_TEST:
-        print(f"  Skipping Track 1: fewer than {MIN_MARKERS_TO_TEST} markers with sufficient support.")
-    else:
-        # ICI-only base vars (no cancer type interaction needed for type-specific,
-        # include for pan-cancer)
-        ici_base_vars = list(base_vars)
+            if len(track2_markers) < MIN_MARKERS_TO_TEST:
+                print(f"  Skipping Track 2: fewer than {MIN_MARKERS_TO_TEST} markers with sufficient support.")
+            else:
+                for spec_name, spec_weights in [('ATE', 'IPTW_ATE'), ('noIPTW', None)]:
+                    results, failed = _run_marker_screen(
+                        type_df, track2_markers, base_vars, spec_weights,
+                        _fit_track2_marker, N_JOBS, label=f"T2 {cancer_type} {spec_name}")
+                    if failed:
+                        print(f"  Track 2 {spec_name} failures: {len(failed)}. "
+                              f"First: {failed[0][0]} -> {failed[0][1]}")
+                    spec_df = pd.DataFrame(results, columns=TRACK2_RESULT_COLS)
+                    spec_df = add_track2_fdr_and_labels(spec_df)
+                    spec_df.to_csv(
+                        os.path.join(RUN_PATH, f'{cancer_type}_track2_{spec_name}_interaction.csv'),
+                        index=False)
 
-        for spec_name, spec_weights in [('ATE', 'IPTW_GEN'), ('unweighted', None)]:
-            results, failed = _run_marker_screen(
-                ici_only_df, track1_markers, ici_base_vars, spec_weights,
-                _fit_track1_marker, N_JOBS, label=f"T1 {cancer_type} {spec_name}")
-            if failed:
-                print(f"  Track 1 {spec_name} failures: {len(failed)}. "
-                      f"First: {failed[0][0]} -> {failed[0][1]}")
-            spec_df = pd.DataFrame(results, columns=TRACK1_RESULT_COLS)
-            spec_df = add_track1_fdr(spec_df)
-            spec_df.to_csv(
-                os.path.join(RUN_PATH, f'{cancer_type}_track1_{spec_name}_ICI_only.csv'),
-                index=False)
+            # === Track 1: ICI-only generalizability-weighted ===
+            ici_only_df = type_df.loc[type_df['PX_on_ICI'] == 1].copy()
 
-print(f"\n[run_IPTW_analysis] Done. Results in {RUN_PATH}")
+            # Generalizability weights for ICI subset: weight = 1 / ps
+            # (reweight ICI patients to look like the full eligible population)
+            ici_ps = ici_only_df['ICI_prediction'].clip(eps, 1 - eps)
+            w_gen = 1.0 / ici_ps
+            low_gen, high_gen = np.percentile(w_gen, IPTW_TRUNC_PCT)
+            if np.isfinite(low_gen) and np.isfinite(high_gen):
+                w_gen_trunc = np.clip(w_gen, low_gen, high_gen)
+            else:
+                w_gen_trunc = np.ones(len(ici_only_df))
+            ici_only_df['IPTW_GEN'] = np.asarray(w_gen_trunc)
+
+            track1_markers = [
+                m for m in biomarker_cols
+                if marker_has_ici_only_support(type_df, m, min_pos=MIN_MARKER_POS_ICI_ONLY,
+                                               min_events=MIN_EVENTS_PER_MARKER_GROUP)
+            ]
+            print(f"  Track 1 markers to test: {len(track1_markers)}")
+
+            if len(track1_markers) < MIN_MARKERS_TO_TEST:
+                print(f"  Skipping Track 1: fewer than {MIN_MARKERS_TO_TEST} markers with sufficient support.")
+            else:
+                # ICI-only base vars (no cancer type interaction needed for type-specific,
+                # include for pan-cancer)
+                ici_base_vars = list(base_vars)
+
+                for spec_name, spec_weights in [('ATE', 'IPTW_GEN'), ('unweighted', None)]:
+                    results, failed = _run_marker_screen(
+                        ici_only_df, track1_markers, ici_base_vars, spec_weights,
+                        _fit_track1_marker, N_JOBS, label=f"T1 {cancer_type} {spec_name}")
+                    if failed:
+                        print(f"  Track 1 {spec_name} failures: {len(failed)}. "
+                              f"First: {failed[0][0]} -> {failed[0][1]}")
+                    spec_df = pd.DataFrame(results, columns=TRACK1_RESULT_COLS)
+                    spec_df = add_track1_fdr(spec_df)
+                    spec_df.to_csv(
+                        os.path.join(RUN_PATH, f'{cancer_type}_track1_{spec_name}_ICI_only.csv'),
+                        index=False)
+
+        print(f"\n[run_IPTW_analysis] Done with {SPEC_LABEL}. Results in {RUN_PATH}")

@@ -6,13 +6,10 @@ Trains two propensity models per cohort:
 
 Uses 5-fold stratified CV to produce held-out propensity scores.
 
-Usage:
-  python ICI_LRs.py --cohort cohort1
-  python ICI_LRs.py --cohort cohort2
+Notebook-ready: loops over all cohorts automatically.
 """
 
 import os
-import argparse
 import warnings
 import numpy as np
 import pandas as pd
@@ -32,70 +29,24 @@ from biomarker_common import (
     DATA_PATH, SURV_PATH, load_note_embeddings, load_confounders,
 )
 
-parser = argparse.ArgumentParser(description='Generate propensity scores for a biomarker cohort.')
-parser.add_argument('--cohort', choices=['cohort1', 'cohort2'], required=True,
-                    help='cohort1=first-line unmatched, cohort2=line-matched lines 1-3')
-args = parser.parse_args()
+# ============================================================
+# Configuration — edit these to control which cohorts to run
+# ============================================================
+COHORTS = ['cohort1', 'cohort2']
+PS_MODELS = ['covariates_only', 'covariates_plus_embeddings']
 
-COHORT = args.cohort
-
-# === Paths ===
-COHORT_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/matched_cohorts/')
-OUTPUT_BASE = os.path.join(DATA_PATH, f'treatment_prediction/{COHORT}/')
-EMBEDDING_DATA_PATH = os.path.join(OUTPUT_BASE, 'prediction_data/')
-os.makedirs(EMBEDDING_DATA_PATH, exist_ok=True)
-
-print(f"[ICI_LRs] Cohort: {COHORT}")
-
-# === Load matched cohort ===
-cohort_df = pd.read_csv(os.path.join(COHORT_PATH, f'matched_cohort_{COHORT}.csv'))
-cohort_df['treatment_start_date'] = pd.to_datetime(cohort_df['treatment_start_date'])
-
-n_ici = cohort_df['PX_on_ICI'].sum()
-n_ctrl = len(cohort_df) - n_ici
-print(f"Cohort: {int(n_ici)} ICI + {int(n_ctrl)} controls = {len(cohort_df)} total")
-
-# === Load note embeddings ===
+# === Load shared data (only needs to happen once) ===
 notes_meta, embeddings_data = load_note_embeddings()
-
 note_types = ['Clinician', 'Imaging', 'Pathology']
 pool_fx = {nt: 'time_decay_mean' for nt in note_types}
 
-# === Load confounders for covariates model ===
 confounders = load_confounders()
 
-# === Load cancer type dummies ===
 cancer_type_df = pd.read_csv(
     os.path.join(DATA_PATH, 'clinical_and_genomic_features/cancer_type_df.csv'))
 
-# === Generate embedding datasets for each buffer ===
-buffers = [0, 15, 30, 45]
-for buffer in tqdm(buffers, desc="Generating embedding datasets"):
-    buffer_path = os.path.join(EMBEDDING_DATA_PATH, f'w_{buffer}_day_buffer/')
-    os.makedirs(buffer_path, exist_ok=True)
 
-    notes_meta_sub = (
-        notes_meta[notes_meta['DFCI_MRN'].isin(cohort_df['DFCI_MRN'])]
-        .merge(cohort_df[['DFCI_MRN', 'treatment_start_date']], on='DFCI_MRN', how='left')
-        .assign(NOTE_TIME_REL_PRED_START_DT=lambda df: (
-            pd.to_datetime(df['NOTE_DATETIME']) - pd.to_datetime(df['treatment_start_date'])).dt.days)
-    )
-
-    embedding_vals = generate_survival_embedding_df(
-        notes_meta=notes_meta_sub, survival_df=None, embedding_array=embeddings_data,
-        note_types=note_types, note_timing_col="NOTE_TIME_REL_PRED_START_DT",
-        max_note_window=-buffer, pool_fx=pool_fx, decay_param=0.01, continuous_window=False)
-
-    full_dataset = cohort_df.merge(embedding_vals.dropna(), on='DFCI_MRN')
-    full_dataset.to_csv(
-        os.path.join(buffer_path, f'ICI_prediction_df_w_{buffer}_day_buffer.csv'), index=False)
-
-# Save prediction times for downstream use
-cohort_df[['DFCI_MRN', 'treatment_start_date', 'PX_on_ICI', 'line_category']].to_csv(
-    os.path.join(EMBEDDING_DATA_PATH, 'prediction_times.csv'), index=False)
-
-
-# === Train propensity models ===
+# === Propensity CV training function ===
 def train_propensity_cv(pred_df, feature_cols, label):
     """Train elastic-net logistic regression with nested CV for hyperparameter
     tuning and held-out propensity scores.
@@ -157,76 +108,124 @@ def train_propensity_cv(pred_df, feature_cols, label):
     })
 
 
-PS_MODELS = ['covariates_only', 'covariates_plus_embeddings']
+# ============================================================
+# Main loop: iterate over cohorts
+# ============================================================
+buffers = [0, 15, 30, 45]
 
-for buffer in tqdm(buffers, desc="Training propensity models"):
-    buffer_input_path = os.path.join(EMBEDDING_DATA_PATH, f'w_{buffer}_day_buffer/')
+for COHORT in COHORTS:
+    print(f"\n{'='*60}")
+    print(f"[ICI_LRs] Cohort: {COHORT}")
+    print(f"{'='*60}")
 
-    pred_df = pd.read_csv(
-        os.path.join(buffer_input_path, f'ICI_prediction_df_w_{buffer}_day_buffer.csv'))
+    # === Paths ===
+    COHORT_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/matched_cohorts/')
+    OUTPUT_BASE = os.path.join(DATA_PATH, f'treatment_prediction/{COHORT}/')
+    EMBEDDING_DATA_PATH = os.path.join(OUTPUT_BASE, 'prediction_data/')
+    os.makedirs(EMBEDDING_DATA_PATH, exist_ok=True)
 
-    # Embedding feature columns
-    embedding_cols = [col for col in pred_df.columns
-                      if ('IMAGING' in col) or ('PATHOLOGY' in col) or ('CLINICIAN' in col)]
+    # === Load matched cohort ===
+    cohort_df = pd.read_csv(os.path.join(COHORT_PATH, f'matched_cohort_{COHORT}.csv'))
+    cohort_df['treatment_start_date'] = pd.to_datetime(cohort_df['treatment_start_date'])
 
-    # Build covariate feature set
-    pred_with_covars = pred_df.merge(cancer_type_df, on='DFCI_MRN', how='left')
+    n_ici = cohort_df['PX_on_ICI'].sum()
+    n_ctrl = len(cohort_df) - n_ici
+    print(f"Cohort: {int(n_ici)} ICI + {int(n_ctrl)} controls = {len(cohort_df)} total")
 
-    cancer_type_feature_cols = [c for c in pred_with_covars.columns if c.startswith('CANCER_TYPE_')]
-    # Line category dummies (drop line 1 as reference)
-    pred_with_covars = pd.get_dummies(
-        pred_with_covars, columns=['line_category'], prefix='LINE', drop_first=True, dtype=int)
-    line_feature_cols = [c for c in pred_with_covars.columns if c.startswith('LINE_')]
+    # === Generate embedding datasets for each buffer ===
+    for buffer in tqdm(buffers, desc="Generating embedding datasets"):
+        buffer_path = os.path.join(EMBEDDING_DATA_PATH, f'w_{buffer}_day_buffer/')
+        os.makedirs(buffer_path, exist_ok=True)
 
-    demo_cols = ['GENDER', 'AGE_AT_TREATMENTSTART']
-    # Ensure demo cols are present
-    if 'GENDER' not in pred_with_covars.columns or 'AGE_AT_TREATMENTSTART' not in pred_with_covars.columns:
-        surv_demo = pd.read_csv(os.path.join(SURV_PATH, 'death_met_surv_df.csv'),
-                                usecols=['DFCI_MRN', 'GENDER', 'AGE_AT_TREATMENTSTART'])
-        pred_with_covars = pred_with_covars.merge(surv_demo, on='DFCI_MRN', how='left')
+        notes_meta_sub = (
+            notes_meta[notes_meta['DFCI_MRN'].isin(cohort_df['DFCI_MRN'])]
+            .merge(cohort_df[['DFCI_MRN', 'treatment_start_date']], on='DFCI_MRN', how='left')
+            .assign(NOTE_TIME_REL_PRED_START_DT=lambda df: (
+                pd.to_datetime(df['NOTE_DATETIME']) - pd.to_datetime(df['treatment_start_date'])).dt.days)
+        )
 
-    covar_cols = (demo_cols + cancer_type_feature_cols + line_feature_cols)
-    covar_cols = [c for c in covar_cols if pred_with_covars[c].notna().any()]
+        embedding_vals = generate_survival_embedding_df(
+            notes_meta=notes_meta_sub, survival_df=None, embedding_array=embeddings_data,
+            note_types=note_types, note_timing_col="NOTE_TIME_REL_PRED_START_DT",
+            max_note_window=-buffer, pool_fx=pool_fx, decay_param=0.01, continuous_window=False)
 
-    covar_plus_embed_cols = covar_cols + embedding_cols
-    covar_plus_embed_cols = [c for c in covar_plus_embed_cols if pred_with_covars[c].notna().any()]
+        full_dataset = cohort_df.merge(embedding_vals.dropna(), on='DFCI_MRN')
+        full_dataset.to_csv(
+            os.path.join(buffer_path, f'ICI_prediction_df_w_{buffer}_day_buffer.csv'), index=False)
 
-    for ps_model in PS_MODELS:
-        output_path = os.path.join(OUTPUT_BASE, f'{ps_model}_propensity/w_{buffer}_day_buffer/')
-        os.makedirs(output_path, exist_ok=True)
+    # Save prediction times for downstream use
+    cohort_df[['DFCI_MRN', 'treatment_start_date', 'PX_on_ICI', 'line_category']].to_csv(
+        os.path.join(EMBEDDING_DATA_PATH, 'prediction_times.csv'), index=False)
 
-        if ps_model == 'covariates_only':
-            features = covar_cols
-            source_df = pred_with_covars.dropna(subset=features)
-        else:
-            features = covar_plus_embed_cols
-            source_df = pred_with_covars.dropna(subset=features)
+    # === Train propensity models ===
+    for buffer in tqdm(buffers, desc="Training propensity models"):
+        buffer_input_path = os.path.join(EMBEDDING_DATA_PATH, f'w_{buffer}_day_buffer/')
 
-        label = f"buffer={buffer}, {ps_model}"
-        out_df = train_propensity_cv(source_df, features, label)
-        out_df.to_csv(os.path.join(output_path, 'predictions.csv'), index=False)
+        pred_df = pd.read_csv(
+            os.path.join(buffer_input_path, f'ICI_prediction_df_w_{buffer}_day_buffer.csv'))
 
-# === Plot ROC curves for the 30-day buffer ===
-fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-PLOT_BUFFER = 30
+        # Embedding feature columns
+        embedding_cols = [col for col in pred_df.columns
+                          if ('IMAGING' in col) or ('PATHOLOGY' in col) or ('CLINICIAN' in col)]
 
-for i, ps_model in enumerate(PS_MODELS):
-    pred_path = os.path.join(OUTPUT_BASE, f'{ps_model}_propensity/w_{PLOT_BUFFER}_day_buffer/predictions.csv')
-    pred_df = pd.read_csv(pred_path)
+        # Build covariate feature set
+        pred_with_covars = pred_df.merge(cancer_type_df, on='DFCI_MRN', how='left')
 
-    auc = roc_auc_score(pred_df['ground_truth'], pred_df['model_probs'])
-    fpr, tpr, _ = roc_curve(pred_df['ground_truth'], pred_df['model_probs'])
+        cancer_type_feature_cols = [c for c in pred_with_covars.columns if c.startswith('CANCER_TYPE_')]
+        # Line category dummies (drop line 1 as reference)
+        pred_with_covars = pd.get_dummies(
+            pred_with_covars, columns=['line_category'], prefix='LINE', drop_first=True, dtype=int)
+        line_feature_cols = [c for c in pred_with_covars.columns if c.startswith('LINE_')]
 
-    ax = axes[i]
-    sns.set_style("whitegrid")
-    sns.lineplot(x=fpr, y=tpr, ax=ax, label=f'AUC = {auc:.3f}')
-    sns.lineplot(x=[0, 1], y=[0, 1], ax=ax, linestyle='--', color='gray')
-    ax.set_title(f'{ps_model} ({COHORT}, buffer={PLOT_BUFFER}d)')
-    ax.set_xlabel('False Positive Rate')
-    ax.set_ylabel('True Positive Rate')
-    ax.legend(loc='lower right')
+        demo_cols = ['GENDER', 'AGE_AT_TREATMENTSTART']
+        # Ensure demo cols are present
+        if 'GENDER' not in pred_with_covars.columns or 'AGE_AT_TREATMENTSTART' not in pred_with_covars.columns:
+            surv_demo = pd.read_csv(os.path.join(SURV_PATH, 'death_met_surv_df.csv'),
+                                    usecols=['DFCI_MRN', 'GENDER', 'AGE_AT_TREATMENTSTART'])
+            pred_with_covars = pred_with_covars.merge(surv_demo, on='DFCI_MRN', how='left')
 
-plt.tight_layout()
-plt.savefig(os.path.join(OUTPUT_BASE, f'propensity_ROC_{COHORT}.png'), dpi=150)
-plt.show()
-print(f"[ICI_LRs] Done. Outputs in {OUTPUT_BASE}")
+        covar_cols = (demo_cols + cancer_type_feature_cols + line_feature_cols)
+        covar_cols = [c for c in covar_cols if pred_with_covars[c].notna().any()]
+
+        covar_plus_embed_cols = covar_cols + embedding_cols
+        covar_plus_embed_cols = [c for c in covar_plus_embed_cols if pred_with_covars[c].notna().any()]
+
+        for ps_model in PS_MODELS:
+            output_path = os.path.join(OUTPUT_BASE, f'{ps_model}_propensity/w_{buffer}_day_buffer/')
+            os.makedirs(output_path, exist_ok=True)
+
+            if ps_model == 'covariates_only':
+                features = covar_cols
+                source_df = pred_with_covars.dropna(subset=features)
+            else:
+                features = covar_plus_embed_cols
+                source_df = pred_with_covars.dropna(subset=features)
+
+            label = f"buffer={buffer}, {ps_model}"
+            out_df = train_propensity_cv(source_df, features, label)
+            out_df.to_csv(os.path.join(output_path, 'predictions.csv'), index=False)
+
+    # === Plot ROC curves for the 30-day buffer ===
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    PLOT_BUFFER = 30
+
+    for i, ps_model in enumerate(PS_MODELS):
+        pred_path = os.path.join(OUTPUT_BASE, f'{ps_model}_propensity/w_{PLOT_BUFFER}_day_buffer/predictions.csv')
+        pred_df = pd.read_csv(pred_path)
+
+        auc = roc_auc_score(pred_df['ground_truth'], pred_df['model_probs'])
+        fpr, tpr, _ = roc_curve(pred_df['ground_truth'], pred_df['model_probs'])
+
+        ax = axes[i]
+        sns.set_style("whitegrid")
+        sns.lineplot(x=fpr, y=tpr, ax=ax, label=f'AUC = {auc:.3f}')
+        sns.lineplot(x=[0, 1], y=[0, 1], ax=ax, linestyle='--', color='gray')
+        ax.set_title(f'{ps_model} ({COHORT}, buffer={PLOT_BUFFER}d)')
+        ax.set_xlabel('False Positive Rate')
+        ax.set_ylabel('True Positive Rate')
+        ax.legend(loc='lower right')
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUTPUT_BASE, f'propensity_ROC_{COHORT}.png'), dpi=150)
+    plt.show()
+    print(f"[ICI_LRs] Done with {COHORT}. Outputs in {OUTPUT_BASE}")

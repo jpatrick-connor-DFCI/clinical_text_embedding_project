@@ -6,22 +6,20 @@ Reads per-scheme CSVs from IPTW_runs_*/ directories and produces:
   - cohort_patient_counts.csv: n_ICI and n_control per cancer type in each cohort
   - scheme_diagnostics_summary.csv: PS AUC, ESS, SMD summaries per scheme
 
-Usage:
-  python compile_IPTW_results.py --output_dir /path/to/output
+Notebook-ready: no argparse, output directory set via variable.
 """
 
 import os
 import re
-import argparse
 import pandas as pd
 from biomarker_common import DATA_PATH
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--output_dir', required=True, help='Directory for compiled output')
-args = parser.parse_args()
-
+# ============================================================
+# Configuration
+# ============================================================
 MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
-os.makedirs(args.output_dir, exist_ok=True)
+OUTPUT_DIR = os.path.join(MARKER_PATH, 'compiled_results/')
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 COHORTS = ['cohort1', 'cohort2']
 PS_MODELS = ['covariates_only', 'covariates_plus_embeddings']
@@ -102,8 +100,8 @@ t2 = pd.concat(all_t2, ignore_index=True) if all_t2 else pd.DataFrame()
 print(f"Track 1 (ICI-only): {len(t1)} significant hits")
 print(f"Track 2 (interaction): {len(t2)} significant hits")
 
-t1.to_csv(os.path.join(args.output_dir, 'track1_all_significant_hits.csv'), index=False)
-t2.to_csv(os.path.join(args.output_dir, 'track2_all_significant_hits.csv'), index=False)
+t1.to_csv(os.path.join(OUTPUT_DIR, 'track1_all_significant_hits.csv'), index=False)
+t2.to_csv(os.path.join(OUTPUT_DIR, 'track2_all_significant_hits.csv'), index=False)
 
 # ================================================
 # 2. Cohort patient counts by cancer type
@@ -131,7 +129,7 @@ for cohort in COHORTS:
         })
 
 cohort_counts = pd.DataFrame(cohort_counts_rows)
-cohort_counts.to_csv(os.path.join(args.output_dir, 'cohort_patient_counts.csv'), index=False)
+cohort_counts.to_csv(os.path.join(OUTPUT_DIR, 'cohort_patient_counts.csv'), index=False)
 print(f"\nCohort patient counts ({len(cohort_counts)} rows):")
 print(cohort_counts.to_string(index=False))
 
@@ -140,7 +138,7 @@ print(cohort_counts.to_string(index=False))
 # ================================================
 if diag_rows:
     diag_df = pd.concat(diag_rows, ignore_index=True)
-    diag_df.to_csv(os.path.join(args.output_dir, 'scheme_diagnostics_summary.csv'), index=False)
+    diag_df.to_csv(os.path.join(OUTPUT_DIR, 'scheme_diagnostics_summary.csv'), index=False)
     print(f"\nDiagnostics summary saved ({len(diag_df)} rows)")
 
-print(f"\nAll outputs saved to {args.output_dir}")
+print(f"\nAll outputs saved to {OUTPUT_DIR}")
