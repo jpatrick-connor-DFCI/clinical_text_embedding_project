@@ -29,7 +29,7 @@ def _parse_args() -> argparse.Namespace:
         choices=["stage", "treatment", "labs", "somatic", "prs", "text"],
     )
     parser.add_argument("--n-jobs", type=int, default=None)
-    parser.add_argument("--max-iter", type=int, default=10000)
+    parser.add_argument("--max-iter", type=int, default=1000)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--backend", default="threading", choices=["threading", "loky"])
     return parser.parse_args()
@@ -39,7 +39,7 @@ def main() -> None:
     args = _parse_args()
     os.environ["JOBLIB_DEFAULT_WORKER_TIMEOUT"] = "600"
 
-    full_prediction_df, type_cols, _, modality_cfg, _ = load_feature_modalities_df(args.scheme)
+    full_prediction_df, type_cols, _, modality_cfg, _ = load_feature_modalities_df(args.scheme, modality=args.modality)
     events = get_events_from_df(full_prediction_df)
     if args.event not in events:
         raise ValueError(
@@ -81,7 +81,8 @@ def main() -> None:
     n_dropped = n_before - len(event_pred_df)
     if n_dropped > 0:
         print(f"{label} Dropped {n_dropped}/{n_before} rows with NaN values")
-    n_jobs = _get_n_jobs(args.n_jobs)
+    # For small feature sets the joblib overhead dominates; run serially.
+    n_jobs = 1 if len(cfg["penalized_cols"]) < 50 else _get_n_jobs(args.n_jobs)
 
     t0 = time.time()
     test_df, val_df, _ = run_grid_CoxPH_parallel(

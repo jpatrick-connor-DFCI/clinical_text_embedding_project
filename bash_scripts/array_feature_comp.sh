@@ -5,7 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=8G
-#SBATCH --time=48:00:00
+#SBATCH --time=6:00:00
 #SBATCH --array=0-0%1
 #SBATCH --output=bash_scripts/output/array_feature_comp/%A_%a.out
 #SBATCH --error=bash_scripts/error/array_feature_comp/%A_%a.err
@@ -74,12 +74,10 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
 
   case "$SCHEME" in
     icd3) SCHEME_RESULTS_DIR="level_3_ICD_results" ;;
-    icd4) SCHEME_RESULTS_DIR="level_4_ICD_results" ;;
-    phecode) SCHEME_RESULTS_DIR="phecode_results" ;;
-    death_met) SCHEME_RESULTS_DIR="death_met_results" ;;
     icd3_post) SCHEME_RESULTS_DIR="level_3_ICD_post_results" ;;
-    icd4_post) SCHEME_RESULTS_DIR="level_4_ICD_post_results" ;;
+    phecode) SCHEME_RESULTS_DIR="phecode_results" ;;
     phecode_post) SCHEME_RESULTS_DIR="phecode_post_results" ;;
+    death_met) SCHEME_RESULTS_DIR="death_met_results" ;;
     *)
       echo "Unsupported scheme in manifest row ${LINE_NUM}: $SCHEME"
       exit 1
@@ -93,7 +91,7 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
     --event "$EVENT" \
     --modality "$MODALITY" \
     --n-jobs "${SLURM_CPUS_PER_TASK:-1}" \
-    --max-iter "${COXNET_MAX_ITER:-10000}" \
+    --max-iter "${COXNET_MAX_ITER:-1000}" \
     --backend "${COXNET_BACKEND:-threading}" \
     ${OVERWRITE_FLAG[@]+"${OVERWRITE_FLAG[@]}"} \
     || echo "[error] row ${LINE_NUM} failed: scheme=${SCHEME}, event=${EVENT}, modality=${MODALITY}"

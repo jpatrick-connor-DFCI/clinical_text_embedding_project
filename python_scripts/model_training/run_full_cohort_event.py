@@ -4,7 +4,7 @@ import argparse
 import os
 import time
 
-from embed_surv_utils import run_grid_CoxPH_parallel
+from embed_surv_utils import run_base_CoxPH, run_grid_CoxPH_parallel
 
 from slurm_array_utils import (
     DEFAULT_ALPHAS,
@@ -23,7 +23,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--scheme", required=True, choices=sorted(SCHEME_CONFIG.keys()))
     parser.add_argument("--event", required=True)
     parser.add_argument("--n-jobs", type=int, default=None)
-    parser.add_argument("--max-iter", type=int, default=10000)
+    parser.add_argument("--max-iter", type=int, default=1000)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--backend", default="threading", choices=["threading", "loky"])
     return parser.parse_args()
@@ -47,8 +47,9 @@ def main() -> None:
     text_val_fp = os.path.join(out_dir, "text_val.csv")
     base_test_fp = os.path.join(out_dir, "base_test.csv")
     base_val_fp = os.path.join(out_dir, "base_val.csv")
-    all_fps = [text_test_fp, text_val_fp, base_test_fp, base_val_fp]
-    if (not args.overwrite) and all(os.path.exists(fp) for fp in all_fps):
+    run_text = args.overwrite or not (os.path.exists(text_test_fp) and os.path.exists(text_val_fp))
+    run_base = args.overwrite or not (os.path.exists(base_test_fp) and os.path.exists(base_val_fp))
+    if not run_text and not run_base:
         print(f"[skip] Existing outputs found for {args.scheme}:{args.event}")
         return
 
@@ -73,41 +74,42 @@ def main() -> None:
         print(f"{label} Dropped {n_dropped}/{n_before} rows with NaN values")
     n_jobs = _get_n_jobs(args.n_jobs)
 
-    t0 = time.time()
-    text_test, text_val, _ = run_grid_CoxPH_parallel(
-        event_pred_df,
-        base_vars + type_cols,
-        ["AGE_AT_TREATMENTSTART"] + embed_cols,
-        embed_cols,
-        DEFAULT_L1_RATIOS,
-        DEFAULT_ALPHAS,
-        event_col=args.event,
-        tstop_col=f"tt_{args.event}",
-        max_iter=args.max_iter,
-        n_jobs=n_jobs,
-        backend=args.backend,
-    )
-    text_test.to_csv(text_test_fp, index=False)
-    text_val.to_csv(text_val_fp, index=False)
-    print(f"[time] {label} text model: {(time.time() - t0) / 60:.1f}m")
+    if run_text:
+        t0 = time.time()
+        text_test, text_val, _ = run_grid_CoxPH_parallel(
+            event_pred_df,
+            base_vars + type_cols,
+            ["AGE_AT_TREATMENTSTART"] + embed_cols,
+            embed_cols,
+            DEFAULT_L1_RATIOS,
+            DEFAULT_ALPHAS,
+            event_col=args.event,
+            tstop_col=f"tt_{args.event}",
+            max_iter=args.max_iter,
+            n_jobs=n_jobs,
+            backend=args.backend,
+        )
+        text_test.to_csv(text_test_fp, index=False)
+        text_val.to_csv(text_val_fp, index=False)
+        print(f"[time] {label} text model: {(time.time() - t0) / 60:.1f}m")
+    else:
+        print(f"[skip] {label} text model already exists")
 
-    t0 = time.time()
-    base_test, base_val, _ = run_grid_CoxPH_parallel(
-        event_pred_df,
-        base_vars + type_cols,
-        ["AGE_AT_TREATMENTSTART"],
-        [],
-        [1.0],
-        [1e-10],
-        event_col=args.event,
-        tstop_col=f"tt_{args.event}",
-        max_iter=args.max_iter,
-        n_jobs=n_jobs,
-        backend=args.backend,
-    )
-    base_test.to_csv(base_test_fp, index=False)
-    base_val.to_csv(base_val_fp, index=False)
-    print(f"[time] {label} base model: {(time.time() - t0) / 60:.1f}m")
+    if run_base:
+        t0 = time.time()
+        base_results = run_base_CoxPH(
+            event_pred_df,
+            base_vars + type_cols,
+            ["AGE_AT_TREATMENTSTART"],
+            event_col=args.event,
+            tstop_col=f"tt_{args.event}",
+            max_iter=args.max_iter,
+        )
+        base_results[base_results["eval_data"] == "test_data"].drop(columns="eval_data").to_csv(base_test_fp, index=False)
+        base_results[base_results["eval_data"] == "cv_data"].drop(columns="eval_data").to_csv(base_val_fp, index=False)
+        print(f"[time] {label} base model: {(time.time() - t0) / 60:.1f}m")
+    else:
+        print(f"[skip] {label} base model already exists")
 
     print(f"[done] {args.scheme}:{args.event} -> {out_dir}")
 

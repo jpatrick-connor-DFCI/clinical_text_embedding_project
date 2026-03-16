@@ -15,35 +15,46 @@ SCHEME_CONFIG: dict[str, dict[str, str]] = {
         "embedding_file": "level_3_ICD_embedding_prediction_df.csv",
         "results_dir": "level_3_ICD_results",
     },
-    "icd4": {
-        "embedding_file": "level_4_ICD_embedding_prediction_df.csv",
-        "results_dir": "level_4_ICD_results",
+    "icd3_post": {
+        "embedding_file": "level_3_ICD_post_embedding_prediction_df.csv",
+        "results_dir": "level_3_ICD_post_results",
     },
     "phecode": {
         "embedding_file": "phecode_embedding_prediction_df.csv",
         "results_dir": "phecode_results",
     },
-    "death_met": {
-        "embedding_file": "death_met_embedding_prediction_df.csv",
-        "results_dir": "death_met_results",
-    },
-    "icd3_post": {
-        "embedding_file": "level_3_ICD_post_embedding_prediction_df.csv",
-        "results_dir": "level_3_ICD_post_results",
-    },
-    "icd4_post": {
-        "embedding_file": "level_4_ICD_post_embedding_prediction_df.csv",
-        "results_dir": "level_4_ICD_post_results",
-    },
     "phecode_post": {
         "embedding_file": "phecode_post_embedding_prediction_df.csv",
         "results_dir": "phecode_post_results",
     },
+    "death_met": {
+        "embedding_file": "death_met_embedding_prediction_df.csv",
+        "results_dir": "death_met_results",
+    },
 }
 
-MET_EVENTS = {"brainM", "boneM", "adrenalM", "liverM", "lungM", "nodeM", "peritonealM"}
-DEFAULT_ALPHAS = np.logspace(-5, 0, 25).tolist()
+DEFAULT_ALPHAS = np.logspace(-3, 0, 15).tolist()
 DEFAULT_L1_RATIOS = [0.5, 1.0]
+
+
+def _get_common_feature_mrns() -> set:
+    """Return the intersection of patient MRNs across all feature files.
+
+    Used by load_feature_modalities_df to enforce a cohort-agnostic comparison:
+    every modality model trains on the same set of patients regardless of which
+    features are actually used.
+    """
+    somatic_mrns = set(pd.read_csv(os.path.join(FEATURE_PATH, "complete_somatic_data_df.csv"), usecols=["DFCI_MRN"])["DFCI_MRN"])
+    prs_mrns = set(pd.read_csv(os.path.join(FEATURE_PATH, "complete_germline_data_df.csv"), usecols=["DFCI_MRN"])["DFCI_MRN"])
+    stage_mrns = set(pd.read_csv(os.path.join(FEATURE_PATH, "cancer_stage_df.csv"), usecols=["DFCI_MRN"])["DFCI_MRN"])
+    labs_mrns = set(pd.read_csv(os.path.join(FEATURE_PATH, "mean_lab_vals_pre_first_treatment.csv"), usecols=["DFCI_MRN"])["DFCI_MRN"])
+    treatment_mrns = set(
+        pd.read_csv(os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv"), usecols=["DFCI_MRN", "treatment_line"])
+        .query("treatment_line == 1")["DFCI_MRN"]
+    )
+    common = somatic_mrns & prs_mrns & stage_mrns & labs_mrns & treatment_mrns
+    print(f"  Common feature cohort: {len(common)} patients (intersection of all modality files)")
+    return common
 
 
 def _ensure_scheme(scheme: str) -> str:
@@ -110,35 +121,56 @@ def filter_event_rows(full_prediction_df: pd.DataFrame, event: str) -> pd.DataFr
 
 def load_feature_modalities_df(
     scheme: str,
+    modality: str | None = None,
 ) -> tuple[pd.DataFrame, list[str], list[str], dict[str, Any], dict[str, list[str]]]:
+    """Load feature data for the given scheme.
+
+    When *modality* is specified only that modality's CSV is read and merged,
+    avoiding unnecessary I/O for large files (e.g. PRS) in single-modality jobs.
+    When *modality* is None all modalities are loaded (original behaviour).
+    """
     emb_df = load_embedding_prediction_df(scheme)
-
-    mrn_stage_df = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_stage_df.csv"))
     cancer_type_df = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_type_df.csv"))
-    somatic_df = pd.read_csv(os.path.join(FEATURE_PATH, "complete_somatic_data_df.csv"))
-    prs_df = pd.read_csv(os.path.join(FEATURE_PATH, "complete_germline_data_df.csv"))
-    treatment_df = pd.read_csv(os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv"))
-    labs_df = pd.read_csv(os.path.join(FEATURE_PATH, "mean_lab_vals_pre_first_treatment.csv"))
-
-    stage_cols = [col for col in mrn_stage_df.columns if col.startswith("CANCER_STAGE_")]
     type_cols = [col for col in cancer_type_df.columns if col.startswith("CANCER_TYPE_")]
-    somatic_cols = [col for col in somatic_df.columns if col.endswith(('_AMP', '_DEL', '_SNV', '_SV', '_FUSION'))]
-    prs_cols = [col for col in prs_df.columns if "PGS" in col]
-    treatment_cols = [col for col in treatment_df.columns if col.startswith("PX_on_")]
     embed_cols = [col for col in emb_df.columns if ("EMBEDDING" in col or "2015" in col)]
-    labs_cols = [col for col in labs_df.columns if col != "DFCI_MRN"]
 
-    full_prediction_df = (
-        emb_df.merge(somatic_df[["DFCI_MRN"] + somatic_cols], on="DFCI_MRN")
-        .merge(prs_df[["DFCI_MRN"] + prs_cols], on="DFCI_MRN")
-        .merge(
+    _to_load = {modality} if modality else {"stage", "treatment", "labs", "somatic", "prs", "text"}
+
+    # Load only what is needed
+    mrn_stage_df = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_stage_df.csv")) if "stage" in _to_load else None
+    somatic_df = pd.read_csv(os.path.join(FEATURE_PATH, "complete_somatic_data_df.csv")) if "somatic" in _to_load else None
+    prs_df = pd.read_csv(os.path.join(FEATURE_PATH, "complete_germline_data_df.csv")) if "prs" in _to_load else None
+    treatment_df = pd.read_csv(os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv")) if "treatment" in _to_load else None
+    labs_df = pd.read_csv(os.path.join(FEATURE_PATH, "mean_lab_vals_pre_first_treatment.csv")) if "labs" in _to_load else None
+
+    stage_cols = [col for col in mrn_stage_df.columns if col.startswith("CANCER_STAGE_")] if mrn_stage_df is not None else []
+    somatic_cols = [col for col in somatic_df.columns if col.endswith(('_AMP', '_DEL', '_SNV', '_SV', '_FUSION'))] if somatic_df is not None else []
+    prs_cols = [col for col in prs_df.columns if "PGS" in col] if prs_df is not None else []
+    treatment_cols = [col for col in treatment_df.columns if col.startswith("PX_on_")] if treatment_df is not None else []
+    labs_cols = [col for col in labs_df.columns if col != "DFCI_MRN"] if labs_df is not None else []
+
+    # For single-modality runs, restrict to the intersection of all feature files
+    # so all modality models train on the same cohort (cohort-agnostic comparison).
+    if modality is not None:
+        common_mrns = _get_common_feature_mrns()
+        emb_df = emb_df[emb_df["DFCI_MRN"].isin(common_mrns)].copy()
+
+    # Base merge: embedding + cancer type (always needed)
+    full_prediction_df = emb_df.merge(cancer_type_df[["DFCI_MRN"] + type_cols], on="DFCI_MRN")
+
+    if somatic_df is not None:
+        full_prediction_df = full_prediction_df.merge(somatic_df[["DFCI_MRN"] + somatic_cols], on="DFCI_MRN")
+    if prs_df is not None:
+        full_prediction_df = full_prediction_df.merge(prs_df[["DFCI_MRN"] + prs_cols], on="DFCI_MRN")
+    if treatment_df is not None:
+        full_prediction_df = full_prediction_df.merge(
             treatment_df.loc[treatment_df["treatment_line"] == 1, ["DFCI_MRN"] + treatment_cols],
             on="DFCI_MRN",
         )
-        .merge(cancer_type_df[["DFCI_MRN"] + type_cols], on="DFCI_MRN")
-        .merge(mrn_stage_df[["DFCI_MRN"] + stage_cols], on="DFCI_MRN")
-        .merge(labs_df[["DFCI_MRN"] + labs_cols], on="DFCI_MRN")
-    )
+    if mrn_stage_df is not None:
+        full_prediction_df = full_prediction_df.merge(mrn_stage_df[["DFCI_MRN"] + stage_cols], on="DFCI_MRN")
+    if labs_df is not None:
+        full_prediction_df = full_prediction_df.merge(labs_df[["DFCI_MRN"] + labs_cols], on="DFCI_MRN")
 
     modality_cfg: dict[str, dict[str, Any]] = {
         "stage": {
@@ -266,10 +298,10 @@ __all__ = [
     "SURV_PATH",
     "FEATURE_PATH",
     "SCHEME_CONFIG",
-    "MET_EVENTS",
     "DEFAULT_ALPHAS",
     "DEFAULT_L1_RATIOS",
     "_get_n_jobs",
+    "_get_common_feature_mrns",
     "build_full_prediction_df",
     "filter_event_rows",
     "get_events_from_df",

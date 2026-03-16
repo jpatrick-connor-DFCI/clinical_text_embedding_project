@@ -253,6 +253,18 @@ def _scale_continuous_train_test_np(
     X_te[:, idx] = (X_te[:, idx] - mu) / sig
     return X_tr, X_te
 
+def _impute_train_test_np(
+    X_tr: np.ndarray,
+    X_te: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-fold mean imputation: fill NaN using training column means only."""
+    col_means = np.nanmean(X_tr, axis=0)
+    col_means = np.where(np.isnan(col_means), 0.0, col_means)  # all-NaN columns → 0
+    X_tr = np.where(np.isnan(X_tr), col_means, X_tr)
+    X_te = np.where(np.isnan(X_te), col_means, X_te)
+    return X_tr, X_te
+
+
 def _best_mmap_dir(prefix="coxnet_folds_"):
     if os.path.isdir("/dev/shm") and os.access("/dev/shm", os.W_OK):
         return tempfile.mkdtemp(prefix=prefix, dir="/dev/shm")
@@ -311,17 +323,14 @@ def run_grid_CoxPH_parallel(
     # ---- Filter invalid (NaN/non-positive tstop, NaN event) ----
     n_before = len(df)
     df = df[df[tstop_col].notna() & (df[tstop_col] > 0) & df[event_col].notna()].copy()
+    n_dropped = n_before - len(df)
+    if n_dropped > 0:
+        logger.info("run_grid_CoxPH_parallel: dropped %d/%d rows with invalid tstop/event", n_dropped, n_before)
 
     all_cols = base_cols + penalized_cols
     base_col_set = set(base_cols)
 
-    # ---- Drop rows with NaN in any feature column ----
-    df = df.dropna(subset=all_cols)
-    n_dropped = n_before - len(df)
-    if n_dropped > 0:
-        logger.info("run_grid_CoxPH_parallel: dropped %d/%d rows with invalid tstop/event/features", n_dropped, n_before)
-
-    # ---- X in RAM (float32) ----
+    # ---- X in RAM (float32); NaN in features is handled per-fold via _impute_train_test_np ----
     X_full = df[all_cols].to_numpy(dtype=np.float32, copy=False)
 
     # ---- Structured survival array ----
@@ -384,7 +393,8 @@ def run_grid_CoxPH_parallel(
             y_tr = y_train_val[tr]
             y_va = y_train_val[va]
 
-            # Scale continuous variables per fold
+            # Per-fold imputation then scaling
+            X_tr, X_va = _impute_train_test_np(X_tr, X_va)
             X_tr, X_va = _scale_continuous_train_test_np(X_tr, X_va, all_cols, continuous_vars)
 
             with warnings.catch_warnings():
@@ -488,9 +498,10 @@ def run_grid_CoxPH_parallel(
         opt = valid_cv.sort_values("mean_auc(t)", ascending=False).iloc[0]
         opt_l1, opt_alpha = float(opt.l1_ratio), float(opt.alpha)
 
-        # Scale continuous variables for final fit
+        # Impute then scale continuous variables for final fit
         X_trval_scaled = np.array(X_train_val, dtype=np.float32, copy=True)
         X_test_scaled = np.array(X_test, dtype=np.float32, copy=True)
+        X_trval_scaled, X_test_scaled = _impute_train_test_np(X_trval_scaled, X_test_scaled)
         X_trval_scaled, X_test_scaled = _scale_continuous_train_test_np(
             X_trval_scaled, X_test_scaled, all_cols, continuous_vars)
 
@@ -525,6 +536,9 @@ def run_grid_CoxPH_parallel(
             y_tr = y_train_val[tr]
             y_va = y_train_val[va]
             colnames = list(colnames0)
+
+            # Per-fold imputation before PCA/scaling
+            X_tr, X_va = _impute_train_test_np(X_tr, X_va)
 
             with warnings.catch_warnings():
                 for _cat, _msg in _SUPPRESSED_WARNINGS:
@@ -684,6 +698,9 @@ def run_grid_CoxPH_parallel(
         X_te = np.array(X_test, dtype=np.float32, copy=True)
         colnames = list(colnames0)
 
+        # Per-fold imputation before PCA/scaling for final model
+        X_trval, X_te = _impute_train_test_np(X_trval, X_te)
+
         with warnings.catch_warnings():
             for _cat, _msg in _SUPPRESSED_WARNINGS:
                 warnings.filterwarnings("ignore", category=_cat, message=_msg)
@@ -763,17 +780,14 @@ def get_heldout_risk_scores_CoxPH(
     # ---- Filter invalid (NaN/non-positive tstop, NaN event) ----
     n_before = len(df)
     df = df[df[tstop_col].notna() & (df[tstop_col] > 0) & df[event_col].notna()].copy()
+    n_dropped = n_before - len(df)
+    if n_dropped > 0:
+        logger.info("get_heldout_risk_scores: dropped %d/%d rows with invalid tstop/event", n_dropped, n_before)
 
     all_cols = base_cols + penalized_cols
     base_col_set = set(base_cols)
 
-    # ---- Drop rows with NaN in any feature column ----
-    df = df.dropna(subset=all_cols)
-    n_dropped = n_before - len(df)
-    if n_dropped > 0:
-        logger.info("get_heldout_risk_scores: dropped %d/%d rows with invalid tstop/event/features", n_dropped, n_before)
-
-    # ---- X in RAM (float32) ----
+    # ---- X in RAM (float32); NaN in features handled per-fold via _impute_train_test_np ----
     X = df[all_cols].to_numpy(dtype=np.float32, copy=False)
 
     # ---- Structured survival array ----
@@ -804,7 +818,8 @@ def get_heldout_risk_scores_CoxPH(
             X_te = np.array(X[test_idx], dtype=np.float32, copy=True)
             y_tr = y[train_idx]
 
-            # Scale continuous variables per fold
+            # Per-fold imputation then scaling
+            X_tr, X_te = _impute_train_test_np(X_tr, X_te)
             X_tr, X_te = _scale_continuous_train_test_np(X_tr, X_te, all_cols, continuous_vars)
 
             with warnings.catch_warnings():
@@ -858,6 +873,9 @@ def get_heldout_risk_scores_CoxPH(
             X_te = np.array(X[test_idx], dtype=np.float32, copy=True)
             y_tr = y[train_idx]
             colnames = list(colnames0)
+
+            # Per-fold imputation before PCA/scaling
+            X_tr, X_te = _impute_train_test_np(X_tr, X_te)
 
             with warnings.catch_warnings():
                 for _cat, _msg in _SUPPRESSED_WARNINGS:

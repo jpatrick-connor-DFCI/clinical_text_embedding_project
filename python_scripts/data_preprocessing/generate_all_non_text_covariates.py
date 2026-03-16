@@ -51,8 +51,11 @@ px_metadata = (pd.read_csv(os.path.join(PROFILE_PATH, 'OncDRS/ALL_2025_03/SOMATI
 px_metadata['SAMPLE_COLLECTION_DT'] = pd.to_datetime(px_metadata['SAMPLE_COLLECTION_DT'])
 px_metadata['first_treatment_date'] = pd.to_datetime(px_metadata['first_treatment_date'])
 px_metadata['days_from_sequencing_to_first_treatment'] = (px_metadata['first_treatment_date'] - px_metadata['SAMPLE_COLLECTION_DT']).apply(lambda x : x.days)
+# Keep only pre-treatment samples (days >= 0), then pick the one closest to treatment start
 px_metadata_min = (px_metadata
+                   .loc[px_metadata['days_from_sequencing_to_first_treatment'] >= 0]
                    .loc[px_metadata
+                        .loc[px_metadata['days_from_sequencing_to_first_treatment'] >= 0]
                         .groupby('DFCI_MRN')['days_from_sequencing_to_first_treatment']
                         .idxmin()]
                    .reset_index(drop=True))
@@ -247,15 +250,13 @@ mean_lab_df = (
 mean_lab_df.columns = [f'{lab}_{stat}' for lab, stat in mean_lab_df.columns]
 mean_lab_df = mean_lab_df.reset_index()
 
-X = mean_lab_df.drop(columns=['DFCI_MRN'])
-X_imp = (
-    X
-    .fillna(X.mean())
-    .astype('float32')
-)
+X = mean_lab_df.drop(columns=['DFCI_MRN']).astype('float32')
 
+# Save raw (unimputed) lab values alongside missingness indicators.
+# Mean imputation is deferred to per-fold preprocessing in cox_models.py
+# to avoid leaking test-set statistics into the imputed training features.
 final_mean_lab_df = pd.concat(
-    [X_imp, X.isna().astype('int8').add_suffix('_missing')],
+    [X, X.isna().astype('int8').add_suffix('_missing')],
     axis=1
 )
 final_mean_lab_df.insert(0, 'DFCI_MRN', mean_lab_df['DFCI_MRN'])
