@@ -1,8 +1,12 @@
 """Unified ICI propensity score generation for biomarker cohorts.
 
 Trains two propensity models per cohort:
-  1. Covariates-only: LR on demographics + cancer type + panel version + line_category
+  1. Covariates-only: LR on demographics + cancer type (+ line dummies for cohort 2)
   2. Covariates + embeddings: LR on covariates + text embeddings
+
+Note: panel version is not included in the PS model (it is included as a confounder
+in the downstream Cox models). This is intentional — panel version may act as a
+mediator of ICI assignment and is not purely a pre-treatment confounder.
 
 Uses 5-fold stratified CV to produce held-out propensity scores.
 
@@ -26,7 +30,7 @@ from sklearn.metrics import roc_auc_score, roc_curve
 warnings.filterwarnings('ignore', category=ConvergenceWarning)
 
 from biomarker_common import (
-    DATA_PATH, SURV_PATH, load_note_embeddings, load_confounders,
+    DATA_PATH, SURV_PATH, load_note_embeddings,
 )
 
 # ============================================================
@@ -39,8 +43,6 @@ PS_MODELS = ['covariates_only', 'covariates_plus_embeddings']
 notes_meta, embeddings_data = load_note_embeddings()
 note_types = ['Clinician', 'Imaging', 'Pathology']
 pool_fx = {nt: 'time_decay_mean' for nt in note_types}
-
-confounders = load_confounders()
 
 cancer_type_df = pd.read_csv(
     os.path.join(DATA_PATH, 'clinical_and_genomic_features/cancer_type_df.csv'))
@@ -172,10 +174,14 @@ for COHORT in COHORTS:
         pred_with_covars = pred_df.merge(cancer_type_df, on='DFCI_MRN', how='left')
 
         cancer_type_feature_cols = [c for c in pred_with_covars.columns if c.startswith('CANCER_TYPE_')]
-        # Line category dummies (drop line 1 as reference)
-        pred_with_covars = pd.get_dummies(
-            pred_with_covars, columns=['line_category'], prefix='LINE', drop_first=True, dtype=int)
-        line_feature_cols = [c for c in pred_with_covars.columns if c.startswith('LINE_')]
+        # Line category dummies: cohort 1 is first-line ICI only — no line variation to adjust for
+        if COHORT != 'cohort1':
+            pred_with_covars['line_category'] = pred_with_covars['line_category'].clip(upper=3)
+            pred_with_covars = pd.get_dummies(
+                pred_with_covars, columns=['line_category'], prefix='LINE', drop_first=True, dtype=int)
+            line_feature_cols = [c for c in pred_with_covars.columns if c.startswith('LINE_')]
+        else:
+            line_feature_cols = []
 
         demo_cols = ['GENDER', 'AGE_AT_TREATMENTSTART']
         # Ensure demo cols are present

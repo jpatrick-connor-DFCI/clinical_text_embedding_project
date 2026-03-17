@@ -6,6 +6,10 @@ Reads per-scheme CSVs from IPTW_runs_*/ directories and produces:
   - cohort_patient_counts.csv: n_ICI and n_control per cancer type in each cohort
   - scheme_diagnostics_summary.csv: PS AUC, ESS, SMD summaries per scheme
 
+Each specification (cohort x ps_model x weighting x cancer_type) is reported
+separately. Downstream analysis should evaluate which specifications produce
+consistent and interpretable results.
+
 Notebook-ready: no argparse, output directory set via variable.
 """
 

@@ -1,7 +1,8 @@
 """Generate IPTW dataset for biomarker analysis (ICI vs never-ICI).
 
 Builds on cohort-specific propensity scores from ICI_LRs.py.
-Includes line_category as a covariate (dummy-coded, line 1 as reference).
+Cohort 2: line_category dummy-coded (LINE_2, LINE_3; line 1 as reference).
+Cohort 1: no line dummies (all ICI patients are first-line; line_category dropped).
 Also includes clinical text embeddings for prognostic score adjustment.
 
 Notebook-ready: loops over all cohort x ps_model combinations automatically.
@@ -93,8 +94,12 @@ for COHORT in COHORTS:
         if 'PANEL_VERSION' in patient_df.columns:
             patient_df = pd.get_dummies(patient_df, columns=['PANEL_VERSION'], drop_first=True)
 
-        # Dummy-code line_category (drop line 1 as reference)
-        patient_df = pd.get_dummies(patient_df, columns=['line_category'], prefix='LINE', drop_first=True, dtype=int)
+        # Cohort 2: dummy-code line_category (line 1 as reference → LINE_2, LINE_3)
+        # Cohort 1: all ICI are first-line — drop line_category entirely
+        if COHORT != 'cohort1':
+            patient_df = pd.get_dummies(patient_df, columns=['line_category'], prefix='LINE', drop_first=True, dtype=int)
+        else:
+            patient_df = patient_df.drop(columns=['line_category'], errors='ignore')
 
         # Drop patients with non-positive survival
         patient_df = patient_df.loc[patient_df['tt_death'] > 0].copy()

@@ -26,8 +26,6 @@ from lifelines.exceptions import ConvergenceWarning
 from joblib import Parallel, delayed
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
-from sklearn.model_selection import StratifiedKFold
-from sklearn.preprocessing import StandardScaler
 from biomarker_common import DATA_PATH, get_mutation_type
 
 random.seed(42)
@@ -513,20 +511,6 @@ for COHORT in COHORTS:
             w_ate_trunc = np.clip(w_ate, low, high)
             type_df['IPTW_ATE'] = w_ate_trunc
 
-            # --- Stabilized ATT weights ---
-            w_att = np.where(treat_mask, 1.0, ((1 - p_treated) / p_treated) * (ps / (1 - ps)))
-            low_att, high_att = np.percentile(w_att, IPTW_TRUNC_PCT)
-            if not np.isfinite(low_att) or not np.isfinite(high_att):
-                print(f"  Skipping: non-finite ATT truncation bounds.")
-                continue
-            w_att_trunc = np.clip(w_att, low_att, high_att)
-            type_df['IPTW_ATT'] = w_att_trunc
-
-            # --- Overlap weights (Li, Morgan & Zaslavsky, JASA 2018) ---
-            # Targets the equipoise population; no truncation needed (bounded 0-1)
-            w_overlap = np.where(treat_mask, 1 - ps, ps)
-            type_df['IPTW_OVL'] = w_overlap
-
             # --- ESS ---
             w_t, w_c = w_ate_trunc[treat_mask], w_ate_trunc[~treat_mask]
             ess_t = w_t.sum() ** 2 / (w_t ** 2).sum()
@@ -534,26 +518,12 @@ for COHORT in COHORTS:
             print(f"  ATE: N treated={treat_mask.sum()}, N control={(~treat_mask).sum()} | "
                   f"ESS treated={ess_t:.0f}, ESS control={ess_c:.0f}")
 
-            w_t_att, w_c_att = w_att_trunc[treat_mask], w_att_trunc[~treat_mask]
-            ess_t_att = w_t_att.sum() ** 2 / (w_t_att ** 2).sum()
-            ess_c_att = w_c_att.sum() ** 2 / (w_c_att ** 2).sum()
-            print(f"  ATT: N treated={treat_mask.sum()}, N control={(~treat_mask).sum()} | "
-                  f"ESS treated={ess_t_att:.0f}, ESS control={ess_c_att:.0f}")
-
-            w_t_ovl, w_c_ovl = w_overlap[treat_mask], w_overlap[~treat_mask]
-            ess_t_ovl = w_t_ovl.sum() ** 2 / (w_t_ovl ** 2).sum()
-            ess_c_ovl = w_c_ovl.sum() ** 2 / (w_c_ovl ** 2).sum()
-            print(f"  OVL: N treated={treat_mask.sum()}, N control={(~treat_mask).sum()} | "
-                  f"ESS treated={ess_t_ovl:.0f}, ESS control={ess_c_ovl:.0f}")
-
             # --- Diagnostics ---
             diag_path = os.path.join(RUN_PATH, f'{cancer_type}_diagnostics/')
             os.makedirs(diag_path, exist_ok=True)
 
             ps_diag = type_df[['PX_on_ICI', 'ICI_prediction']].copy()
             ps_diag['IPTW_ATE'] = w_ate_trunc
-            ps_diag['IPTW_ATT'] = w_att_trunc
-            ps_diag['IPTW_OVL'] = w_overlap
             ps_diag.groupby('PX_on_ICI')['ICI_prediction'].describe().to_csv(
                 os.path.join(diag_path, 'propensity_score_summary.csv'))
 
@@ -577,8 +547,6 @@ for COHORT in COHORTS:
                 'event_rate_control': events_control / max(n_control, 1),
                 'PS_AUC': ps_auc,
                 'ESS_ATE_treated': ess_t, 'ESS_ATE_control': ess_c,
-                'ESS_ATT_treated': ess_t_att, 'ESS_ATT_control': ess_c_att,
-                'ESS_OVL_treated': ess_t_ovl, 'ESS_OVL_control': ess_c_ovl,
             }]).to_csv(os.path.join(diag_path, 'effective_sample_sizes.csv'), index=False)
 
             balance_covars = base_covars + line_cols + [
@@ -586,21 +554,11 @@ for COHORT in COHORTS:
                 if c.startswith('CANCER_TYPE_') or c.upper().startswith('PANEL_VERSION_')]
             smd_ate = compute_smd(type_df, balance_covars, weights=w_ate_trunc)
             smd_ate.to_csv(os.path.join(diag_path, 'covariate_balance_smd_ATE.csv'), index=False)
-            smd_att = compute_smd(type_df, balance_covars, weights=w_att_trunc)
-            smd_att.to_csv(os.path.join(diag_path, 'covariate_balance_smd_ATT.csv'), index=False)
-            smd_ovl = compute_smd(type_df, balance_covars, weights=w_overlap)
-            smd_ovl.to_csv(os.path.join(diag_path, 'covariate_balance_smd_OVL.csv'), index=False)
 
             # Max SMD check (balance quality indicator)
             max_smd_ate = smd_ate['SMD_weighted'].abs().max()
-            max_smd_att = smd_att['SMD_weighted'].abs().max()
-            max_smd_ovl = smd_ovl['SMD_weighted'].abs().max()
             n_imbalanced_ate = (smd_ate['SMD_weighted'].abs() > 0.1).sum()
-            n_imbalanced_att = (smd_att['SMD_weighted'].abs() > 0.1).sum()
-            n_imbalanced_ovl = (smd_ovl['SMD_weighted'].abs() > 0.1).sum()
             print(f"  ATE balance: max|SMD|={max_smd_ate:.4f}, {n_imbalanced_ate}/{len(smd_ate)} covariates with |SMD|>0.1")
-            print(f"  ATT balance: max|SMD|={max_smd_att:.4f}, {n_imbalanced_att}/{len(smd_att)} covariates with |SMD|>0.1")
-            print(f"  OVL balance: max|SMD|={max_smd_ovl:.4f}, {n_imbalanced_ovl}/{len(smd_ovl)} covariates with |SMD|>0.1")
 
             # === Track 2: full-cohort interaction ===
             track2_markers = [
