@@ -47,6 +47,7 @@ MARKER_PATH = os.path.join(DATA_PATH, 'biomarker_analysis/')
 # === Constants ===
 MIN_CANCER_TYPE_TOTAL = 30   # for merging rare types into OTHER in pan-cancer
 MIN_CANCER_TYPE_N = 100      # minimum total patients to run cancer-type-specific analysis
+MIN_PER_ARM_CANCER_TYPE = 25 # minimum patients in each treatment arm for cancer-type-specific
 COMMON_SUPPORT_PCT = (0.5, 99.5)
 IPTW_TRUNC_PCT = (1, 99)
 MIN_MARKER_POS_PER_ARM = 5
@@ -453,6 +454,13 @@ for COHORT in COHORTS:
                 type_df = full_df.loc[full_df[ct_col].astype(bool)].copy()
                 if len(type_df) < MIN_CANCER_TYPE_N:
                     print(f"  Skipping: only {len(type_df)} patients (minimum {MIN_CANCER_TYPE_N}).")
+                    continue
+                n_treated_ct = int(type_df['PX_on_ICI'].sum())
+                n_control_ct = len(type_df) - n_treated_ct
+                if n_treated_ct < MIN_PER_ARM_CANCER_TYPE or n_control_ct < MIN_PER_ARM_CANCER_TYPE:
+                    print(f"  Skipping: insufficient per-arm counts "
+                          f"(treated={n_treated_ct}, control={n_control_ct}, "
+                          f"minimum={MIN_PER_ARM_CANCER_TYPE}).")
                     continue
                 # Recalibrate propensity within subset
                 if type_df['PX_on_ICI'].nunique() >= 2 and len(type_df) > 10:

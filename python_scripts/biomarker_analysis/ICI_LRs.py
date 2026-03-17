@@ -113,7 +113,7 @@ def train_propensity_cv(pred_df, feature_cols, label):
 # ============================================================
 # Main loop: iterate over cohorts
 # ============================================================
-buffers = [0, 15, 30, 45]
+buffers = [30]
 
 for COHORT in COHORTS:
     print(f"\n{'='*60}")
@@ -196,19 +196,24 @@ for COHORT in COHORTS:
         covar_plus_embed_cols = covar_cols + embedding_cols
         covar_plus_embed_cols = [c for c in covar_plus_embed_cols if pred_with_covars[c].notna().any()]
 
+        # Use the same patients for both PS models: restrict to those with
+        # complete data for the most demanding feature set (covariates + embeddings).
+        # This ensures identical patient sets across specifications within each cohort.
+        common_source_df = pred_with_covars.dropna(subset=covar_plus_embed_cols)
+        print(f"    Common patient set: {len(common_source_df)} "
+              f"(dropped {len(pred_with_covars) - len(common_source_df)} with missing embeddings/covariates)")
+
         for ps_model in PS_MODELS:
             output_path = os.path.join(OUTPUT_BASE, f'{ps_model}_propensity/w_{buffer}_day_buffer/')
             os.makedirs(output_path, exist_ok=True)
 
             if ps_model == 'covariates_only':
                 features = covar_cols
-                source_df = pred_with_covars.dropna(subset=features)
             else:
                 features = covar_plus_embed_cols
-                source_df = pred_with_covars.dropna(subset=features)
 
             label = f"buffer={buffer}, {ps_model}"
-            out_df = train_propensity_cv(source_df, features, label)
+            out_df = train_propensity_cv(common_source_df, features, label)
             out_df.to_csv(os.path.join(output_path, 'predictions.csv'), index=False)
 
     # === Plot ROC curves for the 30-day buffer ===
