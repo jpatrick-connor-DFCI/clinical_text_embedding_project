@@ -114,12 +114,12 @@ COHORT_PATH = os.path.join(MARKER_PATH, 'matched_cohorts/')
 cohort_counts_rows = []
 
 for cohort in COHORTS:
+    # --- Original matched cohort (before any filtering) ---
     cohort_file = os.path.join(COHORT_PATH, f'matched_cohort_{cohort}.csv')
     if not os.path.isfile(cohort_file):
         print(f"  Cohort file not found: {cohort_file}")
         continue
     cdf = pd.read_csv(cohort_file)
-    # Handle both 'cancer_type' and 'CANCER_TYPE' column names
     ct_col = 'cancer_type' if 'cancer_type' in cdf.columns else 'CANCER_TYPE'
     for ct, grp in cdf.groupby(ct_col):
         n_ici = int(grp['PX_on_ICI'].sum())
@@ -127,10 +127,67 @@ for cohort in COHORTS:
         cohort_counts_rows.append({
             'cancer_type': ct,
             'cohort': cohort,
+            'ps_model': 'original_cohort',
             'n_ICI': n_ici,
             'n_control': n_ctrl,
             'n_total': len(grp),
         })
+
+    # --- IPTW df counts per PS model (after common_source_df filtering) ---
+    for ps_model in PS_MODELS:
+        iptw_file = os.path.join(MARKER_PATH, f'IPTW_df_{cohort}_{ps_model}.csv')
+        if not os.path.isfile(iptw_file):
+            print(f"  IPTW file not found: {iptw_file}")
+            continue
+        idf = pd.read_csv(iptw_file)
+        cancer_type_cols = [c for c in idf.columns if c.startswith('CANCER_TYPE_')]
+        for ct_c in cancer_type_cols:
+            ct_name = ct_c.replace('CANCER_TYPE_', '')
+            grp = idf[idf[ct_c].astype(bool)]
+            n_ici = int(grp['PX_on_ICI'].sum())
+            n_ctrl = len(grp) - n_ici
+            cohort_counts_rows.append({
+                'cancer_type': ct_name,
+                'cohort': cohort,
+                'ps_model': ps_model,
+                'n_ICI': n_ici,
+                'n_control': n_ctrl,
+                'n_total': len(grp),
+            })
+        # Also add pan-cancer totals
+        n_ici = int(idf['PX_on_ICI'].sum())
+        n_ctrl = len(idf) - n_ici
+        cohort_counts_rows.append({
+            'cancer_type': 'pan_cancer',
+            'cohort': cohort,
+            'ps_model': ps_model,
+            'n_ICI': n_ici,
+            'n_control': n_ctrl,
+            'n_total': len(idf),
+        })
+
+    # --- Post-common-support-trimming counts from diagnostics ---
+    for ps_model in PS_MODELS:
+        spec = f'{cohort}_{ps_model}'
+        run_path = os.path.join(MARKER_PATH, f'IPTW_runs_{spec}/')
+        if not os.path.isdir(run_path):
+            continue
+        for cancer_type in CANCER_TYPES:
+            ess_file = os.path.join(run_path, f'{cancer_type}_diagnostics/effective_sample_sizes.csv')
+            if not os.path.isfile(ess_file):
+                continue
+            ess = pd.read_csv(ess_file)
+            if ess.empty:
+                continue
+            row = ess.iloc[0]
+            cohort_counts_rows.append({
+                'cancer_type': cancer_type,
+                'cohort': cohort,
+                'ps_model': f'{ps_model}_trimmed',
+                'n_ICI': int(row['N_treated']),
+                'n_control': int(row['N_control']),
+                'n_total': int(row['N_treated'] + row['N_control']),
+            })
 
 cohort_counts = pd.DataFrame(cohort_counts_rows)
 cohort_counts.to_csv(os.path.join(OUTPUT_DIR, 'cohort_patient_counts.csv'), index=False)
