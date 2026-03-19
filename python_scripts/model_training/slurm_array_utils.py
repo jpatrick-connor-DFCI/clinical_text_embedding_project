@@ -33,7 +33,7 @@ SCHEME_CONFIG: dict[str, dict[str, str]] = {
     },
 }
 
-DEFAULT_ALPHAS = np.logspace(-3, 0, 15).tolist()
+DEFAULT_ALPHAS = np.logspace(-5, 0, 25).tolist()
 DEFAULT_L1_RATIOS = [0.5, 1.0]
 
 

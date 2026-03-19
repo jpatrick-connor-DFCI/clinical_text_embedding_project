@@ -95,7 +95,7 @@ def _make_surv_array(event: np.ndarray, time: np.ndarray) -> np.ndarray:
 
 def run_base_CoxPH(df: pd.DataFrame, base_cols: list[str], continuous_vars: list[str],
                    event_col: str = 'event', tstop_col: str = 'tstop',
-                   max_iter: int = 1000, n_splits: int = 5,
+                   max_iter: int = 10000, n_splits: int = 5,
                    time_evals: tuple[int, int] = (5, 95),
                    test_size: float = 0.2,
                    ignore_warnings: bool = True) -> pd.DataFrame:
@@ -177,7 +177,7 @@ def run_base_CoxPH(df: pd.DataFrame, base_cols: list[str], continuous_vars: list
 # Fast NumPy preprocessing
 # =========================
 
-def _standardize_train_test(Xtr: np.ndarray, Xte: np.ndarray, eps: float = 1e-6):
+def _standardize_train_test(Xtr: np.ndarray, Xte: np.ndarray, eps: float = 1e-12):
     mu = Xtr.mean(axis=0, dtype=np.float32)
     sig = Xtr.std(axis=0, dtype=np.float32)
     sig = np.maximum(sig, eps).astype(np.float32, copy=False)
@@ -237,7 +237,7 @@ def _scale_continuous_train_test_np(
     X_te: np.ndarray,
     colnames: list[str],
     continuous_vars: list[str],
-    eps: float = 1e-6,
+    eps: float = 1e-12,
 ):
     name_to_idx = {c: i for i, c in enumerate(colnames)}
     idx = [name_to_idx[c] for c in continuous_vars if c in name_to_idx]
@@ -285,7 +285,7 @@ def run_grid_CoxPH_parallel(
     pca_config: dict[str, tuple[list[str], int]] | None = None,
     event_col: str = "event",
     tstop_col: str = "tstop",
-    max_iter: int = 1000,
+    max_iter: int = 10000,
     n_splits: int = 5,
     time_evals: tuple[int, int] = (5, 95),
     n_jobs: int = -1,
@@ -750,7 +750,7 @@ def get_heldout_risk_scores_CoxPH(
     id_col: str = "DFCI_MRN",
     n_splits: int = 5,
     n_jobs: int = -1,
-    max_iter: int = 1000,
+    max_iter: int = 10000,
     penalized: bool = False,
     l1_ratio: float = 0.5,
     alpha: float = 1.0,
