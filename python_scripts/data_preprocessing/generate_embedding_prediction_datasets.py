@@ -333,77 +333,104 @@ _write_death_met_outputs(
 
 
 # =========================
-# ICD-10 LEVEL 3 DATASETS (first instance & first post-treatment)
+# SHARED ICD SETUP
 # =========================
+cohort_mrns = set(base_vte_data_sub['DFCI_MRN'])
+
 icd_data_base = split_ehr_icd_subset.copy()
 icd_data_base['ICD10_LEVEL_3_CD'] = icd_data_base['DIAGNOSIS_ICD10_CD'].map(_to_icd10_level_3)
+icd_data_base['ICD10_LEVEL_4_CD'] = icd_data_base['DIAGNOSIS_ICD10_CD'].map(_to_icd10_level_4)
 icd_data_base = icd_data_base.dropna(subset=['ICD10_LEVEL_3_CD']).copy()
 icd_data_base = icd_data_base.loc[~icd_data_base['ICD10_LEVEL_3_CD'].map(_is_excluded_icd10)].copy()
 icd_data_base['START_DT'] = pd.to_datetime(icd_data_base['START_DT'], errors='coerce')
-icds_to_analyze = _dedupe_in_order(icd_data_base['ICD10_LEVEL_3_CD'].tolist())
 
-# Prevalence filter: keep codes present in >= 1% of the full cohort (any time)
-cohort_mrns = set(base_vte_data_sub['DFCI_MRN'])
-shared_icd3_list = _prefilter_events_by_prevalence(
-    icd_data_base, cohort_mrns, 'ICD10_LEVEL_3_CD', icds_to_analyze, min_prevalence=0.05
+# =========================
+# ICD-10 LEVEL 3 DATASET (first post-treatment instance)
+# =========================
+icd3_codes_raw = _dedupe_in_order(icd_data_base['ICD10_LEVEL_3_CD'].tolist())
+icd3_codes = _prefilter_events_by_prevalence(
+    icd_data_base, cohort_mrns, 'ICD10_LEVEL_3_CD', icd3_codes_raw, min_prevalence=0.05
 )
-allowed_icd3_set = set(shared_icd3_list)
-print(f"  Level-3 ICD code list: {len(shared_icd3_list)} codes")
+print(f"  Level-3 ICD codes (>=5% prevalence): {len(icd3_codes)}")
 
-# Post-treatment prevalence filter (AND): codes must also reach >= 1% prevalence
-# post-treatment so the _post variant endpoint sets are directly comparable.
-_icd_post = icd_data_base.loc[icd_data_base['TIME_TO_ICD'] > 0]
-shared_icd3_post_list = _prefilter_events_by_prevalence(
-    _icd_post, cohort_mrns, 'ICD10_LEVEL_3_CD', shared_icd3_list, min_prevalence=0.05
-)
-allowed_icd3_post_set = set(shared_icd3_post_list)
-print(f"  Level-3 ICD post-treatment code list: {len(shared_icd3_post_list)} codes (AND filter)")
-
-# Save allowed ICD3 code sets for reproducibility
-pd.Series(sorted(allowed_icd3_set), name='ICD10_LEVEL_3_CD').to_csv(
-    os.path.join(CODE_PATH, 'allowed_icd3_codes.csv'), index=False
-)
-pd.Series(sorted(allowed_icd3_post_set), name='ICD10_LEVEL_3_CD').to_csv(
+pd.Series(sorted(icd3_codes), name='ICD10_LEVEL_3_CD').to_csv(
     os.path.join(CODE_PATH, 'allowed_icd3_post_codes.csv'), index=False
 )
 
-for variant, time_filter, surv_fn, emb_fn in [
-    ('first_instance', None, 'level_3_ICD_surv_df.csv', 'level_3_ICD_embedding_prediction_df.csv'),
-    ('first_post_treatment', lambda df: df['TIME_TO_ICD'] > 0, 'level_3_ICD_post_surv_df.csv', 'level_3_ICD_post_embedding_prediction_df.csv'),
-]:
-    vte_data_sub = base_vte_data_sub.copy()
-    icd_data = icd_data_base.copy()
-    if time_filter is not None:
-        icd_data = icd_data.loc[time_filter(icd_data)].copy()
-    icd_data = (
-        icd_data
-        .sort_values(['DFCI_MRN', 'ICD10_LEVEL_3_CD', 'START_DT'])
-        .drop_duplicates(subset=['DFCI_MRN', 'ICD10_LEVEL_3_CD'], keep='first')
-    )
-    icd_event_cols = _map_events_to_columns(
-        vte_data_sub=vte_data_sub,
-        event_data=icd_data,
-        events_to_analyze=shared_icd3_post_list,
-        event_col='ICD10_LEVEL_3_CD',
-        time_col='TIME_TO_ICD',
-        progress_desc=f'Generating level-3 ICD events ({variant})',
-    )
-    vte_data_sub = pd.concat([vte_data_sub, icd_event_cols], axis=1)
-    _finalize_base_covariates(vte_data_sub)
-    kept = _filter_endpoint_events_by_min_post_baseline_count(vte_data_sub, shared_icd3_post_list, min_events=100)
-    _write_outputs(
-        vte_data_sub=vte_data_sub,
-        endpoint_events=kept,
-        surv_filename=surv_fn,
-        embedding_filename=emb_fn,
-        pooled_embedding_df=pooled_embedding_df,
-    )
+vte_data_sub = base_vte_data_sub.copy()
+icd3_data = icd_data_base.loc[icd_data_base['TIME_TO_ICD'] > 0].copy()
+icd3_data = (
+    icd3_data
+    .sort_values(['DFCI_MRN', 'ICD10_LEVEL_3_CD', 'START_DT'])
+    .drop_duplicates(subset=['DFCI_MRN', 'ICD10_LEVEL_3_CD'], keep='first')
+)
+icd3_event_cols = _map_events_to_columns(
+    vte_data_sub=vte_data_sub,
+    event_data=icd3_data,
+    events_to_analyze=icd3_codes,
+    event_col='ICD10_LEVEL_3_CD',
+    time_col='TIME_TO_ICD',
+    progress_desc='Generating level-3 ICD events (first_post_treatment)',
+)
+vte_data_sub = pd.concat([vte_data_sub, icd3_event_cols], axis=1)
+_finalize_base_covariates(vte_data_sub)
+kept = _filter_endpoint_events_by_min_post_baseline_count(vte_data_sub, icd3_codes, min_events=100)
+_write_outputs(
+    vte_data_sub=vte_data_sub,
+    endpoint_events=kept,
+    surv_filename='level_3_ICD_post_surv_df.csv',
+    embedding_filename='level_3_ICD_post_embedding_prediction_df.csv',
+    pooled_embedding_df=pooled_embedding_df,
+)
 
 
 # =========================
-# PHECODE DATASETS (first instance & first post-treatment)
-# Each variant uses the ICD3 set corresponding to its timing filter so endpoint
-# lists are directly comparable within and across variants.
+# ICD-10 LEVEL 4 DATASET (first post-treatment instance)
+# =========================
+icd4_data_base = icd_data_base.dropna(subset=['ICD10_LEVEL_4_CD']).copy()
+icd4_codes_raw = _dedupe_in_order(icd4_data_base['ICD10_LEVEL_4_CD'].tolist())
+icd4_codes = _prefilter_events_by_prevalence(
+    icd4_data_base, cohort_mrns, 'ICD10_LEVEL_4_CD', icd4_codes_raw, min_prevalence=0.05
+)
+_icd4_post = icd4_data_base.loc[icd4_data_base['TIME_TO_ICD'] > 0]
+icd4_codes = _prefilter_events_by_prevalence(
+    _icd4_post, cohort_mrns, 'ICD10_LEVEL_4_CD', icd4_codes, min_prevalence=0.05
+)
+print(f"  Level-4 ICD codes (>=5% prevalence, AND filter): {len(icd4_codes)}")
+
+pd.Series(sorted(icd4_codes), name='ICD10_LEVEL_4_CD').to_csv(
+    os.path.join(CODE_PATH, 'allowed_icd4_post_codes.csv'), index=False
+)
+
+vte_data_sub = base_vte_data_sub.copy()
+icd4_data = icd4_data_base.loc[icd4_data_base['TIME_TO_ICD'] > 0].copy()
+icd4_data = (
+    icd4_data
+    .sort_values(['DFCI_MRN', 'ICD10_LEVEL_4_CD', 'START_DT'])
+    .drop_duplicates(subset=['DFCI_MRN', 'ICD10_LEVEL_4_CD'], keep='first')
+)
+icd4_event_cols = _map_events_to_columns(
+    vte_data_sub=vte_data_sub,
+    event_data=icd4_data,
+    events_to_analyze=icd4_codes,
+    event_col='ICD10_LEVEL_4_CD',
+    time_col='TIME_TO_ICD',
+    progress_desc='Generating level-4 ICD events (first_post_treatment)',
+)
+vte_data_sub = pd.concat([vte_data_sub, icd4_event_cols], axis=1)
+_finalize_base_covariates(vte_data_sub)
+kept = _filter_endpoint_events_by_min_post_baseline_count(vte_data_sub, icd4_codes, min_events=100)
+_write_outputs(
+    vte_data_sub=vte_data_sub,
+    endpoint_events=kept,
+    surv_filename='level_4_ICD_post_surv_df.csv',
+    embedding_filename='level_4_ICD_post_embedding_prediction_df.csv',
+    pooled_embedding_df=pooled_embedding_df,
+)
+
+
+# =========================
+# PHECODE DATASET (first post-treatment instance)
 # =========================
 mapping_file = os.path.join(CODE_PATH, 'icd10_to_phecode_mapping.csv')
 mapping_df = pd.read_csv(mapping_file)
@@ -412,63 +439,46 @@ mapping_phecode_col = _resolve_column(mapping_df, 'phecode')
 mapping_df['ICD10_NORM'] = mapping_df[mapping_icd_col].map(_normalize_icd10_undotted)
 mapping_df['PHECODE'] = mapping_df[mapping_phecode_col].map(_normalize_phecode)
 mapping_df = mapping_df.dropna(subset=['ICD10_NORM', 'PHECODE']).drop_duplicates(subset=['ICD10_NORM', 'PHECODE'])
-mapping_df['ICD10_LEVEL_3'] = mapping_df['ICD10_NORM'].str[:3]
 
+phe_data = split_ehr_icd_subset.copy()
+phe_data['ICD10_NORM'] = phe_data['DIAGNOSIS_ICD10_CD'].map(_normalize_icd10_undotted)
+phe_data = phe_data.dropna(subset=['ICD10_NORM'])
+phe_data = phe_data.merge(mapping_df[['ICD10_NORM', 'PHECODE']], on='ICD10_NORM', how='inner')
+phe_data['START_DT'] = pd.to_datetime(phe_data['START_DT'], errors='coerce')
+phe_data = phe_data.loc[~phe_data['PHECODE'].map(_is_excluded_phecode)].copy()
 
-def _build_phecode_base(icd3_allowed: set) -> tuple[pd.DataFrame, list[str]]:
-    """Build phecode EHR data and endpoint list restricted to a given ICD3 set."""
-    mapping_filt = mapping_df[mapping_df['ICD10_LEVEL_3'].isin(icd3_allowed)].copy()
-    phe_data = split_ehr_icd_subset.copy()
-    phe_data['ICD10_NORM'] = phe_data['DIAGNOSIS_ICD10_CD'].map(_normalize_icd10_undotted)
-    phe_data = phe_data.dropna(subset=['ICD10_NORM'])
-    phe_data = phe_data.merge(mapping_filt[['ICD10_NORM', 'PHECODE']], on='ICD10_NORM', how='inner')
-    phe_data['START_DT'] = pd.to_datetime(phe_data['START_DT'], errors='coerce')
-    phe_list = [p for p in _dedupe_in_order(phe_data['PHECODE'].dropna().tolist()) if not _is_excluded_phecode(p)]
-    phe_data = phe_data.loc[~phe_data['PHECODE'].map(_is_excluded_phecode)].copy()
-    return phe_data, phe_list
-
-
-# Build phecode base from the same ICD3 set used by both ICD3 variants.
-# Apply the same AND prevalence filter (any-time >= 5%, post-treatment >= 5%) so
-# the phecode count is roughly comparable to the ICD3 count.
-phecode_data_base, _shared_phecode_raw = _build_phecode_base(allowed_icd3_post_set)
-shared_phecode_list = _prefilter_events_by_prevalence(
-    phecode_data_base, cohort_mrns, 'PHECODE', _shared_phecode_raw, min_prevalence=0.05
+phecode_codes_raw = _dedupe_in_order(phe_data['PHECODE'].dropna().tolist())
+phecode_codes = _prefilter_events_by_prevalence(
+    phe_data, cohort_mrns, 'PHECODE', phecode_codes_raw, min_prevalence=0.05
 )
-_phe_post = phecode_data_base.loc[phecode_data_base['TIME_TO_ICD'] > 0]
-shared_phecode_list = _prefilter_events_by_prevalence(
-    _phe_post, cohort_mrns, 'PHECODE', shared_phecode_list, min_prevalence=0.05
-)
-print(f"  Phecode list (AND filter, both variants): {len(shared_phecode_list)} codes")
+print(f"  Phecode codes (>=5% prevalence): {len(phecode_codes)}")
 
-for variant, time_filter, surv_fn, emb_fn in [
-    ('first_instance', None, 'phecode_surv_df.csv', 'phecode_embedding_prediction_df.csv'),
-    ('first_post_treatment', lambda df: df['TIME_TO_ICD'] > 0, 'phecode_post_surv_df.csv', 'phecode_post_embedding_prediction_df.csv'),
-]:
-    vte_data_sub = base_vte_data_sub.copy()
-    phecode_data = phecode_data_base.copy()
-    if time_filter is not None:
-        phecode_data = phecode_data.loc[time_filter(phecode_data)].copy()
-    phecode_data = (
-        phecode_data
-        .sort_values(['DFCI_MRN', 'PHECODE', 'START_DT'])
-        .drop_duplicates(subset=['DFCI_MRN', 'PHECODE'], keep='first')
-    )
-    phecode_event_cols = _map_events_to_columns(
-        vte_data_sub=vte_data_sub,
-        event_data=phecode_data,
-        events_to_analyze=shared_phecode_list,
-        event_col='PHECODE',
-        time_col='TIME_TO_ICD',
-        progress_desc=f'Generating phecode events ({variant})',
-    )
-    vte_data_sub = pd.concat([vte_data_sub, phecode_event_cols], axis=1)
-    _finalize_base_covariates(vte_data_sub)
-    kept = _filter_endpoint_events_by_min_post_baseline_count(vte_data_sub, shared_phecode_list, min_events=100)
-    _write_outputs(
-        vte_data_sub=vte_data_sub,
-        endpoint_events=kept,
-        surv_filename=surv_fn,
-        embedding_filename=emb_fn,
-        pooled_embedding_df=pooled_embedding_df,
-    )
+pd.Series(sorted(phecode_codes), name='PHECODE').to_csv(
+    os.path.join(CODE_PATH, 'allowed_phecode_post_codes.csv'), index=False
+)
+
+vte_data_sub = base_vte_data_sub.copy()
+phecode_data = phe_data.loc[phe_data['TIME_TO_ICD'] > 0].copy()
+phecode_data = (
+    phecode_data
+    .sort_values(['DFCI_MRN', 'PHECODE', 'START_DT'])
+    .drop_duplicates(subset=['DFCI_MRN', 'PHECODE'], keep='first')
+)
+phecode_event_cols = _map_events_to_columns(
+    vte_data_sub=vte_data_sub,
+    event_data=phecode_data,
+    events_to_analyze=phecode_codes,
+    event_col='PHECODE',
+    time_col='TIME_TO_ICD',
+    progress_desc='Generating phecode events (first_post_treatment)',
+)
+vte_data_sub = pd.concat([vte_data_sub, phecode_event_cols], axis=1)
+_finalize_base_covariates(vte_data_sub)
+kept = _filter_endpoint_events_by_min_post_baseline_count(vte_data_sub, phecode_codes, min_events=100)
+_write_outputs(
+    vte_data_sub=vte_data_sub,
+    endpoint_events=kept,
+    surv_filename='phecode_post_surv_df.csv',
+    embedding_filename='phecode_post_embedding_prediction_df.csv',
+    pooled_embedding_df=pooled_embedding_df,
+)

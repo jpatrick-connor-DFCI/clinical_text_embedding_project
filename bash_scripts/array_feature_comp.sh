@@ -73,9 +73,8 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
   IFS=$'\t' read -r SCHEME EVENT <<< "${TASK_LINE}"
 
   case "$SCHEME" in
-    icd3) SCHEME_RESULTS_DIR="level_3_ICD_results" ;;
     icd3_post) SCHEME_RESULTS_DIR="level_3_ICD_post_results" ;;
-    phecode) SCHEME_RESULTS_DIR="phecode_results" ;;
+    icd4_post) SCHEME_RESULTS_DIR="level_4_ICD_post_results" ;;
     phecode_post) SCHEME_RESULTS_DIR="phecode_post_results" ;;
     death_met) SCHEME_RESULTS_DIR="death_met_results" ;;
     *)

@@ -11,17 +11,13 @@ SURV_PATH = os.path.join(DATA_PATH, "time-to-event_analysis/")
 FEATURE_PATH = os.path.join(DATA_PATH, "clinical_and_genomic_features/")
 
 SCHEME_CONFIG: dict[str, dict[str, str]] = {
-    "icd3": {
-        "embedding_file": "level_3_ICD_embedding_prediction_df.csv",
-        "results_dir": "level_3_ICD_results",
-    },
     "icd3_post": {
         "embedding_file": "level_3_ICD_post_embedding_prediction_df.csv",
         "results_dir": "level_3_ICD_post_results",
     },
-    "phecode": {
-        "embedding_file": "phecode_embedding_prediction_df.csv",
-        "results_dir": "phecode_results",
+    "icd4_post": {
+        "embedding_file": "level_4_ICD_post_embedding_prediction_df.csv",
+        "results_dir": "level_4_ICD_post_results",
     },
     "phecode_post": {
         "embedding_file": "phecode_post_embedding_prediction_df.csv",
