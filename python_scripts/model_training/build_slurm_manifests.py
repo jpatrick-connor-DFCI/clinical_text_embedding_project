@@ -36,13 +36,21 @@ def _full_cohort_complete(scheme: str, event: str) -> bool:
 
 
 def _feature_comp_complete(scheme: str, event: str) -> bool:
-    """Check if all modality result CSVs exist for a scheme/event."""
+    """Check if all modality result CSVs and held-out risk scores exist for a scheme/event."""
     out_dir = os.path.join(get_output_dir(scheme, "feature_comps"), event)
-    return all(
+    risk_dir = os.path.normpath(os.path.join(
+        get_output_dir(scheme, "feature_comps"), "..", "held_out_risk_scores", event
+    ))
+    grid_done = all(
         os.path.exists(os.path.join(out_dir, f"{mod}_{split}.csv"))
         for mod in MODALITIES
         for split in ("test", "val")
     )
+    risk_done = all(
+        os.path.exists(os.path.join(risk_dir, f"{mod}_risk_scores.csv"))
+        for mod in MODALITIES
+    )
+    return grid_done and risk_done
 
 
 def _parse_args() -> argparse.Namespace:

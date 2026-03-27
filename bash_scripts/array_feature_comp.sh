@@ -7,8 +7,8 @@
 #SBATCH --mem=8G
 #SBATCH --time=24:00:00
 #SBATCH --array=0-0%1
-#SBATCH --output=bash_scripts/output/array_feature_comp/%A_%a.out
-#SBATCH --error=bash_scripts/error/array_feature_comp/%A_%a.err
+#SBATCH --output=bash_scripts/array_feature_comp/output/%A_%a.out
+#SBATCH --error=bash_scripts/array_feature_comp/error/%A_%a.err
 
 PROJECT_ROOT=${PROJECT_ROOT:-/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project}
 MANIFEST=${MANIFEST:-$PROJECT_ROOT/bash_scripts/slurm_manifests/feature_comp_tasks.tsv}
@@ -39,7 +39,7 @@ export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 
-mkdir -p bash_scripts/output/array_feature_comp bash_scripts/error/array_feature_comp
+mkdir -p bash_scripts/array_feature_comp/output bash_scripts/array_feature_comp/error
 
 OVERWRITE_FLAG=()
 if [[ "${OVERWRITE:-0}" == "1" ]]; then

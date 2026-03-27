@@ -4,7 +4,9 @@ import argparse
 import os
 import time
 
-from embed_surv_utils import run_grid_CoxPH_parallel
+import pandas as pd
+
+from embed_surv_utils import get_heldout_risk_scores_CoxPH, run_grid_CoxPH_parallel
 
 from slurm_array_utils import (
     DEFAULT_ALPHAS,
@@ -53,7 +55,12 @@ def main() -> None:
     os.makedirs(out_dir, exist_ok=True)
     test_fp = os.path.join(out_dir, f"{args.modality}_test.csv")
     val_fp = os.path.join(out_dir, f"{args.modality}_val.csv")
-    if (not args.overwrite) and os.path.exists(test_fp) and os.path.exists(val_fp):
+    risk_dir = os.path.join(get_output_dir(args.scheme, "feature_comps"), "..", "held_out_risk_scores", args.event)
+    risk_dir = os.path.normpath(risk_dir)
+    risk_fp = os.path.join(risk_dir, f"{args.modality}_risk_scores.csv")
+    grid_done = os.path.exists(test_fp) and os.path.exists(val_fp)
+    risk_done = os.path.exists(risk_fp)
+    if (not args.overwrite) and grid_done and risk_done:
         print(f"[skip] Existing outputs found for {args.scheme}:{args.event}:{args.modality}")
         return
 
@@ -88,24 +95,55 @@ def main() -> None:
     # For small feature sets the joblib overhead dominates; run serially.
     n_jobs = 1 if len(cfg["penalized_cols"]) < 50 else _get_n_jobs(args.n_jobs)
 
-    t0 = time.time()
-    test_df, val_df, _ = run_grid_CoxPH_parallel(
+    # --- Grid search (skip if already done, reuse val results for risk scores) ---
+    if (not args.overwrite) and grid_done:
+        print(f"[skip] {label} grid search already done, loading val results")
+        val_df = pd.read_csv(val_fp)
+    else:
+        t0 = time.time()
+        test_df, val_df, _ = run_grid_CoxPH_parallel(
+            event_pred_df,
+            base_vars + type_cols,
+            cfg["continuous_vars"],
+            cfg["penalized_cols"],
+            DEFAULT_L1_RATIOS,
+            DEFAULT_ALPHAS,
+            pca_config=cfg["pca_config"],
+            event_col=args.event,
+            tstop_col=f"tt_{args.event}",
+            max_iter=args.max_iter,
+            n_jobs=n_jobs,
+            backend=args.backend,
+        )
+        test_df.to_csv(test_fp, index=False)
+        val_df.to_csv(val_fp, index=False)
+        print(f"[time] {label} grid search: {(time.time() - t0) / 60:.1f}m")
+
+    # --- Generate held-out risk scores using best hyperparams ---
+    os.makedirs(risk_dir, exist_ok=True)
+
+    best_row = val_df.sort_values(by="mean_auc(t)", ascending=False).iloc[0]
+    best_l1 = float(best_row["l1_ratio"])
+    best_alpha = float(best_row["alpha"])
+
+    t1 = time.time()
+    risk_scores = get_heldout_risk_scores_CoxPH(
         event_pred_df,
         base_vars + type_cols,
         cfg["continuous_vars"],
         cfg["penalized_cols"],
-        DEFAULT_L1_RATIOS,
-        DEFAULT_ALPHAS,
         pca_config=cfg["pca_config"],
         event_col=args.event,
         tstop_col=f"tt_{args.event}",
         max_iter=args.max_iter,
+        penalized=True,
+        l1_ratio=best_l1,
+        alpha=best_alpha,
         n_jobs=n_jobs,
         backend=args.backend,
-    )
-    test_df.to_csv(test_fp, index=False)
-    val_df.to_csv(val_fp, index=False)
-    print(f"[time] {label}: {(time.time() - t0) / 60:.1f}m")
+    ).rename(columns={"risk_score": f"{args.modality}_risk_score"})
+    risk_scores.to_csv(risk_fp, index=False)
+    print(f"[time] {label} held-out risk: {(time.time() - t1) / 60:.1f}m ({len(risk_scores)} patients)")
     print(f"[done] {args.scheme}:{args.event}:{args.modality} -> {out_dir}")
 
 
