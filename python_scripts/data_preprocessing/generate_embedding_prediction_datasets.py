@@ -33,6 +33,7 @@ BASE_INPUT_COLS = [
     'vte',
 ]
 BASE_OUTPUT_COLS = ['DFCI_MRN', 'first_treatment_date', 'last_contact_date', 'AGE_AT_TREATMENTSTART', 'GENDER']
+CORE_EVENT_COLS = ['death', 'tt_death', 'vte', 'tt_vte']
 NOTE_TYPES = ['Clinician', 'Imaging', 'Pathology']
 MET_SITES = ['brain', 'bone', 'adrenal', 'liver', 'lung', 'node', 'peritoneal']
 
@@ -271,7 +272,9 @@ def _write_outputs(
     event_cols = _dedupe_in_order(event_cols)
     tt_event_cols = [f'tt_{event}' for event in event_cols]
 
-    events_data_sub = vte_data_sub[BASE_OUTPUT_COLS + event_cols + tt_event_cols]
+    # Always include core survival events (death, vte) so downstream scripts can use them
+    core_cols = [c for c in CORE_EVENT_COLS if c in vte_data_sub.columns]
+    events_data_sub = vte_data_sub[BASE_OUTPUT_COLS + core_cols + event_cols + tt_event_cols]
     events_data_sub.to_csv(os.path.join(SURV_PATH, surv_filename), index=False)
 
     monthly_data = events_data_sub.merge(pooled_embedding_df, on='DFCI_MRN', how='left')
@@ -299,7 +302,8 @@ def _write_death_met_outputs(
     event_cols = _dedupe_in_order(event_cols)
     tt_event_cols = [f'tt_{event}' for event in event_cols]
 
-    events_data_sub = vte_data_sub[BASE_OUTPUT_COLS + event_cols + tt_event_cols]
+    core_cols = [c for c in CORE_EVENT_COLS if c in vte_data_sub.columns and c not in event_cols and c not in tt_event_cols]
+    events_data_sub = vte_data_sub[BASE_OUTPUT_COLS + core_cols + event_cols + tt_event_cols]
     events_data_sub.to_csv(os.path.join(SURV_PATH, surv_filename), index=False)
 
     monthly_data = events_data_sub.merge(pooled_embedding_df, on='DFCI_MRN', how='left')

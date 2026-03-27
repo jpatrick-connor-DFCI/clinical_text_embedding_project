@@ -10,7 +10,7 @@ from embed_surv_utils import run_grid_CoxPH_parallel, get_heldout_risk_scores_Co
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 FEATURE_PATH = os.path.join(DATA_PATH, 'clinical_and_genomic_features/')
 SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
-RESULTS_PATH = os.path.join(SURV_PATH, 'results/level_3_ICD_results/')
+RESULTS_PATH = os.path.join(SURV_PATH, 'results/level_3_ICD_post_results/')
 NOTES_PATH = os.path.join(DATA_PATH, 'batched_datasets/processed_datasets/')
 TRAJECTORY_PATH = os.path.join(RESULTS_PATH, 'mortality_trajectories/')
 os.makedirs(TRAJECTORY_PATH, exist_ok=True)
@@ -20,7 +20,7 @@ os.environ["JOBLIB_DEFAULT_WORKER_TIMEOUT"] = "600"
 # Load datasets
 notes_meta = pd.read_csv(NOTES_PATH + 'full_VTE_embeddings_metadata.csv')
 embeddings_data = np.load(open(NOTES_PATH + 'full_VTE_embeddings_as_array.npy', 'rb'))
-events_data = pd.read_csv(SURV_PATH + 'level_3_ICD_surv_df.csv')
+events_data = pd.read_csv(SURV_PATH + 'level_3_ICD_post_surv_df.csv')
 cancer_type_df = pd.read_csv(os.path.join(FEATURE_PATH, 'cancer_type_df.csv'))
 
 event='death'

@@ -12,13 +12,13 @@ from embed_surv_utils import run_grid_CoxPH_parallel, get_heldout_risk_scores_Co
 # === Paths ===
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
-RESULTS_PATH = os.path.join(SURV_PATH, 'results/level_3_ICD_results/')
+RESULTS_PATH = os.path.join(SURV_PATH, 'results/level_3_ICD_post_results/')
 TREATMENT_PATH = os.path.join(DATA_PATH, 'treatment_prediction/first_line_treatment_prediction_data/')
 
 os.environ["JOBLIB_DEFAULT_WORKER_TIMEOUT"] = "600"
 
 # === Load datasets ===
-time_decayed_events_df = pd.read_csv(os.path.join(SURV_PATH, 'level_3_ICD_embedding_prediction_df.csv'))
+time_decayed_events_df = pd.read_csv(os.path.join(SURV_PATH, 'level_3_ICD_post_embedding_prediction_df.csv'))
 
 # Load cancer types
 cancer_type_df = pd.read_csv(
@@ -131,7 +131,7 @@ within_scores, pan_scores, mrns = [], [], []
 for treatment in tqdm(treatment_types):
 
     sub_df = held_df.loc[held_df['TREATMENT_CLASSIFICATION'] == treatment]
-    if len(sub_df) == 0:
+    if len(sub_df) == 0 or treatment not in within_models:
         continue
 
     within_pred = within_models[treatment].predict(sub_df[base_vars + embed_cols])

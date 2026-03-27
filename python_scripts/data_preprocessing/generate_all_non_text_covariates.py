@@ -20,7 +20,7 @@ os.makedirs(CLINICAL_FEATURE_PATH, exist_ok=True)
 
 # === Shared cohort data loads ===
 vte_data = pd.read_csv(os.path.join(INTAE_DATA_PATH, 'follow_up_vte_df_cohort.csv'), usecols=['DFCI_MRN', 'first_treatment_date'])
-time_decayed_events_df = pd.read_csv(os.path.join(SURV_PATH, 'level_3_ICD_embedding_prediction_df.csv'), usecols=['DFCI_MRN'])
+time_decayed_events_df = pd.read_csv(os.path.join(SURV_PATH, 'level_3_ICD_post_embedding_prediction_df.csv'), usecols=['DFCI_MRN'])
 cancer_type_df = pd.read_csv(
     os.path.join(INTAE_DATA_PATH, 'first_treatments_dfci_w_inferred_cancers.csv'),
     usecols=['DFCI_MRN', 'med_genomics_merged_cancer_group']).rename(columns={'med_genomics_merged_cancer_group': 'CANCER_TYPE'})

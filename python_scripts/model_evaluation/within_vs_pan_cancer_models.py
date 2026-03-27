@@ -12,7 +12,7 @@ from embed_surv_utils import run_grid_CoxPH_parallel, get_heldout_risk_scores_Co
 # === Paths ===
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
-RESULTS_PATH = os.path.join(SURV_PATH, 'results/level_3_ICD_results/')
+RESULTS_PATH = os.path.join(SURV_PATH, 'results/level_3_ICD_post_results/')
 
 os.environ["JOBLIB_DEFAULT_WORKER_TIMEOUT"] = "600"
 
@@ -22,7 +22,7 @@ cancer_type_df = pd.read_csv(
     usecols=['DFCI_MRN', 'med_genomics_merged_cancer_group']
 ).rename(columns={'med_genomics_merged_cancer_group': 'CANCER_TYPE'})
 
-time_decayed_events_df = pd.read_csv(os.path.join(SURV_PATH, 'level_3_ICD_embedding_prediction_df.csv'))
+time_decayed_events_df = pd.read_csv(os.path.join(SURV_PATH, 'level_3_ICD_post_embedding_prediction_df.csv'))
 
 # Merge embeddings + cancer types + events
 full_df = (time_decayed_events_df
@@ -156,7 +156,7 @@ for cancer_type in tqdm([c.replace('CANCER_TYPE_', '') for c in type_cols]):
         continue
 
     sub_df = held_df.loc[held_df[mask_col].astype(bool)]
-    if len(sub_df) == 0:
+    if len(sub_df) == 0 or cancer_type not in within_models:
         continue
 
     within_pred = within_models[cancer_type].predict(sub_df[base_vars + embed_cols])

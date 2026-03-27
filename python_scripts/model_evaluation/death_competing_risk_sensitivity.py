@@ -1,6 +1,6 @@
 """Death-as-competing-risk sensitivity check.
 
-For each ICD3 and phecode endpoint, compares:
+For each ICD3-post and phecode-post endpoint, compares:
   - Standard Kaplan-Meier estimate of event probability (current pipeline:
     death treated as independent censoring)
   - Aalen-Johansen cumulative incidence function (CIF), treating death as a
@@ -15,7 +15,7 @@ endpoints warrant a formal competing-risk analysis.
 
 Usage
 -----
-    python death_competing_risk_sensitivity.py [--schemes icd3 phecode ...]
+    python death_competing_risk_sensitivity.py [--schemes icd3_post phecode_post ...]
 """
 
 import argparse
@@ -29,9 +29,8 @@ SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
 INTAE_DATA_PATH = '/data/gusev/PROFILE/CLINICAL/robust_VTE_pred_project_2025_03_cohort/data/'
 
 SCHEME_SURV_FILES = {
-    'icd3':         'level_3_ICD_surv_df.csv',
     'icd3_post':    'level_3_ICD_post_surv_df.csv',
-    'phecode':      'phecode_surv_df.csv',
+    'icd4_post':    'level_4_ICD_post_surv_df.csv',
     'phecode_post': 'phecode_post_surv_df.csv',
 }
 
