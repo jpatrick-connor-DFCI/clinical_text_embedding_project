@@ -15,7 +15,7 @@ set -euo pipefail
 
 PROJECT_ROOT="${PROJECT_ROOT:-/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project}"
 MANIFEST="${MANIFEST:-$PROJECT_ROOT/bash_scripts/slurm_manifests/feature_comp_tasks.tsv}"
-ROWS_PER_TASK="${ROWS_PER_TASK:-5}"
+ROWS_PER_TASK="${ROWS_PER_TASK:-7}"
 
 if [[ ! -f "$MANIFEST" ]]; then
     echo "Error: manifest not found: $MANIFEST"
