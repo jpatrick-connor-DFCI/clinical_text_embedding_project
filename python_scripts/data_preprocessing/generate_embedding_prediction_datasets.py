@@ -353,9 +353,9 @@ icd_data_base['START_DT'] = pd.to_datetime(icd_data_base['START_DT'], errors='co
 # =========================
 icd3_codes_raw = _dedupe_in_order(icd_data_base['ICD10_LEVEL_3_CD'].tolist())
 icd3_codes = _prefilter_events_by_prevalence(
-    icd_data_base, cohort_mrns, 'ICD10_LEVEL_3_CD', icd3_codes_raw, min_prevalence=0.05
+    icd_data_base, cohort_mrns, 'ICD10_LEVEL_3_CD', icd3_codes_raw, min_prevalence=0.01
 )
-print(f"  Level-3 ICD codes (>=5% prevalence): {len(icd3_codes)}")
+print(f"  Level-3 ICD codes (>=1% prevalence): {len(icd3_codes)}")
 
 pd.Series(sorted(icd3_codes), name='ICD10_LEVEL_3_CD').to_csv(
     os.path.join(CODE_PATH, 'allowed_icd3_post_codes.csv'), index=False
@@ -394,13 +394,9 @@ _write_outputs(
 icd4_data_base = icd_data_base.dropna(subset=['ICD10_LEVEL_4_CD']).copy()
 icd4_codes_raw = _dedupe_in_order(icd4_data_base['ICD10_LEVEL_4_CD'].tolist())
 icd4_codes = _prefilter_events_by_prevalence(
-    icd4_data_base, cohort_mrns, 'ICD10_LEVEL_4_CD', icd4_codes_raw, min_prevalence=0.05
+    icd4_data_base, cohort_mrns, 'ICD10_LEVEL_4_CD', icd4_codes_raw, min_prevalence=0.01
 )
-_icd4_post = icd4_data_base.loc[icd4_data_base['TIME_TO_ICD'] > 0]
-icd4_codes = _prefilter_events_by_prevalence(
-    _icd4_post, cohort_mrns, 'ICD10_LEVEL_4_CD', icd4_codes, min_prevalence=0.05
-)
-print(f"  Level-4 ICD codes (>=5% prevalence, AND filter): {len(icd4_codes)}")
+print(f"  Level-4 ICD codes (>=1% prevalence): {len(icd4_codes)}")
 
 pd.Series(sorted(icd4_codes), name='ICD10_LEVEL_4_CD').to_csv(
     os.path.join(CODE_PATH, 'allowed_icd4_post_codes.csv'), index=False
@@ -453,9 +449,9 @@ phe_data = phe_data.loc[~phe_data['PHECODE'].map(_is_excluded_phecode)].copy()
 
 phecode_codes_raw = _dedupe_in_order(phe_data['PHECODE'].dropna().tolist())
 phecode_codes = _prefilter_events_by_prevalence(
-    phe_data, cohort_mrns, 'PHECODE', phecode_codes_raw, min_prevalence=0.05
+    phe_data, cohort_mrns, 'PHECODE', phecode_codes_raw, min_prevalence=0.01
 )
-print(f"  Phecode codes (>=5% prevalence): {len(phecode_codes)}")
+print(f"  Phecode codes (>=1% prevalence): {len(phecode_codes)}")
 
 pd.Series(sorted(phecode_codes), name='PHECODE').to_csv(
     os.path.join(CODE_PATH, 'allowed_phecode_post_codes.csv'), index=False
