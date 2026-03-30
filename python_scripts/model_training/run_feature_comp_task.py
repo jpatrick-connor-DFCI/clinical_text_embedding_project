@@ -1,6 +1,7 @@
 """Run Feature Comp Task script for model training workflows."""
 
 import argparse
+import json
 import os
 import time
 
@@ -12,6 +13,7 @@ from slurm_array_utils import (
     DEFAULT_ALPHAS,
     DEFAULT_L1_RATIOS,
     SCHEME_CONFIG,
+    SURV_PATH,
     _get_n_jobs,
     filter_event_rows,
     get_events_from_df,
@@ -19,6 +21,16 @@ from slurm_array_utils import (
     load_feature_modalities_df,
     validate_cox_inputs,
 )
+
+SKIP_REPORT_DIR = os.path.join(SURV_PATH, "results", "skipped_events")
+
+
+def _write_skip_report(scheme: str, event: str, run_type: str, reason: str) -> None:
+    os.makedirs(SKIP_REPORT_DIR, exist_ok=True)
+    report_fp = os.path.join(SKIP_REPORT_DIR, f"{scheme}_{run_type}_skipped.jsonl")
+    entry = {"scheme": scheme, "event": event, "run_type": run_type, "reason": reason}
+    with open(report_fp, "a") as f:
+        f.write(json.dumps(entry) + "\n")
 
 
 def _parse_args() -> argparse.Namespace:
@@ -66,7 +78,9 @@ def main() -> None:
 
     event_pred_df = filter_event_rows(full_prediction_df, args.event)
     if event_pred_df.empty:
-        print(f"[skip] No rows with tt_{args.event} > 0 for {args.scheme}:{args.event}")
+        reason = f"No rows with tt_{args.event} > 0"
+        print(f"[skip-data] {args.scheme}:{args.event}:{args.modality} — {reason}")
+        _write_skip_report(args.scheme, args.event, f"feature_comps_{args.modality}", reason)
         return
 
     base_vars = ["GENDER", "AGE_AT_TREATMENTSTART"]
@@ -76,9 +90,15 @@ def main() -> None:
     seen = set()
     all_feature_cols = [c for c in all_feature_cols if not (c in seen or seen.add(c))]
     label = f"{args.scheme}:{args.event}:{args.modality}"
-    event_pred_df, dropped_cols = validate_cox_inputs(
-        event_pred_df, args.event, f"tt_{args.event}", all_feature_cols, label=label,
-    )
+    try:
+        event_pred_df, dropped_cols = validate_cox_inputs(
+            event_pred_df, args.event, f"tt_{args.event}", all_feature_cols, label=label,
+        )
+    except ValueError as e:
+        reason = str(e)
+        print(f"[skip-data] {label} — {reason}")
+        _write_skip_report(args.scheme, args.event, f"feature_comps_{args.modality}", reason)
+        return
     type_cols = [c for c in type_cols if c not in dropped_cols]
     cfg["continuous_vars"] = [c for c in cfg["continuous_vars"] if c not in dropped_cols]
     cfg["penalized_cols"] = [c for c in cfg["penalized_cols"] if c not in dropped_cols]
