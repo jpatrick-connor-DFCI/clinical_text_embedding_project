@@ -35,7 +35,18 @@ def _parse_args() -> argparse.Namespace:
             "for events that have all requested modality risk-score files."
         )
     )
-    parser.add_argument("--scheme", required=True, choices=sorted(SCHEME_CONFIG))
+    parser.add_argument(
+        "--scheme",
+        nargs="+",
+        choices=sorted(SCHEME_CONFIG),
+        default=None,
+        help="One or more schemes to analyze.",
+    )
+    parser.add_argument(
+        "--all-schemes",
+        action="store_true",
+        help="Run across all schemes in SCHEME_CONFIG.",
+    )
     parser.add_argument(
         "--modalities",
         nargs="+",
@@ -57,7 +68,12 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Optional explicit output directory. Defaults to <scheme results>/risk_score_coxph.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.all_schemes and args.scheme:
+        parser.error("Use either --scheme or --all-schemes, not both.")
+    if not args.all_schemes and not args.scheme:
+        parser.error("Specify --scheme <name> [<name> ...] or --all-schemes.")
+    return args
 
 
 def _make_surv_array(event: np.ndarray, time: np.ndarray) -> np.ndarray:
@@ -70,6 +86,14 @@ def _make_surv_array(event: np.ndarray, time: np.ndarray) -> np.ndarray:
 def _default_output_dir(scheme: str) -> str:
     feature_comp_dir = Path(get_output_dir(scheme, "feature_comps"))
     return str(feature_comp_dir.parent / "risk_score_coxph")
+
+
+def _resolve_output_dir(base_output_dir: str | None, scheme: str, multi_scheme: bool) -> str:
+    if base_output_dir is None:
+        return _default_output_dir(scheme)
+    if multi_scheme:
+        return os.path.join(base_output_dir, scheme)
+    return base_output_dir
 
 
 def _write_skip_report(skip_fp: str, scheme: str, event: str, reason: str) -> None:
@@ -174,11 +198,8 @@ def _fit_risk_score_coxph(
     return metrics, coef_df
 
 
-def main() -> None:
-    args = _parse_args()
-    args.modalities = _normalize_modalities(args.modalities)
-
-    out_dir = args.output_dir or _default_output_dir(args.scheme)
+def _run_one_scheme(args: argparse.Namespace, scheme: str, multi_scheme: bool) -> dict[str, object]:
+    out_dir = _resolve_output_dir(args.output_dir, scheme, multi_scheme=multi_scheme)
     os.makedirs(out_dir, exist_ok=True)
 
     univar_fp = os.path.join(out_dir, "univariate_modality_metrics.csv")
@@ -193,21 +214,21 @@ def main() -> None:
         and os.path.exists(joint_fp)
         and os.path.exists(beta_fp)
     ):
-        print(f"[skip] Existing outputs found in {out_dir}")
-        return
+        print(f"[skip] Existing outputs found for {scheme} in {out_dir}")
+        return {"scheme": scheme, "status": "skipped_existing", "output_dir": out_dir}
 
     for fp in (univar_fp, joint_fp, beta_fp, skip_fp, meta_fp):
         if os.path.exists(fp):
             os.remove(fp)
 
-    tte_df = load_embedding_prediction_df(args.scheme)
+    tte_df = load_embedding_prediction_df(scheme)
     available_events = set(get_events_from_df(tte_df))
     events = args.events or sorted(available_events)
     unknown_events = [event for event in events if event not in available_events]
     if unknown_events:
-        raise ValueError(f"Unknown events for scheme '{args.scheme}': {unknown_events}")
+        raise ValueError(f"Unknown events for scheme '{scheme}': {unknown_events}")
 
-    risk_root = os.path.normpath(os.path.join(get_output_dir(args.scheme, "feature_comps"), "..", "held_out_risk_scores"))
+    risk_root = os.path.normpath(os.path.join(get_output_dir(scheme, "feature_comps"), "..", "held_out_risk_scores"))
 
     univariate_rows: list[dict[str, object]] = []
     joint_rows: list[dict[str, object]] = []
@@ -221,7 +242,7 @@ def main() -> None:
     for event in tqdm(events):
         risk_profile, error = _load_event_risk_profile(risk_root, event, args.modalities)
         if error is not None:
-            _write_skip_report(skip_fp, args.scheme, event, error)
+            _write_skip_report(skip_fp, scheme, event, error)
             continue
 
         event_df = (
@@ -231,7 +252,7 @@ def main() -> None:
         )
         event_df = event_df.loc[event_df[f"tt_{event}"] > 0].copy()
         if event_df.empty:
-            _write_skip_report(skip_fp, args.scheme, event, "Merged event/risk dataframe has 0 analyzable rows")
+            _write_skip_report(skip_fp, scheme, event, "Merged event/risk dataframe has 0 analyzable rows")
             continue
 
         risk_cols = [f"{modality}_risk_score" for modality in args.modalities]
@@ -326,7 +347,7 @@ def main() -> None:
     with open(meta_fp, "w", encoding="utf-8") as f:
         json.dump(
             {
-                "scheme": args.scheme,
+                "scheme": scheme,
                 "modalities": args.modalities,
                 "risk_score_dir": risk_root,
                 "risk_scores_standardized_before_fit": True,
@@ -339,12 +360,52 @@ def main() -> None:
             indent=2,
         )
 
-    print(f"[done] Wrote {univar_fp}")
-    print(f"[done] Wrote {joint_fp}")
-    print(f"[done] Wrote {beta_fp}")
-    print(f"[done] Wrote {meta_fp}")
+    print(f"[done] {scheme} -> {univar_fp}")
+    print(f"[done] {scheme} -> {joint_fp}")
+    print(f"[done] {scheme} -> {beta_fp}")
+    print(f"[done] {scheme} -> {meta_fp}")
     if os.path.exists(skip_fp):
-        print(f"[done] Wrote {skip_fp}")
+        print(f"[done] {scheme} -> {skip_fp}")
+
+    return {
+        "scheme": scheme,
+        "status": "completed",
+        "output_dir": out_dir,
+        "n_requested_events": len(events),
+        "n_univariate_rows": len(univariate_rows),
+        "n_joint_rows": len(joint_rows),
+        "n_joint_beta_rows": len(beta_rows),
+    }
+
+
+def main() -> None:
+    args = _parse_args()
+    args.modalities = _normalize_modalities(args.modalities)
+    schemes = sorted(SCHEME_CONFIG) if args.all_schemes else _normalize_modalities(args.scheme)
+
+    results: list[dict[str, object]] = []
+    failures: list[tuple[str, str]] = []
+    multi_scheme = len(schemes) > 1
+
+    for scheme in schemes:
+        print(f"[run] scheme={scheme}")
+        try:
+            results.append(_run_one_scheme(args, scheme, multi_scheme=multi_scheme))
+        except Exception as exc:
+            print(f"[error] {scheme}: {exc}")
+            failures.append((scheme, str(exc)))
+
+    print("[summary]")
+    for row in results:
+        print(
+            f"  {row['scheme']}: {row['status']}"
+            + (f", out={row['output_dir']}" if 'output_dir' in row else "")
+        )
+    for scheme, err in failures:
+        print(f"  {scheme}: failed ({err})")
+
+    if failures:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
