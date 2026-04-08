@@ -174,6 +174,10 @@ def load_cancer_types(cohort_mrns: pd.Series) -> pd.DataFrame:
 
 def draw_panel_a(ax: plt.Axes, df: pd.DataFrame) -> None:
     plot_df = df.dropna(subset=["base_mean_c_index", "text_full_cohort_mean_c_index"]).copy()
+    if "delta_c_index" not in plot_df.columns:
+        plot_df["delta_c_index"] = (
+            plot_df["text_full_cohort_mean_c_index"] - plot_df["base_mean_c_index"]
+        )
     plot_df["scheme_label"] = plot_df["scheme"].map(SCHEME_DISPLAY)
 
     lim_lo = max(0.48, plot_df[["base_mean_c_index", "text_full_cohort_mean_c_index"]].min().min() - 0.01)
@@ -197,7 +201,7 @@ def draw_panel_a(ax: plt.Axes, df: pd.DataFrame) -> None:
             color="#555", linestyle="--", lw=1.0, zorder=0)
 
     # Annotation: % improved and median delta
-    delta = plot_df["text_full_cohort_mean_c_index"] - plot_df["base_mean_c_index"]
+    delta = plot_df["delta_c_index"]
     pct_improved = 100 * (delta > 0).mean()
     ax.text(0.04, 0.96,
             f"{pct_improved:.0f}% of endpoints: text > base\n"
@@ -207,8 +211,7 @@ def draw_panel_a(ax: plt.Axes, df: pd.DataFrame) -> None:
 
     # Annotate top gainers if event_description column exists
     if "event_description" in plot_df.columns:
-        top5 = plot_df.nlargest(5, "delta_c_index") if "delta_c_index" in plot_df.columns \
-            else plot_df.nlargest(5, plot_df.columns[0])
+        top5 = plot_df.nlargest(5, "delta_c_index")
         for _, row in top5.iterrows():
             desc = str(row.get("event_description", row.get("event", "")))
             desc = desc[:30] + "…" if len(desc) > 30 else desc
@@ -231,11 +234,12 @@ def draw_panel_a(ax: plt.Axes, df: pd.DataFrame) -> None:
 # ---------------------------------------------------------------------------
 
 def draw_panel_b(ax: plt.Axes, df: pd.DataFrame) -> None:
-    plot_df = df.dropna(subset=["delta_c_index"]).copy()
+    plot_df = df.copy()
     if "delta_c_index" not in plot_df.columns:
         plot_df["delta_c_index"] = (
             plot_df["text_full_cohort_mean_c_index"] - plot_df["base_mean_c_index"]
         )
+    plot_df = plot_df.dropna(subset=["delta_c_index"]).copy()
     plot_df["scheme_label"] = plot_df["scheme"].map(SCHEME_DISPLAY)
 
     order = [SCHEME_DISPLAY[s] for s in ["death_met", "icd3_post", "icd4_post", "phecode_post"]
@@ -333,12 +337,18 @@ def build_heatmap_matrix(
 def draw_panel_c(ax: plt.Axes, heatmap_df: pd.DataFrame) -> None:
     # Cluster rows
     valid_rows = heatmap_df.dropna(how="all")
-    imputed = valid_rows.fillna(0.5)
+    if valid_rows.empty:
+        ax.text(0.5, 0.5, "No cancer-type C-index data available",
+                ha="center", va="center", transform=ax.transAxes)
+        return
 
-    link = linkage(imputed.values, method="ward")
-    order = dendrogram(link, no_plot=True)["leaves"]
-
-    ordered = valid_rows.iloc[order]
+    if len(valid_rows) == 1:
+        ordered = valid_rows.copy()
+    else:
+        imputed = valid_rows.fillna(0.5)
+        link = linkage(imputed.values, method="ward")
+        order = dendrogram(link, no_plot=True)["leaves"]
+        ordered = valid_rows.iloc[order]
 
     # Shorten labels
     def shorten(s, n=35):

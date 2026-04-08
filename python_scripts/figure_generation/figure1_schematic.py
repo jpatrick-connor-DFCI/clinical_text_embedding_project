@@ -338,14 +338,6 @@ def main():
 
     cancer_counts = load_cohort_cancer_types(cancer_type_csv, cohort_csv)
 
-    fig = plt.figure(figsize=(16, 11), constrained_layout=True)
-    gs = fig.add_gridspec(2, 2, hspace=0.35, wspace=0.28)
-
-    ax_a = fig.add_subplot(gs[0, :])   # spans full top row
-    ax_b = fig.add_subplot(gs[1, 0])
-    ax_c = fig.add_subplot(gs[1, 1])   # will be replaced with timeline — no, let's do 2x2 bottom
-
-    # Actually use 2x2 bottom row
     fig = plt.figure(figsize=(16, 11))
     ax_a = fig.add_axes([0.03, 0.50, 0.94, 0.45])
     ax_b = fig.add_axes([0.06, 0.06, 0.25, 0.36])

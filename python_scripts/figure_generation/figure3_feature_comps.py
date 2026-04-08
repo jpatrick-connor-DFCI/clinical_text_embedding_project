@@ -4,33 +4,25 @@ Panels:
   A: Stacked bar — number of significantly predicted endpoints per modality × scheme
   B: Pairwise overlap heatmap between modalities
   C: Scatter — text C-index (Y) vs. best-competing-modality C-index (X)
-  D: Violin — log(HR) coefficients from a joint Cox model (all 6 risk scores as features)
+  D: Violin — log(HR) coefficients from the joint Cox model over held-out modality risk scores
 
 Data sources:
-  - Panels A, B, C: compiled_all_schemes_compiled_metrics.csv
-  - Panel D: held_out_risk_scores/{event}/{modality}_risk_scores.csv
-             + survival data from embedding prediction DFs
-             → joint CoxPH fitted per event, coefficients cached to a CSV
+  - Panels A, B, C: risk_score_coxph/univariate_modality_metrics.csv
+  - Panel D: risk_score_coxph/joint_model_betas.csv
 
-Notes for Panel D:
-  The joint Cox model is fitted per event over all 6 modality risk scores.
-  This requires that all 6 modality risk score files exist for a given event.
-  Results are cached to avoid re-running on every call.
+These files are produced by python_scripts/model_evaluation/feature_risk_score_coxph.py.
 """
 
 from __future__ import annotations
 
 import os
 import warnings
-from pathlib import Path
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-from lifelines import CoxPHFitter
-from lifelines.exceptions import ConvergenceWarning
 from scipy.stats import wilcoxon
 
 # ---------------------------------------------------------------------------
@@ -39,9 +31,7 @@ from scipy.stats import wilcoxon
 DATA_PATH = "/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/"
 SURV_PATH = os.path.join(DATA_PATH, "time-to-event_analysis/")
 RESULTS_PATH = os.path.join(SURV_PATH, "results/")
-COMPILED_DIR = os.path.join(RESULTS_PATH, "compiled_all_schemes/")
 OUTPUT_DIR = os.path.join(DATA_PATH, "figures/manuscript/")
-JOINT_COX_CACHE = os.path.join(OUTPUT_DIR, "joint_cox_coefs.csv")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 SCHEME_CONFIG = {
@@ -81,12 +71,12 @@ MODALITY_COLORS = {
     "PRS":       "#7d62a8",
 }
 
-# Significance threshold: C-index column must exceed 0.5 at FDR < 0.05
-# In compiled metrics, we use a simple threshold (column present and > 0.5+delta)
-CINDEX_SIG_THRESHOLD = 0.55   # adjust to match your FDR-based significance cutoff
+RISK_SCORE_COXPH_DIRNAME = "risk_score_coxph"
+UNIVAR_METRICS_FILE = "univariate_modality_metrics.csv"
+JOINT_BETAS_FILE = "joint_model_betas.csv"
 
-# Panel D: max number of events to use for joint Cox fitting
-MAX_JOINT_COX_EVENTS = 300
+# Significance threshold for the second-stage held-out risk-score CoxPH runs.
+CINDEX_SIG_THRESHOLD = 0.55
 
 
 # ---------------------------------------------------------------------------
@@ -108,69 +98,98 @@ def set_style():
 # Data loading
 # ---------------------------------------------------------------------------
 
-def load_compiled_metrics() -> pd.DataFrame:
-    for fname in ["all_schemes_compiled_metrics_1pct.csv",
-                  "all_schemes_compiled_metrics.csv"]:
-        fpath = os.path.join(COMPILED_DIR, fname)
-        if os.path.isfile(fpath):
-            print(f"Loading compiled metrics: {fpath}")
-            return pd.read_csv(fpath)
-    raise FileNotFoundError("Compiled metrics CSV not found in " + COMPILED_DIR)
-
-
-def get_cindex_col(modality: str) -> str:
-    """Return the compiled-metrics column name for a modality's C-index."""
-    if modality == "text":
-        return "text_feat_comp_mean_c_index"
-    return f"{modality}_mean_c_index"
-
-
-def is_significant(df: pd.DataFrame, modality: str,
-                   threshold: float = CINDEX_SIG_THRESHOLD) -> pd.Series:
-    """Boolean mask: modality has significant C-index for each endpoint."""
-    col = get_cindex_col(modality)
-    if col not in df.columns:
-        return pd.Series(False, index=df.index)
-    return df[col].notna() & (df[col] > threshold)
-
-
-def load_risk_scores(scheme: str, event: str, modality: str) -> pd.DataFrame | None:
+def get_risk_score_coxph_dir(scheme: str) -> str:
     results_dir = SCHEME_CONFIG[scheme]["results_dir"]
-    fpath = os.path.join(
-        RESULTS_PATH, results_dir, "held_out_risk_scores", event,
-        f"{modality}_risk_scores.csv"
-    )
-    if not os.path.isfile(fpath):
-        return None
-    df = pd.read_csv(fpath)
-    score_cols = [c for c in df.columns if "risk_score" in c.lower() and c != "DFCI_MRN"]
-    if score_cols:
-        df = df.rename(columns={score_cols[0]: f"{modality}_risk_score"})
-    return df
+    return os.path.join(RESULTS_PATH, results_dir, RISK_SCORE_COXPH_DIRNAME)
 
 
-def load_survival_data(scheme: str, event: str) -> pd.DataFrame:
-    fname = SCHEME_CONFIG[scheme]["embedding_file"]
-    fpath = os.path.join(SURV_PATH, fname)
-    cols = ["DFCI_MRN", event, f"tt_{event}"]
-    df = pd.read_csv(fpath, usecols=cols)
-    df = df.rename(columns={event: "event_indicator", f"tt_{event}": "time"})
-    df = df.dropna(subset=["event_indicator", "time"])
-    df["event_indicator"] = df["event_indicator"].astype(bool)
-    return df
+def load_feature_risk_score_run_outputs() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Load tidy per-event outputs from feature_risk_score_coxph.py across schemes."""
+    univariate_frames: list[pd.DataFrame] = []
+    beta_frames: list[pd.DataFrame] = []
+    missing_univar: list[str] = []
+    missing_betas: list[str] = []
+
+    for scheme in sorted(SCHEME_CONFIG):
+        out_dir = get_risk_score_coxph_dir(scheme)
+        univar_fp = os.path.join(out_dir, UNIVAR_METRICS_FILE)
+        beta_fp = os.path.join(out_dir, JOINT_BETAS_FILE)
+
+        if os.path.isfile(univar_fp):
+            cur = pd.read_csv(univar_fp)
+            cur["scheme"] = scheme
+            univariate_frames.append(cur)
+        else:
+            missing_univar.append(univar_fp)
+
+        if os.path.isfile(beta_fp):
+            cur = pd.read_csv(beta_fp)
+            cur["scheme"] = scheme
+            beta_frames.append(cur)
+        else:
+            missing_betas.append(beta_fp)
+
+    if not univariate_frames:
+        raise FileNotFoundError(
+            "No risk-score CoxPH outputs found. Run "
+            "python_scripts/model_evaluation/feature_risk_score_coxph.py first."
+        )
+
+    if missing_univar:
+        warnings.warn(
+            "Missing univariate modality metrics for some schemes:\n  "
+            + "\n  ".join(missing_univar),
+            stacklevel=2,
+        )
+    if missing_betas:
+        warnings.warn(
+            "Missing joint model beta files for some schemes:\n  "
+            + "\n  ".join(missing_betas),
+            stacklevel=2,
+        )
+
+    univar_df = pd.concat(univariate_frames, ignore_index=True)
+    beta_df = pd.concat(beta_frames, ignore_index=True) if beta_frames else pd.DataFrame()
+    return prepare_univariate_metrics(univar_df), beta_df
+
+
+def prepare_univariate_metrics(univar_df: pd.DataFrame) -> pd.DataFrame:
+    required_cols = {"scheme", "event", "modality", "mean_c_index"}
+    missing_cols = sorted(required_cols - set(univar_df.columns))
+    if missing_cols:
+        raise ValueError(f"Univariate metrics missing required columns: {missing_cols}")
+
+    plot_df = univar_df.copy()
+    if "error" not in plot_df.columns:
+        plot_df["error"] = ""
+
+    plot_df["error"] = plot_df["error"].fillna("").astype(str)
+    plot_df = plot_df[plot_df["modality"].isin(MODALITIES)].copy()
+    plot_df = plot_df.drop_duplicates(subset=["scheme", "event", "modality"], keep="last")
+    plot_df["is_valid"] = plot_df["error"].eq("") & plot_df["mean_c_index"].notna()
+    plot_df["is_significant"] = plot_df["is_valid"] & (plot_df["mean_c_index"] > CINDEX_SIG_THRESHOLD)
+    return plot_df
+
+
+def build_metric_matrix(univar_df: pd.DataFrame, value_col: str) -> pd.DataFrame:
+    matrix = (univar_df
+              .pivot(index=["scheme", "event"], columns="modality", values=value_col)
+              .reset_index())
+    matrix.columns.name = None
+    return matrix
 
 
 # ---------------------------------------------------------------------------
 # Panel A — stacked bar: significant endpoints per modality × scheme
 # ---------------------------------------------------------------------------
 
-def draw_panel_a(ax: plt.Axes, df: pd.DataFrame) -> None:
+def draw_panel_a(ax: plt.Axes, univar_df: pd.DataFrame) -> None:
     scheme_order = ["death_met", "icd3_post", "icd4_post", "phecode_post"]
     records = []
     for mod in MODALITIES:
         for scheme in scheme_order:
-            sub = df[df["scheme"] == scheme]
-            n_sig = is_significant(sub, mod).sum()
+            sub = univar_df[(univar_df["scheme"] == scheme) & (univar_df["modality"] == mod)]
+            n_sig = int(sub["is_significant"].sum())
             records.append({
                 "modality": MODALITY_DISPLAY[mod],
                 "scheme": SCHEME_DISPLAY[scheme],
@@ -212,19 +231,24 @@ def draw_panel_a(ax: plt.Axes, df: pd.DataFrame) -> None:
 # Panel B — pairwise overlap heatmap
 # ---------------------------------------------------------------------------
 
-def draw_panel_b(ax: plt.Axes, df: pd.DataFrame) -> None:
+def draw_panel_b(ax: plt.Axes, univar_df: pd.DataFrame) -> None:
     labels = [MODALITY_DISPLAY[m] for m in MODALITIES]
     n = len(labels)
     matrix = np.zeros((n, n))
 
-    sig_masks = {MODALITY_DISPLAY[m]: is_significant(df, m) for m in MODALITIES}
+    sig_sets = {}
+    for modality in MODALITIES:
+        sig_events = univar_df[
+            (univar_df["modality"] == modality) & univar_df["is_significant"]
+        ][["scheme", "event"]]
+        sig_sets[MODALITY_DISPLAY[modality]] = set(sig_events.itertuples(index=False, name=None))
 
     for i, li in enumerate(labels):
         for j, lj in enumerate(labels):
             if i == j:
-                matrix[i, j] = sig_masks[li].sum()
+                matrix[i, j] = len(sig_sets[li])
             else:
-                matrix[i, j] = (sig_masks[li] & sig_masks[lj]).sum()
+                matrix[i, j] = len(sig_sets[li] & sig_sets[lj])
 
     # Show only lower triangle + diagonal
     mask = np.triu(np.ones_like(matrix, dtype=bool), k=1)
@@ -251,26 +275,43 @@ def draw_panel_b(ax: plt.Axes, df: pd.DataFrame) -> None:
 # Panel C — text (Y) vs. best competitor (X) scatter
 # ---------------------------------------------------------------------------
 
-def draw_panel_c(ax: plt.Axes, df: pd.DataFrame) -> None:
-    text_col = get_cindex_col("text")
-    competitor_cols = {m: get_cindex_col(m) for m in MODALITIES if m != "text"
-                       and get_cindex_col(m) in df.columns}
+def draw_panel_c(ax: plt.Axes, univar_df: pd.DataFrame) -> None:
+    cindex_df = build_metric_matrix(univar_df, "mean_c_index")
+    sig_df = build_metric_matrix(univar_df, "is_significant")
 
-    sig_text = is_significant(df, "text")
-    plot_df = df[sig_text].copy()
+    if "text" not in cindex_df.columns or "text" not in sig_df.columns:
+        ax.text(0.5, 0.5, "No text modality results found",
+                ha="center", va="center", transform=ax.transAxes)
+        return
+
+    competitor_cols = [m for m in MODALITIES if m != "text" and m in cindex_df.columns]
+    if not competitor_cols:
+        ax.text(0.5, 0.5, "No competing modality results found",
+                ha="center", va="center", transform=ax.transAxes)
+        return
+
+    plot_df = cindex_df.merge(
+        sig_df[["scheme", "event", "text"]].rename(columns={"text": "text_is_significant"}),
+        on=["scheme", "event"],
+        how="left",
+    )
+    plot_df = plot_df[plot_df["text_is_significant"].fillna(False)].copy()
     if plot_df.empty:
         ax.text(0.5, 0.5, "No significant text endpoints", ha="center", va="center",
                 transform=ax.transAxes)
         return
 
     # Best competitor per endpoint
-    comp_matrix = plot_df[[v for v in competitor_cols.values()]].copy()
-    comp_matrix.columns = list(competitor_cols.keys())
+    comp_matrix = plot_df[competitor_cols].copy()
     plot_df["best_comp_cindex"] = comp_matrix.max(axis=1)
     plot_df["best_comp_modality"] = comp_matrix.idxmax(axis=1).map(MODALITY_DISPLAY)
-    plot_df["text_cindex"] = plot_df[text_col]
+    plot_df["text_cindex"] = plot_df["text"]
 
     plot_df = plot_df.dropna(subset=["text_cindex", "best_comp_cindex"])
+    if plot_df.empty:
+        ax.text(0.5, 0.5, "No endpoints with comparable modality results",
+                ha="center", va="center", transform=ax.transAxes)
+        return
 
     for mod_key in [m for m in MODALITIES if m != "text"]:
         mod_display = MODALITY_DISPLAY[mod_key]
@@ -307,115 +348,40 @@ def draw_panel_c(ax: plt.Axes, df: pd.DataFrame) -> None:
 # Panel D — joint Cox model log(HR) violins
 # ---------------------------------------------------------------------------
 
-def fit_joint_cox_for_event(scheme: str, event: str,
-                             min_events: int = 15) -> dict[str, float] | None:
-    """Fit a joint CoxPH with all 6 modality risk scores as predictors.
-    Returns dict of {modality: log_HR} or None if insufficient data.
-    """
-    # Load survival data
-    try:
-        surv = load_survival_data(scheme, event)
-    except Exception:
-        return None
-
-    if surv["event_indicator"].sum() < min_events:
-        return None
-
-    # Load all 6 risk scores
-    merged = surv.copy()
-    for mod in MODALITIES:
-        rs = load_risk_scores(scheme, event, mod)
-        if rs is None:
-            return None  # require all modalities
-        rs = rs.rename(columns={c: f"{mod}_risk_score"
-                                 for c in rs.columns if c != "DFCI_MRN"})
-        merged = merged.merge(rs[["DFCI_MRN", f"{mod}_risk_score"]], on="DFCI_MRN", how="inner")
-
-    merged = merged.dropna()
-    if len(merged) < 50 or merged["event_indicator"].sum() < min_events:
-        return None
-
-    # Standardize risk scores
-    score_cols = [f"{m}_risk_score" for m in MODALITIES]
-    merged[score_cols] = (merged[score_cols] - merged[score_cols].mean()) / (merged[score_cols].std() + 1e-8)
-
-    fit_df = merged[["time", "event_indicator"] + score_cols].copy()
-    fit_df["event_indicator"] = fit_df["event_indicator"].astype(int)
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", ConvergenceWarning)
-        try:
-            cph = CoxPHFitter(penalizer=0.1)
-            cph.fit(fit_df, duration_col="time", event_col="event_indicator")
-            coefs = {}
-            for mod in MODALITIES:
-                col = f"{mod}_risk_score"
-                if col in cph.params_.index:
-                    coefs[MODALITY_DISPLAY[mod]] = float(cph.params_[col])
-            return coefs if coefs else None
-        except Exception:
-            return None
-
-
-def compute_or_load_joint_cox_coefs(df: pd.DataFrame,
-                                    cache_path: str = JOINT_COX_CACHE,
-                                    max_events: int = MAX_JOINT_COX_EVENTS) -> pd.DataFrame:
-    """Compute joint Cox coefficients for all events, using cache if available."""
-    if os.path.isfile(cache_path):
-        print(f"Loading joint Cox coefficients from cache: {cache_path}")
-        return pd.read_csv(cache_path)
-
-    print("Computing joint Cox model coefficients (this may take a while)...")
-    records = []
-    events_to_run = df.head(max_events)
-
-    for _, row in events_to_run.iterrows():
-        scheme, event = row["scheme"], row["event"]
-        coefs = fit_joint_cox_for_event(scheme, event)
-        if coefs:
-            coefs["scheme"] = scheme
-            coefs["event"] = event
-            records.append(coefs)
-
-    if not records:
-        return pd.DataFrame()
-
-    coef_df = pd.DataFrame(records)
-    coef_df.to_csv(cache_path, index=False)
-    print(f"Saved joint Cox coefficients → {cache_path}")
-    return coef_df
-
-
-def draw_panel_d(ax: plt.Axes, coef_df: pd.DataFrame) -> None:
-    if coef_df.empty:
-        ax.text(0.5, 0.5, "Joint Cox coefficients not available",
+def draw_panel_d(ax: plt.Axes, beta_df: pd.DataFrame) -> None:
+    if beta_df.empty:
+        ax.text(0.5, 0.5, "Joint Cox beta outputs not available",
                 ha="center", va="center", transform=ax.transAxes)
         return
 
-    mod_display_order = [MODALITY_DISPLAY[m] for m in MODALITIES]
-    available_mods = [m for m in mod_display_order if m in coef_df.columns]
+    plot_df = beta_df[beta_df["modality"].isin(MODALITIES)].copy()
+    if plot_df.empty:
+        ax.text(0.5, 0.5, "No supported joint-model betas found",
+                ha="center", va="center", transform=ax.transAxes)
+        return
+    plot_df["Modality"] = plot_df["modality"].map(MODALITY_DISPLAY)
 
-    long_df = coef_df[available_mods].melt(var_name="Modality", value_name="log_HR")
-    long_df = long_df.dropna(subset=["log_HR"])
+    mod_display_order = [MODALITY_DISPLAY[m] for m in MODALITIES]
+    available_mods = [m for m in mod_display_order if m in plot_df["Modality"].dropna().unique()]
 
     palette = {m: MODALITY_COLORS[m] for m in available_mods}
 
-    sns.violinplot(data=long_df, x="Modality", y="log_HR",
+    sns.violinplot(data=plot_df, x="Modality", y="beta",
                    order=available_mods, palette=palette,
                    inner="box", cut=0, linewidth=0.8, ax=ax)
-    sns.stripplot(data=long_df, x="Modality", y="log_HR",
+    sns.stripplot(data=plot_df, x="Modality", y="beta",
                   order=available_mods, color="#333", alpha=0.12,
                   jitter=True, size=2.0, ax=ax)
 
     ax.axhline(0, color="#444", linestyle="--", lw=1.0)
     ax.set_xlabel("")
     ax.set_ylabel("log(HR) from joint Cox model")
-    ax.set_title("Marginal Effect of Each Modality\n(Joint Cox with all risk scores)")
+    ax.set_title("Marginal Effect of Each Modality\n(from risk-score CoxPH joint model)")
     ax.set_xticklabels(available_mods, rotation=20, ha="right")
 
     # Wilcoxon test vs 0 for each modality
     for i, mod in enumerate(available_mods):
-        vals = coef_df[mod].dropna()
+        vals = plot_df.loc[plot_df["Modality"] == mod, "beta"].dropna()
         if len(vals) < 5:
             continue
         try:
@@ -437,10 +403,7 @@ def draw_panel_d(ax: plt.Axes, coef_df: pd.DataFrame) -> None:
 def main():
     set_style()
 
-    df = load_compiled_metrics()
-
-    # Panel D: compute or load joint Cox coefficients
-    coef_df = compute_or_load_joint_cox_coefs(df)
+    univar_df, beta_df = load_feature_risk_score_run_outputs()
 
     fig = plt.figure(figsize=(15, 13))
     ax_a = fig.add_axes([0.07, 0.55, 0.38, 0.38])
@@ -448,24 +411,25 @@ def main():
     ax_c = fig.add_axes([0.07, 0.07, 0.38, 0.38])
     ax_d = fig.add_axes([0.56, 0.07, 0.38, 0.38])
 
-    draw_panel_a(ax_a, df)
-    draw_panel_b(ax_b, df)
-    draw_panel_c(ax_c, df)
-    draw_panel_d(ax_d, coef_df)
+    draw_panel_a(ax_a, univar_df)
+    draw_panel_b(ax_b, univar_df)
+    draw_panel_c(ax_c, univar_df)
+    draw_panel_d(ax_d, beta_df)
 
     for label, ax in {"A": ax_a, "B": ax_b, "C": ax_c, "D": ax_d}.items():
         ax.text(-0.12, 1.04, label, transform=ax.transAxes,
                 fontsize=14, fontweight="bold", va="top", ha="right")
 
     caption = (
-        "Figure 3. Feature class contributions to survival prediction. "
+        "Figure 3. Feature class contributions to survival prediction from the "
+        "held-out modality risk-score CoxPH evaluation run. "
         "(A) Number of significantly predicted endpoints per modality, stratified by outcome scheme. "
         "(B) Pairwise overlap in significantly predicted endpoints between modalities; "
         "diagonal = total significant per modality. "
         "(C) Text C-index (y-axis) vs. best-competing-modality C-index for endpoints where text "
         "is significant; points above diagonal indicate text outperforms all other modalities. "
-        "(D) Distribution of log(HR) coefficients from a joint Cox model including all six "
-        "modality-specific risk scores; asterisks indicate deviation from zero (Wilcoxon, "
+        "(D) Distribution of log(HR) coefficients from the joint Cox model over the "
+        "available modality-specific risk scores; asterisks indicate deviation from zero (Wilcoxon, "
         "***p<0.001, **p<0.01, *p<0.05)."
     )
     fig.text(0.5, 0.005, caption, ha="center", va="bottom", fontsize=7.5, style="italic",
