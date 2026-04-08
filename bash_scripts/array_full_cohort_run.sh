@@ -70,7 +70,18 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
     continue
   fi
 
-  IFS=$'\t' read -r SCHEME EVENT <<< "${TASK_LINE}"
+  IFS=$'\t' read -r RAW_SCHEME EVENT EXTRA_FIELD <<< "${TASK_LINE}"
+  if [[ -n "${EXTRA_FIELD:-}" ]]; then
+    echo "Unsupported manifest row ${LINE_NUM}: expected 2 tab-separated fields, got more"
+    exit 1
+  fi
+
+  case "$RAW_SCHEME" in
+    icd3) SCHEME="icd3_post" ;;
+    icd4) SCHEME="icd4_post" ;;
+    phecode) SCHEME="phecode_post" ;;
+    *) SCHEME="$RAW_SCHEME" ;;
+  esac
 
   case "$SCHEME" in
     icd3_post) SCHEME_RESULTS_DIR="level_3_ICD_post_results" ;;

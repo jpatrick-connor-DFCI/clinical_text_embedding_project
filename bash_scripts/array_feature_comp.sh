@@ -70,7 +70,18 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
     continue
   fi
 
-  IFS=$'\t' read -r SCHEME EVENT <<< "${TASK_LINE}"
+  IFS=$'\t' read -r RAW_SCHEME EVENT MANIFEST_MODALITY EXTRA_FIELD <<< "${TASK_LINE}"
+  if [[ -n "${EXTRA_FIELD:-}" ]]; then
+    echo "Unsupported manifest row ${LINE_NUM}: expected 2 or 3 tab-separated fields, got more"
+    exit 1
+  fi
+
+  case "$RAW_SCHEME" in
+    icd3) SCHEME="icd3_post" ;;
+    icd4) SCHEME="icd4_post" ;;
+    phecode) SCHEME="phecode_post" ;;
+    *) SCHEME="$RAW_SCHEME" ;;
+  esac
 
   case "$SCHEME" in
     icd3_post) SCHEME_RESULTS_DIR="level_3_ICD_post_results" ;;
@@ -84,8 +95,22 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
   esac
   mkdir -p "$RESULTS_ROOT/$SCHEME_RESULTS_DIR/feature_comps/$EVENT"
 
-  echo "Running row ${LINE_NUM}: scheme=${SCHEME}, event=${EVENT}"
-  for MODALITY in stage treatment labs somatic prs text; do
+  if [[ -n "${MANIFEST_MODALITY:-}" ]]; then
+    case "$MANIFEST_MODALITY" in
+      stage|treatment|labs|somatic|prs|text)
+        MODALITIES=("$MANIFEST_MODALITY")
+        ;;
+      *)
+        echo "Unsupported modality in manifest row ${LINE_NUM}: $MANIFEST_MODALITY"
+        exit 1
+        ;;
+    esac
+  else
+    MODALITIES=(stage treatment labs somatic prs text)
+  fi
+
+  echo "Running row ${LINE_NUM}: scheme=${SCHEME}, event=${EVENT}, modalities=${MODALITIES[*]}"
+  for MODALITY in "${MODALITIES[@]}"; do
     python "$PROJECT_ROOT/python_scripts/model_training/run_feature_comp_task.py" \
       --scheme "$SCHEME" \
       --event "$EVENT" \

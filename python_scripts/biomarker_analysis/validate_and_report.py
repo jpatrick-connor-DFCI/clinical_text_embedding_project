@@ -15,10 +15,38 @@ from docx.shared import Pt
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
+from biomarker_common import DATA_PATH, get_mutation_type
+
 # ============================================================
 # Paths
 # ============================================================
-COMPILED_DIR = '/Users/connorpa/Documents/BIG PhD/Gusev Lab/Projects/Clinical Embeddings/compiled_results/'
+DEFAULT_COMPILED_DIR = os.path.join(DATA_PATH, 'biomarker_analysis', 'compiled_results')
+LEGACY_COMPILED_DIR = '/Users/connorpa/Documents/BIG PhD/Gusev Lab/Projects/Clinical Embeddings/compiled_results/'
+
+
+def _resolve_compiled_dir():
+    env_dir = os.getenv('COMPILED_DIR')
+    if env_dir:
+        return env_dir
+
+    preferred = DEFAULT_COMPILED_DIR
+    legacy_inputs = [
+        os.path.join(LEGACY_COMPILED_DIR, 'all_findings_with_validation.csv'),
+        os.path.join(LEGACY_COMPILED_DIR, 'track1_all_significant_hits.csv'),
+        os.path.join(LEGACY_COMPILED_DIR, 'track2_all_significant_hits.csv'),
+    ]
+    preferred_inputs = [
+        os.path.join(preferred, 'all_findings_with_validation.csv'),
+        os.path.join(preferred, 'track1_all_significant_hits.csv'),
+        os.path.join(preferred, 'track2_all_significant_hits.csv'),
+    ]
+
+    if not any(os.path.exists(path) for path in preferred_inputs) and any(os.path.exists(path) for path in legacy_inputs):
+        return LEGACY_COMPILED_DIR
+    return preferred
+
+
+COMPILED_DIR = _resolve_compiled_dir()
 FINDINGS_CSV = os.path.join(COMPILED_DIR, 'all_findings_with_validation.csv')
 REPORT_DOCX = os.path.join(COMPILED_DIR, 'ICI_Biomarker_Pipeline_Report.docx')
 
@@ -685,11 +713,76 @@ def _add_docx_table(doc, df, title=None, font_size=8):
                     run.font.size = Pt(font_size)
 
 
+def _bootstrap_findings_df():
+    """Rebuild all_findings_with_validation.csv from compiled Track 1/2 outputs."""
+    track_specs = [
+        (1, 'track1_all_significant_hits.csv'),
+        (2, 'track2_all_significant_hits.csv'),
+    ]
+    frames = []
+    missing = []
+
+    for track, filename in track_specs:
+        path = os.path.join(COMPILED_DIR, filename)
+        if not os.path.isfile(path):
+            missing.append(path)
+            continue
+
+        df = pd.read_csv(path)
+        required = {'marker', 'cancer_type', 'cohort', 'ps_model', 'weight_type'}
+        missing_cols = sorted(required - set(df.columns))
+        if missing_cols:
+            raise ValueError(f"{filename} is missing required columns: {missing_cols}")
+
+        cur = df.copy()
+        cur['track'] = track
+        cur['mutation_type'] = cur['marker'].map(get_mutation_type)
+        cur['validation_level'] = 'Unassessed'
+        cur['validation_notes'] = ''
+        frames.append(cur)
+
+    if missing:
+        raise FileNotFoundError(
+            "Could not bootstrap all_findings_with_validation.csv because compiled hit files are missing:\n"
+            + "\n".join(missing)
+        )
+
+    combined = pd.concat(frames, ignore_index=True, sort=False)
+    return combined
+
+
+def _load_or_bootstrap_findings_df():
+    os.makedirs(COMPILED_DIR, exist_ok=True)
+
+    if os.path.isfile(FINDINGS_CSV):
+        print(f"Loading {FINDINGS_CSV}")
+        return pd.read_csv(FINDINGS_CSV)
+
+    print(f"{FINDINGS_CSV} not found; rebuilding from compiled Track 1/2 outputs in {COMPILED_DIR}")
+    df = _bootstrap_findings_df()
+    df.to_csv(FINDINGS_CSV, index=False)
+    print(f"  Bootstrapped findings CSV with {len(df)} rows -> {FINDINGS_CSV}")
+    return df
+
+
+def _load_or_init_report_doc():
+    if os.path.isfile(REPORT_DOCX):
+        return Document(REPORT_DOCX)
+
+    doc = Document()
+    doc.add_heading('ICI Biomarker Pipeline Report', level=1)
+    doc.add_paragraph(
+        'This report was initialized by validate_and_report.py because an existing '
+        'report document was not found. Summary tables below are generated from the '
+        'compiled biomarker-analysis outputs in this repository.'
+    )
+    return doc
+
+
 # ============================================================
 # Main
 # ============================================================
-print(f"Loading {FINDINGS_CSV}")
-df = pd.read_csv(FINDINGS_CSV)
+df = _load_or_bootstrap_findings_df()
 
 # Fix any NaN validation_level from previous runs that wrote 'None' (parsed as NaN by pandas)
 nan_mask = df['validation_level'].isna() & df['validation_notes'].notna()
@@ -736,7 +829,7 @@ print(f"\n{'='*60}")
 print("Updating Word document")
 print(f"{'='*60}")
 
-doc = Document(REPORT_DOCX)
+doc = _load_or_init_report_doc()
 
 # --- Remove any previously appended Section 3 ---
 # Find where "3. Updated Validation Summary" starts and truncate from there

@@ -88,7 +88,7 @@ Trains penalized Cox proportional hazards models at scale across all endpoint sc
 
 ### Logic and design decisions
 
-**Manifest generation** (`build_slurm_manifests.py`): Enumerates all valid (scheme, event) and (scheme, event, modality) combinations across 7 endpoint schemes (icd3, icd4, phecode, death_met, plus post-treatment variants). Filters to events with ≥50 positive cases and ≥50 censored observations. Supports `--skip-completed` to resume interrupted runs. Outputs TSV manifests consumed by SLURM array scripts.
+**Manifest generation** (`build_slurm_manifests.py`): Enumerates all valid (scheme, event) combinations across the active endpoint schemes (`icd3_post`, `icd4_post`, `phecode_post`, `death_met`). Filters to events with ≥50 positive cases and ≥50 censored observations. Supports `--skip-completed` to resume interrupted runs. Outputs TSV manifests consumed by SLURM array scripts.
 
 **Full-cohort training** (`run_full_cohort_event.py`): For each endpoint, trains two models:
 1. **Text model**: Base covariates (age, sex) + cancer type dummies (unpenalized) + text embeddings (penalized via elastic net).
@@ -101,18 +101,18 @@ Uses 80/20 stratified train+val/test split. 5-fold stratified CV over a 25-point
 **Shared utilities** (`slurm_array_utils.py`): Centralizes dataset loading, event extraction, feature column identification, modality configuration (which columns, PCA settings), output path management, and Cox input validation (constant-column removal, event/censoring checks).
 
 **SLURM orchestration** (`bash_scripts/`):
-- `submit_full_cohort_array.sh` / `array_full_cohort_run.sh`: Submit and execute full-cohort training jobs. Each SLURM array task processes multiple manifest rows (configurable `ROWS_PER_TASK`). Thread pinning (`OMP_NUM_THREADS=1`) prevents oversubscription with joblib parallelism.
-- `submit_feature_comp_array.sh` / `array_feature_comp.sh`: Same pattern for feature-comparison tasks.
+- `launch_full_cohort.sh` / `array_full_cohort_run.sh`: Submit and execute full-cohort training jobs. Each SLURM array task processes multiple manifest rows (configurable `ROWS_PER_TASK`). Thread pinning (`OMP_NUM_THREADS=1`) prevents oversubscription with joblib parallelism.
+- `launch_feature_comp.sh` / `array_feature_comp.sh`: Same pattern for feature-comparison tasks.
 
 ### Running
 
 ```bash
 # 1. Generate manifests
-python python_scripts/model_training/build_slurm_manifests.py --schemes icd3 icd4 phecode death_met
+python python_scripts/model_training/build_slurm_manifests.py --schemes icd3_post icd4_post phecode_post death_met
 
 # 2. Submit SLURM arrays
-bash bash_scripts/submit_full_cohort_array.sh
-bash bash_scripts/submit_feature_comp_array.sh
+bash bash_scripts/launch_full_cohort.sh
+bash bash_scripts/launch_feature_comp.sh
 ```
 
 ---
@@ -147,11 +147,11 @@ The pipeline addresses confounding in observational ICI data through a multi-spe
 
 **Line-matched cohort construction** (`build_line_matched_cohort.py`): ICI receipt is confounded by treatment line (later lines more likely to include ICI). Patients are matched exactly on (cancer_type, line_category) where line is binned as 1/2/3/4+. For ICI patients, line = earliest line with ICI; for never-ICI controls, line = max line of therapy reached. Uses 1:1 matching (one control per case, without replacement). This ensures treated and control groups have similar disease severity and treatment history.
 
-**Propensity score generation** (`ICI_LRs.py`): Trains logistic regression models predicting ICI receipt within each matched cohort. Two model specifications:
-1. **Embeddings-only**: Text embeddings capture clinical context (disease severity, comorbidities, physician assessment) that drives treatment selection.
-2. **All-covariates**: Embeddings + demographics + cancer type + panel version + line dummies.
+**Propensity score generation** (`ICI_train_propensity.py`): Trains logistic regression models predicting ICI receipt within each matched cohort. Two model specifications are used in the current code:
+1. **`covariates_only`**: demographics + cancer type (+ line dummies for cohort 2).
+2. **`covariates_plus_embeddings`**: the same covariates plus clinical text embeddings.
 
-Uses 5-fold stratified CV to produce held-out propensity scores, avoiding overfitting. Tests multiple buffer windows (0, 15, 30, 45 days before treatment) to exclude notes contaminated by treatment planning; 30-day buffer used for downstream analysis.
+Uses 5-fold stratified CV to produce held-out propensity scores, avoiding overfitting. The current script is configured for the 30-day buffer used downstream.
 
 **IPTW dataset generation** (`generate_IPTW_df.py`): Merges propensity scores with genomic markers (somatic mutations: SNV, AMP, DEL, SV, fusions), cancer type, panel version, and line category dummies. Produces one analysis-ready CSV per specification.
 
@@ -181,20 +181,19 @@ python python_scripts/data_preprocessing/generate_all_non_text_covariates.py
 python python_scripts/biomarker_analysis/build_line_matched_cohort.py
 
 # Step 3: Train propensity models
-python python_scripts/biomarker_analysis/ICI_LRs.py
+python python_scripts/biomarker_analysis/ICI_train_propensity.py
 
-# Step 4: Generate IPTW datasets (2 PS models)
-for p in embeddings_only all_covariates; do
-  python python_scripts/biomarker_analysis/generate_IPTW_df.py --ps_model $p
-done
+# Step 4: Generate IPTW datasets for both PS models
+python python_scripts/biomarker_analysis/generate_IPTW_df.py
 
-# Step 5: Run Cox models (2 PS models)
-for p in embeddings_only all_covariates; do
-  python python_scripts/biomarker_analysis/run_IPTW_analysis.py --ps_model $p
-done
+# Step 5: Run Cox models across cohorts and PS models
+python python_scripts/biomarker_analysis/run_IPTW_analysis.py
 
 # Step 6: Compile results
-python python_scripts/biomarker_analysis/compile_IPTW_results.py --output_dir /path/to/compiled/
+python python_scripts/biomarker_analysis/compile_IPTW_results.py
+
+# Step 7: Build or update the validated findings report
+python python_scripts/biomarker_analysis/validate_and_report.py
 ```
 
 ---
