@@ -42,6 +42,11 @@ COMPILED_DIR = os.path.join(RESULTS_PATH, "compiled_all_schemes/")
 OUTPUT_DIR = os.path.join(DATA_PATH, "figures/manuscript/")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+# Generate one separate figure per evidence-backed prevalence filter.
+# compile_all_scheme_results.ipynb defines thresholds [0.01, 0.025, 0.05]
+# and writes labels via _threshold_to_label(...) -> 1pct, 2_5pct, 5pct.
+PREVALENCE_FILTERS_TO_PLOT = [None, "1pct", "2_5pct", "5pct"]
+
 SCHEME_CONFIG = {
     "icd3_post":    {"embedding_file": "level_3_ICD_post_embedding_prediction_df.csv",
                      "results_dir":    "level_3_ICD_post_results"},
@@ -87,6 +92,24 @@ EXAMPLE_EVENTS = [
 HEATMAP_SIG_CINDEX = 0.65
 
 
+def prevalence_filter_to_suffix(prevalence_filter: str | None) -> str:
+    return "unfiltered" if prevalence_filter in (None, "") else prevalence_filter
+
+
+def prevalence_filter_to_label(prevalence_filter: str | None) -> str:
+    return "unfiltered event set" if prevalence_filter in (None, "") else f"{prevalence_filter} event set"
+
+
+def get_compiled_metrics_path(prevalence_filter: str | None) -> str:
+    if prevalence_filter in (None, ""):
+        path = os.path.join(COMPILED_DIR, "all_schemes_compiled_metrics.csv")
+    else:
+        path = os.path.join(COMPILED_DIR, f"all_schemes_compiled_metrics_{prevalence_filter}.csv")
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"Compiled metrics not found for filter {prevalence_filter!r}: {path}")
+    return path
+
+
 # ---------------------------------------------------------------------------
 # Style
 # ---------------------------------------------------------------------------
@@ -113,13 +136,18 @@ def set_style():
 # Data loading helpers
 # ---------------------------------------------------------------------------
 
-def load_compiled_metrics(prevalence_filter: str = "1pct") -> pd.DataFrame:
+def load_compiled_metrics(prevalence_filter: str | None = "1pct", allow_fallback: bool = True) -> pd.DataFrame:
     """Load compiled cross-scheme metrics. Falls back to unfiltered if filtered file missing."""
-    filtered = os.path.join(COMPILED_DIR, f"all_schemes_compiled_metrics_{prevalence_filter}.csv")
-    base = os.path.join(COMPILED_DIR, "all_schemes_compiled_metrics.csv")
-    path = filtered if os.path.isfile(filtered) else base
-    if not os.path.isfile(path):
-        raise FileNotFoundError(f"Compiled metrics not found: {path}")
+    if prevalence_filter in (None, ""):
+        path = get_compiled_metrics_path(None)
+    else:
+        filtered = os.path.join(COMPILED_DIR, f"all_schemes_compiled_metrics_{prevalence_filter}.csv")
+        base = os.path.join(COMPILED_DIR, "all_schemes_compiled_metrics.csv")
+        path = filtered if os.path.isfile(filtered) else base
+        if not allow_fallback and path != filtered:
+            raise FileNotFoundError(f"Compiled metrics not found for filter {prevalence_filter!r}: {filtered}")
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"Compiled metrics not found: {path}")
     print(f"Loading compiled metrics from: {path}")
     return pd.read_csv(path)
 
@@ -455,8 +483,21 @@ def draw_km_quartiles(ax: plt.Axes, scheme: str, event: str,
                         fontsize=6, ha="center", va="top", color=color)
 
 
-def draw_panel_d(axes: list[plt.Axes], example_events: list[tuple]) -> None:
+def draw_panel_d(
+    axes: list[plt.Axes],
+    example_events: list[tuple],
+    available_events: set[tuple[str, str]] | None = None,
+    prevalence_label: str | None = None,
+) -> None:
     for ax, (scheme, event, name) in zip(axes, example_events):
+        if available_events is not None and (scheme, event) not in available_events:
+            reason = "Not in filtered event set"
+            if prevalence_label is not None:
+                reason = f"Excluded from {prevalence_label}"
+            ax.text(0.5, 0.5, f"{name}\n{reason}",
+                    ha="center", va="center", transform=ax.transAxes, fontsize=8)
+            ax.set_axis_off()
+            continue
         draw_km_quartiles(ax, scheme, event, name)
 
 
@@ -467,60 +508,78 @@ def draw_panel_d(axes: list[plt.Axes], example_events: list[tuple]) -> None:
 def main():
     set_style()
 
-    # Load compiled metrics
-    df = load_compiled_metrics()
-
     # Load cancer type data for panel C
     # Use all MRNs from any scheme (use death_met cohort as proxy)
     print("Loading cancer type data for panel C...")
     cohort_mrns = load_embedding_prediction_df("death_met", usecols=["DFCI_MRN"])["DFCI_MRN"]
     cancer_type_df = load_cancer_types(cohort_mrns)
+    generated = 0
 
-    print(f"Building per-cancer-type C-index heatmap (top {TOP_N_EVENTS} events × top {TOP_M_CANCER_TYPES} types)...")
-    heatmap_df, _ = build_heatmap_matrix(df, cancer_type_df, top_n=TOP_N_EVENTS, top_m=TOP_M_CANCER_TYPES)
+    for prevalence_filter in PREVALENCE_FILTERS_TO_PLOT:
+        try:
+            df = load_compiled_metrics(prevalence_filter, allow_fallback=False)
+        except FileNotFoundError as exc:
+            warnings.warn(str(exc), stacklevel=2)
+            continue
 
-    # Build figure
-    fig = plt.figure(figsize=(15, 14))
+        prevalence_label = prevalence_filter_to_label(prevalence_filter)
+        suffix = prevalence_filter_to_suffix(prevalence_filter)
+        available_events = set(df[["scheme", "event"]].itertuples(index=False, name=None))
 
-    ax_a = fig.add_axes([0.06, 0.56, 0.38, 0.38])
-    ax_b = fig.add_axes([0.56, 0.56, 0.38, 0.38])
-    ax_c = fig.add_axes([0.06, 0.06, 0.38, 0.42])
+        print(
+            "Building per-cancer-type C-index heatmap "
+            f"(top {TOP_N_EVENTS} events × top {TOP_M_CANCER_TYPES} types) for {prevalence_label}..."
+        )
+        heatmap_df, _ = build_heatmap_matrix(df, cancer_type_df, top_n=TOP_N_EVENTS, top_m=TOP_M_CANCER_TYPES)
 
-    # Panel D: 3 KM subplots
-    km_axes = [
-        fig.add_axes([0.54, 0.18, 0.14, 0.30]),
-        fig.add_axes([0.70, 0.18, 0.14, 0.30]),
-        fig.add_axes([0.86, 0.18, 0.14, 0.30]),
-    ]
+        fig = plt.figure(figsize=(15, 14))
 
-    draw_panel_a(ax_a, df)
-    draw_panel_b(ax_b, df)
-    draw_panel_c(ax_c, heatmap_df)
-    draw_panel_d(km_axes, EXAMPLE_EVENTS)
+        ax_a = fig.add_axes([0.06, 0.56, 0.38, 0.38])
+        ax_b = fig.add_axes([0.56, 0.56, 0.38, 0.38])
+        ax_c = fig.add_axes([0.06, 0.06, 0.38, 0.42])
 
-    panel_labels = {"A": ax_a, "B": ax_b, "C": ax_c, "D": km_axes[0]}
-    for label, ax in panel_labels.items():
-        ax.text(-0.12, 1.04, label, transform=ax.transAxes,
-                fontsize=14, fontweight="bold", va="top", ha="right")
+        km_axes = [
+            fig.add_axes([0.54, 0.18, 0.14, 0.30]),
+            fig.add_axes([0.70, 0.18, 0.14, 0.30]),
+            fig.add_axes([0.86, 0.18, 0.14, 0.30]),
+        ]
 
-    caption = (
-        "Figure 2. Text embedding model performance across outcome types. "
-        "(A) Text vs. base model C-index across all endpoints; marker shape = scheme, "
-        "diagonal = equal performance. "
-        "(B) Distribution of C-index improvement (text − base) by outcome scheme. "
-        "(C) Cancer-type-stratified text C-index heatmap for top-performing endpoints; "
-        "gray = insufficient events; * indicates C-index ≥ 0.65. "
-        "(D) Kaplan-Meier survival curves by embedding-derived risk quartile for three "
-        "representative endpoints."
-    )
-    fig.text(0.5, 0.005, caption, ha="center", va="bottom", fontsize=7.5,
-             style="italic",
-             bbox=dict(boxstyle="round,pad=0.3", fc="#f8f8f8", ec="#ddd", alpha=0.8))
+        draw_panel_a(ax_a, df)
+        draw_panel_b(ax_b, df)
+        draw_panel_c(ax_c, heatmap_df)
+        draw_panel_d(km_axes, EXAMPLE_EVENTS, available_events=available_events, prevalence_label=prevalence_label)
 
-    out_stem = os.path.join(OUTPUT_DIR, "figure2_text_results")
-    for ext in ("png", "pdf"):
-        fig.savefig(f"{out_stem}.{ext}", facecolor="white", bbox_inches="tight")
-    print(f"Saved figure 2 → {out_stem}.png/.pdf")
+        panel_labels = {"A": ax_a, "B": ax_b, "C": ax_c, "D": km_axes[0]}
+        for label, ax in panel_labels.items():
+            ax.text(-0.12, 1.04, label, transform=ax.transAxes,
+                    fontsize=14, fontweight="bold", va="top", ha="right")
+
+        fig.text(0.98, 0.975, f"Event set: {prevalence_label}", ha="right", va="top",
+                 fontsize=8, color="#444")
+        caption = (
+            "Figure 2. Text embedding model performance across outcome types. "
+            f"Panels use the {prevalence_label}. "
+            "(A) Text vs. base model C-index across all endpoints; marker shape = scheme, "
+            "diagonal = equal performance. "
+            "(B) Distribution of C-index improvement (text − base) by outcome scheme. "
+            "(C) Cancer-type-stratified text C-index heatmap for top-performing endpoints; "
+            "gray = insufficient events; * indicates C-index ≥ 0.65. "
+            "(D) Kaplan-Meier survival curves by embedding-derived risk quartile for three "
+            "representative endpoints."
+        )
+        fig.text(0.5, 0.005, caption, ha="center", va="bottom", fontsize=7.5,
+                 style="italic",
+                 bbox=dict(boxstyle="round,pad=0.3", fc="#f8f8f8", ec="#ddd", alpha=0.8))
+
+        out_stem = os.path.join(OUTPUT_DIR, f"figure2_text_results_{suffix}")
+        for ext in ("png", "pdf"):
+            fig.savefig(f"{out_stem}.{ext}", facecolor="white", bbox_inches="tight")
+        plt.close(fig)
+        generated += 1
+        print(f"Saved figure 2 ({prevalence_label}) → {out_stem}.png/.pdf")
+
+    if generated == 0:
+        raise FileNotFoundError("No figure2 outputs were generated because no compiled metrics files were found.")
 
 
 if __name__ == "__main__":

@@ -4,11 +4,10 @@ Panels:
   A: Stacked bar — number of significantly predicted endpoints per modality × scheme
   B: Pairwise overlap heatmap between modalities
   C: Scatter — text C-index (Y) vs. best-competing-modality C-index (X)
-  D: Violin — log(HR) coefficients from the joint Cox model over held-out modality risk scores
+  D: Violin — unimodal held-out C-index across endpoints for each modality
 
 Data sources:
-  - Panels A, B, C: risk_score_coxph/univariate_modality_metrics.csv
-  - Panel D: risk_score_coxph/joint_model_betas.csv
+  - Panels A, B, C, D: risk_score_coxph/univariate_modality_metrics.csv
 
 These files are produced by python_scripts/model_evaluation/feature_risk_score_coxph.py.
 """
@@ -31,8 +30,14 @@ from scipy.stats import wilcoxon
 DATA_PATH = "/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/"
 SURV_PATH = os.path.join(DATA_PATH, "time-to-event_analysis/")
 RESULTS_PATH = os.path.join(SURV_PATH, "results/")
+COMPILED_DIR = os.path.join(RESULTS_PATH, "compiled_all_schemes/")
 OUTPUT_DIR = os.path.join(DATA_PATH, "figures/manuscript/")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# Generate one separate figure per evidence-backed prevalence filter.
+# compile_all_scheme_results.ipynb defines thresholds [0.01, 0.025, 0.05]
+# and writes labels via _threshold_to_label(...) -> 1pct, 2_5pct, 5pct.
+PREVALENCE_FILTERS_TO_PLOT = [None, "1pct", "2_5pct", "5pct"]
 
 SCHEME_CONFIG = {
     "icd3_post":    {"embedding_file": "level_3_ICD_post_embedding_prediction_df.csv",
@@ -57,26 +62,42 @@ SCHEME_DISPLAY = {
     "phecode_post": "Phecodes",
 }
 
-MODALITIES = ["text", "stage", "treatment", "labs", "somatic", "prs"]
+MODALITIES = ["text", "stage", "treatment", "somatic", "prs"]
 MODALITY_DISPLAY = {
     "text": "Text", "stage": "Stage", "treatment": "Treatment",
-    "labs": "Labs", "somatic": "Somatic", "prs": "PRS",
+    "somatic": "Somatic", "prs": "PRS",
 }
 MODALITY_COLORS = {
     "Text":      "#1665a2",
     "Stage":     "#718096",
     "Treatment": "#c48f00",
-    "Labs":      "#188977",
     "Somatic":   "#b55852",
     "PRS":       "#7d62a8",
 }
 
 RISK_SCORE_COXPH_DIRNAME = "risk_score_coxph"
 UNIVAR_METRICS_FILE = "univariate_modality_metrics.csv"
-JOINT_BETAS_FILE = "joint_model_betas.csv"
 
 # Significance threshold for the second-stage held-out risk-score CoxPH runs.
 CINDEX_SIG_THRESHOLD = 0.55
+
+
+def prevalence_filter_to_suffix(prevalence_filter: str | None) -> str:
+    return "unfiltered" if prevalence_filter in (None, "") else prevalence_filter
+
+
+def prevalence_filter_to_label(prevalence_filter: str | None) -> str:
+    return "unfiltered event set" if prevalence_filter in (None, "") else f"{prevalence_filter} event set"
+
+
+def get_compiled_metrics_path(prevalence_filter: str | None) -> str:
+    if prevalence_filter in (None, ""):
+        path = os.path.join(COMPILED_DIR, "all_schemes_compiled_metrics.csv")
+    else:
+        path = os.path.join(COMPILED_DIR, f"all_schemes_compiled_metrics_{prevalence_filter}.csv")
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"Compiled metrics not found for filter {prevalence_filter!r}: {path}")
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -103,17 +124,14 @@ def get_risk_score_coxph_dir(scheme: str) -> str:
     return os.path.join(RESULTS_PATH, results_dir, RISK_SCORE_COXPH_DIRNAME)
 
 
-def load_feature_risk_score_run_outputs() -> tuple[pd.DataFrame, pd.DataFrame]:
+def load_feature_risk_score_run_outputs() -> pd.DataFrame:
     """Load tidy per-event outputs from feature_risk_score_coxph.py across schemes."""
     univariate_frames: list[pd.DataFrame] = []
-    beta_frames: list[pd.DataFrame] = []
     missing_univar: list[str] = []
-    missing_betas: list[str] = []
 
     for scheme in sorted(SCHEME_CONFIG):
         out_dir = get_risk_score_coxph_dir(scheme)
         univar_fp = os.path.join(out_dir, UNIVAR_METRICS_FILE)
-        beta_fp = os.path.join(out_dir, JOINT_BETAS_FILE)
 
         if os.path.isfile(univar_fp):
             cur = pd.read_csv(univar_fp)
@@ -121,13 +139,6 @@ def load_feature_risk_score_run_outputs() -> tuple[pd.DataFrame, pd.DataFrame]:
             univariate_frames.append(cur)
         else:
             missing_univar.append(univar_fp)
-
-        if os.path.isfile(beta_fp):
-            cur = pd.read_csv(beta_fp)
-            cur["scheme"] = scheme
-            beta_frames.append(cur)
-        else:
-            missing_betas.append(beta_fp)
 
     if not univariate_frames:
         raise FileNotFoundError(
@@ -141,16 +152,9 @@ def load_feature_risk_score_run_outputs() -> tuple[pd.DataFrame, pd.DataFrame]:
             + "\n  ".join(missing_univar),
             stacklevel=2,
         )
-    if missing_betas:
-        warnings.warn(
-            "Missing joint model beta files for some schemes:\n  "
-            + "\n  ".join(missing_betas),
-            stacklevel=2,
-        )
 
     univar_df = pd.concat(univariate_frames, ignore_index=True)
-    beta_df = pd.concat(beta_frames, ignore_index=True) if beta_frames else pd.DataFrame()
-    return prepare_univariate_metrics(univar_df), beta_df
+    return prepare_univariate_metrics(univar_df)
 
 
 def prepare_univariate_metrics(univar_df: pd.DataFrame) -> pd.DataFrame:
@@ -177,6 +181,27 @@ def build_metric_matrix(univar_df: pd.DataFrame, value_col: str) -> pd.DataFrame
               .reset_index())
     matrix.columns.name = None
     return matrix
+
+
+def load_event_subset(prevalence_filter: str | None) -> set[tuple[str, str]] | None:
+    if prevalence_filter in (None, ""):
+        return None
+    compiled_fp = get_compiled_metrics_path(prevalence_filter)
+    compiled_df = pd.read_csv(compiled_fp, usecols=["scheme", "event"])
+    return set(compiled_df.itertuples(index=False, name=None))
+
+
+def subset_run_outputs(
+    univar_df: pd.DataFrame,
+    event_subset: set[tuple[str, str]] | None,
+) -> pd.DataFrame:
+    if event_subset is None:
+        return univar_df
+
+    univar_sub = univar_df[
+        univar_df[["scheme", "event"]].apply(tuple, axis=1).isin(event_subset)
+    ].copy()
+    return univar_sub
 
 
 # ---------------------------------------------------------------------------
@@ -345,18 +370,22 @@ def draw_panel_c(ax: plt.Axes, univar_df: pd.DataFrame) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Panel D — joint Cox model log(HR) violins
+# Panel D — unimodal held-out C-index violins
 # ---------------------------------------------------------------------------
 
-def draw_panel_d(ax: plt.Axes, beta_df: pd.DataFrame) -> None:
-    if beta_df.empty:
-        ax.text(0.5, 0.5, "Joint Cox beta outputs not available",
+def draw_panel_d(ax: plt.Axes, univar_df: pd.DataFrame) -> None:
+    if univar_df.empty:
+        ax.text(0.5, 0.5, "Univariate modality metrics not available",
                 ha="center", va="center", transform=ax.transAxes)
         return
 
-    plot_df = beta_df[beta_df["modality"].isin(MODALITIES)].copy()
+    plot_df = univar_df[
+        univar_df["modality"].isin(MODALITIES)
+        & univar_df["is_valid"]
+        & univar_df["mean_c_index"].notna()
+    ].copy()
     if plot_df.empty:
-        ax.text(0.5, 0.5, "No supported joint-model betas found",
+        ax.text(0.5, 0.5, "No supported unimodal C-index values found",
                 ha="center", va="center", transform=ax.transAxes)
         return
     plot_df["Modality"] = plot_df["modality"].map(MODALITY_DISPLAY)
@@ -366,30 +395,35 @@ def draw_panel_d(ax: plt.Axes, beta_df: pd.DataFrame) -> None:
 
     palette = {m: MODALITY_COLORS[m] for m in available_mods}
 
-    sns.violinplot(data=plot_df, x="Modality", y="beta",
+    sns.violinplot(data=plot_df, x="Modality", y="mean_c_index",
                    order=available_mods, palette=palette,
                    inner="box", cut=0, linewidth=0.8, ax=ax)
-    sns.stripplot(data=plot_df, x="Modality", y="beta",
+    sns.stripplot(data=plot_df, x="Modality", y="mean_c_index",
                   order=available_mods, color="#333", alpha=0.12,
                   jitter=True, size=2.0, ax=ax)
 
-    ax.axhline(0, color="#444", linestyle="--", lw=1.0)
+    ax.axhline(0.5, color="#444", linestyle="--", lw=1.0)
     ax.set_xlabel("")
-    ax.set_ylabel("log(HR) from joint Cox model")
-    ax.set_title("Marginal Effect of Each Modality\n(from risk-score CoxPH joint model)")
+    ax.set_ylabel("Held-out unimodal C-index")
+    ax.set_title("Held-out Unimodal Performance by Modality")
     ax.set_xticklabels(available_mods, rotation=20, ha="right")
+    y_min = max(0.48, float(plot_df["mean_c_index"].min()) - 0.02)
+    y_max = min(1.0, float(plot_df["mean_c_index"].max()) + 0.03)
+    if y_max <= y_min:
+        y_max = y_min + 0.05
+    ax.set_ylim(y_min, y_max)
 
-    # Wilcoxon test vs 0 for each modality
+    # Wilcoxon test against chance-level discrimination (C-index = 0.5).
     for i, mod in enumerate(available_mods):
-        vals = plot_df.loc[plot_df["Modality"] == mod, "beta"].dropna()
+        vals = plot_df.loc[plot_df["Modality"] == mod, "mean_c_index"].dropna()
         if len(vals) < 5:
             continue
         try:
-            _, p = wilcoxon(vals)
+            _, p = wilcoxon(vals - 0.5, alternative="greater")
         except Exception:
             continue
         stars = "***" if p < 0.001 else ("**" if p < 0.01 else ("*" if p < 0.05 else "ns"))
-        ax.text(i, ax.get_ylim()[1] * 0.97, stars,
+        ax.text(i, y_max - 0.01 * (y_max - y_min), stars,
                 ha="center", va="top", fontsize=8, fontweight="bold")
 
     ax.grid(axis="y", alpha=0.5)
@@ -403,42 +437,62 @@ def draw_panel_d(ax: plt.Axes, beta_df: pd.DataFrame) -> None:
 def main():
     set_style()
 
-    univar_df, beta_df = load_feature_risk_score_run_outputs()
+    univar_df = load_feature_risk_score_run_outputs()
+    generated = 0
 
-    fig = plt.figure(figsize=(15, 13))
-    ax_a = fig.add_axes([0.07, 0.55, 0.38, 0.38])
-    ax_b = fig.add_axes([0.56, 0.55, 0.38, 0.38])
-    ax_c = fig.add_axes([0.07, 0.07, 0.38, 0.38])
-    ax_d = fig.add_axes([0.56, 0.07, 0.38, 0.38])
+    for prevalence_filter in PREVALENCE_FILTERS_TO_PLOT:
+        try:
+            event_subset = load_event_subset(prevalence_filter)
+        except FileNotFoundError as exc:
+            warnings.warn(str(exc), stacklevel=2)
+            continue
 
-    draw_panel_a(ax_a, univar_df)
-    draw_panel_b(ax_b, univar_df)
-    draw_panel_c(ax_c, univar_df)
-    draw_panel_d(ax_d, beta_df)
+        prevalence_label = prevalence_filter_to_label(prevalence_filter)
+        suffix = prevalence_filter_to_suffix(prevalence_filter)
+        univar_sub = subset_run_outputs(univar_df, event_subset)
 
-    for label, ax in {"A": ax_a, "B": ax_b, "C": ax_c, "D": ax_d}.items():
-        ax.text(-0.12, 1.04, label, transform=ax.transAxes,
-                fontsize=14, fontweight="bold", va="top", ha="right")
+        fig = plt.figure(figsize=(15, 13))
+        ax_a = fig.add_axes([0.07, 0.55, 0.38, 0.38])
+        ax_b = fig.add_axes([0.56, 0.55, 0.38, 0.38])
+        ax_c = fig.add_axes([0.07, 0.07, 0.38, 0.38])
+        ax_d = fig.add_axes([0.56, 0.07, 0.38, 0.38])
 
-    caption = (
-        "Figure 3. Feature class contributions to survival prediction from the "
-        "held-out modality risk-score CoxPH evaluation run. "
-        "(A) Number of significantly predicted endpoints per modality, stratified by outcome scheme. "
-        "(B) Pairwise overlap in significantly predicted endpoints between modalities; "
-        "diagonal = total significant per modality. "
-        "(C) Text C-index (y-axis) vs. best-competing-modality C-index for endpoints where text "
-        "is significant; points above diagonal indicate text outperforms all other modalities. "
-        "(D) Distribution of log(HR) coefficients from the joint Cox model over the "
-        "available modality-specific risk scores; asterisks indicate deviation from zero (Wilcoxon, "
-        "***p<0.001, **p<0.01, *p<0.05)."
-    )
-    fig.text(0.5, 0.005, caption, ha="center", va="bottom", fontsize=7.5, style="italic",
-             bbox=dict(boxstyle="round,pad=0.3", fc="#f8f8f8", ec="#ddd", alpha=0.8))
+        draw_panel_a(ax_a, univar_sub)
+        draw_panel_b(ax_b, univar_sub)
+        draw_panel_c(ax_c, univar_sub)
+        draw_panel_d(ax_d, univar_sub)
 
-    out_stem = os.path.join(OUTPUT_DIR, "figure3_feature_comps")
-    for ext in ("png", "pdf"):
-        fig.savefig(f"{out_stem}.{ext}", facecolor="white", bbox_inches="tight")
-    print(f"Saved figure 3 → {out_stem}.png/.pdf")
+        for label, ax in {"A": ax_a, "B": ax_b, "C": ax_c, "D": ax_d}.items():
+            ax.text(-0.12, 1.04, label, transform=ax.transAxes,
+                    fontsize=14, fontweight="bold", va="top", ha="right")
+
+        fig.text(0.98, 0.975, f"Event set: {prevalence_label}", ha="right", va="top",
+                 fontsize=8, color="#444")
+        caption = (
+            "Figure 3. Feature class contributions to survival prediction from the "
+            "held-out modality risk-score CoxPH evaluation run. "
+            f"Panels use the {prevalence_label}. "
+            "(A) Number of significantly predicted endpoints per modality, stratified by outcome scheme. "
+            "(B) Pairwise overlap in significantly predicted endpoints between modalities; "
+            "diagonal = total significant per modality. "
+            "(C) Text C-index (y-axis) vs. best-competing-modality C-index for endpoints where text "
+            "is significant; points above diagonal indicate text outperforms all other modalities. "
+            "(D) Distribution of held-out unimodal C-index values across endpoints for each modality; "
+            "asterisks indicate performance above chance-level discrimination (Wilcoxon vs. 0.5, "
+            "***p<0.001, **p<0.01, *p<0.05)."
+        )
+        fig.text(0.5, 0.005, caption, ha="center", va="bottom", fontsize=7.5, style="italic",
+                 bbox=dict(boxstyle="round,pad=0.3", fc="#f8f8f8", ec="#ddd", alpha=0.8))
+
+        out_stem = os.path.join(OUTPUT_DIR, f"figure3_feature_comps_{suffix}")
+        for ext in ("png", "pdf"):
+            fig.savefig(f"{out_stem}.{ext}", facecolor="white", bbox_inches="tight")
+        plt.close(fig)
+        generated += 1
+        print(f"Saved figure 3 ({prevalence_label}) → {out_stem}.png/.pdf")
+
+    if generated == 0:
+        raise FileNotFoundError("No figure3 outputs were generated because no prevalence-filter event sets were found.")
 
 
 if __name__ == "__main__":
