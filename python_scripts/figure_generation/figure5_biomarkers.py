@@ -568,21 +568,6 @@ def main() -> None:
             ha="right", va="top", fontsize=8, color="#666",
         )
 
-    caption = (
-        "Figure 5. Biomarker discovery workflow summary. "
-        "(A) Propensity-model discrimination for predicting ICI receipt, with inset AUC values by cancer type "
-        "for the preferred model when available. "
-        "(B) Robustness grid across biomarker-analysis specifications; point size scales with support "
-        "(-log10 FDR), blue indicates favorable associations (HR < 1), and red indicates adverse associations (HR > 1). "
-        "(C) Three representative biomarker patterns shown as illustrative survival panels: predictive ICI benefit, "
-        "prognostic effect, and predictive ICI harm. Panel C is intentionally rendered as a publication-style mockup "
-        "rather than a direct Kaplan-Meier export."
-    )
-    fig.text(
-        0.5, 0.015, caption, ha="center", va="bottom", fontsize=7.4, style="italic",
-        bbox=dict(boxstyle="round,pad=0.3", fc="#f8f8f8", ec="#ddd", alpha=0.85),
-    )
-
     out_stem = os.path.join(OUTPUT_DIR, "figure5_biomarkers")
     for ext in ("png", "pdf"):
         fig.savefig(f"{out_stem}.{ext}", facecolor="white", bbox_inches="tight")

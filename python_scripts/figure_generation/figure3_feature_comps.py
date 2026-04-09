@@ -4,10 +4,11 @@ Panels:
   A: Stacked bar — number of significantly predicted endpoints per modality × scheme
   B: Pairwise overlap heatmap between modalities
   C: Scatter — text C-index (Y) vs. best-competing-modality C-index (X)
-  D: Violin — unimodal held-out C-index across endpoints for each modality
+  D: Joint-model log HRs across endpoints for each modality
 
 Data sources:
-  - Panels A, B, C, D: risk_score_coxph/univariate_modality_metrics.csv
+  - Panels A, B, C: risk_score_coxph/univariate_modality_metrics.csv
+  - Panel D: risk_score_coxph/joint_model_betas.csv
 
 These files are produced by python_scripts/model_evaluation/feature_risk_score_coxph.py.
 """
@@ -30,7 +31,6 @@ from figure_generation_utils import (
     prevalence_filter_to_suffix,
     set_manuscript_style,
 )
-from scipy.stats import wilcoxon
 
 SCHEME_CONFIG = {
     "icd3_post":    {"embedding_file": "level_3_ICD_post_embedding_prediction_df.csv",
@@ -70,6 +70,7 @@ MODALITY_COLORS = {
 
 RISK_SCORE_COXPH_DIRNAME = "risk_score_coxph"
 UNIVAR_METRICS_FILE = "univariate_modality_metrics.csv"
+JOINT_BETAS_FILE = "joint_model_betas.csv"
 
 # Significance threshold for the second-stage held-out risk-score CoxPH runs.
 CINDEX_SIG_THRESHOLD = 0.55
@@ -123,6 +124,48 @@ def load_feature_risk_score_run_outputs() -> pd.DataFrame:
 
     univar_df = pd.concat(univariate_frames, ignore_index=True)
     return prepare_univariate_metrics(univar_df)
+
+
+def load_joint_model_betas() -> pd.DataFrame:
+    """Load joint-model beta coefficients across schemes."""
+    beta_frames: list[pd.DataFrame] = []
+    missing_beta: list[str] = []
+
+    for scheme in sorted(SCHEME_CONFIG):
+        out_dir = get_risk_score_coxph_dir(scheme)
+        beta_fp = os.path.join(out_dir, JOINT_BETAS_FILE)
+
+        if os.path.isfile(beta_fp):
+            cur = pd.read_csv(beta_fp)
+            cur["scheme"] = scheme
+            beta_frames.append(cur)
+        else:
+            missing_beta.append(beta_fp)
+
+    if not beta_frames:
+        raise FileNotFoundError(
+            "No joint-model beta outputs found. Run "
+            "python_scripts/model_evaluation/feature_risk_score_coxph.py first."
+        )
+
+    if missing_beta:
+        warnings.warn(
+            "Missing joint-model beta outputs for some schemes:\n  "
+            + "\n  ".join(missing_beta),
+            stacklevel=2,
+        )
+
+    beta_df = pd.concat(beta_frames, ignore_index=True)
+    required_cols = {"scheme", "event", "modality", "beta"}
+    missing_cols = sorted(required_cols - set(beta_df.columns))
+    if missing_cols:
+        raise ValueError(f"Joint-model betas missing required columns: {missing_cols}")
+
+    beta_df = beta_df[beta_df["modality"].isin(MODALITIES)].copy()
+    beta_df["beta"] = pd.to_numeric(beta_df["beta"], errors="coerce")
+    beta_df["is_valid"] = beta_df["beta"].notna() & np.isfinite(beta_df["beta"])
+    beta_df = beta_df.drop_duplicates(subset=["scheme", "event", "modality"], keep="last")
+    return beta_df
 
 
 def prepare_univariate_metrics(univar_df: pd.DataFrame) -> pd.DataFrame:
@@ -338,62 +381,41 @@ def draw_panel_c(ax: plt.Axes, univar_df: pd.DataFrame) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Panel D — unimodal held-out C-index violins
+# Panel D — joint-model log HRs
 # ---------------------------------------------------------------------------
 
-def draw_panel_d(ax: plt.Axes, univar_df: pd.DataFrame) -> None:
-    if univar_df.empty:
-        ax.text(0.5, 0.5, "Univariate modality metrics not available",
+def draw_panel_d(ax: plt.Axes, beta_df: pd.DataFrame) -> None:
+    if beta_df.empty:
+        ax.text(0.5, 0.5, "Joint-model beta outputs not available",
                 ha="center", va="center", transform=ax.transAxes)
         return
 
-    plot_df = univar_df[
-        univar_df["modality"].isin(MODALITIES)
-        & univar_df["is_valid"]
-        & univar_df["mean_c_index"].notna()
+    plot_df = beta_df[
+        beta_df["modality"].isin(MODALITIES)
+        & beta_df["is_valid"]
     ].copy()
     if plot_df.empty:
-        ax.text(0.5, 0.5, "No supported unimodal C-index values found",
+        ax.text(0.5, 0.5, "No supported joint-model log HR values found",
                 ha="center", va="center", transform=ax.transAxes)
         return
     plot_df["Modality"] = plot_df["modality"].map(MODALITY_DISPLAY)
 
     mod_display_order = [MODALITY_DISPLAY[m] for m in MODALITIES]
     available_mods = [m for m in mod_display_order if m in plot_df["Modality"].dropna().unique()]
-
     palette = {m: MODALITY_COLORS[m] for m in available_mods}
 
-    sns.violinplot(data=plot_df, x="Modality", y="mean_c_index",
-                   order=available_mods, palette=palette,
-                   inner="box", cut=0, linewidth=0.8, ax=ax)
-    sns.stripplot(data=plot_df, x="Modality", y="mean_c_index",
+    sns.boxplot(data=plot_df, x="Modality", y="beta",
+                order=available_mods, palette=palette,
+                width=0.58, showfliers=False, linewidth=0.9, ax=ax)
+    sns.stripplot(data=plot_df, x="Modality", y="beta",
                   order=available_mods, color="#333", alpha=0.12,
                   jitter=True, size=2.0, ax=ax)
 
-    ax.axhline(0.5, color="#444", linestyle="--", lw=1.0)
+    ax.axhline(0, color="#444", linestyle="--", lw=1.0)
     ax.set_xlabel("")
-    ax.set_ylabel("Held-out unimodal C-index")
-    ax.set_title("Held-out Unimodal Performance by Modality")
+    ax.set_ylabel("Joint-model log HR")
+    ax.set_title("Joint CoxPH Log-HR by Modality")
     ax.set_xticklabels(available_mods, rotation=20, ha="right")
-    y_min = max(0.48, float(plot_df["mean_c_index"].min()) - 0.02)
-    y_max = min(1.0, float(plot_df["mean_c_index"].max()) + 0.03)
-    if y_max <= y_min:
-        y_max = y_min + 0.05
-    ax.set_ylim(y_min, y_max)
-
-    # Wilcoxon test against chance-level discrimination (C-index = 0.5).
-    for i, mod in enumerate(available_mods):
-        vals = plot_df.loc[plot_df["Modality"] == mod, "mean_c_index"].dropna()
-        if len(vals) < 5:
-            continue
-        try:
-            _, p = wilcoxon(vals - 0.5, alternative="greater")
-        except Exception:
-            continue
-        stars = "***" if p < 0.001 else ("**" if p < 0.01 else ("*" if p < 0.05 else "ns"))
-        ax.text(i, y_max - 0.01 * (y_max - y_min), stars,
-                ha="center", va="top", fontsize=8, fontweight="bold")
-
     ax.grid(axis="y", alpha=0.5)
     ax.grid(axis="x", visible=False)
 
@@ -406,6 +428,7 @@ def main():
     set_style()
 
     univar_df = load_feature_risk_score_run_outputs()
+    beta_df = load_joint_model_betas()
     generated = 0
 
     for prevalence_filter in PREVALENCE_FILTERS_TO_PLOT:
@@ -418,6 +441,7 @@ def main():
         prevalence_label = prevalence_filter_to_label(prevalence_filter)
         suffix = prevalence_filter_to_suffix(prevalence_filter)
         univar_sub = subset_run_outputs(univar_df, event_subset)
+        beta_sub = subset_run_outputs(beta_df, event_subset)
 
         fig = plt.figure(figsize=(15, 13))
         ax_a = fig.add_axes([0.07, 0.55, 0.38, 0.38])
@@ -428,7 +452,7 @@ def main():
         draw_panel_a(ax_a, univar_sub)
         draw_panel_b(ax_b, univar_sub)
         draw_panel_c(ax_c, univar_sub)
-        draw_panel_d(ax_d, univar_sub)
+        draw_panel_d(ax_d, beta_sub)
 
         for label, ax in {"A": ax_a, "B": ax_b, "C": ax_c, "D": ax_d}.items():
             ax.text(-0.12, 1.04, label, transform=ax.transAxes,
@@ -436,21 +460,6 @@ def main():
 
         fig.text(0.98, 0.975, f"Event set: {prevalence_label}", ha="right", va="top",
                  fontsize=8, color="#444")
-        caption = (
-            "Figure 3. Feature class contributions to survival prediction from the "
-            "held-out modality risk-score CoxPH evaluation run. "
-            f"Panels use the {prevalence_label}. "
-            "(A) Number of significantly predicted endpoints per modality, stratified by outcome scheme. "
-            "(B) Pairwise overlap in significantly predicted endpoints between modalities; "
-            "diagonal = total significant per modality. "
-            "(C) Text C-index (y-axis) vs. best-competing-modality C-index for endpoints where text "
-            "is significant; points above diagonal indicate text outperforms all other modalities. "
-            "(D) Distribution of held-out unimodal C-index values across endpoints for each modality; "
-            "asterisks indicate performance above chance-level discrimination (Wilcoxon vs. 0.5, "
-            "***p<0.001, **p<0.01, *p<0.05)."
-        )
-        fig.text(0.5, 0.005, caption, ha="center", va="bottom", fontsize=7.5, style="italic",
-                 bbox=dict(boxstyle="round,pad=0.3", fc="#f8f8f8", ec="#ddd", alpha=0.8))
 
         out_stem = os.path.join(OUTPUT_DIR, f"figure3_feature_comps_{suffix}")
         for ext in ("png", "pdf"):

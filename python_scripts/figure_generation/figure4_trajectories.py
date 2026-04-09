@@ -380,18 +380,6 @@ def main():
         ax.text(-0.10, 1.04, label, transform=ax.transAxes,
                 fontsize=14, fontweight="bold", va="top", ha="right")
 
-    caption = (
-        "Figure 4. Longitudinal mortality risk trajectory analysis. "
-        "(A) Mean standardized risk score trajectories for patient clusters identified by "
-        "K-Means clustering on trajectory shape features; shaded regions indicate 95% CI. "
-        "(B) Kaplan-Meier overall survival stratified by trajectory cluster; clusters derived "
-        "from trajectory shape strongly predict long-term survival. "
-        "(C) Clinical characteristics by trajectory cluster; asterisks indicate significant "
-        "differences (chi-square, ***p<0.001, **p<0.01, *p<0.05)."
-    )
-    fig.text(0.5, 0.005, caption, ha="center", va="bottom", fontsize=7.5, style="italic",
-             bbox=dict(boxstyle="round,pad=0.3", fc="#f8f8f8", ec="#ddd", alpha=0.8))
-
     out_stem = os.path.join(OUTPUT_DIR, "figure4_trajectories")
     for ext in ("png", "pdf"):
         fig.savefig(f"{out_stem}.{ext}", facecolor="white", bbox_inches="tight")

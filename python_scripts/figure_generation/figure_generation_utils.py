@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import warnings
 
 import matplotlib as mpl
 
@@ -12,8 +13,28 @@ SURV_PATH = os.path.join(DATA_PATH, "time-to-event_analysis/")
 FEATURE_PATH = os.path.join(DATA_PATH, "clinical_and_genomic_features/")
 RESULTS_PATH = os.path.join(SURV_PATH, "results/")
 COMPILED_DIR = os.path.join(RESULTS_PATH, "compiled_all_schemes/")
-OUTPUT_DIR = os.path.join(DATA_PATH, "figures/manuscript/")
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+DEFAULT_OUTPUT_DIR = os.path.join(DATA_PATH, "figures/manuscript/")
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+LOCAL_OUTPUT_DIR = os.path.join(REPO_ROOT, "generated_figures", "manuscript")
+
+
+def resolve_output_dir() -> str:
+    for path in (DEFAULT_OUTPUT_DIR, LOCAL_OUTPUT_DIR):
+        try:
+            os.makedirs(path, exist_ok=True)
+            return path
+        except PermissionError:
+            continue
+
+    warnings.warn(
+        f"Falling back to writable local figure output directory: {LOCAL_OUTPUT_DIR}",
+        stacklevel=2,
+    )
+    os.makedirs(LOCAL_OUTPUT_DIR, exist_ok=True)
+    return LOCAL_OUTPUT_DIR
+
+
+OUTPUT_DIR = resolve_output_dir()
 
 # compile_all_scheme_results.ipynb defines thresholds [0.01, 0.025, 0.05]
 # and writes labels via _threshold_to_label(...) -> 1pct, 2_5pct, 5pct.

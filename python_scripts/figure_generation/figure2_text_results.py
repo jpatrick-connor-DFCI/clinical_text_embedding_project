@@ -3,19 +3,18 @@
 Panels:
   A: Scatter — text vs. base model C-index across all endpoint schemes, colored by event category
   B: Violin — delta C-index (text − base) distribution per scheme
-  C: Heatmap — text model C-index for top endpoints × cancer type (requires per-event risk scores)
+  C: Best and worst improved endpoints within each outcome scheme
   D: KM curve — survival by risk quartile for all-cause mortality
 
 Data sources:
-  - Panels A, B: compiled_all_schemes_compiled_metrics.csv
-  - Panel C: held_out_risk_scores/{event}/text_risk_scores.csv + cancer_type_df.csv
-             + {scheme_embedding_df}.csv (for tt_{event} and event indicator)
-  - Panel D: same as Panel C
+  - Panels A, B, C: compiled_all_schemes_compiled_metrics.csv
+  - Panel D: held_out_risk_scores/death/text_risk_scores.csv + death_met_embedding_prediction_df.csv
 """
 
 from __future__ import annotations
 
 import os
+import textwrap
 import warnings
 
 import matplotlib.pyplot as plt
@@ -24,7 +23,6 @@ import pandas as pd
 import seaborn as sns
 from figure_generation_utils import (
     COMPILED_DIR,
-    FEATURE_PATH,
     OUTPUT_DIR,
     PREVALENCE_FILTERS_TO_PLOT,
     RESULTS_PATH,
@@ -36,8 +34,7 @@ from figure_generation_utils import (
 )
 from lifelines import KaplanMeierFitter
 from lifelines.statistics import multivariate_logrank_test
-from scipy.cluster.hierarchy import dendrogram, linkage
-from sksurv.metrics import concordance_index_censored
+from matplotlib.patches import FancyBboxPatch
 
 SCHEME_CONFIG = {
     "icd3_post":    {"embedding_file": "level_3_ICD_post_embedding_prediction_df.csv",
@@ -68,15 +65,11 @@ SCHEME_MARKERS = {
     "phecode_post": "s",
 }
 
-# Panel C — top N events to show in heatmap, top M cancer types
-TOP_N_EVENTS = 20
-TOP_M_CANCER_TYPES = 8
+# Panel C — top and bottom events to show within each scheme
+TOP_EVENTS_PER_SCHEME = 5
 
 # Panel D — keep the manuscript KM example focused on all-cause mortality.
 KM_EVENT = ("death_met", "death", "All-cause Mortality")
-
-# Significance threshold for C-index in heatmap
-HEATMAP_SIG_CINDEX = 0.65
 
 
 # ---------------------------------------------------------------------------
@@ -140,15 +133,6 @@ def load_survival_data(scheme: str, event: str) -> pd.DataFrame:
     df = df.dropna(subset=["event_indicator", "time"])
     df["event_indicator"] = df["event_indicator"].astype(bool)
     return df
-
-
-def load_cancer_types(cohort_mrns: pd.Series) -> pd.DataFrame:
-    """Return DataFrame with DFCI_MRN and dominant cancer type."""
-    ct = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_type_df.csv"))
-    ct = ct[ct["DFCI_MRN"].isin(cohort_mrns)].copy()
-    type_cols = [c for c in ct.columns if c.startswith("CANCER_TYPE_")]
-    ct["cancer_type"] = ct[type_cols].idxmax(axis=1).str.replace("CANCER_TYPE_", "", regex=False)
-    return ct[["DFCI_MRN", "cancer_type"]]
 
 
 # ---------------------------------------------------------------------------
@@ -249,119 +233,91 @@ def draw_panel_b(ax: plt.Axes, df: pd.DataFrame) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Panel C — cancer-type-stratified heatmap of text C-indices
+# Panel C — best and worst improved events within each scheme
 # ---------------------------------------------------------------------------
 
-def compute_per_cancer_type_cindex(
-    scheme: str, event: str, cancer_type_df: pd.DataFrame,
-    min_events: int = 10
-) -> dict[str, float]:
-    """Compute per-cancer-type C-index for a given event using held-out risk scores."""
-    scores = load_risk_scores(scheme, event, modality="text")
-    if scores is None:
-        return {}
-
-    surv = load_survival_data(scheme, event)
-    merged = scores.merge(surv, on="DFCI_MRN").merge(cancer_type_df, on="DFCI_MRN")
-    merged = merged.dropna(subset=["risk_score", "time", "event_indicator"])
-
-    result = {}
-    for ct, grp in merged.groupby("cancer_type"):
-        n_events = grp["event_indicator"].sum()
-        if len(grp) < 20 or n_events < min_events:
-            continue
-        try:
-            c_stat, _, _, _, _ = concordance_index_censored(
-                grp["event_indicator"].values.astype(bool),
-                grp["time"].values,
-                grp["risk_score"].values,
-            )
-            result[ct] = c_stat
-        except Exception:
-            pass
-    return result
+def _clean_event_label(label: str, max_len: int = 20) -> str:
+    label = str(label).replace("_", " ").strip()
+    if not label or label.lower() == "nan":
+        return "Unavailable"
+    return textwrap.shorten(label, width=max_len, placeholder="…")
 
 
-def build_heatmap_matrix(
-    compiled_df: pd.DataFrame,
-    cancer_type_df: pd.DataFrame,
-    top_n: int = TOP_N_EVENTS,
-    top_m: int = TOP_M_CANCER_TYPES,
+def _get_scheme_event_rankings(
+    df: pd.DataFrame,
+    scheme: str,
+    top_n: int = TOP_EVENTS_PER_SCHEME,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Build (events × cancer_types) C-index matrix.
-    Returns (heatmap_df, meta_df) where meta_df has event descriptions.
-    """
-    # Select top N events by text C-index
-    top_events = (compiled_df
-                  .dropna(subset=["text_full_cohort_mean_c_index"])
-                  .nlargest(top_n, "text_full_cohort_mean_c_index")
-                  [["scheme", "event", "event_description", "text_full_cohort_mean_c_index"]]
-                  .reset_index(drop=True))
+    sub = df[df["scheme"] == scheme].copy()
+    if "delta_c_index" not in sub.columns:
+        sub["delta_c_index"] = (
+            sub["text_full_cohort_mean_c_index"] - sub["base_mean_c_index"]
+        )
+    if "event_description" not in sub.columns:
+        sub["event_description"] = sub["event"]
 
-    # Get top M cancer types by frequency
-    top_cts = cancer_type_df["cancer_type"].value_counts().head(top_m).index.tolist()
-    ct_sub = cancer_type_df[cancer_type_df["cancer_type"].isin(top_cts)].copy()
+    sub = sub.dropna(subset=["delta_c_index"]).copy()
+    sub["event_display"] = sub["event_description"].fillna(sub["event"]).astype(str)
+    sub = sub.drop_duplicates(subset=["event_display"], keep="first")
 
-    rows = []
-    for _, meta in top_events.iterrows():
-        per_ct = compute_per_cancer_type_cindex(meta["scheme"], meta["event"], ct_sub)
-        row = {ct: per_ct.get(ct, np.nan) for ct in top_cts}
-        row["event_description"] = meta.get("event_description", meta["event"])
-        rows.append(row)
-
-    df = pd.DataFrame(rows)
-    meta_df = df[["event_description"]].copy()
-    heatmap_df = df.drop(columns=["event_description"])
-    heatmap_df.index = meta_df["event_description"].values
-    return heatmap_df, meta_df
+    best = sub.nlargest(top_n, "delta_c_index").copy()
+    worst = sub.nsmallest(top_n, "delta_c_index").copy()
+    return best, worst
 
 
-def draw_panel_c(ax: plt.Axes, heatmap_df: pd.DataFrame) -> None:
-    # Cluster rows
-    valid_rows = heatmap_df.dropna(how="all")
-    if valid_rows.empty:
-        ax.text(0.5, 0.5, "No cancer-type C-index data available",
-                ha="center", va="center", transform=ax.transAxes)
-        return
+def draw_panel_c(ax: plt.Axes, df: pd.DataFrame) -> None:
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.axis("off")
+    ax.set_title("Best and Worst Improved Events by Scheme")
 
-    if len(valid_rows) == 1:
-        ordered = valid_rows.copy()
-    else:
-        imputed = valid_rows.fillna(0.5)
-        link = linkage(imputed.values, method="ward")
-        order = dendrogram(link, no_plot=True)["leaves"]
-        ordered = valid_rows.iloc[order]
+    card_positions = {
+        "death_met": (0.03, 0.54),
+        "icd3_post": (0.52, 0.54),
+        "icd4_post": (0.03, 0.08),
+        "phecode_post": (0.52, 0.08),
+    }
+    card_w = 0.44
+    card_h = 0.34
 
-    # Shorten labels
-    def shorten(s, n=35):
-        return s[:n] + "…" if len(str(s)) > n else str(s)
+    for scheme, (x0, y0) in card_positions.items():
+        color = SCHEME_COLORS[scheme]
+        best, worst = _get_scheme_event_rankings(df, scheme)
 
-    ordered.index = [shorten(i) for i in ordered.index]
+        card = FancyBboxPatch(
+            (x0, y0),
+            card_w,
+            card_h,
+            boxstyle="round,pad=0.012,rounding_size=0.02",
+            facecolor="#fbfdff",
+            edgecolor=color,
+            linewidth=1.2,
+        )
+        ax.add_patch(card)
 
-    mask = ordered.isna()
-    cmap = plt.get_cmap("Blues").copy()
-    cmap.set_bad("#e0e0e0")
+        ax.text(x0 + 0.03, y0 + card_h - 0.05, SCHEME_DISPLAY[scheme],
+                ha="left", va="top", fontsize=8, fontweight="bold", color=color)
+        ax.text(x0 + 0.03, y0 + card_h - 0.10, "Best",
+                ha="left", va="top", fontsize=6.7, fontweight="bold", color="#1665a2")
+        ax.text(x0 + 0.24, y0 + card_h - 0.10, "Worst",
+                ha="left", va="top", fontsize=6.7, fontweight="bold", color="#b55852")
 
-    im = ax.imshow(ordered.values, cmap=cmap, vmin=0.5, vmax=1.0,
-                   aspect="auto", interpolation="nearest")
+        for idx in range(TOP_EVENTS_PER_SCHEME):
+            y_pos = y0 + card_h - 0.16 - idx * 0.047
 
-    # Asterisks for high C-index
-    for r in range(ordered.shape[0]):
-        for c in range(ordered.shape[1]):
-            val = ordered.iloc[r, c]
-            if not np.isnan(val) and val >= HEATMAP_SIG_CINDEX:
-                ax.text(c, r, "*", ha="center", va="center", fontsize=7, color="white")
+            if idx < len(best):
+                row = best.iloc[idx]
+                label = _clean_event_label(row["event_display"])
+                ax.text(x0 + 0.03, y_pos,
+                        f"{idx + 1}. {label} ({row['delta_c_index']:+.3f})",
+                        ha="left", va="top", fontsize=5.6, color="#1665a2")
 
-    ax.set_xticks(range(len(ordered.columns)))
-    ax.set_xticklabels(ordered.columns, rotation=40, ha="right", fontsize=8)
-    ax.set_yticks(range(len(ordered.index)))
-    ax.set_yticklabels(ordered.index, fontsize=7)
-    ax.set_title("Text C-index by Cancer Type (top endpoints)")
-
-    plt.colorbar(im, ax=ax, label="C-index", fraction=0.04, pad=0.02)
-    ax.text(1.15, -0.05, "* C-index ≥ 0.65", transform=ax.transAxes,
-            fontsize=7, ha="right", color="#555")
+            if idx < len(worst):
+                row = worst.iloc[idx]
+                label = _clean_event_label(row["event_display"])
+                ax.text(x0 + 0.24, y_pos,
+                        f"{idx + 1}. {label} ({row['delta_c_index']:+.3f})",
+                        ha="left", va="top", fontsize=5.6, color="#b55852")
 
 
 # ---------------------------------------------------------------------------
@@ -450,12 +406,6 @@ def draw_panel_d(
 
 def main():
     set_style()
-
-    # Load cancer type data for panel C
-    # Use all MRNs from any scheme (use death_met cohort as proxy)
-    print("Loading cancer type data for panel C...")
-    cohort_mrns = load_embedding_prediction_df("death_met", usecols=["DFCI_MRN"])["DFCI_MRN"]
-    cancer_type_df = load_cancer_types(cohort_mrns)
     generated = 0
 
     for prevalence_filter in PREVALENCE_FILTERS_TO_PLOT:
@@ -468,22 +418,16 @@ def main():
         prevalence_label = prevalence_filter_to_label(prevalence_filter)
         suffix = prevalence_filter_to_suffix(prevalence_filter)
 
-        print(
-            "Building per-cancer-type C-index heatmap "
-            f"(top {TOP_N_EVENTS} events × top {TOP_M_CANCER_TYPES} types) for {prevalence_label}..."
-        )
-        heatmap_df, _ = build_heatmap_matrix(df, cancer_type_df, top_n=TOP_N_EVENTS, top_m=TOP_M_CANCER_TYPES)
+        fig = plt.figure(figsize=(15.5, 12.8))
 
-        fig = plt.figure(figsize=(15, 14))
-
-        ax_a = fig.add_axes([0.06, 0.56, 0.38, 0.38])
-        ax_b = fig.add_axes([0.56, 0.56, 0.38, 0.38])
-        ax_c = fig.add_axes([0.06, 0.08, 0.38, 0.40])
-        ax_d = fig.add_axes([0.56, 0.14, 0.38, 0.34])
+        ax_a = fig.add_axes([0.06, 0.56, 0.38, 0.36])
+        ax_b = fig.add_axes([0.56, 0.56, 0.38, 0.36])
+        ax_c = fig.add_axes([0.04, 0.08, 0.48, 0.40])
+        ax_d = fig.add_axes([0.58, 0.12, 0.34, 0.32])
 
         draw_panel_a(ax_a, df)
         draw_panel_b(ax_b, df)
-        draw_panel_c(ax_c, heatmap_df)
+        draw_panel_c(ax_c, df)
         draw_panel_d(ax_d)
 
         panel_labels = {"A": ax_a, "B": ax_b, "C": ax_c, "D": ax_d}
@@ -493,19 +437,6 @@ def main():
 
         fig.text(0.98, 0.975, f"Panels A-C event set: {prevalence_label}", ha="right", va="top",
                  fontsize=8, color="#444")
-        caption = (
-            "Figure 2. Text embedding model performance across outcome types. "
-            f"Panels A-C use the {prevalence_label}. "
-            "(A) Text vs. base model C-index across all endpoints; marker shape = scheme, "
-            "diagonal = equal performance. "
-            "(B) Distribution of C-index improvement (text − base) by outcome scheme. "
-            "(C) Cancer-type-stratified text C-index heatmap for top-performing endpoints; "
-            "gray = insufficient events; * indicates C-index ≥ 0.65. "
-            "(D) Kaplan-Meier survival curves by embedding-derived risk quartile for all-cause mortality."
-        )
-        fig.text(0.5, 0.005, caption, ha="center", va="bottom", fontsize=7.5,
-                 style="italic",
-                 bbox=dict(boxstyle="round,pad=0.3", fc="#f8f8f8", ec="#ddd", alpha=0.8))
 
         out_stem = os.path.join(OUTPUT_DIR, f"figure2_text_results_{suffix}")
         for ext in ("png", "pdf"):
