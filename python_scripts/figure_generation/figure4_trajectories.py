@@ -30,28 +30,22 @@ Data sources:
 from __future__ import annotations
 
 import os
-import warnings
 
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
+from figure_generation_utils import (
+    FEATURE_PATH,
+    OUTPUT_DIR,
+    RESULTS_PATH,
+    SURV_PATH,
+    set_manuscript_style,
+)
 from lifelines import KaplanMeierFitter
 from lifelines.statistics import multivariate_logrank_test
-from scipy.stats import chi2_contingency, kruskal
+from scipy.stats import chi2_contingency
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
-
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
-DATA_PATH = "/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/"
-SURV_PATH = os.path.join(DATA_PATH, "time-to-event_analysis/")
-FEATURE_PATH = os.path.join(DATA_PATH, "clinical_and_genomic_features/")
-RESULTS_PATH = os.path.join(SURV_PATH, "results/")
-OUTPUT_DIR = os.path.join(DATA_PATH, "figures/manuscript/")
-os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Trajectory file — adjust scheme/decay param to match your computed results
 TRAJECTORY_SCHEME = "death_met"
@@ -79,14 +73,7 @@ CLUSTER_COLORS = ["#2166ac", "#92c5de", "#f4a582", "#d73027"]
 # ---------------------------------------------------------------------------
 
 def set_style():
-    sns.set_theme(context="paper", style="whitegrid")
-    mpl.rcParams.update({
-        "savefig.dpi": 300, "savefig.bbox": "tight", "pdf.fonttype": 42,
-        "font.family": "DejaVu Sans",
-        "axes.titlesize": 11, "axes.titleweight": "semibold",
-        "axes.labelsize": 9, "axes.spines.top": False, "axes.spines.right": False,
-        "xtick.labelsize": 8, "ytick.labelsize": 8, "legend.fontsize": 8,
-    })
+    set_manuscript_style()
 
 
 # ---------------------------------------------------------------------------

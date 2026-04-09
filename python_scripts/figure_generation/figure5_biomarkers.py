@@ -20,10 +20,10 @@ from __future__ import annotations
 import os
 import warnings
 
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from figure_generation_utils import DATA_PATH, OUTPUT_DIR, set_manuscript_style
 from matplotlib.lines import Line2D
 from sklearn.metrics import roc_auc_score, roc_curve
 
@@ -31,12 +31,9 @@ from sklearn.metrics import roc_auc_score, roc_curve
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-DATA_PATH = "/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/"
 MARKER_PATH = os.path.join(DATA_PATH, "biomarker_analysis/")
 COMPILED_DIR = os.path.join(MARKER_PATH, "compiled_results/")
 TREATMENT_PATH = os.path.join(DATA_PATH, "treatment_prediction/")
-OUTPUT_DIR = os.path.join(DATA_PATH, "figures/manuscript/")
-os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -60,23 +57,7 @@ ROBUSTNESS_GRAY = "#D9D9D9"
 
 
 def set_style() -> None:
-    import seaborn as sns
-
-    sns.set_theme(context="paper", style="whitegrid")
-    mpl.rcParams.update({
-        "savefig.dpi": 300,
-        "savefig.bbox": "tight",
-        "pdf.fonttype": 42,
-        "font.family": "DejaVu Sans",
-        "axes.titlesize": 11,
-        "axes.titleweight": "semibold",
-        "axes.labelsize": 9,
-        "axes.spines.top": False,
-        "axes.spines.right": False,
-        "xtick.labelsize": 8,
-        "ytick.labelsize": 8,
-        "legend.fontsize": 7,
-    })
+    set_manuscript_style(legend_fontsize=7)
 
 
 # ---------------------------------------------------------------------------

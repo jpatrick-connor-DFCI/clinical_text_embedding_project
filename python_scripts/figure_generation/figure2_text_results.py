@@ -4,7 +4,7 @@ Panels:
   A: Scatter — text vs. base model C-index across all endpoint schemes, colored by event category
   B: Violin — delta C-index (text − base) distribution per scheme
   C: Heatmap — text model C-index for top endpoints × cancer type (requires per-event risk scores)
-  D: KM curves — survival by risk quartile for 3 representative endpoints
+  D: KM curve — survival by risk quartile for all-cause mortality
 
 Data sources:
   - Panels A, B: compiled_all_schemes_compiled_metrics.csv
@@ -16,36 +16,28 @@ Data sources:
 from __future__ import annotations
 
 import os
-import sys
 import warnings
-from itertools import product
-from pathlib import Path
 
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from figure_generation_utils import (
+    COMPILED_DIR,
+    FEATURE_PATH,
+    OUTPUT_DIR,
+    PREVALENCE_FILTERS_TO_PLOT,
+    RESULTS_PATH,
+    SURV_PATH,
+    get_compiled_metrics_path,
+    prevalence_filter_to_label,
+    prevalence_filter_to_suffix,
+    set_manuscript_style,
+)
 from lifelines import KaplanMeierFitter
 from lifelines.statistics import multivariate_logrank_test
 from scipy.cluster.hierarchy import dendrogram, linkage
 from sksurv.metrics import concordance_index_censored
-
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
-DATA_PATH = "/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/"
-SURV_PATH = os.path.join(DATA_PATH, "time-to-event_analysis/")
-FEATURE_PATH = os.path.join(DATA_PATH, "clinical_and_genomic_features/")
-RESULTS_PATH = os.path.join(SURV_PATH, "results/")
-COMPILED_DIR = os.path.join(RESULTS_PATH, "compiled_all_schemes/")
-OUTPUT_DIR = os.path.join(DATA_PATH, "figures/manuscript/")
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-# Generate one separate figure per evidence-backed prevalence filter.
-# compile_all_scheme_results.ipynb defines thresholds [0.01, 0.025, 0.05]
-# and writes labels via _threshold_to_label(...) -> 1pct, 2_5pct, 5pct.
-PREVALENCE_FILTERS_TO_PLOT = [None, "1pct", "2_5pct", "5pct"]
 
 SCHEME_CONFIG = {
     "icd3_post":    {"embedding_file": "level_3_ICD_post_embedding_prediction_df.csv",
@@ -80,34 +72,11 @@ SCHEME_MARKERS = {
 TOP_N_EVENTS = 20
 TOP_M_CANCER_TYPES = 8
 
-# Panel D — events to show as KM examples (scheme, event_code, display_name)
-# Update event codes to match actual values in your data
-EXAMPLE_EVENTS = [
-    ("death_met",  "death",  "All-cause Mortality"),
-    ("icd3_post",  "B25",    "Cytomegaloviral Disease (B25)"),
-    ("phecode_post", "580",  "Iron Deficiency Anemia"),
-]
+# Panel D — keep the manuscript KM example focused on all-cause mortality.
+KM_EVENT = ("death_met", "death", "All-cause Mortality")
 
 # Significance threshold for C-index in heatmap
 HEATMAP_SIG_CINDEX = 0.65
-
-
-def prevalence_filter_to_suffix(prevalence_filter: str | None) -> str:
-    return "unfiltered" if prevalence_filter in (None, "") else prevalence_filter
-
-
-def prevalence_filter_to_label(prevalence_filter: str | None) -> str:
-    return "unfiltered event set" if prevalence_filter in (None, "") else f"{prevalence_filter} event set"
-
-
-def get_compiled_metrics_path(prevalence_filter: str | None) -> str:
-    if prevalence_filter in (None, ""):
-        path = os.path.join(COMPILED_DIR, "all_schemes_compiled_metrics.csv")
-    else:
-        path = os.path.join(COMPILED_DIR, f"all_schemes_compiled_metrics_{prevalence_filter}.csv")
-    if not os.path.isfile(path):
-        raise FileNotFoundError(f"Compiled metrics not found for filter {prevalence_filter!r}: {path}")
-    return path
 
 
 # ---------------------------------------------------------------------------
@@ -115,21 +84,7 @@ def get_compiled_metrics_path(prevalence_filter: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 def set_style():
-    sns.set_theme(context="paper", style="whitegrid")
-    mpl.rcParams.update({
-        "savefig.dpi": 300,
-        "savefig.bbox": "tight",
-        "pdf.fonttype": 42,
-        "font.family": "DejaVu Sans",
-        "axes.titlesize": 11,
-        "axes.titleweight": "semibold",
-        "axes.labelsize": 9,
-        "axes.spines.top": False,
-        "axes.spines.right": False,
-        "xtick.labelsize": 8,
-        "ytick.labelsize": 8,
-        "legend.fontsize": 8,
-    })
+    set_manuscript_style()
 
 
 # ---------------------------------------------------------------------------
@@ -484,21 +439,9 @@ def draw_km_quartiles(ax: plt.Axes, scheme: str, event: str,
 
 
 def draw_panel_d(
-    axes: list[plt.Axes],
-    example_events: list[tuple],
-    available_events: set[tuple[str, str]] | None = None,
-    prevalence_label: str | None = None,
+    ax: plt.Axes,
 ) -> None:
-    for ax, (scheme, event, name) in zip(axes, example_events):
-        if available_events is not None and (scheme, event) not in available_events:
-            reason = "Not in filtered event set"
-            if prevalence_label is not None:
-                reason = f"Excluded from {prevalence_label}"
-            ax.text(0.5, 0.5, f"{name}\n{reason}",
-                    ha="center", va="center", transform=ax.transAxes, fontsize=8)
-            ax.set_axis_off()
-            continue
-        draw_km_quartiles(ax, scheme, event, name)
+    draw_km_quartiles(ax, *KM_EVENT)
 
 
 # ---------------------------------------------------------------------------
@@ -524,7 +467,6 @@ def main():
 
         prevalence_label = prevalence_filter_to_label(prevalence_filter)
         suffix = prevalence_filter_to_suffix(prevalence_filter)
-        available_events = set(df[["scheme", "event"]].itertuples(index=False, name=None))
 
         print(
             "Building per-cancer-type C-index heatmap "
@@ -536,36 +478,30 @@ def main():
 
         ax_a = fig.add_axes([0.06, 0.56, 0.38, 0.38])
         ax_b = fig.add_axes([0.56, 0.56, 0.38, 0.38])
-        ax_c = fig.add_axes([0.06, 0.06, 0.38, 0.42])
-
-        km_axes = [
-            fig.add_axes([0.54, 0.18, 0.14, 0.30]),
-            fig.add_axes([0.70, 0.18, 0.14, 0.30]),
-            fig.add_axes([0.86, 0.18, 0.14, 0.30]),
-        ]
+        ax_c = fig.add_axes([0.06, 0.08, 0.38, 0.40])
+        ax_d = fig.add_axes([0.56, 0.14, 0.38, 0.34])
 
         draw_panel_a(ax_a, df)
         draw_panel_b(ax_b, df)
         draw_panel_c(ax_c, heatmap_df)
-        draw_panel_d(km_axes, EXAMPLE_EVENTS, available_events=available_events, prevalence_label=prevalence_label)
+        draw_panel_d(ax_d)
 
-        panel_labels = {"A": ax_a, "B": ax_b, "C": ax_c, "D": km_axes[0]}
+        panel_labels = {"A": ax_a, "B": ax_b, "C": ax_c, "D": ax_d}
         for label, ax in panel_labels.items():
             ax.text(-0.12, 1.04, label, transform=ax.transAxes,
                     fontsize=14, fontweight="bold", va="top", ha="right")
 
-        fig.text(0.98, 0.975, f"Event set: {prevalence_label}", ha="right", va="top",
+        fig.text(0.98, 0.975, f"Panels A-C event set: {prevalence_label}", ha="right", va="top",
                  fontsize=8, color="#444")
         caption = (
             "Figure 2. Text embedding model performance across outcome types. "
-            f"Panels use the {prevalence_label}. "
+            f"Panels A-C use the {prevalence_label}. "
             "(A) Text vs. base model C-index across all endpoints; marker shape = scheme, "
             "diagonal = equal performance. "
             "(B) Distribution of C-index improvement (text − base) by outcome scheme. "
             "(C) Cancer-type-stratified text C-index heatmap for top-performing endpoints; "
             "gray = insufficient events; * indicates C-index ≥ 0.65. "
-            "(D) Kaplan-Meier survival curves by embedding-derived risk quartile for three "
-            "representative endpoints."
+            "(D) Kaplan-Meier survival curves by embedding-derived risk quartile for all-cause mortality."
         )
         fig.text(0.5, 0.005, caption, ha="center", va="bottom", fontsize=7.5,
                  style="italic",
