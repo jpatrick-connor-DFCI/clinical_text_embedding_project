@@ -4,7 +4,7 @@ Panels:
   A: Overview of notes to patient-level prediction
   B: Example patient timeline from notes to follow-up
   C: Outcome endpoint counts per scheme
-  D: Cancer type distribution in the mortality cohort (top 10 labeled)
+  D: Cohort proportion by cancer type (top 10 labeled)
 
 Data sources:
   - Panel C: compiled_all_schemes_metrics.csv
@@ -299,6 +299,51 @@ def draw_panel_c(ax: plt.Axes, compiled_csv: str) -> None:
     ax.grid(axis="x", visible=False)
 
 
+def _resolve_cancer_type_labels(cancer_df: pd.DataFrame, type_cols: list[str]) -> pd.Series:
+    """Return a single cancer-type label per row without forcing all-zero rows into OTHER."""
+    if "CANCER_TYPE" in cancer_df.columns and cancer_df["CANCER_TYPE"].notna().any():
+        labels = cancer_df["CANCER_TYPE"].astype(str).str.strip()
+        labels = labels.replace({"": np.nan, "nan": np.nan, "None": np.nan})
+        return labels.fillna("UNSPECIFIED")
+
+    if not type_cols:
+        raise ValueError("Could not identify cancer type columns in cancer_type_df.csv")
+
+    type_matrix = cancer_df[type_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+    positive = type_matrix > 0
+    n_positive = positive.sum(axis=1)
+
+    labels = pd.Series(index=cancer_df.index, dtype=object)
+    labels.loc[n_positive == 0] = "UNSPECIFIED"
+
+    has_other = "CANCER_TYPE_OTHER" in type_matrix.columns
+    if has_other:
+        non_other_cols = [c for c in type_matrix.columns if c != "CANCER_TYPE_OTHER"]
+    else:
+        non_other_cols = list(type_matrix.columns)
+
+    # Prefer specific cancer types over OTHER when both are present.
+    multi_mask = n_positive > 1
+    if has_other and non_other_cols:
+        non_other_positive = positive[non_other_cols].sum(axis=1) > 0
+        prefer_specific = multi_mask & non_other_positive
+        if prefer_specific.any():
+            labels.loc[prefer_specific] = (
+                type_matrix.loc[prefer_specific, non_other_cols]
+                .idxmax(axis=1)
+                .str.replace("CANCER_TYPE_", "", regex=False)
+            )
+
+    unlabeled = labels.isna()
+    if unlabeled.any():
+        labels.loc[unlabeled] = (
+            type_matrix.loc[unlabeled]
+            .idxmax(axis=1)
+            .str.replace("CANCER_TYPE_", "", regex=False)
+        )
+    return labels
+
+
 def load_cancer_type_distribution() -> pd.Series:
     cohort_mrns = pd.read_csv(
         os.path.join(SURV_PATH, "death_met_embedding_prediction_df.csv"),
@@ -309,20 +354,11 @@ def load_cancer_type_distribution() -> pd.Series:
     cancer_df = cancer_df[cancer_df["DFCI_MRN"].isin(cohort_mrns)].copy()
     type_cols = [c for c in cancer_df.columns if c.startswith("CANCER_TYPE_")]
 
-    if type_cols:
-        cancer_df["cancer_type"] = (
-            cancer_df[type_cols]
-            .idxmax(axis=1)
-            .str.replace("CANCER_TYPE_", "", regex=False)
-        )
-    elif "CANCER_TYPE" in cancer_df.columns:
-        cancer_df["cancer_type"] = cancer_df["CANCER_TYPE"].astype(str)
-    else:
-        raise ValueError("Could not identify cancer type columns in cancer_type_df.csv")
-
-    counts = cancer_df["cancer_type"].dropna().astype(str).value_counts()
+    cancer_df["cancer_type"] = _resolve_cancer_type_labels(cancer_df, type_cols)
+    counts = cancer_df["cancer_type"].astype(str).value_counts()
     counts.index = counts.index.str.replace("_", " ", regex=False)
-    return counts.sort_values(ascending=False)
+    proportions = counts / max(int(counts.sum()), 1)
+    return proportions.sort_values(ascending=False)
 
 
 def draw_panel_d(ax: plt.Axes) -> None:
@@ -338,7 +374,6 @@ def draw_panel_d(ax: plt.Axes) -> None:
                 ha="center", va="center", transform=ax.transAxes, fontsize=8)
         return
 
-    total = int(counts.sum())
     n_types = len(counts)
     top_n = min(10, n_types)
     top_idx = set(range(top_n))
@@ -351,17 +386,18 @@ def draw_panel_d(ax: plt.Axes) -> None:
     ax.set_yticklabels(y_labels)
 
     for i, (bar, val) in enumerate(zip(bars, counts.values)):
-        pct = 100 * val / max(total, 1)
+        pct = 100 * val
         ax.text(
-            bar.get_width() + max(counts.max() * 0.02, 1.0),
+            bar.get_width() + max(float(counts.max()) * 0.02, 0.004),
             bar.get_y() + bar.get_height() / 2,
-            f"{val} ({pct:.1f}%)" if i in top_idx else f"{val}",
+            f"{pct:.1f}%" if i in top_idx else "",
             va="center",
             fontsize=7,
         )
 
-    ax.set_xlabel("Patients (n)")
-    ax.set_title("Cancer Type Distribution")
+    ax.set_xlabel("Proportion of cohort")
+    ax.set_title("Cohort Proportion by Cancer Type")
+    ax.set_xlim(0, max(float(counts.max()) * 1.25, 0.05))
     ax.spines["left"].set_visible(False)
     ax.tick_params(axis="y", left=False, labelsize=6.5)
     ax.grid(axis="x", alpha=0.5)
