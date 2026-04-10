@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import importlib.util
 from pathlib import Path
 from typing import Any
 
@@ -45,7 +44,6 @@ FILE_PATTERNS = (
 )
 
 BATCHED_DATA_PATH = DATA_PATH / "batched_datasets"
-BATCHED_TEXT_PATH = BATCHED_DATA_PATH / "batched_text"
 BATCHED_TOKEN_PATH = BATCHED_DATA_PATH / "batched_tokens"
 BATCHED_TOKEN_FILES_PATH = BATCHED_TOKEN_PATH / "tokens"
 BATCHED_METADATA_PATH = BATCHED_TOKEN_PATH / "metadata"
@@ -54,17 +52,6 @@ BATCH_SIZE = 50_000
 TOKENIZER_BATCH_SIZE = 2_048
 TOKENIZER_MODEL_NAME = "yikuan8/Clinical-Longformer"
 TOKEN_BATCH_SUFFIX = ".npz"
-
-
-def resolve_text_batch_compression() -> tuple[str | dict[str, Any], str]:
-    """Choose the best available on-disk compression for intermediate text batches."""
-    if importlib.util.find_spec("zstandard") is not None:
-        return {"method": "zstd", "level": 3}, ".jsonl.zst"
-
-    return "gzip", ".jsonl.gz"
-
-
-TEXT_BATCH_COMPRESSION, TEXT_BATCH_SUFFIX = resolve_text_batch_compression()
 
 
 def clean_text(text: str) -> str:
@@ -92,9 +79,8 @@ def init_batch_storage() -> dict[str, list[Any]]:
 
 
 def ensure_output_dirs() -> None:
-    """Create output directories for text batches, token batches, and metadata."""
+    """Create output directories for token batches and metadata."""
     for path in (
-        BATCHED_TEXT_PATH,
         BATCHED_TOKEN_PATH,
         BATCHED_TOKEN_FILES_PATH,
         BATCHED_METADATA_PATH,
@@ -226,18 +212,6 @@ def append_note_to_batch(
     batch_storage["CLINICAL_TEXT"].append(build_note_text(note))
 
 
-def save_text_batch(batch_df: pd.DataFrame, batch_idx: int) -> Path:
-    """Persist a compressed text batch as newline-delimited JSON."""
-    batch_path = BATCHED_TEXT_PATH / f"VTE_notes_with_full_metadata_batch_{batch_idx}{TEXT_BATCH_SUFFIX}"
-    batch_df.to_json(
-        batch_path,
-        orient="records",
-        lines=True,
-        compression=TEXT_BATCH_COMPRESSION,
-    )
-    return batch_path
-
-
 def resolve_token_dtype(tokenizer: Any) -> np.dtype:
     """Choose a compact dtype that can hold the tokenizer vocabulary."""
     vocab_size = getattr(tokenizer, "vocab_size", None)
@@ -302,9 +276,8 @@ def flush_batch(
     tokenizer: Any,
     batch_idx: int,
 ) -> dict[str, list[Any]]:
-    """Save one full batch of cleaned notes and its tokenized outputs."""
+    """Save one full batch of cleaned notes as token and metadata outputs."""
     batch_df = pd.DataFrame(batch_storage, columns=COLUMNS_TO_SAVE)
-    save_text_batch(batch_df, batch_idx)
     save_tokenized_batch(batch_df, tokenizer, batch_idx)
     return init_batch_storage()
 
