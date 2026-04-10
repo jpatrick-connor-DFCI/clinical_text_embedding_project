@@ -106,7 +106,7 @@ def extract_trajectory_features(long_df: pd.DataFrame) -> pd.DataFrame:
         rs = grp["risk_score"].values
         t  = grp["time"].values
         slope = np.polyfit(t, rs, 1)[0] if len(t) > 1 else 0.0
-        auc   = np.trapz(rs, t) if len(t) > 1 else 0.0
+        auc   = np.trapezoid(rs, t) if len(t) > 1 else 0.0
         return pd.Series({
             "baseline":   rs[0],
             "final":      rs[-1],
@@ -116,7 +116,9 @@ def extract_trajectory_features(long_df: pd.DataFrame) -> pd.DataFrame:
             "max_risk":   rs.max(),
             "rebound":    rs[-1] - rs.min(),
         })
-    return long_df.groupby("DFCI_MRN").apply(features).reset_index()
+    return (long_df.groupby("DFCI_MRN")[["time", "risk_score"]]
+            .apply(features)
+            .reset_index())
 
 
 def cluster_patients(features_df: pd.DataFrame, n_clusters: int = N_CLUSTERS) -> pd.DataFrame:
@@ -144,18 +146,23 @@ def apply_cluster_labels(cluster_df: pd.DataFrame) -> dict[int, str]:
     # Auto-generate labels from cluster statistics
     stats = cluster_df.groupby("cluster")[["baseline", "final", "slope"]].mean()
     labels = {}
+    name_counts: dict[str, int] = {}
     for c in sorted(stats.index):
         base, final, slope = stats.loc[c, ["baseline", "final", "slope"]]
         n = (cluster_df["cluster"] == c).sum()
         if slope > 0.005 and final > 0.6:
-            labels[c] = f"Rapidly Increasing (n={n})"
+            base_label = "Rapidly Increasing"
         elif slope > 0.002 and base > 0.5:
-            labels[c] = f"Stable High (n={n})"
+            base_label = "Stable High"
         elif abs(slope) <= 0.002 and base < 0.35:
-            labels[c] = f"Stable Low (n={n})"
+            base_label = "Stable Low"
         else:
-            labels[c] = f"Decreasing → Rebounding (n={n})" if final > base * 0.8 \
-                        else f"Decreasing (n={n})"
+            base_label = "Decreasing → Rebounding" if final > base * 0.8 else "Decreasing"
+
+        name_counts[base_label] = name_counts.get(base_label, 0) + 1
+        if name_counts[base_label] > 1:
+            base_label = f"{base_label} {name_counts[base_label]}"
+        labels[c] = f"{base_label} (n={n})"
     return labels
 
 
@@ -274,7 +281,8 @@ def load_clinical_features(cluster_df: pd.DataFrame) -> pd.DataFrame:
     treat_df = pd.read_csv(os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv"))
     ici_col = next((c for c in treat_df.columns if "ICI" in c.upper() and "_1" in c), None)
     if ici_col:
-        ici_df = treat_df[treat_df["treatment_line"] == 1][["DFCI_MRN", ici_col]].copy()
+        line1_mask = pd.to_numeric(treat_df["treatment_line"], errors="coerce") == 1
+        ici_df = treat_df.loc[line1_mask, ["DFCI_MRN", ici_col]].copy()
         ici_df = ici_df.rename(columns={ici_col: "ici_treated"})
     else:
         # If treatment_line column exists, mark anyone with any ICI
@@ -292,7 +300,10 @@ def load_clinical_features(cluster_df: pd.DataFrame) -> pd.DataFrame:
               .merge(stage_df, on="DFCI_MRN", how="left")
               .merge(ici_df, on="DFCI_MRN", how="left"))
 
-    merged["male"] = (merged["GENDER"].str.upper() == "M").astype(float)
+    gender = merged["GENDER"].astype("string").str.strip().str.upper()
+    merged["male"] = gender.isin(["M", "MALE"]).astype(float)
+    merged["stage_iv"] = pd.to_numeric(merged["stage_iv"], errors="coerce")
+    merged["ici_treated"] = pd.to_numeric(merged["ici_treated"], errors="coerce")
     return merged
 
 
