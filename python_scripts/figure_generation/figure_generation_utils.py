@@ -38,7 +38,7 @@ OUTPUT_DIR = resolve_output_dir()
 
 # compile_all_scheme_results.ipynb defines thresholds [0.01, 0.025, 0.05]
 # and writes labels via _threshold_to_label(...) -> 1pct, 2_5pct, 5pct.
-PREVALENCE_FILTERS_TO_PLOT = [None, "1pct", "2_5pct", "5pct"]
+PREVALENCE_FILTERS_TO_PLOT = ["2_5pct", "5pct"]
 
 
 def prevalence_filter_to_suffix(prevalence_filter: str | None) -> str:

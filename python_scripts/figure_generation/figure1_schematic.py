@@ -3,8 +3,8 @@
 Panels:
   A: Overview of notes to patient-level prediction
   B: Example patient timeline from notes to follow-up
-  C: Outcome endpoint families and representative endpoints
-  D: Cancer type distribution in the mortality cohort
+  C: Outcome endpoint counts per scheme
+  D: Cancer type distribution in the mortality cohort (top 10 labeled)
 
 Data sources:
   - Panel C: compiled_all_schemes_metrics.csv
@@ -14,7 +14,6 @@ Data sources:
 from __future__ import annotations
 
 import os
-import textwrap
 import warnings
 
 import matplotlib.patches as mpatches
@@ -245,7 +244,6 @@ def draw_panel_b(ax: plt.Axes) -> None:
             ha="center", va="bottom", fontsize=7.2, fontweight="bold", color="#1b6f8a")
 
     milestone_points = [
-        (8, "Risk score\nupdated", "#2563eb"),
         (18, "Incident\nendpoint", "#7c3aed"),
         (32, "Death or\ncensoring", "#dc2626"),
     ]
@@ -263,100 +261,45 @@ def draw_panel_b(ax: plt.Axes) -> None:
             ha="center", va="top", fontsize=6.4, color="#475569")
 
 
-def _clean_endpoint_label(label: str, max_len: int = 32) -> str:
-    label = str(label).replace("_", " ").strip()
-    if not label or label.lower() == "nan":
-        return "Unavailable"
-    return textwrap.shorten(label, width=max_len, placeholder="…")
-
-
-def summarize_endpoint_cards(compiled_csv: str, example_n: int = 3) -> dict[str, dict[str, object]]:
+def summarize_endpoint_counts(compiled_csv: str) -> pd.Series:
     df = load_compiled_metrics(compiled_csv)
-    summary: dict[str, dict[str, object]] = {}
-
-    for scheme in ["death_met", "icd3_post", "icd4_post", "phecode_post"]:
-        sub = df[df["scheme"] == scheme].copy()
-        if sub.empty:
-            summary[scheme] = {"count": 0, "examples": []}
-            continue
-
-        sub["event_display"] = sub["event_description"].fillna(sub["event"]).astype(str)
-        sort_cols = ["event_display"]
-        ascending = [True]
-        if "text_full_cohort_mean_c_index" in sub.columns:
-            sort_cols = ["text_full_cohort_mean_c_index", "event_display"]
-            ascending = [False, True]
-        sub = sub.sort_values(sort_cols, ascending=ascending)
-
-        examples: list[str] = []
-        for desc in sub["event_display"]:
-            cleaned = _clean_endpoint_label(desc)
-            if cleaned not in examples:
-                examples.append(cleaned)
-            if len(examples) == example_n:
-                break
-
-        summary[scheme] = {
-            "count": int(sub["event"].nunique()),
-            "examples": examples,
-        }
-
-    return summary
+    counts = (
+        df.groupby("scheme")["event"]
+        .nunique()
+        .reindex(["death_met", "icd3_post", "icd4_post", "phecode_post"])
+        .fillna(0)
+        .astype(int)
+    )
+    return counts
 
 
 def draw_panel_c(ax: plt.Axes, compiled_csv: str) -> None:
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.axis("off")
-    ax.set_title("Outcome Endpoints by Scheme")
+    counts = summarize_endpoint_counts(compiled_csv)
+    scheme_order = ["death_met", "icd3_post", "icd4_post", "phecode_post"]
+    labels = [SCHEME_CONFIG[s]["label"] for s in scheme_order]
+    colors = [SCHEME_COLORS[s] for s in scheme_order]
+    values = counts.reindex(scheme_order).values
 
-    cards = summarize_endpoint_cards(compiled_csv)
-    card_positions = {
-        "death_met": (0.03, 0.54),
-        "icd3_post": (0.52, 0.54),
-        "icd4_post": (0.03, 0.08),
-        "phecode_post": (0.52, 0.08),
-    }
-    card_w = 0.44
-    card_h = 0.34
-
-    for scheme, (x0, y0) in card_positions.items():
-        color = SCHEME_COLORS[scheme]
-        card = FancyBboxPatch(
-            (x0, y0),
-            card_w,
-            card_h,
-            boxstyle="round,pad=0.012,rounding_size=0.02",
-            facecolor="#fbfdff",
-            edgecolor=color,
-            linewidth=1.2,
+    bars = ax.bar(labels, values, color=colors, edgecolor="white", linewidth=0.8)
+    for bar, value in zip(bars, values):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + max(values) * 0.02,
+            str(int(value)),
+            ha="center",
+            va="bottom",
+            fontsize=8,
+            fontweight="bold",
         )
-        ax.add_patch(card)
 
-        info = cards[scheme]
-        ax.text(x0 + 0.03, y0 + card_h - 0.06, SCHEME_CONFIG[scheme]["label"],
-                ha="left", va="top", fontsize=8, fontweight="bold", color=color)
-        ax.text(x0 + 0.03, y0 + card_h - 0.12, SCHEME_CONFIG[scheme]["subtitle"],
-                ha="left", va="top", fontsize=6.4, color="#555")
-        ax.text(x0 + 0.03, y0 + card_h - 0.18, f"Endpoints: {info['count']}",
-                ha="left", va="top", fontsize=7, fontweight="bold", color="#111")
-        ax.text(x0 + 0.03, y0 + card_h - 0.24, "Examples",
-                ha="left", va="top", fontsize=6.7, color="#555")
-
-        examples = info["examples"] or ["No endpoints available"]
-        for idx, example in enumerate(examples[:3]):
-            ax.text(
-                x0 + 0.04,
-                y0 + card_h - 0.31 - idx * 0.07,
-                textwrap.fill(f"{idx + 1}. {example}", width=22),
-                ha="left",
-                va="top",
-                fontsize=6.5,
-                color="#222",
-            )
+    ax.set_title("Outcome Endpoints per Scheme")
+    ax.set_ylabel("Number of endpoints")
+    ax.tick_params(axis="x", rotation=20, labelsize=7.2)
+    ax.grid(axis="y", alpha=0.5)
+    ax.grid(axis="x", visible=False)
 
 
-def load_cancer_type_distribution(top_n: int = 8) -> pd.Series:
+def load_cancer_type_distribution() -> pd.Series:
     cohort_mrns = pd.read_csv(
         os.path.join(SURV_PATH, "death_met_embedding_prediction_df.csv"),
         usecols=["DFCI_MRN"],
@@ -379,12 +322,7 @@ def load_cancer_type_distribution(top_n: int = 8) -> pd.Series:
 
     counts = cancer_df["cancer_type"].dropna().astype(str).value_counts()
     counts.index = counts.index.str.replace("_", " ", regex=False)
-    if len(counts) > top_n:
-        other_n = int(counts.iloc[top_n:].sum())
-        counts = counts.head(top_n)
-        if other_n > 0:
-            counts.loc["OTHER"] = other_n
-    return counts.sort_values()
+    return counts.sort_values(ascending=False)
 
 
 def draw_panel_d(ax: plt.Axes) -> None:
@@ -401,15 +339,23 @@ def draw_panel_d(ax: plt.Axes) -> None:
         return
 
     total = int(counts.sum())
-    colors = plt.cm.YlGnBu(np.linspace(0.35, 0.85, len(counts)))
-    bars = ax.barh(counts.index, counts.values, color=colors, edgecolor="white", height=0.72)
+    n_types = len(counts)
+    top_n = min(10, n_types)
+    top_idx = set(range(top_n))
 
-    for bar, val in zip(bars, counts.values):
+    colors = plt.cm.YlGnBu(np.linspace(0.35, 0.85, n_types))
+    y_pos = np.arange(n_types)
+    bars = ax.barh(y_pos, counts.values, color=colors, edgecolor="white", height=0.72)
+    y_labels = [name if i in top_idx else "" for i, name in enumerate(counts.index)]
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(y_labels)
+
+    for i, (bar, val) in enumerate(zip(bars, counts.values)):
         pct = 100 * val / max(total, 1)
         ax.text(
             bar.get_width() + max(counts.max() * 0.02, 1.0),
             bar.get_y() + bar.get_height() / 2,
-            f"{val} ({pct:.1f}%)",
+            f"{val} ({pct:.1f}%)" if i in top_idx else f"{val}",
             va="center",
             fontsize=7,
         )
@@ -417,10 +363,21 @@ def draw_panel_d(ax: plt.Axes) -> None:
     ax.set_xlabel("Patients (n)")
     ax.set_title("Cancer Type Distribution")
     ax.spines["left"].set_visible(False)
-    ax.tick_params(axis="y", left=False, labelsize=7)
+    ax.tick_params(axis="y", left=False, labelsize=6.5)
     ax.grid(axis="x", alpha=0.5)
     ax.grid(axis="y", visible=False)
     ax.invert_yaxis()
+    if n_types > top_n:
+        ax.text(
+            0.99,
+            -0.08,
+            "Only top 10 cancer types labeled",
+            transform=ax.transAxes,
+            ha="right",
+            va="top",
+            fontsize=6.5,
+            color="#555",
+        )
 
 
 def main() -> None:

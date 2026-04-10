@@ -5,9 +5,10 @@ Panels:
   B: Pairwise overlap heatmap between modalities
   C: Scatter — text C-index (Y) vs. best-competing-modality C-index (X)
   D: Joint-model log HRs across endpoints for each modality
+  E: Average within-event modality rank by held-out C-index
 
 Data sources:
-  - Panels A, B, C: risk_score_coxph/univariate_modality_metrics.csv
+  - Panels A, B, C, E: risk_score_coxph/univariate_modality_metrics.csv
   - Panel D: risk_score_coxph/joint_model_betas.csv
 
 These files are produced by python_scripts/model_evaluation/feature_risk_score_coxph.py.
@@ -192,6 +193,22 @@ def build_metric_matrix(univar_df: pd.DataFrame, value_col: str) -> pd.DataFrame
               .reset_index())
     matrix.columns.name = None
     return matrix
+
+
+def compute_event_modality_ranks(univar_df: pd.DataFrame) -> pd.DataFrame:
+    """Rank modalities within each event by held-out C-index (1 = best)."""
+    rank_df = univar_df[
+        univar_df["modality"].isin(MODALITIES)
+        & univar_df["is_valid"]
+        & univar_df["mean_c_index"].notna()
+    ][["scheme", "event", "modality", "mean_c_index"]].copy()
+    if rank_df.empty:
+        return rank_df
+
+    rank_df["rank"] = rank_df.groupby(["scheme", "event"])["mean_c_index"].rank(
+        method="average", ascending=False
+    )
+    return rank_df
 
 
 def load_event_subset(prevalence_filter: str | None) -> set[tuple[str, str]] | None:
@@ -421,6 +438,52 @@ def draw_panel_d(ax: plt.Axes, beta_df: pd.DataFrame) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Panel E — average within-event modality rank
+# ---------------------------------------------------------------------------
+
+def draw_panel_e(ax: plt.Axes, univar_df: pd.DataFrame) -> None:
+    rank_df = compute_event_modality_ranks(univar_df)
+    if rank_df.empty:
+        ax.text(0.5, 0.5, "No valid unimodal C-index values found",
+                ha="center", va="center", transform=ax.transAxes)
+        return
+
+    rank_df["Modality"] = rank_df["modality"].map(MODALITY_DISPLAY)
+    summary = (
+        rank_df.groupby("Modality")
+        .agg(avg_rank=("rank", "mean"), n_events=("rank", "size"))
+        .reset_index()
+    )
+    if summary.empty:
+        ax.text(0.5, 0.5, "No modality rank summary available",
+                ha="center", va="center", transform=ax.transAxes)
+        return
+
+    mod_order = [MODALITY_DISPLAY[m] for m in MODALITIES]
+    summary = summary.set_index("Modality").reindex(mod_order).dropna(subset=["avg_rank"]).reset_index()
+    summary = summary.sort_values("avg_rank", ascending=True)
+    colors = [MODALITY_COLORS[m] for m in summary["Modality"]]
+
+    bars = ax.barh(summary["Modality"], summary["avg_rank"], color=colors, edgecolor="white", height=0.72)
+    for bar, avg_rank, n_events in zip(bars, summary["avg_rank"], summary["n_events"]):
+        ax.text(
+            bar.get_width() + 0.04,
+            bar.get_y() + bar.get_height() / 2,
+            f"{avg_rank:.2f} (n={int(n_events)})",
+            va="center",
+            fontsize=7,
+        )
+
+    ax.set_xlabel("Average rank per event (1 = best)")
+    ax.set_ylabel("")
+    ax.set_title("Average Modality Rank Across Events")
+    ax.set_xlim(0.9, max(1.5, float(summary["avg_rank"].max()) + 0.35))
+    ax.grid(axis="x", alpha=0.5)
+    ax.grid(axis="y", visible=False)
+    ax.invert_yaxis()
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -443,18 +506,20 @@ def main():
         univar_sub = subset_run_outputs(univar_df, event_subset)
         beta_sub = subset_run_outputs(beta_df, event_subset)
 
-        fig = plt.figure(figsize=(15, 13))
-        ax_a = fig.add_axes([0.07, 0.55, 0.38, 0.38])
-        ax_b = fig.add_axes([0.56, 0.55, 0.38, 0.38])
-        ax_c = fig.add_axes([0.07, 0.07, 0.38, 0.38])
-        ax_d = fig.add_axes([0.56, 0.07, 0.38, 0.38])
+        fig = plt.figure(figsize=(16.5, 13.0))
+        ax_a = fig.add_axes([0.04, 0.56, 0.28, 0.36])
+        ax_b = fig.add_axes([0.36, 0.56, 0.28, 0.36])
+        ax_c = fig.add_axes([0.68, 0.56, 0.28, 0.36])
+        ax_d = fig.add_axes([0.08, 0.08, 0.38, 0.35])
+        ax_e = fig.add_axes([0.54, 0.08, 0.38, 0.35])
 
         draw_panel_a(ax_a, univar_sub)
         draw_panel_b(ax_b, univar_sub)
         draw_panel_c(ax_c, univar_sub)
         draw_panel_d(ax_d, beta_sub)
+        draw_panel_e(ax_e, univar_sub)
 
-        for label, ax in {"A": ax_a, "B": ax_b, "C": ax_c, "D": ax_d}.items():
+        for label, ax in {"A": ax_a, "B": ax_b, "C": ax_c, "D": ax_d, "E": ax_e}.items():
             ax.text(-0.12, 1.04, label, transform=ax.transAxes,
                     fontsize=14, fontweight="bold", va="top", ha="right")
 

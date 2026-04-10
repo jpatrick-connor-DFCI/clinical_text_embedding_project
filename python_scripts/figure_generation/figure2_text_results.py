@@ -34,7 +34,6 @@ from figure_generation_utils import (
 )
 from lifelines import KaplanMeierFitter
 from lifelines.statistics import multivariate_logrank_test
-from matplotlib.patches import FancyBboxPatch
 
 SCHEME_CONFIG = {
     "icd3_post":    {"embedding_file": "level_3_ICD_post_embedding_prediction_df.csv",
@@ -266,58 +265,99 @@ def _get_scheme_event_rankings(
 
 
 def draw_panel_c(ax: plt.Axes, df: pd.DataFrame) -> None:
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.axis("off")
-    ax.set_title("Best and Worst Improved Events by Scheme")
-
-    card_positions = {
-        "death_met": (0.03, 0.54),
-        "icd3_post": (0.52, 0.54),
-        "icd4_post": (0.03, 0.08),
-        "phecode_post": (0.52, 0.08),
-    }
-    card_w = 0.44
-    card_h = 0.34
-
-    for scheme, (x0, y0) in card_positions.items():
-        color = SCHEME_COLORS[scheme]
+    rows: list[dict[str, object]] = []
+    for scheme in ["death_met", "icd3_post", "icd4_post", "phecode_post"]:
         best, worst = _get_scheme_event_rankings(df, scheme)
+        combined = pd.concat([worst, best], ignore_index=True)
+        if combined.empty:
+            continue
+        for _, row in combined.iterrows():
+            rows.append(
+                {
+                    "scheme": scheme,
+                    "scheme_label": SCHEME_DISPLAY[scheme],
+                    "event_label": _clean_event_label(row["event_display"], max_len=30),
+                    "delta_c_index": float(row["delta_c_index"]),
+                }
+            )
 
-        card = FancyBboxPatch(
-            (x0, y0),
-            card_w,
-            card_h,
-            boxstyle="round,pad=0.012,rounding_size=0.02",
-            facecolor="#fbfdff",
-            edgecolor=color,
-            linewidth=1.2,
+    if not rows:
+        ax.text(0.5, 0.5, "No event-level delta C-index data available",
+                ha="center", va="center", transform=ax.transAxes)
+        return
+
+    plot_df = pd.DataFrame(rows)
+    max_abs = max(0.01, float(plot_df["delta_c_index"].abs().max()))
+
+    # Build grouped y positions with gaps so each scheme looks like a branch cluster.
+    group_gap = 1.1
+    y_positions: list[float] = []
+    group_centers: dict[str, float] = {}
+    scheme_bounds: dict[str, tuple[float, float]] = {}
+    y_cursor = 0.0
+    ordered_rows = []
+    for scheme in ["death_met", "icd3_post", "icd4_post", "phecode_post"]:
+        sub = plot_df[plot_df["scheme"] == scheme].sort_values("delta_c_index")
+        if sub.empty:
+            continue
+        sub = sub.copy()
+        ys = [y_cursor + i for i in range(len(sub))]
+        y_positions.extend(ys)
+        sub["y"] = ys
+        ordered_rows.append(sub)
+        group_centers[scheme] = float(np.mean(ys))
+        scheme_bounds[scheme] = (min(ys), max(ys))
+        y_cursor = ys[-1] + 1 + group_gap
+
+    plot_df = pd.concat(ordered_rows, ignore_index=True)
+
+    neg = plot_df[plot_df["delta_c_index"] < 0]
+    pos = plot_df[plot_df["delta_c_index"] >= 0]
+    ax.barh(neg["y"], neg["delta_c_index"], color="#b55852", edgecolor="white", height=0.7)
+    ax.barh(pos["y"], pos["delta_c_index"], color="#1665a2", edgecolor="white", height=0.7)
+
+    # Central trunk and branch connectors for a tree-like look.
+    y_min = float(plot_df["y"].min()) - 0.7
+    y_max = float(plot_df["y"].max()) + 0.7
+    ax.vlines(0, y_min, y_max, color="#555", lw=1.1, zorder=0)
+    for scheme in ["death_met", "icd3_post", "icd4_post", "phecode_post"]:
+        if scheme not in scheme_bounds:
+            continue
+        low, high = scheme_bounds[scheme]
+        center = group_centers[scheme]
+        ax.vlines(0, low - 0.35, high + 0.35, color=SCHEME_COLORS[scheme], lw=2.0, alpha=0.55)
+        ax.text(
+            0,
+            center,
+            SCHEME_DISPLAY[scheme],
+            ha="center",
+            va="center",
+            fontsize=7,
+            fontweight="bold",
+            color=SCHEME_COLORS[scheme],
+            bbox=dict(boxstyle="round,pad=0.18", fc="white", ec=SCHEME_COLORS[scheme], alpha=0.95),
         )
-        ax.add_patch(card)
 
-        ax.text(x0 + 0.03, y0 + card_h - 0.05, SCHEME_DISPLAY[scheme],
-                ha="left", va="top", fontsize=8, fontweight="bold", color=color)
-        ax.text(x0 + 0.03, y0 + card_h - 0.10, "Best",
-                ha="left", va="top", fontsize=6.7, fontweight="bold", color="#1665a2")
-        ax.text(x0 + 0.24, y0 + card_h - 0.10, "Worst",
-                ha="left", va="top", fontsize=6.7, fontweight="bold", color="#b55852")
+    for _, row in plot_df.iterrows():
+        y = float(row["y"])
+        val = float(row["delta_c_index"])
+        label = f"{row['event_label']} ({val:+.3f})"
+        if val >= 0:
+            x_text = val + max_abs * 0.02
+            ax.text(x_text, y, label, ha="left", va="center", fontsize=6.2, color="#164e78")
+            ax.hlines(y, 0, min(val, max_abs * 0.08), color="#9ca3af", lw=0.8, zorder=0)
+        else:
+            x_text = val - max_abs * 0.02
+            ax.text(x_text, y, label, ha="right", va="center", fontsize=6.2, color="#7a2e2a")
+            ax.hlines(y, max(val, -max_abs * 0.08), 0, color="#9ca3af", lw=0.8, zorder=0)
 
-        for idx in range(TOP_EVENTS_PER_SCHEME):
-            y_pos = y0 + card_h - 0.16 - idx * 0.047
-
-            if idx < len(best):
-                row = best.iloc[idx]
-                label = _clean_event_label(row["event_display"])
-                ax.text(x0 + 0.03, y_pos,
-                        f"{idx + 1}. {label} ({row['delta_c_index']:+.3f})",
-                        ha="left", va="top", fontsize=5.6, color="#1665a2")
-
-            if idx < len(worst):
-                row = worst.iloc[idx]
-                label = _clean_event_label(row["event_display"])
-                ax.text(x0 + 0.24, y_pos,
-                        f"{idx + 1}. {label} ({row['delta_c_index']:+.3f})",
-                        ha="left", va="top", fontsize=5.6, color="#b55852")
+    ax.set_title("Tree-Like Event Delta C-index by Scheme")
+    ax.set_xlabel("Delta C-index (text - base)")
+    ax.set_yticks([])
+    ax.set_xlim(-max_abs * 2.05, max_abs * 2.05)
+    ax.set_ylim(y_max + 0.2, y_min - 0.2)
+    ax.grid(axis="x", alpha=0.35)
+    ax.grid(axis="y", visible=False)
 
 
 # ---------------------------------------------------------------------------
