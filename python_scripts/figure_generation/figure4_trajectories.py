@@ -20,7 +20,7 @@ Data sources:
       Columns: DFCI_MRN, CANCER_STAGE_2.0, CANCER_STAGE_3.0, CANCER_STAGE_4.0, ...
 
   - Treatment (ICI flag):
-      {FEATURE_PATH}/categorical_treatment_data_by_line.csv
+      {FEATURE_PATH}/categorical_treatment_data_by_line.csv.gz
       Columns: DFCI_MRN, treatment_line, PX_on_ICI_1 (or similar)
 
   - Sex from survival/demographics:
@@ -278,7 +278,7 @@ def load_clinical_features(cluster_df: pd.DataFrame) -> pd.DataFrame:
     stage_df = stage_df[["DFCI_MRN", "stage_iv"]]
 
     # ICI treatment flag
-    treat_df = pd.read_csv(os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv"))
+    treat_df = pd.read_csv(os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv.gz"))
     ici_col = next((c for c in treat_df.columns if "ICI" in c.upper() and "_1" in c), None)
     if ici_col:
         line1_mask = pd.to_numeric(treat_df["treatment_line"], errors="coerce") == 1

@@ -8,7 +8,7 @@ Panels:
 
 Data sources:
   - Panel C: all_schemes_compiled_metrics.csv
-  - Panel D: cancer_type_df.csv + death_met_embedding_prediction_df.csv.gz
+  - Panel D: cancer_type_df.csv.gz + death_met_embedding_prediction_df.csv.gz
 """
 
 from __future__ import annotations
@@ -307,7 +307,7 @@ def _resolve_cancer_type_labels(cancer_df: pd.DataFrame, type_cols: list[str]) -
         return labels.fillna("UNSPECIFIED")
 
     if not type_cols:
-        raise ValueError("Could not identify cancer type columns in cancer_type_df.csv")
+        raise ValueError("Could not identify cancer type columns in cancer_type_df.csv.gz")
 
     type_matrix = cancer_df[type_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
     positive = type_matrix > 0
@@ -350,7 +350,7 @@ def load_cancer_type_distribution() -> pd.Series:
         usecols=["DFCI_MRN"],
     )["DFCI_MRN"]
 
-    cancer_df = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_type_df.csv"))
+    cancer_df = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_type_df.csv.gz"))
     cancer_df = cancer_df[cancer_df["DFCI_MRN"].isin(cohort_mrns)].copy()
     type_cols = [c for c in cancer_df.columns if c.startswith("CANCER_TYPE_")]
 
