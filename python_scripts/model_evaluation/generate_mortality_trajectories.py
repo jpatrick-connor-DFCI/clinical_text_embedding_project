@@ -1,5 +1,6 @@
 """Generate Mortality Trajectories script for model evaluation workflows."""
 
+import gzip
 import os
 from tqdm import tqdm
 import numpy as np
@@ -18,10 +19,11 @@ os.makedirs(TRAJECTORY_PATH, exist_ok=True)
 os.environ["JOBLIB_DEFAULT_WORKER_TIMEOUT"] = "600"
 
 # Load datasets
-notes_meta = pd.read_csv(NOTES_PATH + 'full_VTE_embeddings_metadata.csv')
-embeddings_data = np.load(open(NOTES_PATH + 'full_VTE_embeddings_as_array.npy', 'rb'))
-events_data = pd.read_csv(SURV_PATH + 'death_met_surv_df.csv')
-cancer_type_df = pd.read_csv(os.path.join(FEATURE_PATH, 'cancer_type_df.csv'))
+notes_meta = pd.read_csv(NOTES_PATH + 'full_VTE_embeddings_metadata.csv.gz')
+with gzip.open(NOTES_PATH + 'full_VTE_embeddings_as_array.npy.gz', 'rb') as f:
+    embeddings_data = np.load(f)
+events_data = pd.read_csv(SURV_PATH + 'death_met_surv_df.csv.gz')
+cancer_type_df = pd.read_csv(os.path.join(FEATURE_PATH, 'cancer_type_df.csv.gz'))
 
 event='death'
 alphas_to_test = np.logspace(-5, 0, 25)
@@ -92,4 +94,4 @@ for month_adj in tqdm(months_to_test):
     except:
         continue
     
-trajectory_predictions_df.to_csv(os.path.join(TRAJECTORY_PATH, f'survival_trajectories_w_decay_param_{decay_param}.csv'), index=False)
+trajectory_predictions_df.to_csv(os.path.join(TRAJECTORY_PATH, f'survival_trajectories_w_decay_param_{decay_param}.csv.gz'), index=False)

@@ -65,7 +65,7 @@ for cohort in COHORTS:
         for cancer_type in CANCER_TYPES:
             # Diagnostics
             diag_path = os.path.join(run_path, f'{cancer_type}_diagnostics/')
-            ess_file = os.path.join(diag_path, 'effective_sample_sizes.csv')
+            ess_file = os.path.join(diag_path, 'effective_sample_sizes.csv.gz')
             if os.path.isfile(ess_file):
                 ess = pd.read_csv(ess_file)
                 ess['cohort'] = cohort
@@ -74,7 +74,7 @@ for cohort in COHORTS:
 
             # Track 1
             for weight in TRACK1_WEIGHTS:
-                fname = f'{cancer_type}_track1_{weight}_ICI_only.csv'
+                fname = f'{cancer_type}_track1_{weight}_ICI_only.csv.gz'
                 fpath = os.path.join(run_path, fname)
                 if os.path.isfile(fpath):
                     df = pd.read_csv(fpath)
@@ -87,7 +87,7 @@ for cohort in COHORTS:
 
             # Track 2
             for weight in TRACK2_WEIGHTS:
-                fname = f'{cancer_type}_track2_{weight}_interaction.csv'
+                fname = f'{cancer_type}_track2_{weight}_interaction.csv.gz'
                 fpath = os.path.join(run_path, fname)
                 if os.path.isfile(fpath):
                     df = pd.read_csv(fpath)
@@ -104,8 +104,8 @@ t2 = pd.concat(all_t2, ignore_index=True) if all_t2 else pd.DataFrame()
 print(f"Track 1 (ICI-only): {len(t1)} significant hits")
 print(f"Track 2 (interaction): {len(t2)} significant hits")
 
-t1.to_csv(os.path.join(OUTPUT_DIR, 'track1_all_significant_hits.csv'), index=False)
-t2.to_csv(os.path.join(OUTPUT_DIR, 'track2_all_significant_hits.csv'), index=False)
+t1.to_csv(os.path.join(OUTPUT_DIR, 'track1_all_significant_hits.csv.gz'), index=False)
+t2.to_csv(os.path.join(OUTPUT_DIR, 'track2_all_significant_hits.csv.gz'), index=False)
 
 # ================================================
 # 2. Cohort patient counts by cancer type
@@ -115,7 +115,7 @@ cohort_counts_rows = []
 
 for cohort in COHORTS:
     # --- Original matched cohort (before any filtering) ---
-    cohort_file = os.path.join(COHORT_PATH, f'matched_cohort_{cohort}.csv')
+    cohort_file = os.path.join(COHORT_PATH, f'matched_cohort_{cohort}.csv.gz')
     if not os.path.isfile(cohort_file):
         print(f"  Cohort file not found: {cohort_file}")
         continue
@@ -135,7 +135,7 @@ for cohort in COHORTS:
 
     # --- IPTW df counts per PS model (after common_source_df filtering) ---
     for ps_model in PS_MODELS:
-        iptw_file = os.path.join(MARKER_PATH, f'IPTW_df_{cohort}_{ps_model}.csv')
+        iptw_file = os.path.join(MARKER_PATH, f'IPTW_df_{cohort}_{ps_model}.csv.gz')
         if not os.path.isfile(iptw_file):
             print(f"  IPTW file not found: {iptw_file}")
             continue
@@ -173,7 +173,7 @@ for cohort in COHORTS:
         if not os.path.isdir(run_path):
             continue
         for cancer_type in CANCER_TYPES:
-            ess_file = os.path.join(run_path, f'{cancer_type}_diagnostics/effective_sample_sizes.csv')
+            ess_file = os.path.join(run_path, f'{cancer_type}_diagnostics/effective_sample_sizes.csv.gz')
             if not os.path.isfile(ess_file):
                 continue
             ess = pd.read_csv(ess_file)
@@ -190,7 +190,7 @@ for cohort in COHORTS:
             })
 
 cohort_counts = pd.DataFrame(cohort_counts_rows)
-cohort_counts.to_csv(os.path.join(OUTPUT_DIR, 'cohort_patient_counts.csv'), index=False)
+cohort_counts.to_csv(os.path.join(OUTPUT_DIR, 'cohort_patient_counts.csv.gz'), index=False)
 print(f"\nCohort patient counts ({len(cohort_counts)} rows):")
 print(cohort_counts.to_string(index=False))
 
@@ -199,7 +199,7 @@ print(cohort_counts.to_string(index=False))
 # ================================================
 if diag_rows:
     diag_df = pd.concat(diag_rows, ignore_index=True)
-    diag_df.to_csv(os.path.join(OUTPUT_DIR, 'scheme_diagnostics_summary.csv'), index=False)
+    diag_df.to_csv(os.path.join(OUTPUT_DIR, 'scheme_diagnostics_summary.csv.gz'), index=False)
     print(f"\nDiagnostics summary saved ({len(diag_df)} rows)")
 
 print(f"\nAll outputs saved to {OUTPUT_DIR}")

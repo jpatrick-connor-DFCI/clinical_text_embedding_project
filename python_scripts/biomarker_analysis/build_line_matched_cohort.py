@@ -35,7 +35,7 @@ TREATMENT_FILE = '/data/gusev/USERS/mjsaleh/profile_lines_of_rx/profile_rxlines.
 
 
 # === Load data ===
-surv_df = pd.read_csv(os.path.join(SURV_PATH, 'death_met_surv_df.csv'))
+surv_df = pd.read_csv(os.path.join(SURV_PATH, 'death_met_surv_df.csv.gz'))
 surv_df['first_treatment_date'] = pd.to_datetime(surv_df['first_treatment_date'])
 cohort_mrns = set(surv_df['DFCI_MRN'].unique())
 
@@ -47,7 +47,7 @@ treated_mrns = set(treatment_df['MRN'].unique())
 
 med_lines_df = pd.read_csv(MED_LINES_FILE).rename(columns={'MRN': 'DFCI_MRN'})
 
-cancer_type_df = pd.read_csv(os.path.join(CLINICAL_FEATURE_PATH, 'cancer_type_df.csv'))
+cancer_type_df = pd.read_csv(os.path.join(CLINICAL_FEATURE_PATH, 'cancer_type_df.csv.gz'))
 cancer_type_cols = [c for c in cancer_type_df.columns if c.startswith('CANCER_TYPE_')]
 cancer_type_df['cancer_type'] = cancer_type_df[cancer_type_cols].idxmax(axis=1)
 cancer_type_map = dict(zip(cancer_type_df['DFCI_MRN'], cancer_type_df['cancer_type']))
@@ -126,8 +126,8 @@ print(f"Cohort 1: {n_ici} ICI + {n_ctrl} controls = {len(cohort1)} total")
 print(f"  Cancer type distribution:")
 print(cohort1.groupby(['PX_on_ICI', 'cancer_type']).size().unstack(fill_value=0))
 
-cohort1.to_csv(os.path.join(COHORT_PATH, 'matched_cohort_cohort1.csv'), index=False)
-print(f"  Saved to {os.path.join(COHORT_PATH, 'matched_cohort_cohort1.csv')}")
+cohort1.to_csv(os.path.join(COHORT_PATH, 'matched_cohort_cohort1.csv.gz'), index=False)
+print(f"  Saved to {os.path.join(COHORT_PATH, 'matched_cohort_cohort1.csv.gz')}")
 
 
 # ================================================================
@@ -227,5 +227,5 @@ else:
     print(f"  Line distribution:")
     print(cohort2.groupby(['PX_on_ICI', 'line_category']).size().unstack(fill_value=0))
 
-    cohort2.to_csv(os.path.join(COHORT_PATH, 'matched_cohort_cohort2.csv'), index=False)
-    print(f"  Saved to {os.path.join(COHORT_PATH, 'matched_cohort_cohort2.csv')}")
+    cohort2.to_csv(os.path.join(COHORT_PATH, 'matched_cohort_cohort2.csv.gz'), index=False)
+    print(f"  Saved to {os.path.join(COHORT_PATH, 'matched_cohort_cohort2.csv.gz')}")

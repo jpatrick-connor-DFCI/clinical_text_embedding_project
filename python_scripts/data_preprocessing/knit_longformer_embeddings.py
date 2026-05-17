@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import re
@@ -136,11 +137,12 @@ def main() -> None:
         metadata_df["NOTE_DATETIME"] - metadata_df["FIRST_TREATMENT_START_DT"]
     ).dt.days
 
-    metadata_file = PROC_PATH / "full_VTE_embeddings_metadata.csv"
-    embeds_file = PROC_PATH / "full_VTE_embeddings_as_array.npy"
+    metadata_file = PROC_PATH / "full_VTE_embeddings_metadata.csv.gz"
+    embeds_file = PROC_PATH / "full_VTE_embeddings_as_array.npy.gz"
 
     metadata_df.to_csv(metadata_file, index=False)
-    np.save(embeds_file, embeddings)
+    with gzip.open(embeds_file, 'wb') as f:
+        np.save(f, embeddings)
 
     missing_tstart = int(metadata_df["FIRST_TREATMENT_START_DT"].isna().sum())
 

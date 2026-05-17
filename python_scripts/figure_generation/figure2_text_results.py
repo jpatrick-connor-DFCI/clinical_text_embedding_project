@@ -7,8 +7,8 @@ Panels:
   D: KM curve — survival by risk quartile for all-cause mortality
 
 Data sources:
-  - Panels A, B, C: compiled_all_schemes_compiled_metrics.csv
-  - Panel D: held_out_risk_scores/death/text_risk_scores.csv + death_met_embedding_prediction_df.csv
+  - Panels A, B, C: all_schemes_compiled_metrics.csv.gz
+  - Panel D: held_out_risk_scores/death/text_risk_scores.csv.gz + death_met_embedding_prediction_df.csv.gz
 """
 
 from __future__ import annotations
@@ -36,13 +36,13 @@ from lifelines import KaplanMeierFitter
 from lifelines.statistics import multivariate_logrank_test
 
 SCHEME_CONFIG = {
-    "icd3_post":    {"embedding_file": "level_3_ICD_post_embedding_prediction_df.csv",
+    "icd3_post":    {"embedding_file": "level_3_ICD_post_embedding_prediction_df.csv.gz",
                      "results_dir":    "level_3_ICD_post_results"},
-    "icd4_post":    {"embedding_file": "level_4_ICD_post_embedding_prediction_df.csv",
+    "icd4_post":    {"embedding_file": "level_4_ICD_post_embedding_prediction_df.csv.gz",
                      "results_dir":    "level_4_ICD_post_results"},
-    "phecode_post": {"embedding_file": "phecode_post_embedding_prediction_df.csv",
+    "phecode_post": {"embedding_file": "phecode_post_embedding_prediction_df.csv.gz",
                      "results_dir":    "phecode_post_results"},
-    "death_met":    {"embedding_file": "death_met_embedding_prediction_df.csv",
+    "death_met":    {"embedding_file": "death_met_embedding_prediction_df.csv.gz",
                      "results_dir":    "death_met_results"},
 }
 SCHEME_DISPLAY = {
@@ -88,8 +88,8 @@ def load_compiled_metrics(prevalence_filter: str | None = "1pct", allow_fallback
     if prevalence_filter in (None, ""):
         path = get_compiled_metrics_path(None)
     else:
-        filtered = os.path.join(COMPILED_DIR, f"all_schemes_compiled_metrics_{prevalence_filter}.csv")
-        base = os.path.join(COMPILED_DIR, "all_schemes_compiled_metrics.csv")
+        filtered = os.path.join(COMPILED_DIR, f"all_schemes_compiled_metrics_{prevalence_filter}.csv.gz")
+        base = os.path.join(COMPILED_DIR, "all_schemes_compiled_metrics.csv.gz")
         path = filtered if os.path.isfile(filtered) else base
         if not allow_fallback and path != filtered:
             raise FileNotFoundError(f"Compiled metrics not found for filter {prevalence_filter!r}: {filtered}")
@@ -111,7 +111,7 @@ def load_risk_scores(scheme: str, event: str, modality: str = "text") -> pd.Data
     results_dir = SCHEME_CONFIG[scheme]["results_dir"]
     fpath = os.path.join(
         RESULTS_PATH, results_dir, "held_out_risk_scores", event,
-        f"{modality}_risk_scores.csv"
+        f"{modality}_risk_scores.csv.gz"
     )
     if not os.path.isfile(fpath):
         return None

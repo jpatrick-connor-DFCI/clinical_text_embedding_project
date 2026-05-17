@@ -41,7 +41,7 @@ normalize_phecode <- function(codes) {
 
 # ── 1. Load unique ICD-10 codes from dataset ────────────────────────────────
 cat("Loading ICD data …\n")
-icd_file <- file.path(SURV_PATH, "timestamped_icd_info.csv")
+icd_file <- file.path(SURV_PATH, "timestamped_icd_info.csv.gz")
 icd_dt <- fread(icd_file, select = "DIAGNOSIS_ICD10_CD")
 raw_codes <- unique(na.omit(icd_dt$DIAGNOSIS_ICD10_CD))
 cat(sprintf("  %d unique raw ICD-10 codes in dataset\n", length(raw_codes)))
@@ -168,7 +168,7 @@ cat(sprintf("  Unique phecodes:                       %d\n", length(unique(final
 output <- final[, .(icd10_code = icd10_norm, phecode, source)]
 output <- output[order(icd10_code, phecode)]
 
-out_path <- file.path(CODE_PATH, "icd10_to_phecode_mapping.csv")
+out_path <- file.path(CODE_PATH, "icd10_to_phecode_mapping.csv.gz")
 fwrite(output, out_path)
 cat(sprintf("\nWrote mapping: %s  (%d rows)\n", out_path, nrow(output)))
 
@@ -177,7 +177,7 @@ if (length(still_unmapped) > 0) {
     icd10_code  = sort(still_unmapped),
     raw_example = norm_to_raw[sort(still_unmapped)]
   )
-  unmapped_path <- file.path(CODE_PATH, "icd10_unmapped_codes.csv")
+  unmapped_path <- file.path(CODE_PATH, "icd10_unmapped_codes.csv.gz")
   fwrite(unmapped_dt, unmapped_path)
   cat(sprintf("Wrote unmapped codes: %s  (%d rows)\n", unmapped_path, nrow(unmapped_dt)))
 }

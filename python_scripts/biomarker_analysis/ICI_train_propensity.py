@@ -38,7 +38,7 @@ BUFFERS = [30]
 PS_MODELS = ['covariates_only', 'covariates_plus_embeddings']
 
 cancer_type_df = pd.read_csv(
-    os.path.join(DATA_PATH, 'clinical_and_genomic_features/cancer_type_df.csv'))
+    os.path.join(DATA_PATH, 'clinical_and_genomic_features/cancer_type_df.csv.gz'))
 
 
 # === Propensity CV training function ===
@@ -118,7 +118,7 @@ for COHORT in COHORTS:
         buffer_input_path = os.path.join(EMBEDDING_DATA_PATH, f'w_{buffer}_day_buffer/')
 
         pred_df = pd.read_csv(
-            os.path.join(buffer_input_path, f'ICI_prediction_df_w_{buffer}_day_buffer.csv'))
+            os.path.join(buffer_input_path, f'ICI_prediction_df_w_{buffer}_day_buffer.csv.gz'))
 
         # Embedding feature columns
         embedding_cols = [col for col in pred_df.columns
@@ -139,7 +139,7 @@ for COHORT in COHORTS:
 
         demo_cols = ['GENDER', 'AGE_AT_TREATMENTSTART']
         if 'GENDER' not in pred_with_covars.columns or 'AGE_AT_TREATMENTSTART' not in pred_with_covars.columns:
-            surv_demo = pd.read_csv(os.path.join(SURV_PATH, 'death_met_surv_df.csv'),
+            surv_demo = pd.read_csv(os.path.join(SURV_PATH, 'death_met_surv_df.csv.gz'),
                                     usecols=['DFCI_MRN', 'GENDER', 'AGE_AT_TREATMENTSTART'])
             pred_with_covars = pred_with_covars.merge(surv_demo, on='DFCI_MRN', how='left')
 
@@ -166,14 +166,14 @@ for COHORT in COHORTS:
 
             label = f"buffer={buffer}, {ps_model}"
             out_df = train_propensity_cv(common_source_df, features, label)
-            out_df.to_csv(os.path.join(output_path, 'predictions.csv'), index=False)
+            out_df.to_csv(os.path.join(output_path, 'predictions.csv.gz'), index=False)
 
     # === Plot ROC curves for the 30-day buffer ===
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
     PLOT_BUFFER = 30
 
     for i, ps_model in enumerate(PS_MODELS):
-        pred_path = os.path.join(OUTPUT_BASE, f'{ps_model}_propensity/w_{PLOT_BUFFER}_day_buffer/predictions.csv')
+        pred_path = os.path.join(OUTPUT_BASE, f'{ps_model}_propensity/w_{PLOT_BUFFER}_day_buffer/predictions.csv.gz')
         pred_df = pd.read_csv(pred_path)
 
         auc = roc_auc_score(pred_df['ground_truth'], pred_df['model_probs'])

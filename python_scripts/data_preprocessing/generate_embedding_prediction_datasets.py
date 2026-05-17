@@ -1,5 +1,6 @@
 """Generate Embedding Prediction Datasets script for data preprocessing workflows."""
 
+import gzip
 import os
 import re
 from typing import Optional
@@ -155,9 +156,10 @@ def _filter_endpoint_events_by_min_post_baseline_count(
 
 def _load_shared_inputs() -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray, pd.DataFrame]:
     base_vte_data_sub = pd.read_csv(os.path.join(INTAE_DATA_PATH, 'follow_up_vte_df_cohort.csv'))[BASE_INPUT_COLS].copy()
-    split_ehr_icd_subset = pd.read_csv(os.path.join(SURV_PATH, 'timestamped_icd_info.csv'))
-    embeddings_data = np.load(os.path.join(NOTES_PATH, 'full_VTE_embeddings_as_array.npy'))
-    notes_meta = pd.read_csv(os.path.join(NOTES_PATH, 'full_VTE_embeddings_metadata.csv'))
+    split_ehr_icd_subset = pd.read_csv(os.path.join(SURV_PATH, 'timestamped_icd_info.csv.gz'))
+    with gzip.open(os.path.join(NOTES_PATH, 'full_VTE_embeddings_as_array.npy.gz'), 'rb') as f:
+        embeddings_data = np.load(f)
+    notes_meta = pd.read_csv(os.path.join(NOTES_PATH, 'full_VTE_embeddings_metadata.csv.gz'))
     return base_vte_data_sub, split_ehr_icd_subset, embeddings_data, notes_meta
 
 
@@ -275,12 +277,12 @@ def _write_outputs(
     # Always include core survival events (death, vte) so downstream scripts can use them
     core_cols = [c for c in CORE_EVENT_COLS if c in vte_data_sub.columns]
     events_data_sub = vte_data_sub[BASE_OUTPUT_COLS + core_cols + event_cols + tt_event_cols]
-    events_data_sub.to_csv(os.path.join(SURV_PATH, surv_filename), index=False)
+    events_data_sub.to_csv(os.path.join(SURV_PATH, surv_filename + '.gz'), index=False)
 
     monthly_data = events_data_sub.merge(pooled_embedding_df, on='DFCI_MRN', how='left')
     embedding_cols = [col for col in pooled_embedding_df.columns if col != 'DFCI_MRN']
     monthly_data = monthly_data.dropna(subset=embedding_cols)
-    monthly_data.to_csv(os.path.join(SURV_PATH, embedding_filename), index=False)
+    monthly_data.to_csv(os.path.join(SURV_PATH, embedding_filename + '.gz'), index=False)
 
 
 def _write_death_met_outputs(
@@ -304,12 +306,12 @@ def _write_death_met_outputs(
 
     core_cols = [c for c in CORE_EVENT_COLS if c in vte_data_sub.columns and c not in event_cols and c not in tt_event_cols]
     events_data_sub = vte_data_sub[BASE_OUTPUT_COLS + core_cols + event_cols + tt_event_cols]
-    events_data_sub.to_csv(os.path.join(SURV_PATH, surv_filename), index=False)
+    events_data_sub.to_csv(os.path.join(SURV_PATH, surv_filename + '.gz'), index=False)
 
     monthly_data = events_data_sub.merge(pooled_embedding_df, on='DFCI_MRN', how='left')
     embedding_cols = [col for col in pooled_embedding_df.columns if col != 'DFCI_MRN']
     monthly_data = monthly_data.dropna(subset=embedding_cols)
-    monthly_data.to_csv(os.path.join(SURV_PATH, embedding_filename), index=False)
+    monthly_data.to_csv(os.path.join(SURV_PATH, embedding_filename + '.gz'), index=False)
 
 
 # Shared input loading (once)
@@ -358,7 +360,7 @@ icd3_codes = _prefilter_events_by_prevalence(
 print(f"  Level-3 ICD codes (>=1% prevalence): {len(icd3_codes)}")
 
 pd.Series(sorted(icd3_codes), name='ICD10_LEVEL_3_CD').to_csv(
-    os.path.join(CODE_PATH, 'allowed_icd3_post_codes.csv'), index=False
+    os.path.join(CODE_PATH, 'allowed_icd3_post_codes.csv.gz'), index=False
 )
 
 vte_data_sub = base_vte_data_sub.copy()
@@ -399,7 +401,7 @@ icd4_codes = _prefilter_events_by_prevalence(
 print(f"  Level-4 ICD codes (>=1% prevalence): {len(icd4_codes)}")
 
 pd.Series(sorted(icd4_codes), name='ICD10_LEVEL_4_CD').to_csv(
-    os.path.join(CODE_PATH, 'allowed_icd4_post_codes.csv'), index=False
+    os.path.join(CODE_PATH, 'allowed_icd4_post_codes.csv.gz'), index=False
 )
 
 vte_data_sub = base_vte_data_sub.copy()
@@ -432,7 +434,7 @@ _write_outputs(
 # =========================
 # PHECODE DATASET (first post-treatment instance)
 # =========================
-mapping_file = os.path.join(CODE_PATH, 'icd10_to_phecode_mapping.csv')
+mapping_file = os.path.join(CODE_PATH, 'icd10_to_phecode_mapping.csv.gz')
 mapping_df = pd.read_csv(mapping_file)
 mapping_icd_col = _resolve_column(mapping_df, 'icd10_code')
 mapping_phecode_col = _resolve_column(mapping_df, 'phecode')
@@ -454,7 +456,7 @@ phecode_codes = _prefilter_events_by_prevalence(
 print(f"  Phecode codes (>=1% prevalence): {len(phecode_codes)}")
 
 pd.Series(sorted(phecode_codes), name='PHECODE').to_csv(
-    os.path.join(CODE_PATH, 'allowed_phecode_post_codes.csv'), index=False
+    os.path.join(CODE_PATH, 'allowed_phecode_post_codes.csv.gz'), index=False
 )
 
 vte_data_sub = base_vte_data_sub.copy()

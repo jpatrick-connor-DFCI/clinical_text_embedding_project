@@ -20,7 +20,7 @@ os.makedirs(CLINICAL_FEATURE_PATH, exist_ok=True)
 
 # === Shared cohort data loads ===
 vte_data = pd.read_csv(os.path.join(INTAE_DATA_PATH, 'follow_up_vte_df_cohort.csv'), usecols=['DFCI_MRN', 'first_treatment_date'])
-time_decayed_events_df = pd.read_csv(os.path.join(SURV_PATH, 'level_3_ICD_post_embedding_prediction_df.csv'), usecols=['DFCI_MRN'])
+time_decayed_events_df = pd.read_csv(os.path.join(SURV_PATH, 'level_3_ICD_post_embedding_prediction_df.csv.gz'), usecols=['DFCI_MRN'])
 cancer_type_df = pd.read_csv(
     os.path.join(INTAE_DATA_PATH, 'first_treatments_dfci_w_inferred_cancers.csv'),
     usecols=['DFCI_MRN', 'med_genomics_merged_cancer_group']).rename(columns={'med_genomics_merged_cancer_group': 'CANCER_TYPE'})
@@ -38,8 +38,8 @@ mrn_stage_df = pd.get_dummies(pd.DataFrame({'DFCI_MRN' : mrn_stage_dict.keys(),
                                             'CANCER_STAGE' : mrn_stage_dict.values()}),
                               columns=['CANCER_STAGE'], drop_first=True)
 
-cancer_type_sub.to_csv(os.path.join(CLINICAL_FEATURE_PATH, 'cancer_type_df.csv'), index=False)
-mrn_stage_df.to_csv(os.path.join(CLINICAL_FEATURE_PATH, 'cancer_stage_df.csv'), index=False)
+cancer_type_sub.to_csv(os.path.join(CLINICAL_FEATURE_PATH, 'cancer_type_df.csv.gz'), index=False)
+mrn_stage_df.to_csv(os.path.join(CLINICAL_FEATURE_PATH, 'cancer_stage_df.csv.gz'), index=False)
 
 # === Genomics ===
 idmap = pd.read_csv(os.path.join(PROFILE_PATH, 'PROFILE_2024_idmap.csv'), usecols=['DFCI_MRN', 'sample_id', 'CANCER_TYPE', 'cbio_sample_id', 'PANEL_VERSION'])
@@ -83,12 +83,12 @@ metadata_columns = px_metadata_min.columns.tolist()
 complete_mutation_data = complete_mutation_data[metadata_columns + mutation_columns]
 complete_mutation_data[mutation_columns] = complete_mutation_data[mutation_columns].astype(int)
 
-complete_mutation_data.to_csv(os.path.join(CLINICAL_FEATURE_PATH, 'complete_somatic_data_df.csv'), index=False)
+complete_mutation_data.to_csv(os.path.join(CLINICAL_FEATURE_PATH, 'complete_somatic_data_df.csv.gz'), index=False)
 
 prs_df = (pd.read_csv('/data/gusev/USERS/mjsaleh/PRS_PGScatalog/pgs_matrix_with_avg.tsv', sep='\t')
           .rename(columns={'IID' : 'cbio_sample_id'})
           .merge(px_metadata_min[['cbio_sample_id', 'DFCI_MRN']], on='cbio_sample_id'))
-prs_df.to_csv(os.path.join(CLINICAL_FEATURE_PATH, 'complete_germline_data_df.csv'), index=False)
+prs_df.to_csv(os.path.join(CLINICAL_FEATURE_PATH, 'complete_germline_data_df.csv.gz'), index=False)
 
 # === Structural variant features ===
 SV_DOMINANCE_THRESHOLD = 0.5
@@ -193,10 +193,10 @@ if sv_columns:
 # Re-save complete somatic data with SV/fusion columns included
 all_feature_cols = mutation_columns + sv_columns
 complete_mutation_data = complete_mutation_data[metadata_columns + all_feature_cols]
-complete_mutation_data.to_csv(os.path.join(CLINICAL_FEATURE_PATH, 'complete_somatic_data_df.csv'), index=False)
+complete_mutation_data.to_csv(os.path.join(CLINICAL_FEATURE_PATH, 'complete_somatic_data_df.csv.gz'), index=False)
 
 # === Categorical treatment by line ===
-med_classes = pd.read_csv(os.path.join(DATA_PATH, 'GPT_generated_med_classes.csv'))
+med_classes = pd.read_csv(os.path.join(DATA_PATH, 'GPT_generated_med_classes.csv.gz'))
 
 treatment_df = (pd.read_csv('/data/gusev/USERS/mjsaleh/profile_lines_of_rx/ALL_MEDICATION_LINES.csv')
                 .rename(columns={'MRN': 'DFCI_MRN', 'MED_START_DT': 'treatment_start_date'}))
@@ -223,7 +223,7 @@ treatment_df = pd.concat([treatment_df, dummies], axis=1)
 
 line_by_line_treatment_data = treatment_df.drop(columns=['TPLAN_TYPE', 'MED_NAME', 'THERAPY_TYPE', 'HAS_ICI', 'LINE',
                                                          'THERAPY_TYPES', 'ICI_SUBTYPES', 'type_of_rx', 'type_of_rx_sub', 'TPLAN_DX_NAME'])
-line_by_line_treatment_data.to_csv(os.path.join(CLINICAL_FEATURE_PATH, 'categorical_treatment_data_by_line.csv'), index=False)
+line_by_line_treatment_data.to_csv(os.path.join(CLINICAL_FEATURE_PATH, 'categorical_treatment_data_by_line.csv.gz'), index=False)
 
 # === Mean lab values ===
 labs_df = pd.read_csv(os.path.join(DIAGNOSTICS_PATH, 'OUTPT_LAB_RESULTS_LABS.csv'),
@@ -260,4 +260,4 @@ final_mean_lab_df = pd.concat(
     axis=1
 )
 final_mean_lab_df.insert(0, 'DFCI_MRN', mean_lab_df['DFCI_MRN'])
-final_mean_lab_df.to_csv(os.path.join(CLINICAL_FEATURE_PATH, 'mean_lab_vals_pre_first_treatment.csv'), index=False)
+final_mean_lab_df.to_csv(os.path.join(CLINICAL_FEATURE_PATH, 'mean_lab_vals_pre_first_treatment.csv.gz'), index=False)

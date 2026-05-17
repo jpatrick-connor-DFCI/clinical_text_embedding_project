@@ -40,7 +40,7 @@ for COHORT in COHORTS:
     os.makedirs(EMBEDDING_DATA_PATH, exist_ok=True)
 
     # === Load matched cohort ===
-    cohort_df = pd.read_csv(os.path.join(COHORT_PATH, f'matched_cohort_{COHORT}.csv'))
+    cohort_df = pd.read_csv(os.path.join(COHORT_PATH, f'matched_cohort_{COHORT}.csv.gz'))
     cohort_df['treatment_start_date'] = pd.to_datetime(cohort_df['treatment_start_date'])
 
     n_ici = cohort_df['PX_on_ICI'].sum()
@@ -66,10 +66,10 @@ for COHORT in COHORTS:
 
         full_dataset = cohort_df.merge(embedding_vals.dropna(), on='DFCI_MRN')
         full_dataset.to_csv(
-            os.path.join(buffer_path, f'ICI_prediction_df_w_{buffer}_day_buffer.csv'), index=False)
+            os.path.join(buffer_path, f'ICI_prediction_df_w_{buffer}_day_buffer.csv.gz'), index=False)
 
     # Save prediction times for downstream use
     cohort_df[['DFCI_MRN', 'treatment_start_date', 'PX_on_ICI', 'line_category']].to_csv(
-        os.path.join(EMBEDDING_DATA_PATH, 'prediction_times.csv'), index=False)
+        os.path.join(EMBEDDING_DATA_PATH, 'prediction_times.csv.gz'), index=False)
 
     print(f"[ICI_generate_embeddings] Done with {COHORT}. Data in {EMBEDDING_DATA_PATH}")

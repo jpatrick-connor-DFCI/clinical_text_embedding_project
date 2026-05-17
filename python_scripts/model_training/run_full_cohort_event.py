@@ -55,10 +55,10 @@ def main() -> None:
     out_dir = os.path.join(get_output_dir(args.scheme, "full_cohort"), args.event)
     os.makedirs(out_dir, exist_ok=True)
 
-    text_test_fp = os.path.join(out_dir, "text_test.csv")
-    text_val_fp = os.path.join(out_dir, "text_val.csv")
-    base_test_fp = os.path.join(out_dir, "base_test.csv")
-    base_val_fp = os.path.join(out_dir, "base_val.csv")
+    text_test_fp = os.path.join(out_dir, "text_test.csv.gz")
+    text_val_fp = os.path.join(out_dir, "text_val.csv.gz")
+    base_test_fp = os.path.join(out_dir, "base_test.csv.gz")
+    base_val_fp = os.path.join(out_dir, "base_val.csv.gz")
     run_text = args.overwrite or not (os.path.exists(text_test_fp) and os.path.exists(text_val_fp))
     run_base = args.overwrite or not (os.path.exists(base_test_fp) and os.path.exists(base_val_fp))
     if not run_text and not run_base:

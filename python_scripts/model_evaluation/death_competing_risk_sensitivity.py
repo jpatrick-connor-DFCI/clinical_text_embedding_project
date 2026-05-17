@@ -29,9 +29,9 @@ SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
 INTAE_DATA_PATH = '/data/gusev/PROFILE/CLINICAL/robust_VTE_pred_project_2025_03_cohort/data/'
 
 SCHEME_SURV_FILES = {
-    'icd3_post':    'level_3_ICD_post_surv_df.csv',
-    'icd4_post':    'level_4_ICD_post_surv_df.csv',
-    'phecode_post': 'phecode_post_surv_df.csv',
+    'icd3_post':    'level_3_ICD_post_surv_df.csv.gz',
+    'icd4_post':    'level_4_ICD_post_surv_df.csv.gz',
+    'phecode_post': 'phecode_post_surv_df.csv.gz',
 }
 
 LANDMARK_YEARS = [1, 3, 5]
@@ -203,7 +203,7 @@ def main() -> None:
         default=list(SCHEME_SURV_FILES.keys()),
         choices=list(SCHEME_SURV_FILES.keys()),
     )
-    parser.add_argument('--out', default=os.path.join(SURV_PATH, 'death_competing_risk_sensitivity.csv'))
+    parser.add_argument('--out', default=os.path.join(SURV_PATH, 'death_competing_risk_sensitivity.csv.gz'))
     args = parser.parse_args()
 
     results = run_sensitivity(args.schemes)

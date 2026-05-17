@@ -403,7 +403,7 @@ for COHORT in COHORTS:
         print(f"{'#'*60}")
 
         # === Load data ===
-        input_file = os.path.join(MARKER_PATH, f'IPTW_df_{SPEC_LABEL}.csv')
+        input_file = os.path.join(MARKER_PATH, f'IPTW_df_{SPEC_LABEL}.csv.gz')
         full_df = pd.read_csv(input_file)
 
         # === Identify column groups ===
@@ -533,7 +533,7 @@ for COHORT in COHORTS:
             ps_diag = type_df[['PX_on_ICI', 'ICI_prediction']].copy()
             ps_diag['IPTW_ATE'] = w_ate_trunc
             ps_diag.groupby('PX_on_ICI')['ICI_prediction'].describe().to_csv(
-                os.path.join(diag_path, 'propensity_score_summary.csv'))
+                os.path.join(diag_path, 'propensity_score_summary.csv.gz'))
 
             # PS AUC within this cancer type subset
             ps_auc = roc_auc_score(type_df['PX_on_ICI'], type_df['ICI_prediction'])
@@ -555,13 +555,13 @@ for COHORT in COHORTS:
                 'event_rate_control': events_control / max(n_control, 1),
                 'PS_AUC': ps_auc,
                 'ESS_ATE_treated': ess_t, 'ESS_ATE_control': ess_c,
-            }]).to_csv(os.path.join(diag_path, 'effective_sample_sizes.csv'), index=False)
+            }]).to_csv(os.path.join(diag_path, 'effective_sample_sizes.csv.gz'), index=False)
 
             balance_covars = base_covars + line_cols + [
                 c for c in type_df.columns
                 if c.startswith('CANCER_TYPE_') or c.upper().startswith('PANEL_VERSION_')]
             smd_ate = compute_smd(type_df, balance_covars, weights=w_ate_trunc)
-            smd_ate.to_csv(os.path.join(diag_path, 'covariate_balance_smd_ATE.csv'), index=False)
+            smd_ate.to_csv(os.path.join(diag_path, 'covariate_balance_smd_ATE.csv.gz'), index=False)
 
             # Max SMD check (balance quality indicator)
             max_smd_ate = smd_ate['SMD_weighted'].abs().max()
@@ -590,7 +590,7 @@ for COHORT in COHORTS:
                     spec_df = pd.DataFrame(results, columns=TRACK2_RESULT_COLS)
                     spec_df = add_track2_fdr_and_labels(spec_df)
                     spec_df.to_csv(
-                        os.path.join(RUN_PATH, f'{cancer_type}_track2_{spec_name}_interaction.csv'),
+                        os.path.join(RUN_PATH, f'{cancer_type}_track2_{spec_name}_interaction.csv.gz'),
                         index=False)
 
             # === Track 1: ICI-only generalizability-weighted ===
@@ -631,7 +631,7 @@ for COHORT in COHORTS:
                     spec_df = pd.DataFrame(results, columns=TRACK1_RESULT_COLS)
                     spec_df = add_track1_fdr(spec_df)
                     spec_df.to_csv(
-                        os.path.join(RUN_PATH, f'{cancer_type}_track1_{spec_name}_ICI_only.csv'),
+                        os.path.join(RUN_PATH, f'{cancer_type}_track1_{spec_name}_ICI_only.csv.gz'),
                         index=False)
 
         print(f"\n[run_IPTW_analysis] Done with {SPEC_LABEL}. Results in {RUN_PATH}")

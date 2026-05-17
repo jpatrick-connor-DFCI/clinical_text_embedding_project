@@ -127,8 +127,8 @@ def gen_trajectory_heatmap(long_traj_df, output_path, x='time', y='risk_score', 
     
     
 # Load datasets
-stage_df = pd.read_csv(os.path.join(FEATURE_PATH, 'cancer_stage_df.csv'))
-type_df = pd.read_csv(os.path.join(FEATURE_PATH, 'cancer_type_df.csv'))
+stage_df = pd.read_csv(os.path.join(FEATURE_PATH, 'cancer_stage_df.csv.gz'))
+type_df = pd.read_csv(os.path.join(FEATURE_PATH, 'cancer_type_df.csv.gz'))
 
 stage_cols = ["CANCER_STAGE_2.0", "CANCER_STAGE_3.0", "CANCER_STAGE_4.0"]
 stage_df["STAGE"] = (stage_df[stage_cols]
@@ -138,7 +138,7 @@ stage_df["STAGE"] = (stage_df[stage_cols]
 stage_df.drop(columns=stage_cols, inplace=True)
 
 # surv_traj = pd.read_csv(os.path.join(TRAJECTORY_PATH, 'survival_trajectories.csv'))
-surv_traj = pd.read_csv(os.path.join(TRAJECTORY_PATH, 'survival_trajectories_w_decay_param_0.1.csv'))
+surv_traj = pd.read_csv(os.path.join(TRAJECTORY_PATH, 'survival_trajectories_w_decay_param_0.1.csv.gz'))
 
 traj_w_stage = surv_traj.merge(stage_df, on='DFCI_MRN')[['DFCI_MRN', 'STAGE', 'plus_0_months_data']].dropna()
 rho, p = spearmanr(traj_w_stage['STAGE'], traj_w_stage['plus_0_months_data'])

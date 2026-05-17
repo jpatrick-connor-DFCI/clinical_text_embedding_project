@@ -8,8 +8,8 @@ Panels:
   E: Average within-event modality rank by held-out C-index
 
 Data sources:
-  - Panels A, B, C, E: risk_score_coxph/univariate_modality_metrics.csv
-  - Panel D: risk_score_coxph/joint_model_betas.csv
+  - Panels A, B, C, E: risk_score_coxph/univariate_modality_metrics.csv.gz
+  - Panel D: risk_score_coxph/joint_model_betas.csv.gz
 
 These files are produced by python_scripts/model_evaluation/feature_risk_score_coxph.py.
 """
@@ -34,13 +34,13 @@ from figure_generation_utils import (
 )
 
 SCHEME_CONFIG = {
-    "icd3_post":    {"embedding_file": "level_3_ICD_post_embedding_prediction_df.csv",
+    "icd3_post":    {"embedding_file": "level_3_ICD_post_embedding_prediction_df.csv.gz",
                      "results_dir":    "level_3_ICD_post_results"},
-    "icd4_post":    {"embedding_file": "level_4_ICD_post_embedding_prediction_df.csv",
+    "icd4_post":    {"embedding_file": "level_4_ICD_post_embedding_prediction_df.csv.gz",
                      "results_dir":    "level_4_ICD_post_results"},
-    "phecode_post": {"embedding_file": "phecode_post_embedding_prediction_df.csv",
+    "phecode_post": {"embedding_file": "phecode_post_embedding_prediction_df.csv.gz",
                      "results_dir":    "phecode_post_results"},
-    "death_met":    {"embedding_file": "death_met_embedding_prediction_df.csv",
+    "death_met":    {"embedding_file": "death_met_embedding_prediction_df.csv.gz",
                      "results_dir":    "death_met_results"},
 }
 SCHEME_COLORS = {
@@ -70,8 +70,8 @@ MODALITY_COLORS = {
 }
 
 RISK_SCORE_COXPH_DIRNAME = "risk_score_coxph"
-UNIVAR_METRICS_FILE = "univariate_modality_metrics.csv"
-JOINT_BETAS_FILE = "joint_model_betas.csv"
+UNIVAR_METRICS_FILE = "univariate_modality_metrics.csv.gz"
+JOINT_BETAS_FILE = "joint_model_betas.csv.gz"
 
 # Significance threshold for the second-stage held-out risk-score CoxPH runs.
 CINDEX_SIG_THRESHOLD = 0.55

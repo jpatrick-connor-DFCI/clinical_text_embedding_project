@@ -15,7 +15,7 @@ SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
 RESULTS_PATH = os.path.join(SURV_PATH, 'results/')
 HELD_OUT_PRED_PATH = os.path.join(RESULTS_PATH, 'mortality_trajectories/')
 
-trajectory_predictions_df = pd.read_csv(os.path.join(HELD_OUT_PRED_PATH, 'held_out_preds_full_cohort.csv'))
+trajectory_predictions_df = pd.read_csv(os.path.join(HELD_OUT_PRED_PATH, 'held_out_preds_full_cohort.csv.gz'))
 monthly_cols = [col for col in trajectory_predictions_df if col != 'DFCI_MRN']
 
 missing_data_colwise = trajectory_predictions_df[monthly_cols].isna().sum(axis=0)
