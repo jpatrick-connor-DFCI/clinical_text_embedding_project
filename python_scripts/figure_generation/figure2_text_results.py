@@ -7,8 +7,8 @@ Panels:
   D: KM curve — survival by risk quartile for all-cause mortality
 
 Data sources:
-  - Panels A, B, C: all_schemes_compiled_metrics.csv.gz
-  - Panel D: held_out_risk_scores/death/text_risk_scores.csv.gz + death_met_embedding_prediction_df.csv.gz
+  - Panels A, B, C: all_schemes_compiled_metrics.csv
+  - Panel D: held_out_risk_scores/death/text_risk_scores.csv + death_met_embedding_prediction_df.csv.gz
 """
 
 from __future__ import annotations
@@ -88,8 +88,8 @@ def load_compiled_metrics(prevalence_filter: str | None = "1pct", allow_fallback
     if prevalence_filter in (None, ""):
         path = get_compiled_metrics_path(None)
     else:
-        filtered = os.path.join(COMPILED_DIR, f"all_schemes_compiled_metrics_{prevalence_filter}.csv.gz")
-        base = os.path.join(COMPILED_DIR, "all_schemes_compiled_metrics.csv.gz")
+        filtered = os.path.join(COMPILED_DIR, f"all_schemes_compiled_metrics_{prevalence_filter}.csv")
+        base = os.path.join(COMPILED_DIR, "all_schemes_compiled_metrics.csv")
         path = filtered if os.path.isfile(filtered) else base
         if not allow_fallback and path != filtered:
             raise FileNotFoundError(f"Compiled metrics not found for filter {prevalence_filter!r}: {filtered}")
@@ -111,7 +111,7 @@ def load_risk_scores(scheme: str, event: str, modality: str = "text") -> pd.Data
     results_dir = SCHEME_CONFIG[scheme]["results_dir"]
     fpath = os.path.join(
         RESULTS_PATH, results_dir, "held_out_risk_scores", event,
-        f"{modality}_risk_scores.csv.gz"
+        f"{modality}_risk_scores.csv"
     )
     if not os.path.isfile(fpath):
         return None

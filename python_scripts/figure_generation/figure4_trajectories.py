@@ -8,7 +8,7 @@ Panels:
 Data sources:
   - Trajectory CSV:
       {RESULTS_PATH}/death_met_results/mortality_trajectories/
-      survival_trajectories_w_decay_param_{DECAY_PARAM}.csv.gz
+      survival_trajectories_w_decay_param_{DECAY_PARAM}.csv
       Columns: DFCI_MRN, plus_0_months_data, plus_3_months_data, ..., plus_60_months_data
 
   - Survival data:
@@ -16,11 +16,11 @@ Data sources:
       Columns include: DFCI_MRN, death, tt_death
 
   - Cancer stage (for clinical char panel):
-      {FEATURE_PATH}/cancer_stage_df.csv.gz
+      {FEATURE_PATH}/cancer_stage_df.csv
       Columns: DFCI_MRN, CANCER_STAGE_2.0, CANCER_STAGE_3.0, CANCER_STAGE_4.0, ...
 
   - Treatment (ICI flag):
-      {FEATURE_PATH}/categorical_treatment_data_by_line.csv.gz
+      {FEATURE_PATH}/categorical_treatment_data_by_line.csv
       Columns: DFCI_MRN, treatment_line, PX_on_ICI_1 (or similar)
 
   - Sex from survival/demographics:
@@ -53,7 +53,7 @@ TRAJECTORY_RESULTS_DIR = "death_met_results"
 DECAY_PARAM = 0.1   # adjust to match your file name
 TRAJECTORY_FILE = os.path.join(
     RESULTS_PATH, TRAJECTORY_RESULTS_DIR, "mortality_trajectories",
-    f"survival_trajectories_w_decay_param_{DECAY_PARAM}.csv.gz"
+    f"survival_trajectories_w_decay_param_{DECAY_PARAM}.csv"
 )
 
 # Clustering
@@ -265,7 +265,7 @@ def load_clinical_features(cluster_df: pd.DataFrame) -> pd.DataFrame:
     )
 
     # Stage
-    stage_df = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_stage_df.csv.gz"))
+    stage_df = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_stage_df.csv"))
     stage_cols_4 = [c for c in stage_df.columns if "STAGE_4" in c or "STAGE_IV" in c.upper()]
     if stage_cols_4:
         stage_df["stage_iv"] = stage_df[stage_cols_4].any(axis=1).astype(int)
@@ -278,7 +278,7 @@ def load_clinical_features(cluster_df: pd.DataFrame) -> pd.DataFrame:
     stage_df = stage_df[["DFCI_MRN", "stage_iv"]]
 
     # ICI treatment flag
-    treat_df = pd.read_csv(os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv.gz"))
+    treat_df = pd.read_csv(os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv"))
     ici_col = next((c for c in treat_df.columns if "ICI" in c.upper() and "_1" in c), None)
     if ici_col:
         line1_mask = pd.to_numeric(treat_df["treatment_line"], errors="coerce") == 1

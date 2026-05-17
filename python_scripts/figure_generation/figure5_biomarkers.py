@@ -6,10 +6,10 @@ Panels:
   C: Three illustrative survival panels for representative biomarker patterns
 
 Data sources (when available):
-  - treatment_prediction/{cohort}/{ps_model}_propensity/w_30_day_buffer/predictions.csv.gz
-  - biomarker_analysis/matched_cohorts/matched_cohort_{cohort}.csv.gz
-  - biomarker_analysis/compiled_results/track1_all_significant_hits.csv.gz
-  - biomarker_analysis/compiled_results/track2_all_significant_hits.csv.gz
+  - treatment_prediction/{cohort}/{ps_model}_propensity/w_30_day_buffer/predictions.csv
+  - biomarker_analysis/matched_cohorts/matched_cohort_{cohort}.csv
+  - biomarker_analysis/compiled_results/track1_all_significant_hits.csv
+  - biomarker_analysis/compiled_results/track2_all_significant_hits.csv
 
 When one or more sources are unavailable, the script falls back to an illustrative
 mockup so the full five-figure manuscript workflow remains runnable.
@@ -122,7 +122,7 @@ def load_panel_a_data(cohort: str = "cohort2") -> tuple[list[dict], pd.DataFrame
 
     for model_key, label in model_specs:
         pred_path = os.path.join(
-            TREATMENT_PATH, cohort, f"{model_key}_propensity", "w_30_day_buffer", "predictions.csv.gz"
+            TREATMENT_PATH, cohort, f"{model_key}_propensity", "w_30_day_buffer", "predictions.csv"
         )
         pred_df = _safe_read_csv(pred_path)
         if pred_df is None:
@@ -152,7 +152,7 @@ def load_panel_a_data(cohort: str = "cohort2") -> tuple[list[dict], pd.DataFrame
 
     auc_by_cancer = None
     if selected_model_df is not None and "DFCI_MRN" in selected_model_df.columns:
-        cohort_path = os.path.join(MARKER_PATH, "matched_cohorts", f"matched_cohort_{cohort}.csv.gz")
+        cohort_path = os.path.join(MARKER_PATH, "matched_cohorts", f"matched_cohort_{cohort}.csv")
         cohort_df = _safe_read_csv(cohort_path)
         if cohort_df is not None:
             cancer_col = "cancer_type" if "cancer_type" in cohort_df.columns else "CANCER_TYPE"
@@ -262,8 +262,8 @@ def _mock_panel_b_matrix() -> tuple[pd.DataFrame, bool]:
 
 
 def load_panel_b_data() -> tuple[pd.DataFrame, bool]:
-    t1_path = os.path.join(COMPILED_DIR, "track1_all_significant_hits.csv.gz")
-    t2_path = os.path.join(COMPILED_DIR, "track2_all_significant_hits.csv.gz")
+    t1_path = os.path.join(COMPILED_DIR, "track1_all_significant_hits.csv")
+    t2_path = os.path.join(COMPILED_DIR, "track2_all_significant_hits.csv")
     t1 = _safe_read_csv(t1_path)
     t2 = _safe_read_csv(t2_path)
 

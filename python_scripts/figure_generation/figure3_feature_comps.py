@@ -8,8 +8,8 @@ Panels:
   E: Average within-event modality rank by held-out C-index
 
 Data sources:
-  - Panels A, B, C, E: risk_score_coxph/univariate_modality_metrics.csv.gz
-  - Panel D: risk_score_coxph/joint_model_betas.csv.gz
+  - Panels A, B, C, E: risk_score_coxph/univariate_modality_metrics.csv
+  - Panel D: risk_score_coxph/joint_model_betas.csv
 
 These files are produced by python_scripts/model_evaluation/feature_risk_score_coxph.py.
 """
@@ -70,8 +70,8 @@ MODALITY_COLORS = {
 }
 
 RISK_SCORE_COXPH_DIRNAME = "risk_score_coxph"
-UNIVAR_METRICS_FILE = "univariate_modality_metrics.csv.gz"
-JOINT_BETAS_FILE = "joint_model_betas.csv.gz"
+UNIVAR_METRICS_FILE = "univariate_modality_metrics.csv"
+JOINT_BETAS_FILE = "joint_model_betas.csv"
 
 # Significance threshold for the second-stage held-out risk-score CoxPH runs.
 CINDEX_SIG_THRESHOLD = 0.55

@@ -51,9 +51,9 @@ def prevalence_filter_to_label(prevalence_filter: str | None) -> str:
 
 def get_compiled_metrics_path(prevalence_filter: str | None) -> str:
     if prevalence_filter in (None, ""):
-        path = os.path.join(COMPILED_DIR, "all_schemes_compiled_metrics.csv.gz")
+        path = os.path.join(COMPILED_DIR, "all_schemes_compiled_metrics.csv")
     else:
-        path = os.path.join(COMPILED_DIR, f"all_schemes_compiled_metrics_{prevalence_filter}.csv.gz")
+        path = os.path.join(COMPILED_DIR, f"all_schemes_compiled_metrics_{prevalence_filter}.csv")
     if not os.path.isfile(path):
         raise FileNotFoundError(f"Compiled metrics not found for filter {prevalence_filter!r}: {path}")
     return path
