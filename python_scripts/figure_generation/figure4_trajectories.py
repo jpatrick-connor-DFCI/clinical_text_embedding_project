@@ -16,7 +16,7 @@ Data sources:
       Columns include: DFCI_MRN, death, tt_death
 
   - Cancer stage (for clinical char panel):
-      {FEATURE_PATH}/cancer_stage_df.csv
+      {FEATURE_PATH}/cancer_stage_df.csv.gz
       Columns: DFCI_MRN, CANCER_STAGE_2.0, CANCER_STAGE_3.0, CANCER_STAGE_4.0, ...
 
   - Treatment (ICI flag):
@@ -265,7 +265,7 @@ def load_clinical_features(cluster_df: pd.DataFrame) -> pd.DataFrame:
     )
 
     # Stage
-    stage_df = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_stage_df.csv"))
+    stage_df = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_stage_df.csv.gz"))
     stage_cols_4 = [c for c in stage_df.columns if "STAGE_4" in c or "STAGE_IV" in c.upper()]
     if stage_cols_4:
         stage_df["stage_iv"] = stage_df[stage_cols_4].any(axis=1).astype(int)
