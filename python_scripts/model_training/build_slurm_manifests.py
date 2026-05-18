@@ -15,7 +15,7 @@ from slurm_array_utils import (
 )
 
 MODALITIES = ["stage", "treatment", "labs", "somatic", "prs", "text"]
-FULL_COHORT_FILES = ["text_test.csv.gz", "text_val.csv.gz", "base_test.csv.gz", "base_val.csv.gz"]
+FULL_COHORT_FILES = ["text_test.csv", "text_val.csv", "base_test.csv", "base_val.csv"]
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[2] / "bash_scripts" / "slurm_manifests"
 
 
@@ -42,12 +42,12 @@ def _feature_comp_complete(scheme: str, event: str) -> bool:
         get_output_dir(scheme, "feature_comps"), "..", "held_out_risk_scores", event
     ))
     grid_done = all(
-        os.path.exists(os.path.join(out_dir, f"{mod}_{split}.csv.gz"))
+        os.path.exists(os.path.join(out_dir, f"{mod}_{split}.csv"))
         for mod in MODALITIES
         for split in ("test", "val")
     )
     risk_done = all(
-        os.path.exists(os.path.join(risk_dir, f"{mod}_risk_scores.csv.gz"))
+        os.path.exists(os.path.join(risk_dir, f"{mod}_risk_scores.csv"))
         for mod in MODALITIES
     )
     return grid_done and risk_done

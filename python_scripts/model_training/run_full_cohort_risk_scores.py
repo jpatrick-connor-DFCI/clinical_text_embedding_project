@@ -1,6 +1,6 @@
 """Generate 5-fold held-out risk scores for the full-cohort text and base models.
 
-Consumes the CV grid (`text_val.csv.gz`) produced by `run_full_cohort_event.py`
+Consumes the CV grid (`text_val.csv`) produced by `run_full_cohort_event.py`
 to pick best hyperparameters for the text model. The base model is unpenalized
 (no hyperparameters needed). Outputs per-patient risk scores so the two models
 can be compared on the same cohort (e.g. stratified KM curves).
@@ -57,8 +57,8 @@ def main() -> None:
     # Output dir for risk scores
     risk_out_dir = os.path.join(get_output_dir(args.scheme, run_type), args.event)
     os.makedirs(risk_out_dir, exist_ok=True)
-    text_risk_fp = os.path.join(risk_out_dir, "text_risk_scores.csv.gz")
-    base_risk_fp = os.path.join(risk_out_dir, "base_risk_scores.csv.gz")
+    text_risk_fp = os.path.join(risk_out_dir, "text_risk_scores.csv")
+    base_risk_fp = os.path.join(risk_out_dir, "base_risk_scores.csv")
     run_text = args.overwrite or not os.path.exists(text_risk_fp)
     run_base = args.overwrite or not os.path.exists(base_risk_fp)
     if not run_text and not run_base:
@@ -67,7 +67,7 @@ def main() -> None:
 
     # Training outputs we depend on
     train_dir = os.path.join(get_output_dir(args.scheme, "full_cohort"), args.event)
-    text_val_fp = os.path.join(train_dir, "text_val.csv.gz")
+    text_val_fp = os.path.join(train_dir, "text_val.csv")
     if run_text and not os.path.exists(text_val_fp):
         reason = f"Missing training CV output {text_val_fp}; run run_full_cohort_event.py first"
         print(f"[skip-data] {args.scheme}:{args.event} — {reason}")

@@ -196,7 +196,7 @@ complete_mutation_data = complete_mutation_data[metadata_columns + all_feature_c
 complete_mutation_data.to_csv(os.path.join(CLINICAL_FEATURE_PATH, 'complete_somatic_data_df.csv.gz'), index=False)
 
 # === Categorical treatment by line ===
-med_classes = pd.read_csv(os.path.join(DATA_PATH, 'GPT_generated_med_classes.csv.gz'))
+med_classes = pd.read_csv(os.path.join(DATA_PATH, 'GPT_generated_med_classes.csv'))
 
 treatment_df = (pd.read_csv('/data/gusev/USERS/mjsaleh/profile_lines_of_rx/ALL_MEDICATION_LINES.csv')
                 .rename(columns={'MRN': 'DFCI_MRN', 'MED_START_DT': 'treatment_start_date'}))

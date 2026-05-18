@@ -229,9 +229,9 @@ metrics_df = pd.DataFrame(cindex_by_type).sort_values('DELTA_WITHIN_MINUS_PAN', 
 train_outdir = os.path.join(RESULTS_PATH, 'pan_vs_within_cancer')
 os.makedirs(train_outdir, exist_ok=True)
 
-complete_train.to_csv(os.path.join(train_outdir, 'train_risk_scores.csv.gz'), index=False)
-held_scores.to_csv(os.path.join(train_outdir, 'held_out_risk_scores.csv.gz'), index=False)
-metrics_df.to_csv(os.path.join(train_outdir, 'cindex_by_cancer_type.csv.gz'), index=False)
+complete_train.to_csv(os.path.join(train_outdir, 'train_risk_scores.csv'), index=False)
+held_scores.to_csv(os.path.join(train_outdir, 'held_out_risk_scores.csv'), index=False)
+metrics_df.to_csv(os.path.join(train_outdir, 'cindex_by_cancer_type.csv'), index=False)
 
 print("\n=== Per-Cancer-Type C-Index Results (Held-out) ===")
 print(metrics_df)

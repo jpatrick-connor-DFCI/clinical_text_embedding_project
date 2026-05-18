@@ -360,7 +360,7 @@ icd3_codes = _prefilter_events_by_prevalence(
 print(f"  Level-3 ICD codes (>=1% prevalence): {len(icd3_codes)}")
 
 pd.Series(sorted(icd3_codes), name='ICD10_LEVEL_3_CD').to_csv(
-    os.path.join(CODE_PATH, 'allowed_icd3_post_codes.csv.gz'), index=False
+    os.path.join(CODE_PATH, 'allowed_icd3_post_codes.csv'), index=False
 )
 
 vte_data_sub = base_vte_data_sub.copy()
@@ -401,7 +401,7 @@ icd4_codes = _prefilter_events_by_prevalence(
 print(f"  Level-4 ICD codes (>=1% prevalence): {len(icd4_codes)}")
 
 pd.Series(sorted(icd4_codes), name='ICD10_LEVEL_4_CD').to_csv(
-    os.path.join(CODE_PATH, 'allowed_icd4_post_codes.csv.gz'), index=False
+    os.path.join(CODE_PATH, 'allowed_icd4_post_codes.csv'), index=False
 )
 
 vte_data_sub = base_vte_data_sub.copy()
@@ -434,7 +434,7 @@ _write_outputs(
 # =========================
 # PHECODE DATASET (first post-treatment instance)
 # =========================
-mapping_file = os.path.join(CODE_PATH, 'icd10_to_phecode_mapping.csv.gz')
+mapping_file = os.path.join(CODE_PATH, 'icd10_to_phecode_mapping.csv')
 mapping_df = pd.read_csv(mapping_file)
 mapping_icd_col = _resolve_column(mapping_df, 'icd10_code')
 mapping_phecode_col = _resolve_column(mapping_df, 'phecode')
@@ -456,7 +456,7 @@ phecode_codes = _prefilter_events_by_prevalence(
 print(f"  Phecode codes (>=1% prevalence): {len(phecode_codes)}")
 
 pd.Series(sorted(phecode_codes), name='PHECODE').to_csv(
-    os.path.join(CODE_PATH, 'allowed_phecode_post_codes.csv.gz'), index=False
+    os.path.join(CODE_PATH, 'allowed_phecode_post_codes.csv'), index=False
 )
 
 vte_data_sub = base_vte_data_sub.copy()

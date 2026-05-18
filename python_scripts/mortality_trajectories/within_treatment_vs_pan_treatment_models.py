@@ -31,7 +31,7 @@ types_to_keep = cancer_type_counts[cancer_type_counts >= 500].index.tolist()
 cancer_type_sub['CANCER_TYPE'] = cancer_type_sub['CANCER_TYPE'].where(cancer_type_sub['CANCER_TYPE'].isin(types_to_keep), 'OTHER')
 cancer_type_sub = pd.get_dummies(cancer_type_sub, columns=['CANCER_TYPE'], drop_first=True)
 
-treatment_df = pd.read_csv(os.path.join(TREATMENT_PATH, 'first_line_treatment_classes.csv.gz'))
+treatment_df = pd.read_csv(os.path.join(TREATMENT_PATH, 'first_line_treatment_classes.csv'))
 treatment_types = treatment_df['TREATMENT_CLASSIFICATION'].unique()
 
 # Merge embeddings + cancer types + events
@@ -188,9 +188,9 @@ metrics_df = pd.DataFrame(cindex_by_treatment).sort_values('DELTA_WITHIN_MINUS_P
 train_outdir = os.path.join(RESULTS_PATH, 'pan_vs_within_treatment')
 os.makedirs(train_outdir, exist_ok=True)
 
-complete_train.to_csv(os.path.join(train_outdir, 'train_risk_scores.csv.gz'), index=False)
-held_scores.to_csv(os.path.join(train_outdir, 'held_out_risk_scores.csv.gz'), index=False)
-metrics_df.to_csv(os.path.join(train_outdir, 'cindex_by_treatment.csv.gz'), index=False)
+complete_train.to_csv(os.path.join(train_outdir, 'train_risk_scores.csv'), index=False)
+held_scores.to_csv(os.path.join(train_outdir, 'held_out_risk_scores.csv'), index=False)
+metrics_df.to_csv(os.path.join(train_outdir, 'cindex_by_treatment.csv'), index=False)
 
 print("\n=== Per-Cancer-Type C-Index Results (Held-out) ===")
 print(metrics_df)

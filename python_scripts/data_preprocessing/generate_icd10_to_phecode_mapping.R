@@ -168,7 +168,7 @@ cat(sprintf("  Unique phecodes:                       %d\n", length(unique(final
 output <- final[, .(icd10_code = icd10_norm, phecode, source)]
 output <- output[order(icd10_code, phecode)]
 
-out_path <- file.path(CODE_PATH, "icd10_to_phecode_mapping.csv.gz")
+out_path <- file.path(CODE_PATH, "icd10_to_phecode_mapping.csv")
 fwrite(output, out_path)
 cat(sprintf("\nWrote mapping: %s  (%d rows)\n", out_path, nrow(output)))
 
@@ -177,7 +177,7 @@ if (length(still_unmapped) > 0) {
     icd10_code  = sort(still_unmapped),
     raw_example = norm_to_raw[sort(still_unmapped)]
   )
-  unmapped_path <- file.path(CODE_PATH, "icd10_unmapped_codes.csv.gz")
+  unmapped_path <- file.path(CODE_PATH, "icd10_unmapped_codes.csv")
   fwrite(unmapped_dt, unmapped_path)
   cat(sprintf("Wrote unmapped codes: %s  (%d rows)\n", unmapped_path, nrow(unmapped_dt)))
 }

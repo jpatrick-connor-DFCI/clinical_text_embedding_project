@@ -65,11 +65,11 @@ def main() -> None:
 
     out_dir = os.path.join(get_output_dir(args.scheme, "feature_comps"), args.event)
     os.makedirs(out_dir, exist_ok=True)
-    test_fp = os.path.join(out_dir, f"{args.modality}_test.csv.gz")
-    val_fp = os.path.join(out_dir, f"{args.modality}_val.csv.gz")
+    test_fp = os.path.join(out_dir, f"{args.modality}_test.csv")
+    val_fp = os.path.join(out_dir, f"{args.modality}_val.csv")
     risk_dir = os.path.join(get_output_dir(args.scheme, "feature_comps"), "..", "held_out_risk_scores", args.event)
     risk_dir = os.path.normpath(risk_dir)
-    risk_fp = os.path.join(risk_dir, f"{args.modality}_risk_scores.csv.gz")
+    risk_fp = os.path.join(risk_dir, f"{args.modality}_risk_scores.csv")
     grid_done = os.path.exists(test_fp) and os.path.exists(val_fp)
     risk_done = os.path.exists(risk_fp)
     if (not args.overwrite) and grid_done and risk_done:

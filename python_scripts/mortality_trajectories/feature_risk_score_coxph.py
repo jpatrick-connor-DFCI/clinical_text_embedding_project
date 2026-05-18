@@ -116,7 +116,7 @@ def _load_event_risk_profile(
     missing_modalities: list[str] = []
 
     for modality in modalities:
-        risk_fp = os.path.join(risk_root, event, f"{modality}_risk_scores.csv.gz")
+        risk_fp = os.path.join(risk_root, event, f"{modality}_risk_scores.csv")
         if not os.path.exists(risk_fp):
             missing_modalities.append(modality)
             continue
@@ -202,9 +202,9 @@ def _run_one_scheme(args: argparse.Namespace, scheme: str, multi_scheme: bool) -
     out_dir = _resolve_output_dir(args.output_dir, scheme, multi_scheme=multi_scheme)
     os.makedirs(out_dir, exist_ok=True)
 
-    univar_fp = os.path.join(out_dir, "univariate_modality_metrics.csv.gz")
-    joint_fp = os.path.join(out_dir, "joint_model_metrics.csv.gz")
-    beta_fp = os.path.join(out_dir, "joint_model_betas.csv.gz")
+    univar_fp = os.path.join(out_dir, "univariate_modality_metrics.csv")
+    joint_fp = os.path.join(out_dir, "joint_model_metrics.csv")
+    beta_fp = os.path.join(out_dir, "joint_model_betas.csv")
     skip_fp = os.path.join(out_dir, "skipped_events.jsonl")
     meta_fp = os.path.join(out_dir, "metadata.json")
 

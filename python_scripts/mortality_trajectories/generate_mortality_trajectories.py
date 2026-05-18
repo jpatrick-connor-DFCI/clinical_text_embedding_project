@@ -94,4 +94,4 @@ for month_adj in tqdm(months_to_test):
     except:
         continue
     
-trajectory_predictions_df.to_csv(os.path.join(TRAJECTORY_PATH, f'survival_trajectories_w_decay_param_{decay_param}.csv.gz'), index=False)
+trajectory_predictions_df.to_csv(os.path.join(TRAJECTORY_PATH, f'survival_trajectories_w_decay_param_{decay_param}.csv'), index=False)
