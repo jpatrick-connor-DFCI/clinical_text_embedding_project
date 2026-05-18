@@ -80,8 +80,8 @@ def load_cancer_type_df() -> tuple[pd.DataFrame, list[str]]:
 
 def get_output_dir(scheme: str, run_type: str) -> str:
     scheme = _ensure_scheme(scheme)
-    if run_type not in {"full_cohort", "feature_comps"}:
-        raise ValueError("run_type must be one of {'full_cohort', 'feature_comps'}")
+    if run_type not in {"full_cohort", "feature_comps", "full_cohort_risk_scores"}:
+        raise ValueError("run_type must be one of {'full_cohort', 'feature_comps', 'full_cohort_risk_scores'}")
     out = os.path.join(SURV_PATH, "results", SCHEME_CONFIG[scheme]["results_dir"], run_type)
     os.makedirs(out, exist_ok=True)
     return out
@@ -282,6 +282,13 @@ def validate_cox_inputs(
     return df, constant_cols
 
 
+def get_best_hparams(val_fp: str) -> tuple[float, float]:
+    """Return (l1_ratio, alpha) from the CV row with highest mean_auc(t)."""
+    val_df = pd.read_csv(val_fp)
+    best = val_df.sort_values(by="mean_auc(t)", ascending=False).iloc[0]
+    return float(best["l1_ratio"]), float(best["alpha"])
+
+
 def parse_manifest_line(line: str, expected_fields: int) -> list[str]:
     fields = line.rstrip("\n").split("\t")
     if len(fields) != expected_fields:
@@ -300,6 +307,7 @@ __all__ = [
     "_get_common_feature_mrns",
     "build_full_prediction_df",
     "filter_event_rows",
+    "get_best_hparams",
     "get_events_from_df",
     "get_output_dir",
     "load_embedding_prediction_df",
