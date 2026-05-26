@@ -45,17 +45,24 @@ def _cohort_counts(emb_df: pd.DataFrame, cancer_type_df: pd.DataFrame) -> pd.Dat
 
 
 def _note_volume(notes_meta: pd.DataFrame) -> pd.DataFrame:
-    year_col = next((c for c in (
-        "YEAR_RELATIVE_TO_FIRST_TREATMENT", "years_since_first_treatment",
-        "days_since_first_treatment", "NOTE_DT_OFFSET_DAYS",
-    ) if c in notes_meta.columns), None)
+    # (column_name, unit) — first matching column wins; unit declared explicitly
+    # because not all column names carry "days"/"years" in their text.
+    TIME_CANDIDATES = [
+        ("NOTE_TIME_REL_FIRST_TREATMENT_START", "days"),  # written by knit_longformer_embeddings.py
+        ("YEAR_RELATIVE_TO_FIRST_TREATMENT", "years"),
+        ("years_since_first_treatment", "years"),
+        ("days_since_first_treatment", "days"),
+        ("NOTE_DT_OFFSET_DAYS", "days"),
+    ]
+    time_col, unit = next(((c, u) for c, u in TIME_CANDIDATES if c in notes_meta.columns),
+                          (None, None))
     type_col = next((c for c in ("NOTE_TYPE", "note_type", "NOTE_KIND")
                      if c in notes_meta.columns), None)
-    if year_col is None or type_col is None:
+    if time_col is None or type_col is None:
         raise RuntimeError(
-            f"Could not find year/type columns in notes_meta; have: {list(notes_meta.columns)[:25]}")
-    nm = notes_meta[[year_col, type_col]].copy()
-    nm["_years"] = nm[year_col] / 365.25 if "days" in year_col.lower() else nm[year_col]
+            f"Could not find time/type columns in notes_meta; have: {list(notes_meta.columns)[:25]}")
+    nm = notes_meta[[time_col, type_col]].copy()
+    nm["_years"] = nm[time_col] / 365.25 if unit == "days" else nm[time_col]
     nm = nm[(nm["_years"] >= -5) & (nm["_years"] <= 0)].copy()
     nm["year_bin"] = nm["_years"].round().astype(int)
     out = (nm.groupby(["year_bin", type_col]).size()
