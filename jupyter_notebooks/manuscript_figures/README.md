@@ -13,11 +13,12 @@ manuscript_figures/
 │   ├── prep_figure_3.py          # modality C-index, joint betas, risk-score corr, univ-vs-joint AUC
 │   ├── prep_figure_4.py          # trajectory clustering, cluster means, composition, KM merge
 │   └── prep_figure_5.py          # PS predictions, volcano, robust hits, top-hit KM
-├── figure_1_cohort.ipynb         # load + plot only
-├── figure_2_text_vs_base.ipynb
-├── figure_3_modality_comparison.ipynb
-├── figure_4_trajectories.ipynb
-├── figure_5_biomarkers.ipynb
+├── plot_figure_1_cohort.py       # load + plot only; writes PNG panels
+├── plot_figure_2_text_vs_base.py
+├── plot_figure_3_modality_comparison.py
+├── plot_figure_4_trajectories.py
+├── plot_figure_5_biomarkers.py
+├── run_all_figures.ipynb         # one notebook to call prep + plot scripts
 └── figures/                      # PNG outputs (auto-created by save_panel)
 ```
 
@@ -34,15 +35,21 @@ manuscript_figures/
 2. **Plot** (anywhere `figure_data/` is reachable):
 
    ```bash
-   jupyter lab jupyter_notebooks/manuscript_figures/figure_1_cohort.ipynb
+   for n in 1 2 3 4 5; do
+     python jupyter_notebooks/manuscript_figures/plot_figure_${n}_*.py
+   done
    ```
 
    PNGs land in `jupyter_notebooks/manuscript_figures/figures/`.
 
+3. **Notebook orchestration**: open `run_all_figures.ipynb` and run all cells. It calls
+   every prep and plotting script with the active kernel Python (`sys.executable`), so
+   it uses the same conda environment as the notebook kernel rather than shell `python`.
+
 ## Key design decisions
 
-- **Compute is separate from plotting.** Notebooks are load-and-plot only — no `sksurv`, `umap`, or `sklearn` imports. Iterate styling without re-running clustering, bootstraps, or AUC integrals.
-- **Schema-stable empty outputs.** When an upstream input is missing, prep scripts still emit a header-only CSV with the expected columns, so the corresponding notebook panel degrades to "no data — skipping" instead of crashing the whole notebook.
+- **Compute is separate from plotting.** Prep scripts do the heavy work; plotting scripts are load-and-plot only — no `sksurv`, `umap`, or `sklearn` imports. Iterate styling without re-running clustering, bootstraps, or AUC integrals.
+- **Schema-stable empty outputs.** When an upstream input is missing, prep scripts still emit a header-only CSV with the expected columns, so the corresponding plot script degrades to "no data — skipping" instead of crashing the whole run.
 - **Stable cluster labels (Fig 4).** Trajectory clusters are relabeled by ascending mean risk in prep, so Cluster 0 is always the lowest-risk group across reruns. The `CLUSTER_COLORS` palette then maps consistently to the same semantic cluster.
 - **Geometric mean for HR aggregation (Fig 5C).** Hazard ratios are multiplicative; the arithmetic mean of `[0.5, 2.0]` is `1.25` but the geometric mean is `1.0`. Robust-marker ranking uses the latter.
 - **Primary-spec top hit (Fig 5D).** Panel D's KM is restricted to the primary spec (`cohort2 / covariates_plus_embeddings / ATE`), not whichever sensitivity spec happens to have the smallest p-value. The displayed spec is annotated in the title.
@@ -67,5 +74,5 @@ manuscript_figures/
 
 ## Dependencies
 
-- Plotting (notebooks): `matplotlib`, `pandas`, `numpy`, `lifelines`
+- Plotting scripts: `matplotlib`, `pandas`, `numpy`, `lifelines`
 - Prep (data_generation scripts): plotting deps + `scikit-survival`, `scikit-learn`, optionally `umap-learn` (PCA fallback if absent)
