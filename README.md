@@ -20,19 +20,14 @@ This project investigates whether dense representations of clinical narratives (
 clinical_text_embedding_project/
 ├── python_scripts/
 │   ├── data_preprocessing/       # Text processing, embedding generation, covariate creation
-│   ├── model_training/           # CoxPH model training with SLURM array jobs
-│   ├── model_evaluation/         # Risk scoring, mortality trajectories, model comparisons
+│   ├── model_training/           # CoxPH model training + held-out risk-score generation (SLURM)
+│   ├── mortality_trajectories/   # Risk scoring, mortality trajectories, model comparisons
 │   └── biomarker_analysis/       # Line-matched ICI propensity scoring, IPTW biomarker discovery
 ├── python_utils/
 │   └── embed_surv_utils/         # Shared preprocessing and Cox model utilities (installable package)
 ├── bash_scripts/                 # SLURM submission and worker scripts
 │   └── slurm_manifests/          # Generated task TSV files
-└── jupyter_notebooks/
-    ├── metrics/                  # Survival model performance analysis and trajectory clustering
-    ├── biomarker_analysis/       # IPTW KM curves and marker-propensity association testing
-    ├── note_embedding_EDA/       # Embedding exploratory data analysis and PCA associations
-    ├── manuscript_figures/        # Publication-quality figures
-    └── meeting_figures/          # Lab meeting and conference presentations
+└── jupyter_notebooks/            # Top-level analysis notebooks (per-pipeline notebooks live alongside their scripts)
 ```
 
 ---
@@ -96,11 +91,14 @@ Trains penalized Cox proportional hazards models at scale across all endpoint sc
 
 Uses 80/20 stratified train+val/test split. 5-fold stratified CV over a 25-point log-spaced alpha grid × 2 L1 ratios (0.5, 1.0), selecting the hyperparameters maximizing mean time-dependent AUC. Final model is refit on full train+val and evaluated on test.
 
-**Feature comparison** (`run_feature_comp_task.py`): Identical CV pipeline but with one modality at a time: stage, treatment, labs, somatic, PRS, or text. PRS uses randomized PCA (1500 components) before Cox fitting to handle the high-dimensional score matrix. Enables direct modality-vs-modality comparison on held-out data.
+**Feature comparison** (`run_feature_comp_task.py`): Identical CV pipeline but with one modality at a time: stage, treatment, labs, somatic, PRS, or text. PRS uses randomized PCA (1500 components) before Cox fitting to handle the high-dimensional score matrix. Also generates 5-fold held-out per-patient risk scores at the best hyperparameters, enabling direct modality-vs-modality comparison on the same patients.
 
-**Shared utilities** (`slurm_array_utils.py`): Centralizes dataset loading, event extraction, feature column identification, modality configuration (which columns, PCA settings), output path management, and Cox input validation (constant-column removal, event/censoring checks).
+**Full-cohort held-out risk scores** (`run_full_cohort_risk_scores.py`): Runs after `run_full_cohort_event.py`. Reads the best `(l1_ratio, alpha)` from `text_val.csv` and generates 5-fold held-out per-patient risk scores for both the text model (penalized, with best hyperparameters) and the base model (unpenalized). Outputs `text_risk_scores.csv` and `base_risk_scores.csv` per event so the two models can be compared on the same cohort (e.g. stratified KM curves). The companion notebook `run_full_cohort_risk_scores.ipynb` fans the script out across every `(scheme, event)` whose training has completed.
+
+**Shared utilities** (`slurm_array_utils.py`): Centralizes dataset loading, event extraction, feature column identification, modality configuration (which columns, PCA settings), output path management, Cox input validation (constant-column removal, event/censoring checks), and `get_best_hparams` for recovering top CV hyperparameters from a val CSV.
 
 **SLURM orchestration** (`bash_scripts/`):
+
 - `launch_full_cohort.sh` / `array_full_cohort_run.sh`: Submit and execute full-cohort training jobs. Each SLURM array task processes multiple manifest rows (configurable `ROWS_PER_TASK`). Thread pinning (`OMP_NUM_THREADS=1`) prevents oversubscription with joblib parallelism.
 - `launch_feature_comp.sh` / `array_feature_comp.sh`: Same pattern for feature-comparison tasks.
 
@@ -113,17 +111,23 @@ python python_scripts/model_training/build_slurm_manifests.py --schemes icd3_pos
 # 2. Submit SLURM arrays
 bash bash_scripts/launch_full_cohort.sh
 bash bash_scripts/launch_feature_comp.sh
+
+# 3. After full-cohort training completes, generate held-out risk scores
+#    (either per-event via the script, or in bulk via the notebook)
+python python_scripts/model_training/run_full_cohort_risk_scores.py --scheme death_met --event death
 ```
 
 ---
 
-## Pipeline 3: Model Evaluation
+## Pipeline 3: Mortality Trajectories & Model Evaluation
 
-Evaluates trained models through held-out risk scoring, mortality trajectory analysis, and stratified model comparisons.
+Scripts under `python_scripts/mortality_trajectories/`. Evaluates trained models through held-out risk scoring, second-stage Cox modeling on those risk scores, mortality trajectory analysis, and stratified model comparisons.
 
 ### Logic and design decisions
 
-**Held-out risk scores** (`feature_ICD10_level_3_risk_scores.py`): For each endpoint, loads the best hyperparameters from each modality's CV results and generates 5-fold held-out risk scores using `get_heldout_risk_scores_CoxPH`. Produces per-patient risk score DataFrames that enable cross-modality comparison on the same held-out patients. Metastatic endpoints additionally exclude patients with baseline metastasis.
+**Per-modality held-out risk scores for metastasis endpoints** (`feature_ICD10_level_3_risk_scores.py`): For each ICD-10 level 3 endpoint (and the metastasis endpoints with baseline-metastasis exclusion), loads the best hyperparameters from each modality's `*_val.csv` and generates 5-fold held-out risk scores using `get_heldout_risk_scores_CoxPH`. Produces a merged per-patient risk-score DataFrame across modalities for downstream KM and second-stage Cox analyses.
+
+**Second-stage CoxPH on risk scores** (`feature_risk_score_coxph.py`): For each event with a complete set of modality risk-score files, fits (a) univariate Cox models per modality and (b) a joint Cox model over all modality risk scores. Writes `univariate_modality_metrics.csv`, `joint_model_metrics.csv`, and `joint_model_betas.csv`. Supports running across one or all schemes and a configurable modality set.
 
 **Mortality trajectories** (`generate_mortality_trajectories.py`): Fits a pan-cancer embedding-based Cox model at time 0, then generates risk scores at rolling 3-month intervals (3, 6, ..., 60 months post-treatment). At each interval, re-pools embeddings using all notes up to that time point with time-decay weighting (decay=1.0 for sharper recency focus). Produces a patient × time matrix of risk scores that captures how predicted mortality evolves with accumulating clinical information.
 
@@ -220,21 +224,13 @@ Installable Python package (`pip install -e python_utils/`) providing core funct
 
 ## Jupyter Notebooks
 
-| Directory | Notebook | Description |
-|-----------|----------|-------------|
-| `metrics/` | `compile_ICD_level_3_results.ipynb` | Compiles full-cohort CoxPH results across ICD-10 level 3 endpoints. |
-| `metrics/` | `compile_feature_comps_ICD_level_3.ipynb` | Compiles feature-comparison results (text vs somatic vs labs vs PRS vs stage vs treatment). |
-| `metrics/` | `analyze_landmark_results.ipynb` | Analysis of landmark survival model performance across time horizons. |
-| `metrics/` | `analyze_mortality_trajectories.ipynb` | Interactive visualization of mortality risk score trajectories. |
-| `metrics/` | `trajectories_vs_stage.ipynb` | Compares trajectory clusters against cancer stage. |
-| `metrics/` | `debug_individual_events.ipynb` | Debugging notebook for individual event-level model fits. |
-| `biomarker_analysis/` | `IPTW_KM_curves.ipynb` | Kaplan-Meier curves comparing ICI vs non-ICI patients with IPTW weights. |
-| `biomarker_analysis/` | `test_marker_propensity_association.ipynb` | Tests for residual confounding between markers and propensity scores. |
-| `note_embedding_EDA/` | `embedding_EDA.ipynb` | Exploratory analysis of embedding distributions and clustering patterns. |
-| `note_embedding_EDA/` | `association_testing_for_PCA.ipynb` | Tests associations between PCA components and clinical variables. |
-| `manuscript_figures/` | `figure_1.ipynb` | Generates Figure 1 for the manuscript. |
-| `meeting_figures/` | `07_14_2025_lab_meeting.ipynb` | Figures for the July 14, 2025 lab meeting. |
-| `meeting_figures/` | `ASHG_figures.ipynb` | Figures for the ASHG conference presentation. |
+| Location | Notebook | Description |
+|----------|----------|-------------|
+| `jupyter_notebooks/` | `compile_all_scheme_results.ipynb` | Consolidates full-cohort and feature-comparison results across all four schemes (death_met, icd3_post, icd4_post, phecode_post). |
+| `jupyter_notebooks/` | `debug_individual_events.ipynb` | Runs individual events through the Cox pipeline to diagnose NaN / data quality issues. |
+| `python_scripts/model_training/` | `run_full_cohort_risk_scores.ipynb` | Orchestrates `run_full_cohort_risk_scores.py` across every `(scheme, event)` whose training has completed. |
+| `python_scripts/biomarker_analysis/` | `run_biomarker_pipeline.ipynb` | End-to-end driver for the biomarker discovery pipeline (cohorts × PS models × tracks). |
+| `python_scripts/biomarker_analysis/` | `propensity_score_evaluation.ipynb` | Compares the two propensity score specifications (covariates-only vs +embeddings) for ICI prediction. |
 
 ---
 
@@ -245,3 +241,4 @@ Installable Python package (`pip install -e python_utils/`) providing core funct
 - Key dependencies: `pandas`, `numpy`, `scikit-learn`, `scikit-survival`, `lifelines`, `statsmodels`, `torch`, `transformers`, `joblib`, `tqdm`, `icd10`, `matplotlib`, `seaborn`.
 - The embedding generation step (`generate_clinical_embeddings.py`) requires GPU access and was originally run on GCP.
 - SLURM scripts assume a `clinical_notes_project` conda environment with `embed_surv_utils` installed.
+- **File extension convention**: `.csv.gz` is reserved for files in `batched_datasets/`, `clinical_and_genomic_features/`, and the root of `time-to-event_analysis/`. All other files — including everything under `results/`, `code_data/`, and `biomarker_analysis/` outputs — use plain `.csv`. The biomarker pipeline still has lingering `.csv.gz` references for results files that should eventually be migrated.
