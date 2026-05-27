@@ -15,6 +15,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.patches import FancyBboxPatch, Ellipse, Rectangle
+from lifelines import KaplanMeierFitter
+from lifelines.statistics import multivariate_logrank_test
 
 from _figure_utils import apply_style, load_figure_data, save_panel
 
@@ -177,36 +179,47 @@ save_panel(fig, "fig1c")
 plt.close(fig)
 
 
-# %% fig1d: cohort composition (pie of cancer types)
-ct = load_figure_data("fig1_cancer_type_counts.csv")
-fig, ax = plt.subplots(figsize=(7.0, 5.2))
-if ct.empty:
-    _missing(ax, "fig1_cancer_type_counts.csv empty")
+# %% fig1d: mortality by risk-score tertile (text solid, base dashed)
+km_tert = load_figure_data("fig1_km_tertiles.csv")
+fig, ax = plt.subplots(figsize=(6.4, 5.0))
+if km_tert.empty:
+    _missing(ax, "fig1_km_tertiles.csv empty")
 else:
-    plot_df = ct.head(10).copy()
-    plot_df["category"] = plot_df["category"].astype(str).str.replace("_", " ", regex=False)
-    plot_df = plot_df.sort_values("n", ascending=False)
-    colors = plt.cm.tab10(np.linspace(0, 1, len(plot_df)))
-    total = int(plot_df["n"].sum())
-    wedges, _, autotexts = ax.pie(
-        plot_df["n"].values,
-        labels=None,
-        colors=colors,
-        autopct=lambda pct: f"{pct:.1f}%" if pct >= 3 else "",
-        startangle=90,
-        pctdistance=0.78,
-        wedgeprops=dict(edgecolor="white", linewidth=1.2),
-    )
-    for at in autotexts:
-        at.set_fontsize(7)
-    ax.legend(
-        wedges,
-        [f"{c} (n={int(n):,})" for c, n in zip(plot_df["category"], plot_df["n"])],
-        loc="center left",
-        bbox_to_anchor=(0.95, 0.5),
-        fontsize=7.5,
-        frameon=False,
-    )
-    ax.set_title(f"Cohort Composition  (N={total:,})")
+    tertile_colors = {"low": "#2CA02C", "mid": "#FF7F0E", "high": "#D62728"}
+    months = km_tert["tt_death"] / 30.44
+    death = km_tert["death"].astype(int)
+    kmf = KaplanMeierFitter()
+    for t in ("low", "mid", "high"):
+        sub = km_tert[km_tert["text_tertile"] == t]
+        if sub.empty:
+            continue
+        kmf.fit(sub["tt_death"] / 30.44, sub["death"].astype(int),
+                label=f"text {t} (n={len(sub):,})")
+        kmf.plot_survival_function(ax=ax, ci_show=False,
+                                   color=tertile_colors[t], lw=2)
+    for t in ("low", "mid", "high"):
+        sub = km_tert[km_tert["base_tertile"] == t]
+        if sub.empty:
+            continue
+        kmf.fit(sub["tt_death"] / 30.44, sub["death"].astype(int),
+                label=f"base {t} (n={len(sub):,})")
+        kmf.plot_survival_function(ax=ax, ci_show=False,
+                                   color=tertile_colors[t], lw=1.2,
+                                   linestyle="--")
+    try:
+        lr_text = multivariate_logrank_test(months, km_tert["text_tertile"], death)
+        lr_base = multivariate_logrank_test(months, km_tert["base_tertile"], death)
+        ax.text(0.03, 0.06,
+                f"text logrank p={lr_text.p_value:.1e}\n"
+                f"base logrank p={lr_base.p_value:.1e}",
+                transform=ax.transAxes, fontsize=7.5, style="italic")
+    except Exception as exc:
+        print(f"  logrank test failed: {exc}")
+    ax.set_xlim(0, 60)
+    ax.set_ylim(0, 1.03)
+    ax.set_xlabel("Months from first treatment")
+    ax.set_ylabel("Overall survival")
+    ax.set_title("Mortality by Risk-Score Tertile\n(text solid, base dashed)")
+    ax.legend(loc="upper right", fontsize=6.5, ncol=2)
 save_panel(fig, "fig1d")
 plt.close(fig)

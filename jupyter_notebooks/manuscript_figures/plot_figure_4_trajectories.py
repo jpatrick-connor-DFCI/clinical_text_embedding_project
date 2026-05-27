@@ -62,32 +62,53 @@ save_panel(fig, "fig4a")
 plt.close(fig)
 
 
-# %% fig4b: KM survival by cluster
+# %% fig4b: conditional KM survival from month 60 onwards
+# Cluster assignment requires a 60-month risk-score trajectory, so every
+# clustered patient is by construction alive at month 60. Plotting from time 0
+# pretends those 60 months were observed for cluster assignment, which is
+# immortal-time bias. Condition on surviving to month 60 (left-truncation at
+# the cluster-entry boundary) so the curves start at S(60) = 1.0.
+ENTRY_MONTHS = 60.0
 fig, ax = plt.subplots(figsize=(6.4, 4.8))
 if km.empty:
     _missing(ax, "fig4_km_data.csv empty")
 else:
-    kmf = KaplanMeierFitter()
-    for k in sorted(km["cluster"].dropna().unique()):
-        sub = km[km["cluster"] == k]
-        if sub.empty:
-            continue
-        color = CLUSTER_COLORS[int(k) % len(CLUSTER_COLORS)]
-        label = _cluster_label(int(k), len(sub))
-        kmf.fit(sub["tt_death"] / 30.44, sub["death"], label=label)
-        kmf.plot_survival_function(ax=ax, ci_show=False, color=color, lw=2)
-    try:
-        lr = multivariate_logrank_test(km["tt_death"], km["cluster"], km["death"])
-        ax.text(0.03, 0.08, f"Log-rank p={lr.p_value:.1e}", transform=ax.transAxes,
-                fontsize=8, style="italic")
-    except Exception as exc:
-        print(f"logrank test failed: {exc}")
-    ax.set_xlim(0, 120)
-    ax.set_ylim(0, 1.03)
-    ax.set_xlabel("Months")
-    ax.set_ylabel("Overall Survival Probability")
-    ax.set_title("KM Overall Survival by Cluster")
-    ax.legend(fontsize=7, loc="upper right")
+    km_months = km.assign(_months=km["tt_death"] / 30.44)
+    km_at_risk = km_months[km_months["_months"] >= ENTRY_MONTHS]
+    if km_at_risk.empty:
+        _missing(ax, f"no patients followed past {int(ENTRY_MONTHS)} months")
+    else:
+        kmf = KaplanMeierFitter()
+        for k in sorted(km_at_risk["cluster"].dropna().unique()):
+            sub = km_at_risk[km_at_risk["cluster"] == k]
+            if sub.empty:
+                continue
+            color = CLUSTER_COLORS[int(k) % len(CLUSTER_COLORS)]
+            label = _cluster_label(int(k), len(sub))
+            kmf.fit(
+                durations=sub["_months"],
+                event_observed=sub["death"],
+                entry=np.full(len(sub), ENTRY_MONTHS),
+                label=label,
+            )
+            kmf.plot_survival_function(ax=ax, ci_show=False, color=color, lw=2)
+        try:
+            lr = multivariate_logrank_test(
+                km_at_risk["_months"],
+                km_at_risk["cluster"],
+                km_at_risk["death"],
+            )
+            ax.text(0.03, 0.08, f"Log-rank p={lr.p_value:.1e}",
+                    transform=ax.transAxes, fontsize=8, style="italic")
+        except Exception as exc:
+            print(f"logrank test failed: {exc}")
+        ax.set_xlim(ENTRY_MONTHS, 120)
+        ax.set_ylim(0, 1.03)
+        ax.set_xlabel("Months from first treatment")
+        ax.set_ylabel("Overall Survival Probability (conditional)")
+        ax.set_title(f"KM Overall Survival by Cluster\n"
+                     f"(conditional on survival to month {int(ENTRY_MONTHS)})")
+        ax.legend(fontsize=7, loc="upper right")
 save_panel(fig, "fig4b")
 plt.close(fig)
 

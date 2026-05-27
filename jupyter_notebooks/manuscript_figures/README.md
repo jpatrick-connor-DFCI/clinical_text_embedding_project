@@ -76,7 +76,7 @@ manuscript_figures/
 
 | Figure | Inputs from `figure_data/` |
 |---|---|
-| 1 | `fig1_cohort_counts.csv`, `fig1_endpoint_counts.csv`, `fig1_note_volume.csv`, `fig1_cancer_type_counts.csv`, `fig1_stage_counts.csv`, `fig1_treatment_counts.csv`, `fig1_umap_coords.csv` |
+| 1 | `fig1_cohort_counts.csv`, `fig1_endpoint_counts.csv`, `fig1_note_volume.csv`, `fig1_cancer_type_counts.csv`, `fig1_stage_counts.csv`, `fig1_treatment_counts.csv`, `fig1_umap_coords.csv`, `fig1_km_tertiles.csv` (emitted by `prep_figure_2`, consumed by Fig 1D) |
 | 2 | `fig2_full_cohort_metrics.csv`, `fig2_cancer_endpoint_heatmap.csv`, `fig2_km_examples.csv` |
 | 3 | `fig3_modality_cindex.csv`, `fig3_joint_betas.csv` (includes p-values), `fig3_risk_score_corr.csv`, `fig3_univariate_vs_joint.csv` |
 | 4 | `fig4_trajectories_with_clusters.csv` (full cohort), `fig4_trajectories_heatmap.csv` (per-cluster downsample for panel A), `fig4_cluster_means.csv`, `fig4_cluster_composition_{cancer,stage,treatment}.csv`, `fig4_km_data.csv` |

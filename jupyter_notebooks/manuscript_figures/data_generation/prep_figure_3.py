@@ -142,7 +142,12 @@ def _joint_betas(scheme: str) -> pd.DataFrame:
         fit_df = pd.DataFrame(X, columns=risk_cols, index=merged.index)
         fit_df[event] = merged[event].astype(int).values
         fit_df[f"tt_{event}"] = merged[f"tt_{event}"].astype(float).values
-        cph = CoxPHFitter()
+        # Small L2 ridge stabilizes the fit on highly-collinear modality risk
+        # scores. Without it, near-rank-deficient designs produce huge
+        # cancelling betas (|beta| > 1e4) and meaningless p-values. With a
+        # penalty of 1e-2 on standardized features, well-identified coefficients
+        # are essentially unchanged while pathological events stay finite.
+        cph = CoxPHFitter(penalizer=1e-2, l1_ratio=0.0)
         # lifelines wraps several upstream failure modes (collinearity,
         # remaining NaNs slipping through, Newton-step singularities) in a mix
         # of ConvergenceError / TypeError / ValueError / LinAlgError. Catch all
@@ -154,6 +159,14 @@ def _joint_betas(scheme: str) -> pd.DataFrame:
             print(f"  [{scheme}/{event}] CoxPH refit failed: {type(exc).__name__}: {exc}")
             continue
         summary = cph.summary
+        # Backstop: even with the ridge, drop the (scheme, event) entirely if
+        # any coefficient is clearly numerical breakdown rather than biology.
+        # On standardized features, |beta| > 5 (HR > ~150 per SD) is implausible
+        # and almost always reflects residual separation / collinearity.
+        if (summary["coef"].abs() > 5).any():
+            offenders = summary.loc[summary["coef"].abs() > 5, "coef"].to_dict()
+            print(f"  [{scheme}/{event}] dropping fit with pathological betas: {offenders}")
+            continue
         for risk_col, srow in summary.iterrows():
             rows.append({
                 "scheme": scheme,
