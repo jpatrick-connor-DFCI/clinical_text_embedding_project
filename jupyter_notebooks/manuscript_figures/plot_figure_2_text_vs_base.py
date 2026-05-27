@@ -139,43 +139,46 @@ save_panel(fig, "fig2c")
 plt.close(fig)
 
 
-# %% fig2d: survival and AUC examples
-km_examples = load_figure_data("fig2_km_examples.csv")
-fig, axes = plt.subplots(1, 3, figsize=(12.4, 3.8), sharey=False)
-
-def _plot_km(ax: plt.Axes, data: pd.DataFrame, title: str) -> None:
-    if data.empty:
-        _missing(ax, "no KM example data")
-        return
+# %% fig2d: mortality by risk-score tertile (text solid, base dashed)
+km_tert = load_figure_data("fig2_km_tertiles.csv")
+fig, ax = plt.subplots(figsize=(6.4, 5.0))
+if km_tert.empty:
+    _missing(ax, "fig2_km_tertiles.csv empty")
+else:
+    months = km_tert["tt_death"] / 30.44
+    death = km_tert["death"].astype(int)
     kmf = KaplanMeierFitter()
-    for label in ["low", "mid", "high"]:
-        sub = data[data["text_tertile"] == label]
+    for t in ("low", "mid", "high"):
+        sub = km_tert[km_tert["text_tertile"] == t]
         if sub.empty:
             continue
-        kmf.fit(sub["time"] / 30.44, sub["event_indicator"], label=f"{label.title()} (n={len(sub):,})")
-        kmf.plot_survival_function(ax=ax, ci_show=False, color=RISK_COLORS[label], lw=1.8)
+        kmf.fit(sub["tt_death"] / 30.44, sub["death"].astype(int),
+                label=f"text {t} (n={len(sub):,})")
+        kmf.plot_survival_function(ax=ax, ci_show=False,
+                                   color=RISK_COLORS[t], lw=2)
+    for t in ("low", "mid", "high"):
+        sub = km_tert[km_tert["base_tertile"] == t]
+        if sub.empty:
+            continue
+        kmf.fit(sub["tt_death"] / 30.44, sub["death"].astype(int),
+                label=f"base {t} (n={len(sub):,})")
+        kmf.plot_survival_function(ax=ax, ci_show=False,
+                                   color=RISK_COLORS[t], lw=1.2,
+                                   linestyle="--")
     try:
-        lr = multivariate_logrank_test(data["time"], data["text_tertile"], data["event_indicator"])
-        ax.text(0.03, 0.06, f"Log-rank p={lr.p_value:.1e}", transform=ax.transAxes, fontsize=7)
+        lr_text = multivariate_logrank_test(months, km_tert["text_tertile"], death)
+        lr_base = multivariate_logrank_test(months, km_tert["base_tertile"], death)
+        ax.text(0.03, 0.06,
+                f"text logrank p={lr_text.p_value:.1e}\n"
+                f"base logrank p={lr_base.p_value:.1e}",
+                transform=ax.transAxes, fontsize=7.5, style="italic")
     except Exception as exc:
-        print(f"logrank failed for {title}: {exc}")
+        print(f"  logrank test failed: {exc}")
     ax.set_xlim(0, 60)
-    ax.set_ylim(0, 1.02)
-    ax.set_title(title)
-    ax.set_xlabel("Months")
-    ax.set_ylabel("Survival Probability")
-    ax.legend(fontsize=6.5, loc="upper right")
-
-if km_examples.empty:
-    for ax in axes:
-        _missing(ax, "fig2_km_examples.csv empty")
-else:
-    events = list(km_examples["event"].dropna().unique())[:3]
-    for ax, event in zip(axes, events):
-        sub = km_examples[km_examples["event"] == event]
-        _plot_km(ax, sub, str(event).replace("_", " ").title())
-    for ax in axes[len(events):]:
-        _missing(ax, "no additional KM event")
-fig.tight_layout()
+    ax.set_ylim(0, 1.03)
+    ax.set_xlabel("Months from first treatment")
+    ax.set_ylabel("Overall survival")
+    ax.set_title("Mortality by Risk-Score Tertile\n(text solid, base dashed)")
+    ax.legend(loc="upper right", fontsize=6.5, ncol=2)
 save_panel(fig, "fig2d")
 plt.close(fig)

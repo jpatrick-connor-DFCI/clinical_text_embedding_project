@@ -3,11 +3,8 @@
 Writes to FIGURE_DATA_DIR:
 - fig2_full_cohort_metrics.csv      scheme, event, text_cindex, base_cindex, text_auc, base_auc
 - fig2_cancer_endpoint_heatmap.csv  event, cancer_type, text_cindex, n, n_events
-- fig2_km_examples.csv              DFCI_MRN, event, text_risk_score, event_indicator, time,
-                                    text_tertile
-- fig1_km_tertiles.csv              DFCI_MRN, text_risk_score, base_risk_score, death, tt_death,
+- fig2_km_tertiles.csv              DFCI_MRN, text_risk_score, base_risk_score, death, tt_death,
                                     text_tertile, base_tertile
-  (consumed by Fig 1D; emitted here because the surv-merge helpers already live in this module)
 """
 
 from __future__ import annotations
@@ -35,7 +32,6 @@ FULL_COHORT_METRIC_COLUMNS = [
     "scheme", "event", "text_cindex", "base_cindex", "text_auc", "base_auc",
 ]
 CANCER_ENDPOINT_COLUMNS = ["event", "cancer_type", "text_cindex", "n", "n_events"]
-KM_EXAMPLE_COLUMNS = ["DFCI_MRN", "event", "text_risk_score", "event_indicator", "time", "text_tertile"]
 KM_TERTILE_COLUMNS = [
     "DFCI_MRN", "text_risk_score", "base_risk_score", "death", "tt_death",
     "text_tertile", "base_tertile",
@@ -96,7 +92,7 @@ def _safe_tertiles(scores: pd.Series, label: str) -> pd.Series:
 
 
 def _km_tertiles(surv_df: pd.DataFrame) -> pd.DataFrame:
-    """Patient-level table for the Fig 1D text-vs-base tertile KM panel."""
+    """Patient-level table for the Fig 2D text-vs-base tertile KM panel."""
     m = _merge_risk_with_surv("death", surv_df)
     if m is None:
         return pd.DataFrame(columns=KM_TERTILE_COLUMNS)
@@ -158,23 +154,6 @@ def _cancer_endpoint_heatmap(surv_df: pd.DataFrame, top_n_cancers: int = 8,
     return pd.DataFrame(rows, columns=CANCER_ENDPOINT_COLUMNS)
 
 
-def _km_examples(surv_df: pd.DataFrame, events: list[str] | None = None) -> pd.DataFrame:
-    events = events or ["death", "liverM", "brainM"]
-    rows = []
-    for ev in events:
-        m = _merge_risk_with_surv(ev, surv_df)
-        if m is None or len(m) < 100:
-            continue
-        m = m.copy()
-        m["text_tertile"] = _safe_tertiles(m["text_risk_score"], f"text/{ev}")
-        cur = m[["DFCI_MRN", "text_risk_score", ev, f"tt_{ev}", "text_tertile"]].rename(
-            columns={ev: "event_indicator", f"tt_{ev}": "time"}
-        )
-        cur["event"] = ev
-        rows.append(cur[KM_EXAMPLE_COLUMNS])
-    if not rows:
-        return pd.DataFrame(columns=KM_EXAMPLE_COLUMNS)
-    return pd.concat(rows, ignore_index=True)
 
 
 def main() -> None:
@@ -182,8 +161,7 @@ def main() -> None:
 
     save_figure_data(_full_cohort_metrics(), "fig2_full_cohort_metrics.csv")
     save_figure_data(_cancer_endpoint_heatmap(surv_df), "fig2_cancer_endpoint_heatmap.csv")
-    save_figure_data(_km_examples(surv_df), "fig2_km_examples.csv")
-    save_figure_data(_km_tertiles(surv_df), "fig1_km_tertiles.csv")
+    save_figure_data(_km_tertiles(surv_df), "fig2_km_tertiles.csv")
 
 
 if __name__ == "__main__":
