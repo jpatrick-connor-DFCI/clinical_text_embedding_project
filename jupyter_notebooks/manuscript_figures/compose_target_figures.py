@@ -9,13 +9,20 @@ older manuscript-style full-figure targets.
 from __future__ import annotations
 
 import argparse
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
 
 THIS_DIR = Path(__file__).resolve().parent
-FIGURE_OUT_DIR = THIS_DIR / "figures"
+# Make sibling _figure_utils importable when this script is run directly so
+# we share its (env-var-overridable) FIGURE_OUT_DIR rather than defaulting to
+# the in-tree `jupyter_notebooks/.../figures` directory.
+if str(THIS_DIR) not in sys.path:
+    sys.path.insert(0, str(THIS_DIR))
+from _figure_utils import FIGURE_OUT_DIR  # noqa: E402
+
 TARGET_OUT_DIR = FIGURE_OUT_DIR / "target_figures"
 
 

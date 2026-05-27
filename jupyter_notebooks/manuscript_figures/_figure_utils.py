@@ -18,7 +18,17 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 THIS_DIR = Path(__file__).resolve().parent
-FIGURE_OUT_DIR = THIS_DIR / "figures"
+
+# Cluster-side output root for rendered panel PNGs and composed figures.
+# Override with the CLINICAL_FIGURES_OUT env var when running off the cluster
+# (e.g. local rendering for styling iteration) — `save_panel` creates the
+# directory on demand, so nothing here needs to exist at import time.
+FIGURE_OUT_DIR = Path(
+    os.environ.get(
+        "CLINICAL_FIGURES_OUT",
+        "/data/gusev/USERS/jpconnor/figures/clinical_text_embedding_project/manuscript_figures/",
+    )
+)
 
 # Project paths (cluster) — mirrors slurm_array_utils.py
 DATA_PATH = "/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/"
