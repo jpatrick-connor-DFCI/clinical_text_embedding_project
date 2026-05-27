@@ -110,25 +110,47 @@ def _joint_betas(scheme: str) -> pd.DataFrame:
         if not set(keep).issubset(tte_df.columns):
             continue
         merged = merged.merge(tte_df[keep], on="DFCI_MRN", how="inner")
-        merged = merged.dropna(subset=[event, f"tt_{event}"])
+        risk_cols = [c for c in merged.columns if c.endswith("_risk_score")]
+        # Drop rows with NaN in *any* feature or in event/time. The per-modality
+        # held-out risk-score files don't all cover the same patients (their
+        # outer join can leave NaNs for partially-overlapping cohorts), and
+        # lifelines refuses NaNs outright.
+        merged = merged.dropna(subset=risk_cols + [event, f"tt_{event}"])
         merged = merged.loc[merged[f"tt_{event}"] > 0]
+        # Drop constant risk-score columns within this event slice; a feature
+        # with zero variance breaks StandardScaler and makes the Cox design
+        # matrix singular.
+        constant_cols = [c for c in risk_cols if merged[c].nunique(dropna=False) <= 1]
+        if constant_cols:
+            print(f"  [{scheme}/{event}] dropping constant risk columns: {constant_cols}")
+            merged = merged.drop(columns=constant_cols)
+            risk_cols = [c for c in risk_cols if c not in constant_cols]
+        if len(risk_cols) < 2:
+            continue
         n = len(merged)
         n_events = int(merged[event].sum()) if n else 0
         if n < 20 or n_events < 5 or n - n_events < 5:
             continue
-        risk_cols = [c for c in merged.columns if c.endswith("_risk_score")]
         try:
             X = StandardScaler().fit_transform(merged[risk_cols].astype(float))
         except ValueError as exc:
             print(f"  [{scheme}/{event}] standardize failed: {exc}")
             continue
+        if not np.isfinite(X).all():
+            print(f"  [{scheme}/{event}] non-finite values after standardize; skipping")
+            continue
         fit_df = pd.DataFrame(X, columns=risk_cols, index=merged.index)
         fit_df[event] = merged[event].astype(int).values
         fit_df[f"tt_{event}"] = merged[f"tt_{event}"].astype(float).values
         cph = CoxPHFitter()
+        # lifelines wraps several upstream failure modes (collinearity,
+        # remaining NaNs slipping through, Newton-step singularities) in a mix
+        # of ConvergenceError / TypeError / ValueError / LinAlgError. Catch all
+        # of them so one pathological event can't kill the entire scheme.
         try:
             cph.fit(fit_df, duration_col=f"tt_{event}", event_col=event)
-        except (ConvergenceError, ValueError, np.linalg.LinAlgError) as exc:
+        except (ConvergenceError, TypeError, ValueError,
+                np.linalg.LinAlgError) as exc:
             print(f"  [{scheme}/{event}] CoxPH refit failed: {type(exc).__name__}: {exc}")
             continue
         summary = cph.summary
