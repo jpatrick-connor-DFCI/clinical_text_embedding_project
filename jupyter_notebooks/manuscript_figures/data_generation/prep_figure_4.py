@@ -10,6 +10,8 @@ Writes to FIGURE_DATA_DIR:
 - fig4_cluster_composition_stage.csv   same
 - fig4_cluster_composition_treatment.csv same
 - fig4_km_data.csv                     DFCI_MRN, cluster, death, tt_death
+- fig4_cluster_severity.csv            cluster, mean_met_sites, rmst_months, n_patients
+- fig4_silhouette.csv                  k, silhouette  (cluster-count justification, appendix)
 """
 
 from __future__ import annotations
@@ -21,7 +23,10 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from lifelines import KaplanMeierFitter
+from lifelines.utils import restricted_mean_survival_time
 from sklearn.cluster import AgglomerativeClustering
+from sklearn.metrics import silhouette_score
 from sklearn.preprocessing import StandardScaler
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -39,6 +44,11 @@ HEATMAP_ROWS_PER_CLUSTER = 500
 CLUSTER_MEAN_COLUMNS = ["cluster", "month", "mean", "sem", "n_patients"]
 COMPOSITION_COLUMNS = ["cluster", "OTHER"]
 KM_COLUMNS = ["DFCI_MRN", "cluster", "death", "tt_death"]
+SEVERITY_COLUMNS = ["cluster", "mean_met_sites", "rmst_months", "n_patients"]
+SILHOUETTE_COLUMNS = ["k", "silhouette"]
+MET_EVENTS = ["brainM", "boneM", "adrenalM", "liverM", "lungM", "nodeM", "peritonealM"]
+RMST_TAU_MONTHS = 60  # restricted-mean-survival horizon, matches the KM x-range
+SILHOUETTE_K_RANGE = range(2, 9)
 
 
 def _default_trajectory_input(decay: float) -> str:
@@ -49,7 +59,13 @@ def _default_trajectory_input(decay: float) -> str:
     )
 
 
-def _cluster_trajectories(input_path: str) -> tuple[pd.DataFrame, list[str]]:
+def _scaled_trajectory_matrix(input_path: str) -> tuple[pd.DataFrame, np.ndarray | None, list[str]]:
+    """Load, filter, impute (ffill/bfill) and z-scale the trajectory matrix.
+
+    Returns (traj_sub with imputed month columns, X_z or None if too few patients,
+    months_to_keep). Shared by clustering and the silhouette scan so both operate on
+    exactly the same feature matrix.
+    """
     if not os.path.exists(input_path):
         raise FileNotFoundError(
             f"Trajectory input not found: {input_path}\n"
@@ -65,31 +81,48 @@ def _cluster_trajectories(input_path: str) -> tuple[pd.DataFrame, list[str]]:
     traj_sub = traj_df.loc[pxs_to_keep, ["DFCI_MRN"] + months_to_keep].copy()
 
     if len(traj_sub) < N_CLUSTERS:
+        return traj_sub, None, months_to_keep
+
+    X = traj_sub[months_to_keep].values
+    X_filled = pd.DataFrame(X).ffill(axis=1).bfill(axis=1).values
+    X_z = StandardScaler().fit_transform(X_filled)
+    # Replace original X with filled X so downstream uses the same values
+    for i, col in enumerate(months_to_keep):
+        traj_sub[col] = X_filled[:, i]
+    return traj_sub, X_z, months_to_keep
+
+
+def _cluster_trajectories(input_path: str) -> tuple[pd.DataFrame, list[str]]:
+    traj_sub, X_z, months_to_keep = _scaled_trajectory_matrix(input_path)
+    if X_z is None:
         print(f"  only {len(traj_sub)} patients survived filtering; need >= {N_CLUSTERS} "
               "for clustering. Emitting empty figure-data.")
         empty = pd.DataFrame(columns=["DFCI_MRN", "cluster", *months_to_keep])
         return empty, months_to_keep
 
-    X = traj_sub[months_to_keep].values
-    X_filled = pd.DataFrame(X).ffill(axis=1).bfill(axis=1).values
-    X_z = StandardScaler().fit_transform(X_filled)
     model = AgglomerativeClustering(n_clusters=N_CLUSTERS, linkage="ward")
     raw_labels = model.fit_predict(X_z)
 
     # Relabel clusters by ascending mean risk so cluster 0 is always lowest-risk.
     # This stabilizes labels across reruns / input filtering changes.
-    cluster_mean_risk = {
-        k: X_filled[raw_labels == k].mean()
-        for k in np.unique(raw_labels)
-    }
+    risk = traj_sub[months_to_keep].to_numpy()
+    cluster_mean_risk = {k: risk[raw_labels == k].mean() for k in np.unique(raw_labels)}
     label_order = sorted(cluster_mean_risk, key=cluster_mean_risk.get)
     relabel = {old: new for new, old in enumerate(label_order)}
     traj_sub["cluster"] = pd.Series(raw_labels, index=traj_sub.index).map(relabel)
-
-    # Replace original X with filled X so downstream uses the same values
-    for i, col in enumerate(months_to_keep):
-        traj_sub[col] = X_filled[:, i]
     return traj_sub, months_to_keep
+
+
+def _silhouette_scan(input_path: str) -> pd.DataFrame:
+    """Silhouette score vs k on the same scaled trajectory matrix — justifies N_CLUSTERS."""
+    _, X_z, _ = _scaled_trajectory_matrix(input_path)
+    if X_z is None or len(X_z) <= max(SILHOUETTE_K_RANGE):
+        return pd.DataFrame(columns=SILHOUETTE_COLUMNS)
+    rows = []
+    for k in SILHOUETTE_K_RANGE:
+        labels = AgglomerativeClustering(n_clusters=k, linkage="ward").fit_predict(X_z)
+        rows.append({"k": int(k), "silhouette": float(silhouette_score(X_z, labels))})
+    return pd.DataFrame(rows, columns=SILHOUETTE_COLUMNS)
 
 
 def _cluster_means(traj_sub: pd.DataFrame, months_to_keep: list[str]) -> pd.DataFrame:
@@ -151,6 +184,46 @@ def _km_data(traj_sub: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _cluster_severity(traj_sub: pd.DataFrame) -> pd.DataFrame:
+    """Per-cluster disease-severity metrics for the Fig 4C characteristics panel.
+
+    - mean_met_sites: mean number of distinct metastasis sites per patient (0-7).
+    - rmst_months: cluster restricted mean survival time over [0, RMST_TAU_MONTHS] months.
+    """
+    if traj_sub.empty:
+        return pd.DataFrame(columns=SEVERITY_COLUMNS)
+    surv_df = pd.read_csv(os.path.join(SURV_PATH, "death_met_surv_df.csv.gz"))
+    met_cols = [c for c in MET_EVENTS if c in surv_df.columns]
+    keep_cols = ["DFCI_MRN", "death", "tt_death"] + met_cols
+    merged = traj_sub[["DFCI_MRN", "cluster"]].merge(
+        surv_df[keep_cols], on="DFCI_MRN", how="inner",
+    )
+    if met_cols:
+        merged["n_met_sites"] = merged[met_cols].fillna(0).clip(upper=1).sum(axis=1)
+    else:
+        merged["n_met_sites"] = np.nan
+
+    rows = []
+    for k, sub in merged.groupby("cluster"):
+        valid = sub.dropna(subset=["death", "tt_death"])
+        valid = valid[valid["tt_death"] > 0]
+        rmst = np.nan
+        if not valid.empty:
+            kmf = KaplanMeierFitter().fit(valid["tt_death"] / 30.44, valid["death"])
+            try:
+                rmst = float(restricted_mean_survival_time(kmf, t=RMST_TAU_MONTHS))
+            except Exception as e:  # pragma: no cover - defensive
+                print(f"  RMST failed for cluster {k}: {e}")
+                rmst = np.nan
+        rows.append({
+            "cluster": int(k),
+            "mean_met_sites": sub["n_met_sites"].mean(),
+            "rmst_months": rmst,
+            "n_patients": int(len(sub)),
+        })
+    return pd.DataFrame(rows, columns=SEVERITY_COLUMNS)
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--decay", type=float, default=DEFAULT_DECAY,
@@ -185,6 +258,8 @@ def main() -> None:
     save_figure_data(_composition(traj_sub, tx1, tx_cols, "PX_on_"),
                      "fig4_cluster_composition_treatment.csv")
     save_figure_data(_km_data(traj_sub), "fig4_km_data.csv")
+    save_figure_data(_cluster_severity(traj_sub), "fig4_cluster_severity.csv")
+    save_figure_data(_silhouette_scan(input_path), "fig4_silhouette.csv")
 
 
 if __name__ == "__main__":

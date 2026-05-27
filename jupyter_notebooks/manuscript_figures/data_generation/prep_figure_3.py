@@ -2,6 +2,7 @@
 
 Writes to FIGURE_DATA_DIR:
 - fig3_modality_cindex.csv        scheme, event, modality, cindex
+- fig3_modality_avg_rank.csv      modality, mean_rank, sem_rank, n_events  (complete-case endpoints)
 - fig3_joint_betas.csv            scheme, event, modality, beta, se, hr, p_value, n, n_events
 - fig3_risk_score_corr.csv        modality x modality correlation, plus n_patients in metadata row
 - fig3_univariate_vs_joint.csv    modality, univariate_auc, joint_auc
@@ -34,6 +35,7 @@ SCHEMES = list(SCHEME_RESULT_DIRS)
 DEATH_SCHEME = "death_met"    # scheme for the correlation heatmap
 
 MODALITY_CINDEX_COLUMNS = ["scheme", "event", "modality", "cindex"]
+MODALITY_AVG_RANK_COLUMNS = ["modality", "mean_rank", "sem_rank", "n_events"]
 JOINT_BETA_COLUMNS = [
     "scheme", "event", "modality",
     "beta", "se", "hr", "p_value", "n", "n_events",
@@ -194,6 +196,38 @@ def _joint_betas_all() -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=JOINT_BETA_COLUMNS)
 
 
+def _modality_avg_rank(cindex_df: pd.DataFrame) -> pd.DataFrame:
+    """Average performance rank per modality across endpoints.
+
+    For each (scheme, event) endpoint, rank the modalities by c-index (1 = best);
+    average those ranks per modality. Restricted to *complete-case* endpoints where
+    every modality in MODALITY_ORDER has a c-index, so all averages rank the same set.
+    """
+    if cindex_df.empty:
+        return pd.DataFrame(columns=MODALITY_AVG_RANK_COLUMNS)
+
+    mat = cindex_df.pivot_table(
+        index=["scheme", "event"], columns="modality", values="cindex", aggfunc="mean",
+    )
+    modalities = [m for m in MODALITY_ORDER if m in mat.columns]
+    mat = mat.reindex(columns=modalities)
+    mat = mat.dropna(how="any")  # complete-case endpoints only
+    if mat.empty:
+        return pd.DataFrame(columns=MODALITY_AVG_RANK_COLUMNS)
+
+    # Higher c-index -> better -> rank 1; ties share the average rank.
+    ranks = mat.rank(axis=1, ascending=False, method="average")
+    n_events = len(ranks)
+    out = pd.DataFrame({
+        "modality": modalities,
+        "mean_rank": [ranks[m].mean() for m in modalities],
+        "sem_rank": [ranks[m].std(ddof=1) / np.sqrt(n_events) if n_events > 1 else 0.0
+                     for m in modalities],
+        "n_events": n_events,
+    })
+    return out.reindex(columns=MODALITY_AVG_RANK_COLUMNS)
+
+
 def _risk_score_corr(scheme: str, event: str = "death") -> pd.DataFrame:
     risk_dir = feature_held_out_dir(scheme, event)
     dfs = []
@@ -238,7 +272,9 @@ def _univariate_vs_joint(scheme: str) -> pd.DataFrame:
 
 
 def main() -> None:
-    save_figure_data(_modality_cindex_all(), "fig3_modality_cindex.csv")
+    cindex_all = _modality_cindex_all()
+    save_figure_data(cindex_all, "fig3_modality_cindex.csv")
+    save_figure_data(_modality_avg_rank(cindex_all), "fig3_modality_avg_rank.csv")
     save_figure_data(_joint_betas_all(), "fig3_joint_betas.csv")
     save_figure_data(_risk_score_corr(DEATH_SCHEME, "death"), "fig3_risk_score_corr.csv")
     save_figure_data(_univariate_vs_joint(SCHEME), "fig3_univariate_vs_joint.csv")

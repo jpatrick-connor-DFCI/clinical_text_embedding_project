@@ -30,6 +30,21 @@ TEAL = "#2A9D8F"
 NS_GRAY = "#999999"
 LIGHT_GRAY = "#EAEAEA"
 
+COHORT_LABELS = {"cohort1": "Cohort 1", "cohort2": "Cohort 2"}
+COHORT_SHORT = {"cohort1": "first-line, unmatched", "cohort2": "lines 1-3, 1:1 matched"}
+COHORT_DEFS = {
+    "cohort1": "Cohort 1: first-line ICI vs. all never-ICI controls (unmatched, discovery)",
+    "cohort2": "Cohort 2: ICI lines 1-3 vs. 1:1 matched controls (matched, validation)",
+}
+
+
+def _cohort_label(cohort: str) -> str:
+    return COHORT_LABELS.get(str(cohort), str(cohort))
+
+
+def _spec_cohort(spec: str) -> str:
+    return str(spec).split("|")[0]
+
 
 def _missing(ax: plt.Axes, msg: str) -> None:
     ax.text(0.5, 0.5, msg, ha="center", va="center", transform=ax.transAxes, color="#777")
@@ -114,7 +129,16 @@ else:
     ax.set_ylim(0, 1.02)
     ax.set_xlabel("False Positive Rate")
     ax.set_ylabel("True Positive Rate")
-    ax.set_title("Propensity Score Model: Predicting ICI Receipt", fontweight="bold")
+    cohorts_present = sorted(ps["cohort"].dropna().unique()) if "cohort" in ps.columns else []
+    cohort_sub = " · ".join(
+        f"{_cohort_label(c)} ({COHORT_SHORT.get(str(c), '')})".rstrip(" ()") for c in cohorts_present
+    )
+    title = "Propensity Score Model: Predicting ICI Receipt"
+    if cohort_sub:
+        title += f"\n{cohort_sub}"
+    ax.set_title(title, fontweight="bold")
+    ax.text(0.03, 0.10, "AUC from held-out CV predictions", transform=ax.transAxes,
+            fontsize=7, style="italic", color="#555")
     ax.legend(fontsize=8, loc="lower right", frameon=True)
 
     text_model = ps[ps["ps_model"] == "covariates_plus_embeddings"].dropna(subset=["cancer_type"])
@@ -157,7 +181,17 @@ else:
                     .sort_values(["n_specs", "support"], ascending=[False, False])
                     .head(15))
     markers = marker_rank.index.tolist()
-    specs = r["spec"].dropna().drop_duplicates().tolist()[:6]
+    # Order specs grouped by cohort (cohort1 block, then cohort2), up to ~3 per cohort
+    all_specs = r["spec"].dropna().drop_duplicates().tolist()
+    spec_cohort_set = {_spec_cohort(s) for s in all_specs}
+    cohorts_in_order = [c for c in ("cohort1", "cohort2") if c in spec_cohort_set]
+    cohorts_in_order += [c for c in sorted(spec_cohort_set) if c not in cohorts_in_order]
+    per_cohort = max(1, 6 // max(len(cohorts_in_order), 1))
+    specs = []
+    for c in cohorts_in_order:
+        specs.extend([s for s in all_specs if _spec_cohort(s) == c][:per_cohort])
+    specs = specs[:6]
+    spec_cohorts = [_spec_cohort(s) for s in specs]
     sub = r[r["marker_key"].isin(markers) & r["spec"].isin(specs)]
 
     for x in range(len(specs)):
@@ -188,9 +222,34 @@ else:
     ax.set_yticklabels(markers, fontsize=8, fontweight="bold")
     ax.invert_yaxis()
     ax.set_xlim(-0.55, len(specs) + 1.2)
-    ax.set_title("Biomarker Association Robustness", fontweight="bold")
+
+    # Cohort group headers above the columns + a divider between cohort blocks
+    trans = ax.get_xaxis_transform()
+    for cohort in cohorts_in_order:
+        idxs = [i for i, c in enumerate(spec_cohorts) if c == cohort]
+        if not idxs:
+            continue
+        lo, hi = min(idxs), max(idxs)
+        ax.text((lo + hi) / 2, 1.02, _cohort_label(cohort), transform=trans,
+                ha="center", va="bottom", fontsize=9, fontweight="bold", color="#333")
+        if lo > 0:
+            ax.axvline(lo - 0.5, color="#444", lw=1.0, zorder=2)
+
+    n_robust = r["marker_key"].nunique()
+    n_sig = int(r["n_significant_markers"].dropna().iloc[0]) if (
+        "n_significant_markers" in r.columns and r["n_significant_markers"].notna().any()) else None
+    denom = f" of {n_sig} significant in ≥1 spec" if n_sig else ""
+    ax.set_title("Biomarker Association Robustness", fontweight="bold", pad=22)
+    ax.text(0.0, 1.005, f"top {len(markers)} shown · {n_robust} robust "
+            "(≥2 specs, consistent direction)" + denom,
+            transform=ax.transAxes, ha="left", va="bottom", fontsize=7, color="#666")
     ax.tick_params(axis="y", length=0)
     ax.spines["left"].set_visible(False)
+
+    # Cohort definitions caption (only cohorts shown)
+    defn = "\n".join(COHORT_DEFS[c] for c in cohorts_in_order if c in COHORT_DEFS)
+    if defn:
+        fig.text(0.5, -0.01, defn, ha="center", va="top", fontsize=7, color="#555")
     handles = [
         Line2D([0], [0], marker="o", color="w", markerfacecolor=BENEFIT_COLOR,
                markeredgecolor="white", markersize=8, label="Sig., ICI benefit"),
@@ -238,11 +297,23 @@ def _plot_km(ax: plt.Axes, data: pd.DataFrame, title: str) -> None:
     ax.legend(fontsize=7, loc="upper right")
 
 
+def _hr_suffix(data: pd.DataFrame) -> str:
+    """marker×ICI interaction HR + 95% CI title suffix, read from carried-through columns."""
+    if "hr" not in data.columns or pd.isna(data["hr"].iloc[0]):
+        return ""
+    hr = data["hr"].iloc[0]
+    lo = data["ci_low"].iloc[0] if "ci_low" in data.columns else np.nan
+    hi = data["ci_high"].iloc[0] if "ci_high" in data.columns else np.nan
+    if pd.notna(lo) and pd.notna(hi):
+        return f"\nHR={hr:.2f} (95% CI {lo:.2f}-{hi:.2f})"
+    return f"\nHR={hr:.2f}"
+
+
 if not km_examples.empty:
     example_ids = list(km_examples["example_id"].dropna().unique())[:3]
     for ax, ex_id in zip(axes, example_ids):
         data = km_examples[km_examples["example_id"] == ex_id]
-        title = str(data["title"].iloc[0]) + "\n" + str(data["cancer"].iloc[0])
+        title = str(data["title"].iloc[0]) + "\n" + str(data["cancer"].iloc[0]) + _hr_suffix(data)
         _plot_km(ax, data, title)
     for ax in axes[len(example_ids):]:
         _missing(ax, "no additional example")
@@ -258,6 +329,41 @@ else:
     for ax in axes:
         _missing(ax, "fig5_km_examples.csv empty")
 axes[0].set_ylabel("Survival Probability")
-fig.tight_layout()
+if not meta.empty:
+    m0 = meta.iloc[0]
+    spec_txt = (f"{_cohort_label(m0['cohort'])} · {_pretty_model(m0['ps_model'])} PS"
+                f" · {str(m0['weight_type']).upper()}")
+    fig.suptitle(f"Representative marker × ICI interactions   ({spec_txt})",
+                 fontsize=10, fontweight="bold")
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
+else:
+    fig.tight_layout()
 save_panel(fig, "fig5c")
+plt.close(fig)
+
+
+# %% fig5d: covariate balance love plot (SMD before vs after IPTW)
+love = load_figure_data("fig5_love_smd.csv")
+fig, ax = plt.subplots(figsize=(6.5, 6.0))
+if love.empty:
+    _missing(ax, "fig5_love_smd.csv empty")
+else:
+    love = love.copy()
+    love["_abs"] = love["smd_unweighted"].abs()
+    love = love.sort_values("_abs")  # most-imbalanced at the top of a barh-style axis
+    y = np.arange(len(love))
+    for yi, u, wv in zip(y, love["smd_unweighted"], love["smd_weighted"]):
+        ax.plot([u, wv], [yi, yi], color="#CCC", lw=1, zorder=1)
+    ax.scatter(love["smd_unweighted"], y, color=HARM_COLOR, s=30, label="Unweighted", zorder=2)
+    ax.scatter(love["smd_weighted"], y, color=TEAL, s=30, label="IPTW-weighted", zorder=2)
+    ax.axvline(0, color="#333", lw=0.8)
+    for x0 in (-0.1, 0.1):
+        ax.axvline(x0, color="#999", ls=":", lw=1)
+    ax.set_yticks(y)
+    ax.set_yticklabels([str(c).replace("_", " ") for c in love["covariate"]], fontsize=7)
+    ax.set_xlabel("Standardized mean difference")
+    ax.set_title("Covariate Balance (SMD): before vs after IPTW", fontweight="bold")
+    ax.legend(fontsize=8, loc="lower right", frameon=True)
+    ax.grid(axis="x", alpha=0.35)
+save_panel(fig, "fig5d")
 plt.close(fig)

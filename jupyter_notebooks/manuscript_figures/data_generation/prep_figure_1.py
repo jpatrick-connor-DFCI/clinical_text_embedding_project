@@ -7,7 +7,7 @@ Writes to FIGURE_DATA_DIR (defined in _figure_utils.py):
 - fig1_cancer_type_counts.csv     category, n
 - fig1_stage_counts.csv           category, n
 - fig1_treatment_counts.csv       category, n
-- fig1_umap_coords.csv            DFCI_MRN, x, y, method, cancer_type
+- fig1_notes_per_patient.csv      DFCI_MRN, note_type, n_notes  (per patient x note type)
 """
 
 from __future__ import annotations
@@ -74,6 +74,19 @@ def _note_volume(notes_meta: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _notes_per_patient(notes_meta: pd.DataFrame) -> pd.DataFrame:
+    """Per-(patient, note_type) note counts → distribution input for the Fig 1 box/violin."""
+    type_col = next((c for c in ("NOTE_TYPE", "note_type", "NOTE_KIND")
+                     if c in notes_meta.columns), None)
+    if type_col is None or "DFCI_MRN" not in notes_meta.columns:
+        raise RuntimeError(
+            f"Could not find DFCI_MRN/note-type columns in notes_meta; have: {list(notes_meta.columns)[:25]}")
+    out = (notes_meta.groupby(["DFCI_MRN", type_col]).size()
+           .reset_index(name="n_notes")
+           .rename(columns={type_col: "note_type"}))
+    return out[["DFCI_MRN", "note_type", "n_notes"]]
+
+
 def _composition_counts(df: pd.DataFrame, cols: list[str], prefix: str, top_n: int) -> pd.DataFrame:
     s = df[cols].sum().sort_values(ascending=False)
     s.index = s.index.str.replace(prefix, "", regex=False)
@@ -89,42 +102,6 @@ def _endpoint_counts() -> pd.DataFrame:
     return pd.DataFrame(rows, columns=ENDPOINT_COUNT_COLUMNS)
 
 
-def _umap_coords(emb_df: pd.DataFrame, cancer_type_df: pd.DataFrame,
-                 type_cols: list[str], embed_cols: list[str], n_sample: int = 15000) -> pd.DataFrame:
-    merged = emb_df.merge(cancer_type_df[["DFCI_MRN"] + type_cols], on="DFCI_MRN", how="inner")
-    if len(merged) == 0:
-        print("  no overlap between embedding cohort and cancer-type cohort; "
-              "emitting empty UMAP coords")
-        return pd.DataFrame(columns=["DFCI_MRN", "x", "y", "method", "cancer_type"])
-
-    X = merged[embed_cols].values
-    type_arg = merged[type_cols].values.argmax(axis=1)
-    type_labels = np.array([type_cols[i].replace("CANCER_TYPE_", "") for i in type_arg])
-
-    rng = np.random.default_rng(0)
-    idx = rng.choice(len(X), size=min(n_sample, len(X)), replace=False)
-    X_s = X[idx]
-    labels_s = type_labels[idx]
-    mrns_s = merged["DFCI_MRN"].values[idx]
-
-    try:
-        import umap
-        coords = umap.UMAP(n_components=2, n_neighbors=30, min_dist=0.1, random_state=0).fit_transform(X_s)
-        method = "UMAP"
-    except Exception as e:
-        print(f"  UMAP unavailable ({e}); falling back to PCA")
-        from sklearn.decomposition import PCA
-        coords = PCA(n_components=2, random_state=0).fit_transform(X_s)
-        method = "PCA"
-    return pd.DataFrame({
-        "DFCI_MRN": mrns_s,
-        "x": coords[:, 0],
-        "y": coords[:, 1],
-        "method": method,
-        "cancer_type": labels_s,
-    })
-
-
 def main() -> None:
     emb_df = pd.read_csv(os.path.join(SURV_PATH, EMBEDDING_FILES[SCHEME_FOR_EMBED]))
     cancer_type_df = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_type_df.csv.gz"))
@@ -132,7 +109,6 @@ def main() -> None:
     treatment_df = pd.read_csv(os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv.gz"))
     notes_meta = pd.read_csv(os.path.join(NOTES_PATH, "full_VTE_embeddings_metadata.csv.gz"))
 
-    embed_cols = [c for c in emb_df.columns if "EMBEDDING" in c]
     type_cols = [c for c in cancer_type_df.columns if c.startswith("CANCER_TYPE_")]
     stage_cols = [c for c in stage_df.columns if c.startswith("CANCER_STAGE_")]
     tx_cols = [c for c in treatment_df.columns if c.startswith("PX_on_")]
@@ -147,8 +123,7 @@ def main() -> None:
                      "fig1_stage_counts.csv")
     save_figure_data(_composition_counts(tx1, tx_cols, "PX_on_", 15),
                      "fig1_treatment_counts.csv")
-    save_figure_data(_umap_coords(emb_df, cancer_type_df, type_cols, embed_cols),
-                     "fig1_umap_coords.csv")
+    save_figure_data(_notes_per_patient(notes_meta), "fig1_notes_per_patient.csv")
 
 
 if __name__ == "__main__":

@@ -65,14 +65,10 @@ if str(_TRAINING_DIR) not in sys.path:
 # ---------------------------------------------------------------------------
 # Palettes
 # ---------------------------------------------------------------------------
-# NOTE: "labs" temporarily disabled for Fig 3 regeneration — uncomment to
-# restore. MODALITY_ORDER is only consumed by prep_figure_3 / plot_figure_3,
-# so this scoped change does not affect Figs 1/2/4/5.
-MODALITY_ORDER = ["stage", "treatment", "somatic", "prs", "text"]  # "labs",
+MODALITY_ORDER = ["stage", "treatment", "somatic", "prs", "text"]
 MODALITY_COLORS = {
     "stage":     "#8C8C8C",
     "treatment": "#E8B72E",
-    "labs":      "#5DA5DA",  # kept so re-enabling MODALITY_ORDER needs no other change
     "somatic":   "#60BD68",
     "prs":       "#B276B2",
     "text":      "#D62728",

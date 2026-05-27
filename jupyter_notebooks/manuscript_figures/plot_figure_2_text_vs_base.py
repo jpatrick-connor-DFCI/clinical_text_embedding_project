@@ -26,6 +26,8 @@ SCHEME_COLORS = {
 SCHEME_MARKERS = {"death_met": "D", "icd3_post": "o", "icd4_post": "^", "phecode_post": "s"}
 SCHEME_LABELS = {"death_met": "death_met", "icd3_post": "ICD3", "icd4_post": "ICD4", "phecode_post": "PhecodeX"}
 RISK_COLORS = {"low": "#2E86C1", "mid": "#F28E2B", "high": "#E74C3C"}
+# Shared low->high palette for the stage-vs-risk panel (stage I->IV, quartile Q1->Q4)
+ORDINAL4 = ["#2E86C1", "#58A55C", "#F28E2B", "#E74C3C"]
 
 
 def _missing(ax: plt.Axes, msg: str) -> None:
@@ -181,4 +183,56 @@ else:
     ax.set_title("Mortality by Risk-Score Tertile\n(text solid, base dashed)")
     ax.legend(loc="upper right", fontsize=6.5, ncol=2)
 save_panel(fig, "fig2d")
+plt.close(fig)
+
+
+# %% fig2e: survival by cancer stage vs text risk-score quartile (side-by-side)
+sr = load_figure_data("fig2_km_stage_vs_risk.csv")
+cidx_tbl = load_figure_data("fig2_stage_vs_risk_cindex.csv")
+fig, (axL, axR) = plt.subplots(1, 2, figsize=(11.0, 4.8), sharey=True)
+if sr.empty:
+    _missing(axL, "fig2_km_stage_vs_risk.csv empty")
+    _missing(axR, "fig2_km_stage_vs_risk.csv empty")
+else:
+    months = sr["tt_death"] / 30.44
+    death = sr["death"].astype(int)
+
+    def _cindex_for(predictor: str) -> float:
+        if cidx_tbl.empty or "predictor" not in cidx_tbl.columns:
+            return float("nan")
+        hit = cidx_tbl.loc[cidx_tbl["predictor"] == predictor, "cindex"]
+        return float(hit.iloc[0]) if len(hit) else float("nan")
+
+    def _km_by_group(ax, group_col, groups, title):
+        kmf = KaplanMeierFitter()
+        for grp, color in zip(groups, ORDINAL4):
+            sub = sr[sr[group_col] == grp]
+            if sub.empty:
+                continue
+            kmf.fit(sub["tt_death"] / 30.44, sub["death"].astype(int),
+                    label=f"{grp} (n={len(sub):,})")
+            kmf.plot_survival_function(ax=ax, ci_show=False, color=color, lw=2)
+        ax.set_xlim(0, 60)
+        ax.set_ylim(0, 1.03)
+        ax.set_xlabel("Months from first treatment")
+        ax.set_title(title)
+        ax.legend(loc="upper right", fontsize=6.5)
+
+    _km_by_group(axL, "stage_group", ["I", "II", "III", "IV"], "Survival by Cancer Stage")
+    _km_by_group(axR, "risk_quartile", ["Q1", "Q2", "Q3", "Q4"],
+                 "Survival by Text Risk-Score Quartile")
+    axL.set_ylabel("Overall survival")
+
+    try:
+        lr_stage = multivariate_logrank_test(months, sr["stage_group"], death)
+        axL.text(0.03, 0.06,
+                 f"c-index={_cindex_for('stage'):.3f}\nlogrank p={lr_stage.p_value:.1e}",
+                 transform=axL.transAxes, fontsize=7.5, style="italic")
+        lr_risk = multivariate_logrank_test(months, sr["risk_quartile"], death)
+        axR.text(0.03, 0.06,
+                 f"c-index={_cindex_for('text_risk'):.3f}\nlogrank p={lr_risk.p_value:.1e}",
+                 transform=axR.transAxes, fontsize=7.5, style="italic")
+    except Exception as exc:
+        print(f"  logrank test failed: {exc}")
+save_panel(fig, "fig2e")
 plt.close(fig)

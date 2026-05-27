@@ -13,6 +13,7 @@ Writes to FIGURE_DATA_DIR:
 - fig5_km_examples.csv            example_id, title, marker, cancer, marker_value, PX_on_ICI,
                                   death, tt_death
 - fig5_top_hit_meta.csv           marker, cancer, ps_model
+- fig5_love_smd.csv               covariate, smd_unweighted, smd_weighted  (primary-spec balance)
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ COMPILED_DIR = os.path.join(BIOMARKER_PATH, "compiled_results/")
 PS_BASE = os.path.join(DATA_PATH, f"treatment_prediction/{COHORT}/")
 PRIMARY_SPEC_DIR = os.path.join(BIOMARKER_PATH, f"IPTW_runs_{COHORT}_covariates_plus_embeddings/")
 
-PS_PREDICTION_COLUMNS = ["DFCI_MRN", "ps_model", "model_probs", "ground_truth", "cancer_type"]
+PS_PREDICTION_COLUMNS = ["DFCI_MRN", "ps_model", "model_probs", "ground_truth", "cancer_type", "cohort"]
 VOLCANO_COLUMNS = [
     "marker", "cancer", "HR_markerxICI", "p_markerxICI",
     "log_hr", "neglog10_p", "significant",
@@ -49,14 +50,16 @@ ROBUST_COLUMNS = [
     "marker", "cancer_type", "spec", "HR_markerxICI",
     "CI95_marker_ICI_low", "CI95_marker_ICI_high", "p_markerxICI",
     "cohort", "ps_model", "weight_type", "n_specs", "mean_HR",
-    "direction_consistent",
+    "direction_consistent", "n_significant_markers",
 ]
 KM_COLUMNS = ["DFCI_MRN", "marker_value", "PX_on_ICI", "death", "tt_death"]
 KM_EXAMPLE_COLUMNS = [
     "DFCI_MRN", "example_id", "title", "marker", "cancer", "marker_value",
-    "PX_on_ICI", "death", "tt_death",
+    "PX_on_ICI", "death", "tt_death", "hr", "ci_low", "ci_high",
 ]
 TOP_HIT_META_COLUMNS = ["marker", "cancer", "cohort", "ps_model", "weight_type"]
+LOVE_SMD_COLUMNS = ["covariate", "smd_unweighted", "smd_weighted"]
+LOVE_TOP_N = 15  # covariates shown beyond the always-kept demographics
 
 
 def _patient_cancer_type() -> pd.DataFrame:
@@ -87,6 +90,7 @@ def _ps_predictions() -> pd.DataFrame:
             continue
         d = d[["DFCI_MRN", "model_probs", "ground_truth"]].copy()
         d["ps_model"] = ps_model
+        d["cohort"] = COHORT
         if not cancer.empty:
             d = d.merge(cancer, on="DFCI_MRN", how="left")
         else:
@@ -174,6 +178,9 @@ def _robust_hits() -> pd.DataFrame:
                        on=["marker", "cancer_type"], how="inner")
                 [cols + ["cohort", "ps_model", "weight_type"]]
                 .merge(robust, on=["marker", "cancer_type"], how="left"))
+    # Denominator for the survivorship-aware panel B annotation: markers significant
+    # in >=1 spec (the universe these robust hits were filtered from).
+    out["n_significant_markers"] = hits[["marker", "cancer_type"]].drop_duplicates().shape[0]
     return out.reindex(columns=ROBUST_COLUMNS)
 
 
@@ -278,6 +285,8 @@ def _km_examples() -> pd.DataFrame:
         cohort = getattr(row, "cohort")
         ps_model = getattr(row, "ps_model")
         hr = getattr(row, "HR_markerxICI")
+        ci_low = getattr(row, "CI95_marker_ICI_low", np.nan)
+        ci_high = getattr(row, "CI95_marker_ICI_high", np.nan)
         iptw_fp = os.path.join(BIOMARKER_PATH, f"IPTW_df_{cohort}_{ps_model}.csv.gz")
         if not os.path.exists(iptw_fp):
             print(f"  missing {iptw_fp}")
@@ -303,10 +312,85 @@ def _km_examples() -> pd.DataFrame:
         cur["title"] = title
         cur["marker"] = marker
         cur["cancer"] = cancer
+        cur["hr"] = hr
+        cur["ci_low"] = ci_low
+        cur["ci_high"] = ci_high
         frames.append(cur.reindex(columns=KM_EXAMPLE_COLUMNS))
     if not frames:
         return pd.DataFrame(columns=KM_EXAMPLE_COLUMNS)
     return pd.concat(frames, ignore_index=True)
+
+
+def _smd(x: np.ndarray, treat: np.ndarray, w: np.ndarray | None = None) -> float:
+    """Standardized mean difference between treated/control (optionally IPTW-weighted)."""
+    t, c = treat == 1, treat == 0
+    if x[t].size == 0 or x[c].size == 0:
+        return np.nan
+    if w is None:
+        mt, mc = x[t].mean(), x[c].mean()
+        vt, vc = x[t].var(ddof=1), x[c].var(ddof=1)
+    else:
+        wt, wc = w[t], w[c]
+        mt, mc = np.average(x[t], weights=wt), np.average(x[c], weights=wc)
+        vt = np.average((x[t] - mt) ** 2, weights=wt)
+        vc = np.average((x[c] - mc) ** 2, weights=wc)
+    denom = np.sqrt((vt + vc) / 2)
+    return float((mt - mc) / denom) if denom > 0 else 0.0
+
+
+def _love_smd() -> pd.DataFrame:
+    """Covariate balance (SMD) before vs after IPTW for the primary spec, for the love plot.
+
+    Recomputes stabilized ATE weights from the held-out propensity (ICI_prediction) so the panel
+    is self-contained, mirroring run_IPTW_analysis.compute_smd + the ATE-weight formula.
+    """
+    fp = os.path.join(BIOMARKER_PATH, f"IPTW_df_{COHORT}_{PRIMARY_PS_MODEL}.csv.gz")
+    if not os.path.exists(fp):
+        print(f"  no IPTW df at {fp}; emitting empty love-plot data")
+        return pd.DataFrame(columns=LOVE_SMD_COLUMNS)
+    df = pd.read_csv(fp)
+    if not {"PX_on_ICI", "ICI_prediction"}.issubset(df.columns):
+        print("  IPTW df missing PX_on_ICI/ICI_prediction; emitting empty love-plot data")
+        return pd.DataFrame(columns=LOVE_SMD_COLUMNS)
+
+    # Rows without a propensity/treatment value can't be weighted — drop them so the
+    # weighted SMDs don't collapse to NaN.
+    df = df.dropna(subset=["PX_on_ICI", "ICI_prediction"])
+    if df.empty:
+        return pd.DataFrame(columns=LOVE_SMD_COLUMNS)
+
+    base = [c for c in ("GENDER", "AGE_AT_TREATMENTSTART") if c in df.columns]
+    prefixed = [c for c in df.columns
+                if c.startswith(("LINE_", "CANCER_TYPE_", "PANEL_VERSION_"))]
+    covars = base + prefixed
+    if not covars:
+        return pd.DataFrame(columns=LOVE_SMD_COLUMNS)
+
+    treat = df["PX_on_ICI"].to_numpy()
+    ps = df["ICI_prediction"].clip(1e-6, 1 - 1e-6).to_numpy()
+    p_treat = treat.mean()
+    w = np.where(treat == 1, p_treat / ps, (1 - p_treat) / (1 - ps))
+    lo, hi = np.percentile(w, [1, 99])
+    w = np.clip(w, lo, hi)
+
+    rows = []
+    for cov in covars:
+        x = pd.to_numeric(df[cov], errors="coerce").to_numpy(dtype=float)
+        if np.isnan(x).any():
+            continue
+        rows.append({
+            "covariate": cov,
+            "smd_unweighted": _smd(x, treat),
+            "smd_weighted": _smd(x, treat, w),
+        })
+    out = pd.DataFrame(rows, columns=LOVE_SMD_COLUMNS)
+    if out.empty:
+        return out
+    # Keep demographics + the most-imbalanced covariates for a readable love plot
+    out["_abs"] = out["smd_unweighted"].abs()
+    keep_base = out[out["covariate"].isin(base)]
+    keep_top = out[~out["covariate"].isin(base)].nlargest(LOVE_TOP_N, "_abs")
+    return pd.concat([keep_base, keep_top]).drop(columns="_abs").reset_index(drop=True)
 
 
 def main() -> None:
@@ -317,6 +401,7 @@ def main() -> None:
     save_figure_data(km, "fig5_km_top_hit.csv")
     save_figure_data(_km_examples(), "fig5_km_examples.csv")
     save_figure_data(meta, "fig5_top_hit_meta.csv")
+    save_figure_data(_love_smd(), "fig5_love_smd.csv")
 
 
 if __name__ == "__main__":

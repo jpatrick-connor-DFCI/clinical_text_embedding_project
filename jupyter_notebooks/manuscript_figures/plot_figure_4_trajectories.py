@@ -19,6 +19,8 @@ from _figure_utils import apply_style, load_figure_data, save_panel, CLUSTER_COL
 
 apply_style()
 
+N_CLUSTERS = 4  # mirrors prep_figure_4.N_CLUSTERS; used to mark the chosen k in figS1a
+
 
 def _missing(ax: plt.Axes, msg: str) -> None:
     ax.text(0.5, 0.5, msg, ha="center", va="center", transform=ax.transAxes, color="#777")
@@ -35,29 +37,43 @@ def _cluster_label(cluster: int, n: int) -> str:
     return f"{name} (n={n:,})"
 
 
-means = load_figure_data("fig4_cluster_means.csv")
+heatmap = load_figure_data("fig4_trajectories_heatmap.csv")
 km = load_figure_data("fig4_km_data.csv")
 
 
-# %% fig4a: risk trajectories by cluster
+# %% fig4a: per-patient mortality-risk trajectory heatmap, grouped by cluster
 fig, ax = plt.subplots(figsize=(6.4, 4.8))
-if means.empty:
-    _missing(ax, "fig4_cluster_means.csv empty")
+if heatmap.empty:
+    _missing(ax, "fig4_trajectories_heatmap.csv empty")
 else:
-    means = means.copy()
-    means["month_num"] = _month_to_float(means["month"])
-    for k, g in means.groupby("cluster"):
-        g = g.sort_values("month_num")
-        n = int(g["n_patients"].iloc[0])
-        color = CLUSTER_COLORS[int(k) % len(CLUSTER_COLORS)]
-        ax.plot(g["month_num"], g["mean"], lw=2.2, color=color, label=_cluster_label(int(k), n))
-        ax.fill_between(g["month_num"], g["mean"] - 1.96 * g["sem"], g["mean"] + 1.96 * g["sem"],
-                        color=color, alpha=0.18)
+    hm = heatmap.sort_values("cluster", kind="stable").reset_index(drop=True)
+    month_cols = [c for c in hm.columns if c not in ("DFCI_MRN", "cluster")]
+    nums = _month_to_float(pd.Series(month_cols)).to_numpy()
+    order = np.argsort(nums)
+    month_cols = [month_cols[i] for i in order]
+    x_months = nums[order]
+    M = hm[month_cols].to_numpy(dtype=float)
+
+    im = ax.imshow(M, aspect="auto", cmap="magma", interpolation="nearest")
+    n_months = len(month_cols)
+    xticks = np.unique(np.linspace(0, n_months - 1, min(n_months, 7)).astype(int))
+    ax.set_xticks(xticks)
+    ax.set_xticklabels([f"{x_months[t]:.0f}" for t in xticks])
+
+    # White separators between clusters; cluster names as y-tick labels at block centers
+    boundaries = hm.groupby("cluster", sort=True).size()
+    y0, mids, ylabels = 0, [], []
+    for k, n in boundaries.items():
+        if y0 > 0:
+            ax.axhline(y0 - 0.5, color="white", lw=1.2)
+        mids.append(y0 + n / 2 - 0.5)
+        ylabels.append(_cluster_label(int(k), int(n)))
+        y0 += n
+    ax.set_yticks(mids)
+    ax.set_yticklabels(ylabels, fontsize=7)
     ax.set_xlabel("Months post-treatment")
-    ax.set_ylabel("Standardized Mortality Risk Score")
-    ax.set_title("Risk Score Trajectories by Cluster")
-    ax.legend(fontsize=7.5, loc="upper left")
-    ax.grid(alpha=0.35)
+    ax.set_title("Mortality-Risk Trajectories by Cluster")
+    fig.colorbar(im, ax=ax, label="Std. mortality risk", fraction=0.046, pad=0.04)
 save_panel(fig, "fig4a")
 plt.close(fig)
 
@@ -113,100 +129,102 @@ save_panel(fig, "fig4b")
 plt.close(fig)
 
 
-# %% fig4c: clinical characteristics by trajectory cluster
+# %% fig4c: disease-severity characteristics by trajectory cluster
 stage = load_figure_data("fig4_cluster_composition_stage.csv")
 treatment = load_figure_data("fig4_cluster_composition_treatment.csv")
-cancer = load_figure_data("fig4_cluster_composition_cancer.csv")
-fig, ax = plt.subplots(figsize=(10.6, 4.4))
-if stage.empty and treatment.empty and cancer.empty and km.empty:
-    _missing(ax, "cluster characteristic data empty")
+severity = load_figure_data("fig4_cluster_severity.csv")
+
+# Composition CSVs carry one column per top category with the prefix stripped
+# (e.g. "CANCER_STAGE_IV" -> "IV"), plus a trailing "OTHER" column. Match exact
+# tokens so "IV" doesn't catch "IIV" and "ICI" doesn't catch "ICI_PLUS_CHEMO".
+STAGE_IV_TOKENS = re.compile(r"^(IV|4)[A-D]?$", re.IGNORECASE)
+ICI_TOKENS = re.compile(
+    r"^(ICI|IMMUNOTHERAPY|PD1|PDL1|PD_?L1|CHECKPOINT(?:_INHIBITOR)?)$",
+    re.IGNORECASE,
+)
+
+
+def _share_by_token(comp_df: pd.DataFrame, token_re: re.Pattern) -> dict[int, float]:
+    """{cluster: percentage} summing composition columns whose name matches token_re."""
+    if comp_df.empty:
+        return {}
+    idx = comp_df.set_index("cluster")
+    cols = [c for c in idx.columns if c != "OTHER" and token_re.match(str(c))]
+    if not cols:
+        return {}
+    return {int(k): v for k, v in (100 * idx[cols].sum(axis=1)).items()}
+
+
+stage_iv = _share_by_token(stage, STAGE_IV_TOKENS)
+ici = _share_by_token(treatment, ICI_TOKENS)
+met_sites: dict[int, float] = {}
+rmst: dict[int, float] = {}
+if not severity.empty:
+    sev_idx = severity.set_index("cluster")
+    met_sites = {int(k): v for k, v in sev_idx["mean_met_sites"].dropna().items()}
+    rmst = {int(k): v for k, v in sev_idx["rmst_months"].dropna().items()}
+
+# (title, y-axis units, {cluster: value})
+characteristics = [
+    ("% Stage IV", "Percentage (%)", stage_iv),
+    ("% ICI Treated", "Percentage (%)", ici),
+    ("Mean # met sites", "Sites (0-7)", met_sites),
+    ("5-yr RMST", "Months", rmst),
+]
+
+cluster_ids = sorted({int(k) for _, _, d in characteristics for k in d})
+
+fig, axes = plt.subplots(1, len(characteristics), figsize=(12.0, 3.8))
+axes = np.atleast_1d(axes)
+if not cluster_ids:
+    for ax in axes:
+        _missing(ax, "cluster characteristic data empty")
 else:
-    cluster_ids = sorted(set(
-        pd.concat([
-            stage.get("cluster", pd.Series(dtype=float)),
-            treatment.get("cluster", pd.Series(dtype=float)),
-            cancer.get("cluster", pd.Series(dtype=float)),
-            km.get("cluster", pd.Series(dtype=float)),
-        ]).dropna().astype(int)
-    ))
-    features: list[tuple[str, dict[int, float]]] = []
-
-    # Composition CSVs (per prep_figure_4._composition) carry one column per
-    # top category with the prefix already stripped (e.g. "CANCER_STAGE_IV" -> "IV"),
-    # plus a trailing "OTHER" column. Use exact-token matching so "IV" doesn't
-    # accidentally match e.g. "IIV", and "ICI" doesn't match a longer combo
-    # like "ICI_PLUS_CHEMO" — list those alternates explicitly.
-    STAGE_IV_TOKENS = re.compile(r"^(IV|4)[A-D]?$", re.IGNORECASE)
-    ICI_TOKENS = re.compile(
-        r"^(ICI|IMMUNOTHERAPY|PD1|PDL1|PD_?L1|CHECKPOINT(?:_INHIBITOR)?)$",
-        re.IGNORECASE,
-    )
-
-    def _category_cols(idx: pd.DataFrame) -> list[str]:
-        return [c for c in idx.columns if c != "OTHER"]
-
-    def _top_cat_share(idx: pd.DataFrame, label_suffix: str) -> tuple[str, dict[int, float]] | None:
-        cats = _category_cols(idx)
-        if not cats:
-            return None
-        col = idx[cats].sum().sort_values(ascending=False).index[0]
-        label = f"{str(col).replace('_', ' ')} ({label_suffix})"
-        return label, (100 * idx[col]).to_dict()
-
-    if not stage.empty:
-        stage_idx = stage.set_index("cluster")
-        stage4_cols = [c for c in stage_idx.columns
-                       if c != "OTHER" and STAGE_IV_TOKENS.match(str(c))]
-        if stage4_cols:
-            features.append(("% Stage IV", (100 * stage_idx[stage4_cols].sum(axis=1)).to_dict()))
-        else:
-            top = _top_cat_share(stage_idx, "stage")
-            if top is not None:
-                print(f"  no Stage IV columns detected; falling back to top stage: {top[0]}")
-                features.append(top)
-
-    if not treatment.empty:
-        tx_idx = treatment.set_index("cluster")
-        ici_cols = [c for c in tx_idx.columns
-                    if c != "OTHER" and ICI_TOKENS.match(str(c))]
-        if ici_cols:
-            features.append(("% ICI Treated", (100 * tx_idx[ici_cols].sum(axis=1)).to_dict()))
-        else:
-            top = _top_cat_share(tx_idx, "tx")
-            if top is not None:
-                print(f"  no ICI columns detected; falling back to top treatment: {top[0]}")
-                features.append(top)
-
-    if not cancer.empty:
-        cancer_idx = cancer.set_index("cluster")
-        top = _top_cat_share(cancer_idx, "cancer")
-        if top is not None:
-            features.append(top)
-
-    if not km.empty:
-        alive5 = {}
-        for k, sub in km.groupby("cluster"):
-            alive5[int(k)] = 100 * ((sub["tt_death"] / 30.44 >= 60) | (sub["death"] == 0)).mean()
-        features.append(("Alive at 5 years", alive5))
-
-    if not features:
-        _missing(ax, "no supported clinical characteristics")
-    else:
-        x = np.arange(len(features))
-        width = 0.78 / max(len(cluster_ids), 1)
-        for i, k in enumerate(cluster_ids):
-            vals = [feat_map.get(k, np.nan) for _, feat_map in features]
-            offset = (i - len(cluster_ids) / 2 + 0.5) * width
-            ax.bar(x + offset, vals, width=width * 0.92,
-                   color=CLUSTER_COLORS[int(k) % len(CLUSTER_COLORS)],
-                   edgecolor="white", label=f"Cluster {k}")
-        ax.set_xticks(x)
-        ax.set_xticklabels([name for name, _ in features])
-        ax.set_ylim(0, 100)
-        ax.set_ylabel("Percentage (%)")
-        ax.set_title("Clinical Characteristics by Trajectory Cluster")
-        ax.legend(fontsize=7, loc="upper right")
+    colors = [CLUSTER_COLORS[k % len(CLUSTER_COLORS)] for k in cluster_ids]
+    for ax, (title, units, values) in zip(axes, characteristics):
+        if not values:
+            _missing(ax, "no data")
+            continue
+        heights = [values.get(k, np.nan) for k in cluster_ids]
+        ax.bar(range(len(cluster_ids)), heights, color=colors, edgecolor="white")
+        # Flag clusters with no survival estimate (RMST should always be defined)
+        if units == "Months":
+            for xi, k in enumerate(cluster_ids):
+                if k not in values:
+                    ax.text(xi, 0, "n/a", ha="center", va="bottom", fontsize=7, color="#777")
+        ax.set_xticks(range(len(cluster_ids)))
+        ax.set_xticklabels([str(k) for k in cluster_ids])
+        ax.set_xlabel("Cluster")
+        ax.set_ylabel(units)
+        ax.set_title(title, fontsize=10)
         ax.grid(axis="y", alpha=0.35)
         ax.grid(axis="x", visible=False)
+        if title.startswith("%"):
+            ax.set_ylim(0, 100)
+    fig.suptitle("Disease-Severity Characteristics by Trajectory Cluster",
+                 fontsize=11, fontweight="bold")
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
 save_panel(fig, "fig4c")
+plt.close(fig)
+
+
+# %% figS1a (appendix): silhouette score vs k, justifying the chosen cluster count
+sil = load_figure_data("fig4_silhouette.csv")
+fig, ax = plt.subplots(figsize=(6.0, 4.4))
+if sil.empty:
+    _missing(ax, "fig4_silhouette.csv empty")
+else:
+    sil = sil.sort_values("k")
+    ax.plot(sil["k"], sil["silhouette"], marker="o", color="#2E86C1", lw=2)
+    best_k = int(sil.loc[sil["silhouette"].idxmax(), "k"])
+    ax.axvline(N_CLUSTERS, color="#E74C3C", ls="--", lw=1.5,
+               label=f"chosen k={N_CLUSTERS}")
+    ax.scatter([best_k], [sil["silhouette"].max()], color="#E74C3C", zorder=5,
+               label=f"best silhouette (k={best_k})")
+    ax.set_xlabel("Number of clusters (k)")
+    ax.set_ylabel("Mean silhouette score")
+    ax.set_title("Trajectory Cluster-Count Selection")
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.35)
+save_panel(fig, "figS1a")
 plt.close(fig)

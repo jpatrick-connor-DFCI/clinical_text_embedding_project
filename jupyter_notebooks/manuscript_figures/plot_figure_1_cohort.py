@@ -140,39 +140,28 @@ save_panel(fig, "fig1b")
 plt.close(fig)
 
 
-# %% fig1c: patient timeline schematic
-vol = load_figure_data("fig1_note_volume.csv")
-fig, ax = plt.subplots(figsize=(7.5, 4.4))
-ax.set_xlim(-24, 60)
-ax.set_ylim(0, 1)
-ax.axvspan(-24, 0, ymin=0.38, ymax=0.50, color="#A9D5F3", alpha=0.9)
-ax.axvspan(0, 60, ymin=0.38, ymax=0.50, color="#F1948A", alpha=0.9)
-ax.axvline(0, color="#2C3E50", ls="--", lw=2)
-ax.text(0, 0.78, "Treatment\nStart", ha="center", va="center", fontsize=9, fontweight="bold")
-ax.text(-12, 0.78, "Note collection\nwindow", ha="center", va="center", fontsize=9, color="#2E86C1")
-ax.annotate("", xy=(-12, 0.49), xytext=(-15, 0.72),
-            arrowprops=dict(arrowstyle="->", color="#2E86C1", lw=1.4))
-ax.text(34, 0.78, "Outcome\nwindow", ha="center", va="center", fontsize=9, color="#E74C3C")
-ax.annotate("", xy=(30, 0.50), xytext=(34, 0.72),
-            arrowprops=dict(arrowstyle="->", color="#E74C3C", lw=1.4))
-
-rng = np.random.default_rng(4)
-note_types = list(vol["note_type"].dropna().unique())[:3] if not vol.empty else []
-if not note_types:
-    note_types = ["Clinician Notes", "Imaging Reports", "Pathology Reports"]
-markers = ["o", "^", "s"]
-colors = ["#2E86C1", "#27AE60", "#F28E2B"]
-for i, note_type in enumerate(note_types):
-    xs = rng.uniform(-22, -1, 12)
-    ys = rng.normal(0.58, 0.012, 12)
-    ax.scatter(xs, ys, s=36, marker=markers[i % len(markers)], color=colors[i % len(colors)],
-               label=str(note_type).replace("_", " ").title(), alpha=0.8)
-ax.text(-24, 0.34, "Diagnosis", ha="left", va="top", color="#666", fontsize=8)
-ax.text(58, 0.34, "End of\nFollow-up", ha="right", va="top", color="#666", fontsize=8)
-ax.set_xlabel("Time (months relative to treatment start)")
-ax.set_yticks([])
-ax.set_title("Patient Timeline")
-ax.legend(loc="lower right", fontsize=7)
+# %% fig1c: notes per patient by note type (distribution)
+npp = load_figure_data("fig1_notes_per_patient.csv")
+fig, ax = plt.subplots(figsize=(7.0, 4.4))
+if npp.empty:
+    _missing(ax, "fig1_notes_per_patient.csv empty")
+else:
+    order = npp.groupby("note_type")["n_notes"].median().sort_values().index.tolist()
+    data = [npp.loc[npp["note_type"] == t, "n_notes"].values for t in order]
+    bp = ax.boxplot(data, vert=False, showfliers=False, patch_artist=True, widths=0.6)
+    palette = plt.cm.tab10(np.linspace(0, 0.6, len(order)))
+    for patch, c in zip(bp["boxes"], palette):
+        patch.set_facecolor(c)
+        patch.set_alpha(0.6)
+    for med in bp["medians"]:
+        med.set_color("#111")
+    ax.set_yticks(range(1, len(order) + 1))
+    ax.set_yticklabels([str(t).replace("_", " ").title() for t in order])
+    ax.set_xscale("log")
+    ax.set_xlabel("Notes per patient (log; among patients with ≥1 of type)")
+    ax.set_title("Notes per Patient by Type")
+    ax.grid(axis="x", alpha=0.35)
+    ax.grid(axis="y", visible=False)
 save_panel(fig, "fig1c")
 plt.close(fig)
 
@@ -209,4 +198,44 @@ else:
     )
     ax.set_title(f"Cohort Composition  (N={total:,})")
 save_panel(fig, "fig1d")
+plt.close(fig)
+
+
+# %% fig1e: cancer stage population breakdown
+stage_counts = load_figure_data("fig1_stage_counts.csv")
+fig, ax = plt.subplots(figsize=(6.0, 4.4))
+if stage_counts.empty:
+    _missing(ax, "fig1_stage_counts.csv empty")
+else:
+    s = stage_counts.sort_values("n", ascending=True)
+    y = np.arange(len(s))
+    ax.barh(y, s["n"].values, color="#5B8DB8", edgecolor="white")
+    for yi, v in zip(y, s["n"].values):
+        ax.text(v + max(s["n"].max() * 0.01, 1), yi, f"{int(v):,}", va="center", fontsize=7)
+    ax.set_yticks(y)
+    ax.set_yticklabels([str(c).replace("_", " ") for c in s["category"]])
+    ax.set_xlabel("Patients")
+    ax.set_title("Cancer Stage Breakdown")
+    ax.grid(axis="x", alpha=0.35)
+    ax.grid(axis="y", visible=False)
+save_panel(fig, "fig1e")
+plt.close(fig)
+
+
+# %% fig1f: first-line treatment population breakdown
+treat_counts = load_figure_data("fig1_treatment_counts.csv")
+fig, ax = plt.subplots(figsize=(6.0, 4.4))
+if treat_counts.empty:
+    _missing(ax, "fig1_treatment_counts.csv empty")
+else:
+    t = treat_counts.sort_values("n", ascending=True)
+    y = np.arange(len(t))
+    ax.barh(y, t["n"].values, color="#E8A33D", edgecolor="white")
+    ax.set_yticks(y)
+    ax.set_yticklabels([str(c).replace("_", " ") for c in t["category"]], fontsize=7)
+    ax.set_xlabel("Patients")
+    ax.set_title("First-line Treatment Breakdown")
+    ax.grid(axis="x", alpha=0.35)
+    ax.grid(axis="y", visible=False)
+save_panel(fig, "fig1f")
 plt.close(fig)
