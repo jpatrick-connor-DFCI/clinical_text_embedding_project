@@ -1,11 +1,10 @@
 """Pre-compute inputs for Figure 2 (text vs base full-cohort prediction).
 
 Writes to FIGURE_DATA_DIR:
-- fig2_full_cohort_metrics.csv    scheme, event, text_cindex, base_cindex, text_auc, base_auc
-- fig2_bootstrap_deltas.csv       event, delta, lo, hi, n
-- fig2_km_death_data.csv          DFCI_MRN, text_risk_score, base_risk_score, death, tt_death,
-                                  text_tertile, base_tertile
-- fig2_td_auc.csv                 event, time_months, auc_text, auc_base
+- fig2_full_cohort_metrics.csv      scheme, event, text_cindex, base_cindex, text_auc, base_auc
+- fig2_cancer_endpoint_heatmap.csv  event, cancer_type, text_cindex, n, n_events
+- fig2_km_examples.csv              DFCI_MRN, event, text_risk_score, event_indicator, time,
+                                    text_tertile
 """
 
 from __future__ import annotations
@@ -14,15 +13,13 @@ import os
 import sys
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
-from sksurv.metrics import concordance_index_censored, cumulative_dynamic_auc
-from sksurv.util import Surv
+from sksurv.metrics import concordance_index_censored
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from _figure_utils import (
-    SURV_PATH,
+    FEATURE_PATH, SURV_PATH,
     full_cohort_event_dir, full_cohort_risk_dir, list_trained_events,
     save_figure_data,
 )
@@ -30,19 +27,12 @@ from _figure_utils import (
 
 SCHEMES = ["death_met", "icd3_post", "icd4_post", "phecode_post"]
 DEATH_EVENTS = ["death", "brainM", "boneM", "adrenalM", "liverM", "lungM", "nodeM", "peritonealM"]
-TD_AUC_EVENTS = ["death", "liverM", "brainM"]
-EVAL_MONTHS = np.array([3, 6, 12, 18, 24, 36])
-BOOTSTRAP_SEEDS = {event: i for i, event in enumerate(DEATH_EVENTS)}
 
 FULL_COHORT_METRIC_COLUMNS = [
     "scheme", "event", "text_cindex", "base_cindex", "text_auc", "base_auc",
 ]
-BOOTSTRAP_DELTA_COLUMNS = ["event", "delta", "lo", "hi", "n"]
-KM_DEATH_COLUMNS = [
-    "DFCI_MRN", "text_risk_score", "base_risk_score", "death", "tt_death",
-    "text_tertile", "base_tertile",
-]
-TD_AUC_COLUMNS = ["event", "time_months", "auc_text", "auc_base"]
+CANCER_ENDPOINT_COLUMNS = ["event", "cancer_type", "text_cindex", "n", "n_events"]
+KM_EXAMPLE_COLUMNS = ["DFCI_MRN", "event", "text_risk_score", "event_indicator", "time", "text_tertile"]
 
 
 def _full_cohort_metrics() -> pd.DataFrame:
@@ -83,45 +73,6 @@ def _merge_risk_with_surv(event: str, surv_df: pd.DataFrame) -> pd.DataFrame | N
     return merged
 
 
-def _bootstrap_deltas(surv_df: pd.DataFrame, n_boot: int = 200) -> pd.DataFrame:
-    rows = []
-    for ev in DEATH_EVENTS:
-        m = _merge_risk_with_surv(ev, surv_df)
-        if m is None or len(m) < 100:
-            print(f"  [{ev}] skipped — too few patients with risk + survival")
-            continue
-        # Per-event RNG so reruns of a single event are reproducible without
-        # depending on the order of preceding events.
-        rng = np.random.default_rng(BOOTSTRAP_SEEDS[ev])
-        events = m[ev].values.astype(bool)
-        times = m[f"tt_{ev}"].values.astype(float)
-        text_rs = m["text_risk_score"].values
-        base_rs = m["base_risk_score"].values
-        text_c0 = concordance_index_censored(events, times, text_rs)[0]
-        base_c0 = concordance_index_censored(events, times, base_rs)[0]
-        deltas = []
-        n = len(events)
-        n_boot_failed = 0
-        for _ in range(n_boot):
-            idx = rng.integers(0, n, n)
-            try:
-                tc = concordance_index_censored(events[idx], times[idx], text_rs[idx])[0]
-                bc = concordance_index_censored(events[idx], times[idx], base_rs[idx])[0]
-                deltas.append(tc - bc)
-            except (ValueError, ZeroDivisionError):
-                n_boot_failed += 1
-                continue
-        if n_boot_failed:
-            print(f"  [{ev}] {n_boot_failed}/{n_boot} bootstrap iterations failed")
-        deltas = np.array(deltas)
-        if len(deltas) == 0:
-            print(f"  [{ev}] skipped — all bootstrap iterations failed")
-            continue
-        lo, hi = np.percentile(deltas, [2.5, 97.5])
-        rows.append({"event": ev, "delta": text_c0 - base_c0, "lo": lo, "hi": hi, "n": n})
-    return pd.DataFrame(rows, columns=BOOTSTRAP_DELTA_COLUMNS).sort_values("delta").reset_index(drop=True)
-
-
 def _safe_tertiles(scores: pd.Series, label: str) -> pd.Series:
     """qcut into low/mid/high, falling back to rank-based bins when ties at
     boundaries would otherwise raise. Base-model risk often has many ties
@@ -131,60 +82,89 @@ def _safe_tertiles(scores: pd.Series, label: str) -> pd.Series:
     try:
         return pd.qcut(scores, 3, labels=labels).astype(str)
     except ValueError:
-        # Rank-based fallback breaks ties by row order so every row gets a bin.
         ranks = scores.rank(method="first")
         out = pd.qcut(ranks, 3, labels=labels).astype(str)
-        print(f"  [_km_death] {label}: qcut hit duplicate edges; used rank-based tertiles")
+        print(f"  [{label}] qcut hit duplicate edges; used rank-based tertiles")
         return out
 
 
-def _km_death(surv_df: pd.DataFrame) -> pd.DataFrame:
-    m = _merge_risk_with_surv("death", surv_df)
-    if m is None:
-        return pd.DataFrame(columns=KM_DEATH_COLUMNS)
-    m = m.copy()
-    m["text_tertile"] = _safe_tertiles(m["text_risk_score"], "text")
-    m["base_tertile"] = _safe_tertiles(m["base_risk_score"], "base")
-    return m[["DFCI_MRN", "text_risk_score", "base_risk_score",
-              "death", "tt_death", "text_tertile", "base_tertile"]]
+def _cancer_type_labels(cancer_df: pd.DataFrame) -> pd.DataFrame:
+    type_cols = [c for c in cancer_df.columns if c.startswith("CANCER_TYPE_")]
+    if "CANCER_TYPE" in cancer_df.columns:
+        labels = cancer_df["CANCER_TYPE"].astype(str)
+    elif type_cols:
+        labels = cancer_df[type_cols].apply(pd.to_numeric, errors="coerce").fillna(0).idxmax(axis=1)
+        labels = labels.str.replace("CANCER_TYPE_", "", regex=False)
+    else:
+        return pd.DataFrame(columns=["DFCI_MRN", "cancer_type"])
+    return pd.DataFrame({
+        "DFCI_MRN": cancer_df["DFCI_MRN"],
+        "cancer_type": labels.astype(str).str.replace("_", " ", regex=False),
+    })
 
 
-def _td_auc(surv_df: pd.DataFrame) -> pd.DataFrame:
-    eval_days = EVAL_MONTHS * 30.44
+def _cancer_endpoint_heatmap(surv_df: pd.DataFrame, top_n_cancers: int = 8,
+                             min_n: int = 50, min_events: int = 5) -> pd.DataFrame:
+    cancer_df = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_type_df.csv.gz"))
+    labels = _cancer_type_labels(cancer_df)
+    if labels.empty:
+        return pd.DataFrame(columns=CANCER_ENDPOINT_COLUMNS)
+    top_cancers = labels["cancer_type"].value_counts().head(top_n_cancers).index.tolist()
     rows = []
-    for ev in TD_AUC_EVENTS:
+    for ev in DEATH_EVENTS:
         m = _merge_risk_with_surv(ev, surv_df)
         if m is None:
-            print(f"  [{ev}] skipped — risk-score files not found")
             continue
-        y = Surv.from_arrays(event=m[ev].astype(bool).values, time=m[f"tt_{ev}"].values)
-        max_t = m[f"tt_{ev}"].max() * 0.9
-        times = eval_days[eval_days < max_t]
-        if len(times) == 0:
-            print(f"  [{ev}] skipped — max follow-up {m[f'tt_{ev}'].max():.0f} days "
-                  "too short for any evaluation timepoint")
+        merged = m.merge(labels, on="DFCI_MRN", how="inner")
+        for cancer_type in top_cancers:
+            sub = merged[merged["cancer_type"] == cancer_type].dropna(subset=["text_risk_score", ev, f"tt_{ev}"])
+            n = len(sub)
+            n_events = int(sub[ev].sum()) if n else 0
+            if n < min_n or n_events < min_events:
+                continue
+            try:
+                cidx = concordance_index_censored(
+                    sub[ev].astype(bool).values,
+                    sub[f"tt_{ev}"].astype(float).values,
+                    sub["text_risk_score"].astype(float).values,
+                )[0]
+            except (ValueError, ZeroDivisionError):
+                continue
+            rows.append({
+                "event": ev,
+                "cancer_type": cancer_type,
+                "text_cindex": cidx,
+                "n": n,
+                "n_events": n_events,
+            })
+    return pd.DataFrame(rows, columns=CANCER_ENDPOINT_COLUMNS)
+
+
+def _km_examples(surv_df: pd.DataFrame, events: list[str] | None = None) -> pd.DataFrame:
+    events = events or ["death", "liverM", "brainM"]
+    rows = []
+    for ev in events:
+        m = _merge_risk_with_surv(ev, surv_df)
+        if m is None or len(m) < 100:
             continue
-        if len(times) < 3:
-            print(f"  [{ev}] warning: only {len(times)} timepoints fit within follow-up "
-                  f"(max {m[f'tt_{ev}'].max():.0f} days); AUC curve will be sparse")
-        try:
-            auc_text, _ = cumulative_dynamic_auc(y, y, m["text_risk_score"].values, times)
-            auc_base, _ = cumulative_dynamic_auc(y, y, m["base_risk_score"].values, times)
-        except ValueError as e:
-            print(f"  [{ev}] cumulative_dynamic_auc failed: {e}")
-            continue
-        for t, at, ab in zip(times / 30.44, auc_text, auc_base):
-            rows.append({"event": ev, "time_months": t, "auc_text": at, "auc_base": ab})
-    return pd.DataFrame(rows, columns=TD_AUC_COLUMNS)
+        m = m.copy()
+        m["text_tertile"] = _safe_tertiles(m["text_risk_score"], f"text/{ev}")
+        cur = m[["DFCI_MRN", "text_risk_score", ev, f"tt_{ev}", "text_tertile"]].rename(
+            columns={ev: "event_indicator", f"tt_{ev}": "time"}
+        )
+        cur["event"] = ev
+        rows.append(cur[KM_EXAMPLE_COLUMNS])
+    if not rows:
+        return pd.DataFrame(columns=KM_EXAMPLE_COLUMNS)
+    return pd.concat(rows, ignore_index=True)
 
 
 def main() -> None:
     surv_df = pd.read_csv(os.path.join(SURV_PATH, "death_met_surv_df.csv.gz"))
 
     save_figure_data(_full_cohort_metrics(), "fig2_full_cohort_metrics.csv")
-    save_figure_data(_bootstrap_deltas(surv_df), "fig2_bootstrap_deltas.csv")
-    save_figure_data(_km_death(surv_df), "fig2_km_death_data.csv")
-    save_figure_data(_td_auc(surv_df), "fig2_td_auc.csv")
+    save_figure_data(_cancer_endpoint_heatmap(surv_df), "fig2_cancer_endpoint_heatmap.csv")
+    save_figure_data(_km_examples(surv_df), "fig2_km_examples.csv")
 
 
 if __name__ == "__main__":

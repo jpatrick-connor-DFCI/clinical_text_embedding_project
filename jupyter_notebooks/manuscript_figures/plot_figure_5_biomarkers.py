@@ -1,7 +1,9 @@
-"""Render Figure 5 biomarkers manuscript panels.
+"""Render Figure 5 panels using the old biomarker-discovery target.
 
-It loads prepared CSVs via
-`_figure_utils.load_figure_data` and writes panel PNGs via `save_panel`.
+Target content from the old rendered mockup:
+- A: propensity-model ROC curves with an inset cancer-type AUC bar plot
+- B: biomarker association robustness across analysis specifications
+- C: three representative marker-by-ICI Kaplan-Meier interaction panels
 """
 
 from __future__ import annotations
@@ -10,149 +12,252 @@ import matplotlib
 
 matplotlib.use("Agg")
 
-# %% imports
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib.lines import Line2D
 from lifelines import KaplanMeierFitter
 
 from _figure_utils import apply_style, load_figure_data, save_panel
 
+
 apply_style()
 
-# %% fig5a
-ps = load_figure_data('fig5_ps_predictions.csv')
-if ps.empty:
-    print('fig5_ps_predictions.csv is empty; skipping panel A')
+BENEFIT_COLOR = "#2E6F9E"  # ICI benefit (HR<1)
+HARM_COLOR = "#E76F51"     # ICI harm (HR>1)
+TEAL = "#2A9D8F"
+NS_GRAY = "#999999"
+LIGHT_GRAY = "#EAEAEA"
+
+
+def _missing(ax: plt.Axes, msg: str) -> None:
+    ax.text(0.5, 0.5, msg, ha="center", va="center", transform=ax.transAxes, color="#777")
+    ax.set_axis_off()
+
+
+def _pretty_model(model: str) -> str:
+    labels = {
+        "covariates_only": "Covariates only",
+        "covariates_plus_embeddings": "Text + covariates",
+    }
+    return labels.get(str(model), str(model).replace("_", " "))
+
+
+def _pretty_spec(spec: str) -> str:
+    parts = str(spec).split("|")
+    if len(parts) == 3:
+        cohort, ps_model, weight = parts
+        ps = "embed PS" if "embedding" in ps_model else "covar PS"
+        return f"{weight}\n({ps})"
+    return str(spec).replace("_", " ")
+
+
+def _roc_curve_auc(y_true: pd.Series, score: pd.Series) -> tuple[np.ndarray, np.ndarray, float]:
+    y = pd.to_numeric(y_true, errors="coerce").to_numpy()
+    s = pd.to_numeric(score, errors="coerce").to_numpy()
+    keep = np.isfinite(y) & np.isfinite(s)
+    y = y[keep].astype(int)
+    s = s[keep]
+    if len(np.unique(y)) < 2:
+        return np.array([0.0, 1.0]), np.array([0.0, 1.0]), float("nan")
+
+    order = np.argsort(-s)
+    y = y[order]
+    threshold_idx = np.r_[np.where(np.diff(s[order]) != 0)[0], len(y) - 1]
+    tp = np.cumsum(y == 1)[threshold_idx]
+    fp = np.cumsum(y == 0)[threshold_idx]
+    tpr = np.r_[0.0, tp / max(tp[-1], 1), 1.0]
+    fpr = np.r_[0.0, fp / max(fp[-1], 1), 1.0]
+    auc = float(np.trapezoid(tpr, fpr))
+    return fpr, tpr, auc
+
+
+def _km_title(marker: str, cancer: str, hr: float | None = None) -> str:
+    marker = str(marker).replace("_", " ")
+    cancer = str(cancer).replace("_", " ")
+    if hr is None or not np.isfinite(hr):
+        return f"{marker}\n{cancer}"
+    direction = "ICI benefit" if hr < 1 else "ICI harm"
+    return f"{marker}\n{direction}"
+
+
+ps_predictions = load_figure_data("fig5_ps_predictions.csv")
+robust = load_figure_data("fig5_robust_hits.csv")
+km_examples = load_figure_data("fig5_km_examples.csv")
+km_top = load_figure_data("fig5_km_top_hit.csv")
+meta = load_figure_data("fig5_top_hit_meta.csv")
+
+
+# %% fig5a: propensity ROC + cancer-type AUC inset
+fig, ax = plt.subplots(figsize=(8.0, 6.0))
+if ps_predictions.empty:
+    _missing(ax, "fig5_ps_predictions.csv empty")
 else:
-    ps_models = ['covariates_only', 'covariates_plus_embeddings']
-    fig, axes = plt.subplots(1, len(ps_models), figsize=(10, 4), sharey=True)
-    bins = np.linspace(0, 1, 41)
-    for ax, model in zip(axes, ps_models):
-        sub = ps[ps['ps_model'] == model]
+    ps = ps_predictions.dropna(subset=["model_probs", "ground_truth"]).copy()
+    colors = {
+        "covariates_only": "#F28E2B",
+        "covariates_plus_embeddings": TEAL,
+    }
+    model_order = ["covariates_only", "covariates_plus_embeddings"]
+    model_order += [m for m in ps["ps_model"].dropna().unique() if m not in model_order]
+    for model in model_order:
+        sub = ps[ps["ps_model"] == model]
         if sub.empty:
-            ax.text(0.5, 0.5, f'no {model} predictions', ha='center', va='center',
-                    transform=ax.transAxes, color='#888')
-            ax.set_title(model.replace('_', ' '))
-            ax.axis('off')
             continue
-        treated = sub.loc[sub['ground_truth'] == 1, 'model_probs']
-        control = sub.loc[sub['ground_truth'] == 0, 'model_probs']
-        ax.hist(treated, bins=bins, alpha=0.55, color='#D62728',
-                label=f'ICI (n={len(treated):,})', density=True)
-        ax.hist(control, bins=bins, alpha=0.55, color='#4A4A4A',
-                label=f'no-ICI (n={len(control):,})', density=True)
-        ax.set_xlabel('Estimated P(ICI)')
-        ax.set_title(model.replace('_', ' '))
-        ax.legend(loc='upper center', fontsize=8)
-    axes[0].set_ylabel('Density')
-    fig.suptitle('Propensity score overlap by specification', y=1.02)
-    fig.tight_layout()
-    save_panel(fig, 'fig5a')
-    plt.close(fig)
+        fpr, tpr, auc = _roc_curve_auc(sub["ground_truth"], sub["model_probs"])
+        label = f"{_pretty_model(model)} (AUC={auc:.2f})" if np.isfinite(auc) else _pretty_model(model)
+        ax.plot(fpr, tpr, lw=2.0, color=colors.get(model, "#457B9D"), label=label)
 
-# %% fig5b
-vol = load_figure_data('fig5_volcano_track2.csv')
-if vol.empty:
-    print('fig5_volcano_track2.csv is empty; skipping panel B')
-else:
-    sig = vol['significant'].astype(bool)
-    fig, ax = plt.subplots(figsize=(6.5, 4.8))
-    ax.scatter(vol.loc[~sig, 'log_hr'], vol.loc[~sig, 'neglog10_p'],
-               s=8, color='#BBBBBB', alpha=0.6, label='not sig.', edgecolors='none')
-    ax.scatter(vol.loc[sig, 'log_hr'], vol.loc[sig, 'neglog10_p'],
-               s=18, color='#D62728', alpha=0.85,
-               label=f'significant (n={sig.sum()})', edgecolors='black', linewidths=0.3)
-    top = vol.sort_values('p_markerxICI').head(8)
-    for _, r in top.iterrows():
-        ax.annotate(f"{r['marker']} ({r['cancer']})",
-                    (r['log_hr'], r['neglog10_p']),
-                    fontsize=7, ha='left', va='bottom', alpha=0.9)
-    ax.axvline(0, color='#888', lw=0.8, ls='--')
-    ax.set_xlabel('log HR (marker × ICI)')
-    ax.set_ylabel('−log10 p')
-    ax.set_title('Track 2 interaction volcano')
-    ax.legend(loc='upper left', fontsize=8)
-    save_panel(fig, 'fig5b')
-    plt.close(fig)
+    ax.plot([0, 1], [0, 1], "--", color="#777777", lw=1.0, label="Random classifier")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1.02)
+    ax.set_xlabel("False Positive Rate")
+    ax.set_ylabel("True Positive Rate")
+    ax.set_title("Propensity Score Model: Predicting ICI Receipt", fontweight="bold")
+    ax.legend(fontsize=8, loc="lower right", frameon=True)
 
-# %% fig5c
-robust = load_figure_data('fig5_robust_hits.csv')
+    text_model = ps[ps["ps_model"] == "covariates_plus_embeddings"].dropna(subset=["cancer_type"])
+    rows = []
+    for cancer, sub in text_model.groupby("cancer_type"):
+        y = pd.to_numeric(sub["ground_truth"], errors="coerce")
+        if len(sub) < 30 or y.nunique(dropna=True) < 2:
+            continue
+        _, _, auc = _roc_curve_auc(sub["ground_truth"], sub["model_probs"])
+        rows.append({"cancer_type": cancer, "auc": auc, "n": len(sub)})
+    auc_by_cancer = pd.DataFrame(rows).dropna(subset=["auc"]).sort_values("auc").tail(6)
+    if not auc_by_cancer.empty:
+        inset = ax.inset_axes([0.36, 0.08, 0.46, 0.36])
+        y_pos = np.arange(len(auc_by_cancer))
+        inset.barh(y_pos, auc_by_cancer["auc"], color=plt.cm.tab10(np.linspace(0, 0.6, len(y_pos))))
+        inset.set_yticks(y_pos)
+        inset.set_yticklabels(auc_by_cancer["cancer_type"], fontsize=7)
+        inset.set_xlim(max(0.5, auc_by_cancer["auc"].min() - 0.08), min(1.0, auc_by_cancer["auc"].max() + 0.08))
+        inset.set_xlabel("AUC", fontsize=7)
+        inset.set_title("AUC by Cancer Type\n(Text model)", fontsize=8, fontweight="bold")
+        inset.tick_params(axis="x", labelsize=7)
+        for yi, row in enumerate(auc_by_cancer.itertuples(index=False)):
+            inset.text(row.auc + 0.005, yi, f"{row.auc:.2f}", va="center", fontsize=7)
+save_panel(fig, "fig5a")
+plt.close(fig)
+
+
+# %% fig5b: biomarker association robustness
+fig, ax = plt.subplots(figsize=(8.0, 6.0))
 if robust.empty:
-    print('fig5_robust_hits.csv is empty; skipping panel C')
+    _missing(ax, "fig5_robust_hits.csv empty")
 else:
-    # Top 10 by abs(log geometric-mean HR) — mean_HR is already geometric-mean from prep
-    summary = (robust[['marker', 'cancer_type', 'mean_HR']]
-               .drop_duplicates()
-               .dropna(subset=['mean_HR'])
-               .assign(abs_log=lambda d: np.abs(np.log(d['mean_HR'])))
-               .sort_values('abs_log', ascending=False)
-               .head(10))
-    if summary.empty:
-        print('No robust markers with non-null mean_HR; skipping panel C')
-    else:
-        spec_order = sorted(robust['spec'].dropna().unique())
-        palette = plt.cm.tab10(np.linspace(0, 1, len(spec_order)))
-        spec_colors = {s: palette[i] for i, s in enumerate(spec_order)}
-        fig, ax = plt.subplots(figsize=(7.5, max(3, 0.45 * len(summary))))
-        y_labels = []
-        for y_i, (_, r) in enumerate(summary.iterrows()):
-            marker, cancer = r['marker'], r['cancer_type']
-            sub = robust[(robust['marker'] == marker) & (robust['cancer_type'] == cancer)]
-            for j, (_, row) in enumerate(sub.iterrows()):
-                offset = (j - (len(sub) - 1) / 2) * 0.15
-                lo, hi = row.get('CI95_marker_ICI_low'), row.get('CI95_marker_ICI_high')
-                if pd.notna(lo) and pd.notna(hi):
-                    ax.errorbar(row['HR_markerxICI'], y_i + offset,
-                                xerr=[[max(1e-3, row['HR_markerxICI'] - lo)],
-                                      [max(1e-3, hi - row['HR_markerxICI'])]],
-                                fmt='o', color=spec_colors[row['spec']],
-                                capsize=2, markersize=4)
-                else:
-                    ax.plot(row['HR_markerxICI'], y_i + offset, 'o',
-                            color=spec_colors[row['spec']], markersize=4)
-            y_labels.append(f'{marker} ({cancer})')
-        ax.axvline(1.0, color='#333', ls='--', lw=0.8)
-        ax.set_xscale('log')
-        ax.set_yticks(range(len(summary)))
-        ax.set_yticklabels(y_labels)
-        ax.set_xlabel('HR (marker × ICI)')
-        ax.set_title('Robust predictive markers (≥2 specs, consistent direction; ranked by geo-mean HR)')
-        handles = [plt.Line2D([0], [0], marker='o', color=c, lw=0, label=s)
-                   for s, c in spec_colors.items()]
-        ax.legend(handles=handles, loc='center left', bbox_to_anchor=(1.02, 0.5), fontsize=7)
-        save_panel(fig, 'fig5c')
-        plt.close(fig)
+    r = robust.dropna(subset=["marker", "spec", "HR_markerxICI"]).copy()
+    r["support"] = -np.log10(pd.to_numeric(r["p_markerxICI"], errors="coerce").clip(lower=1e-300))
+    r["marker_key"] = r["marker"].astype(str) + " (" + r["cancer_type"].astype(str) + ")"
+    marker_rank = (r.groupby("marker_key")
+                    .agg(n_specs=("spec", "nunique"),
+                         support=("support", "max"),
+                         mean_HR=("mean_HR", "median"))
+                    .sort_values(["n_specs", "support"], ascending=[False, False])
+                    .head(15))
+    markers = marker_rank.index.tolist()
+    specs = r["spec"].dropna().drop_duplicates().tolist()[:6]
+    sub = r[r["marker_key"].isin(markers) & r["spec"].isin(specs)]
 
-# %% fig5d
-km = load_figure_data('fig5_km_top_hit.csv')
-meta = load_figure_data('fig5_top_hit_meta.csv')
-if km.empty or meta.empty:
-    print('No top-hit KM data; skipping panel D')
-else:
-    m = meta.iloc[0]
-    marker, cancer, ps_model = m['marker'], m['cancer'], m['ps_model']
-    cohort = m.get('cohort', '')
-    weight_type = m.get('weight_type', '')
-    fig, ax = plt.subplots(figsize=(6.5, 4.5))
+    for x in range(len(specs)):
+        ax.axvline(x, color=LIGHT_GRAY, lw=0.8, zorder=0)
+    for y in range(len(markers)):
+        ax.axhline(y, color=LIGHT_GRAY, lw=0.8, zorder=0)
+    for y in range(len(markers)):
+        for x in range(len(specs)):
+            ax.scatter(x, y, s=22, facecolors="white", edgecolors=NS_GRAY, lw=0.8, zorder=1)
+
+    for _, row in sub.iterrows():
+        x = specs.index(row["spec"])
+        y = markers.index(row["marker_key"])
+        hr = float(row["HR_markerxICI"])
+        support = float(row["support"]) if np.isfinite(row["support"]) else 0.0
+        color = BENEFIT_COLOR if hr < 1 else HARM_COLOR
+        ax.scatter(x, y, s=28 + min(support, 4) * 26, color=color,
+                   edgecolors="white", lw=0.5, zorder=3)
+
+    for y, marker in enumerate(markers):
+        hr = marker_rank.loc[marker, "mean_HR"]
+        if pd.notna(hr):
+            ax.text(len(specs) + 0.3, y, f"HR={hr:.2f}", va="center", fontsize=7, color="#666")
+
+    ax.set_xticks(range(len(specs)))
+    ax.set_xticklabels([_pretty_spec(s) for s in specs], fontsize=8)
+    ax.set_yticks(range(len(markers)))
+    ax.set_yticklabels(markers, fontsize=8, fontweight="bold")
+    ax.invert_yaxis()
+    ax.set_xlim(-0.55, len(specs) + 1.2)
+    ax.set_title("Biomarker Association Robustness", fontweight="bold")
+    ax.tick_params(axis="y", length=0)
+    ax.spines["left"].set_visible(False)
+    handles = [
+        Line2D([0], [0], marker="o", color="w", markerfacecolor=BENEFIT_COLOR,
+               markeredgecolor="white", markersize=8, label="Sig., ICI benefit"),
+        Line2D([0], [0], marker="o", color="w", markerfacecolor=HARM_COLOR,
+               markeredgecolor="white", markersize=8, label="Sig., ICI harm"),
+        Line2D([0], [0], marker="o", color="w", markerfacecolor="white",
+               markeredgecolor=NS_GRAY, markersize=8, label="Not significant"),
+    ]
+    ax.legend(handles=handles, fontsize=7.5, loc="lower left", frameon=True)
+save_panel(fig, "fig5b")
+plt.close(fig)
+
+
+# %% fig5c: three representative KM interaction panels
+fig, axes = plt.subplots(1, 3, figsize=(15.0, 5.0), sharey=True)
+
+
+def _plot_km(ax: plt.Axes, data: pd.DataFrame, title: str) -> None:
+    if data.empty:
+        _missing(ax, "no KM data")
+        return
     kmf = KaplanMeierFitter()
     strata = [
-        ('ICI / marker−',    (km['PX_on_ICI'] == 1) & (km['marker_value'] == 0), '#D62728', '-'),
-        ('ICI / marker+',    (km['PX_on_ICI'] == 1) & (km['marker_value'] == 1), '#D62728', '--'),
-        ('no-ICI / marker−', (km['PX_on_ICI'] == 0) & (km['marker_value'] == 0), '#4A4A4A', '-'),
-        ('no-ICI / marker+', (km['PX_on_ICI'] == 0) & (km['marker_value'] == 1), '#4A4A4A', '--'),
+        ("Marker+ / ICI+", (data["marker_value"] == 1) & (data["PX_on_ICI"] == 1), "#1B4F72"),
+        ("Marker- / ICI+", (data["marker_value"] == 0) & (data["PX_on_ICI"] == 1), "#5DADE2"),
+        ("Marker- / ICI-", (data["marker_value"] == 0) & (data["PX_on_ICI"] == 0), "#F28E2B"),
+        ("Marker+ / ICI-", (data["marker_value"] == 1) & (data["PX_on_ICI"] == 0), "#C0392B"),
     ]
-    for label, mask, color, ls in strata:
-        sub = km[mask]
+    plotted = 0
+    for label, mask, color in strata:
+        sub = data[mask].dropna(subset=["tt_death", "death"])
+        sub = sub[sub["tt_death"] > 0]
         if len(sub) < 5:
             continue
-        kmf.fit(sub['tt_death'] / 30.44, sub['death'], label=f'{label} (n={len(sub)})')
-        kmf.plot_survival_function(ax=ax, ci_show=False, color=color, linestyle=ls, lw=1.8)
+        kmf.fit(sub["tt_death"] / 30.44, sub["death"], label=f"{label} (n={len(sub):,})")
+        kmf.plot_survival_function(ax=ax, ci_show=False, color=color, lw=2.0)
+        plotted += 1
+    if plotted == 0:
+        _missing(ax, "insufficient KM strata")
+        return
     ax.set_xlim(0, 60)
-    ax.set_xlabel('Months from first treatment')
-    ax.set_ylabel('Overall survival')
-    spec_desc = ' / '.join(s for s in (cohort, ps_model, weight_type) if s)
-    ax.set_title(f'{marker} × ICI ({cancer})\n[{spec_desc}]')
-    ax.legend(loc='upper right', fontsize=8)
-    save_panel(fig, 'fig5d')
-    plt.close(fig)
+    ax.set_ylim(0, 1.02)
+    ax.set_xlabel("Months")
+    ax.set_title(title, fontsize=10, fontweight="bold")
+    ax.legend(fontsize=7, loc="upper right")
+
+
+if not km_examples.empty:
+    example_ids = list(km_examples["example_id"].dropna().unique())[:3]
+    for ax, ex_id in zip(axes, example_ids):
+        data = km_examples[km_examples["example_id"] == ex_id]
+        title = str(data["title"].iloc[0]) + "\n" + str(data["cancer"].iloc[0])
+        _plot_km(ax, data, title)
+    for ax in axes[len(example_ids):]:
+        _missing(ax, "no additional example")
+elif not km_top.empty:
+    title = "Top hit"
+    if not meta.empty:
+        m = meta.iloc[0]
+        title = _km_title(str(m["marker"]), str(m["cancer"]))
+    _plot_km(axes[0], km_top, title)
+    for ax in axes[1:]:
+        _missing(ax, "no additional example")
+else:
+    for ax in axes:
+        _missing(ax, "fig5_km_examples.csv empty")
+axes[0].set_ylabel("Survival Probability")
+fig.tight_layout()
+save_panel(fig, "fig5c")
+plt.close(fig)

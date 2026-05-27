@@ -2,6 +2,7 @@
 
 Writes to FIGURE_DATA_DIR (defined in _figure_utils.py):
 - fig1_cohort_counts.csv          step → n
+- fig1_endpoint_counts.csv        scheme → n_endpoints
 - fig1_note_volume.csv            year_bin × note_type → count
 - fig1_cancer_type_counts.csv     category, n
 - fig1_stage_counts.csv           category, n
@@ -23,12 +24,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from _figure_utils import (
     EMBEDDING_FILES, FEATURE_PATH, NOTES_PATH, SURV_PATH,
+    SCHEME_RESULT_DIRS, list_trained_events,
     save_figure_data,
 )
 from slurm_array_utils import _get_common_feature_mrns
 
 
 SCHEME_FOR_EMBED = "icd3_post"  # widest cohort
+ENDPOINT_COUNT_COLUMNS = ["scheme", "n_endpoints"]
 
 
 def _cohort_counts(emb_df: pd.DataFrame, cancer_type_df: pd.DataFrame) -> pd.DataFrame:
@@ -76,6 +79,14 @@ def _composition_counts(df: pd.DataFrame, cols: list[str], prefix: str, top_n: i
     s.index = s.index.str.replace(prefix, "", regex=False)
     s = s.head(top_n)
     return pd.DataFrame({"category": s.index.astype(str), "n": s.values.astype(int)})
+
+
+def _endpoint_counts() -> pd.DataFrame:
+    rows = [
+        {"scheme": scheme, "n_endpoints": len(list_trained_events(scheme))}
+        for scheme in SCHEME_RESULT_DIRS
+    ]
+    return pd.DataFrame(rows, columns=ENDPOINT_COUNT_COLUMNS)
 
 
 def _umap_coords(emb_df: pd.DataFrame, cancer_type_df: pd.DataFrame,
@@ -128,6 +139,7 @@ def main() -> None:
     tx1 = treatment_df.loc[treatment_df["treatment_line"] == 1]
 
     save_figure_data(_cohort_counts(emb_df, cancer_type_df), "fig1_cohort_counts.csv")
+    save_figure_data(_endpoint_counts(), "fig1_endpoint_counts.csv")
     save_figure_data(_note_volume(notes_meta), "fig1_note_volume.csv")
     save_figure_data(_composition_counts(cancer_type_df, type_cols, "CANCER_TYPE_", 15),
                      "fig1_cancer_type_counts.csv")

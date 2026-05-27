@@ -1,8 +1,4 @@
-"""Render Figure 2 text vs base manuscript panels.
-
-It loads prepared CSVs via
-`_figure_utils.load_figure_data` and writes panel PNGs via `save_panel`.
-"""
+"""Render Figure 2 panels using the old text-vs-base target."""
 
 from __future__ import annotations
 
@@ -10,117 +6,176 @@ import matplotlib
 
 matplotlib.use("Agg")
 
-# %% imports
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from lifelines import KaplanMeierFitter
 from lifelines.statistics import multivariate_logrank_test
 
-from _figure_utils import apply_style, load_figure_data, save_panel, MODEL_COLORS
+from _figure_utils import apply_style, load_figure_data, save_panel
+
 
 apply_style()
 
-# %% fig2a
-metrics = load_figure_data('fig2_full_cohort_metrics.csv')
+SCHEME_COLORS = {
+    "death_met": "#E74C3C",
+    "icd3_post": "#3498DB",
+    "icd4_post": "#2ECC71",
+    "phecode_post": "#9B59B6",
+}
+SCHEME_MARKERS = {"death_met": "D", "icd3_post": "o", "icd4_post": "^", "phecode_post": "s"}
+SCHEME_LABELS = {"death_met": "death_met", "icd3_post": "ICD3", "icd4_post": "ICD4", "phecode_post": "PhecodeX"}
+RISK_COLORS = {"low": "#2E86C1", "mid": "#F28E2B", "high": "#E74C3C"}
+
+
+def _missing(ax: plt.Axes, msg: str) -> None:
+    ax.text(0.5, 0.5, msg, ha="center", va="center", transform=ax.transAxes, color="#777")
+    ax.set_axis_off()
+
+
+metrics = load_figure_data("fig2_full_cohort_metrics.csv")
+
+
+# %% fig2a: text vs base scatter
+fig, ax = plt.subplots(figsize=(6.4, 5.0))
 if metrics.empty:
-    print('fig2_full_cohort_metrics.csv is empty; skipping panel A')
+    _missing(ax, "fig2_full_cohort_metrics.csv empty")
 else:
-    scheme_markers = {'death_met': 'o', 'icd3_post': 's', 'icd4_post': '^', 'phecode_post': 'D'}
-    scheme_colors = {'death_met': '#D62728', 'icd3_post': '#1F77B4',
-                     'icd4_post': '#2CA02C', 'phecode_post': '#9467BD'}
-    fig, ax = plt.subplots(figsize=(5, 5))
-    for scheme, g in metrics.groupby('scheme'):
-        ax.scatter(g['base_cindex'], g['text_cindex'],
-                   marker=scheme_markers.get(scheme, 'o'),
-                   c=scheme_colors.get(scheme, '#555'),
-                   alpha=0.6, s=22, edgecolors='none', label=f'{scheme} (n={len(g)})')
-    lim = [metrics[['base_cindex', 'text_cindex']].min().min() - 0.02,
-           metrics[['base_cindex', 'text_cindex']].max().max() + 0.02]
-    ax.plot(lim, lim, ls='--', c='#888', lw=1)
-    ax.set_xlim(lim); ax.set_ylim(lim)
-    ax.set_xlabel('Base model C-index')
-    ax.set_ylabel('Text model C-index')
-    ax.set_title('Text vs base on held-out test (all events)')
-    ax.legend(loc='lower right', fontsize=8)
-    save_panel(fig, 'fig2a')
-    plt.close(fig)
+    plot_df = metrics.dropna(subset=["base_cindex", "text_cindex"]).copy()
+    plot_df["delta"] = plot_df["text_cindex"] - plot_df["base_cindex"]
+    for scheme, g in plot_df.groupby("scheme"):
+        ax.scatter(g["base_cindex"], g["text_cindex"],
+                   marker=SCHEME_MARKERS.get(scheme, "o"),
+                   color=SCHEME_COLORS.get(scheme, "#777"),
+                   s=26, alpha=0.55, edgecolors="none",
+                   label=f"{SCHEME_LABELS.get(scheme, scheme)} (n={len(g)})")
+    lo = max(0.45, plot_df[["base_cindex", "text_cindex"]].min().min() - 0.02)
+    hi = min(1.0, plot_df[["base_cindex", "text_cindex"]].max().max() + 0.02)
+    ax.plot([lo, hi], [lo, hi], ls="--", color="#666", lw=1)
+    top = plot_df.nlargest(min(5, len(plot_df)), "delta")
+    for _, row in top.iterrows():
+        label = str(row["event"]).replace("_", " ")[:28]
+        ax.annotate(label, (row["base_cindex"], row["text_cindex"]),
+                    xytext=(5, 5), textcoords="offset points", fontsize=6.5,
+                    arrowprops=dict(arrowstyle="-", lw=0.5, color="#999"))
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(lo, hi)
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xlabel("Base Model C-index")
+    ax.set_ylabel("Text Model C-index")
+    ax.set_title("Text vs. Base Model Performance")
+    ax.legend(loc="lower right", fontsize=7)
+save_panel(fig, "fig2a")
+plt.close(fig)
 
-# %% fig2b
-forest = load_figure_data('fig2_bootstrap_deltas.csv')
-if forest.empty:
-    print('fig2_bootstrap_deltas.csv is empty; skipping panel B')
-else:
-    forest = forest.sort_values('delta').reset_index(drop=True)
-    fig, ax = plt.subplots(figsize=(5.5, 4.5))
-    y = np.arange(len(forest))
-    # Percentile bootstrap CI can produce lo > delta or hi < delta for skewed
-    # distributions; clip to keep matplotlib's errorbar from raising.
-    xerr_lo = np.maximum(0, forest['delta'] - forest['lo'])
-    xerr_hi = np.maximum(0, forest['hi'] - forest['delta'])
-    ax.errorbar(forest['delta'], y, xerr=[xerr_lo, xerr_hi],
-                fmt='o', color='#D62728', ecolor='#888', capsize=3)
-    ax.axvline(0, color='#333', lw=0.8, ls='--')
-    ax.set_yticks(y)
-    ax.set_yticklabels([f'{r.event}  (n={int(r.n):,})' for _, r in forest.iterrows()])
-    ax.set_xlabel('Δ C-index (text − base)')
-    ax.set_title('Mortality + metastasis endpoints')
-    save_panel(fig, 'fig2b')
-    plt.close(fig)
 
-# %% fig2c
-km = load_figure_data('fig2_km_death_data.csv')
-if km.empty:
-    print('fig2_km_death_data.csv is empty; skipping panel C')
+# %% fig2b: delta violin by scheme
+fig, ax = plt.subplots(figsize=(6.0, 4.8))
+if metrics.empty:
+    _missing(ax, "fig2_full_cohort_metrics.csv empty")
 else:
-    tertile_colors = {'low': '#2CA02C', 'mid': '#FF7F0E', 'high': '#D62728'}
-    fig, ax = plt.subplots(figsize=(6, 4.5))
+    plot_df = metrics.dropna(subset=["base_cindex", "text_cindex"]).copy()
+    plot_df["delta"] = plot_df["text_cindex"] - plot_df["base_cindex"]
+    order = [s for s in SCHEME_LABELS if s in set(plot_df["scheme"])]
+    values = [plot_df.loc[plot_df["scheme"] == s, "delta"].values for s in order]
+    parts = ax.violinplot(values, positions=np.arange(len(order)), widths=0.65,
+                          showmeans=False, showmedians=True, showextrema=True)
+    for body, scheme in zip(parts["bodies"], order):
+        body.set_facecolor(SCHEME_COLORS[scheme])
+        body.set_alpha(0.45)
+        body.set_edgecolor("none")
+    parts["cmedians"].set_color("#111")
+    rng = np.random.default_rng(0)
+    for i, (scheme, vals) in enumerate(zip(order, values)):
+        if len(vals) == 0:
+            continue
+        x = i + rng.uniform(-0.18, 0.18, len(vals))
+        ax.scatter(x, vals, s=10, color=SCHEME_COLORS[scheme], alpha=0.35, edgecolors="none")
+        ax.text(i, ax.get_ylim()[1] * 0.94, f"n={len(vals)}\nmed={np.median(vals):+.3f}",
+                ha="center", va="top", fontsize=7)
+    ax.axhline(0, color="#333", ls="--", lw=1)
+    ax.set_xticks(np.arange(len(order)))
+    ax.set_xticklabels([SCHEME_LABELS[s] for s in order])
+    ax.set_ylabel("Delta C-index (Text - Base)")
+    ax.set_title("C-index Improvement by Scheme")
+save_panel(fig, "fig2b")
+plt.close(fig)
+
+
+# %% fig2c: heatmap of text model C-index by endpoint and scheme
+cancer_heat = load_figure_data("fig2_cancer_endpoint_heatmap.csv")
+fig, ax = plt.subplots(figsize=(10.8, 4.2))
+if cancer_heat.empty:
+    _missing(ax, "fig2_cancer_endpoint_heatmap.csv empty")
+else:
+    plot_df = cancer_heat.dropna(subset=["text_cindex"]).copy()
+    event_order = (
+        plot_df.groupby("event")["text_cindex"].mean()
+        .sort_values(ascending=False)
+        .index.tolist()
+    )
+    cancer_order = (
+        plot_df.groupby("cancer_type")["n"].sum()
+        .sort_values(ascending=False)
+        .index.tolist()
+    )
+    mat = plot_df.pivot_table(index="event", columns="cancer_type", values="text_cindex", aggfunc="mean")
+    mat = mat.reindex(index=event_order, columns=cancer_order)
+    im = ax.imshow(mat.values, aspect="auto", cmap="Blues", vmin=0.5, vmax=1.0)
+    ax.set_xticks(range(len(mat.columns)))
+    ax.set_xticklabels(mat.columns, rotation=35, ha="right")
+    ax.set_yticks(range(len(mat.index)))
+    ax.set_yticklabels([str(e).replace("_", " ") for e in mat.index], fontsize=7)
+    for i in range(mat.shape[0]):
+        for j in range(mat.shape[1]):
+            v = mat.iloc[i, j]
+            if pd.isna(v):
+                continue
+            ax.text(j, i, "*" if v >= 0.60 else "", ha="center", va="center",
+                    color="white", fontsize=9, fontweight="bold")
+    ax.set_title("Text Model C-index by Cancer Type and Endpoint")
+    fig.colorbar(im, ax=ax, label="C-index", fraction=0.03, pad=0.02)
+save_panel(fig, "fig2c")
+plt.close(fig)
+
+
+# %% fig2d: survival and AUC examples
+km_examples = load_figure_data("fig2_km_examples.csv")
+fig, axes = plt.subplots(1, 3, figsize=(12.4, 3.8), sharey=False)
+
+def _plot_km(ax: plt.Axes, data: pd.DataFrame, title: str) -> None:
+    if data.empty:
+        _missing(ax, "no KM example data")
+        return
     kmf = KaplanMeierFitter()
-    for t in ['low', 'mid', 'high']:
-        sub = km[km['text_tertile'] == t]
+    for label in ["low", "mid", "high"]:
+        sub = data[data["text_tertile"] == label]
         if sub.empty:
             continue
-        kmf.fit(sub['tt_death'] / 30.44, sub['death'], label=f'text {t} (n={len(sub):,})')
-        kmf.plot_survival_function(ax=ax, ci_show=False, color=tertile_colors[t], lw=2)
-    for t in ['low', 'mid', 'high']:
-        sub = km[km['base_tertile'] == t]
-        if sub.empty:
-            continue
-        kmf.fit(sub['tt_death'] / 30.44, sub['death'], label=f'base {t} (n={len(sub):,})')
-        kmf.plot_survival_function(ax=ax, ci_show=False, color=tertile_colors[t], lw=1.2, linestyle='--')
+        kmf.fit(sub["time"] / 30.44, sub["event_indicator"], label=f"{label.title()} (n={len(sub):,})")
+        kmf.plot_survival_function(ax=ax, ci_show=False, color=RISK_COLORS[label], lw=1.8)
     try:
-        lr_text = multivariate_logrank_test(km['tt_death'], km['text_tertile'], km['death'])
-        lr_base = multivariate_logrank_test(km['tt_death'], km['base_tertile'], km['death'])
-        ax.text(0.02, 0.05,
-                f'text logrank p={lr_text.p_value:.1e}\nbase logrank p={lr_base.p_value:.1e}',
-                transform=ax.transAxes, fontsize=8)
-    except Exception as e:
-        print(f'logrank test failed: {e}')
+        lr = multivariate_logrank_test(data["time"], data["text_tertile"], data["event_indicator"])
+        ax.text(0.03, 0.06, f"Log-rank p={lr.p_value:.1e}", transform=ax.transAxes, fontsize=7)
+    except Exception as exc:
+        print(f"logrank failed for {title}: {exc}")
     ax.set_xlim(0, 60)
-    ax.set_xlabel('Months from first treatment')
-    ax.set_ylabel('Overall survival')
-    ax.set_title('Mortality by risk-score tertile (text solid, base dashed)')
-    ax.legend(loc='upper right', fontsize=7, ncol=2)
-    save_panel(fig, 'fig2c')
-    plt.close(fig)
+    ax.set_ylim(0, 1.02)
+    ax.set_title(title)
+    ax.set_xlabel("Months")
+    ax.set_ylabel("Survival Probability")
+    ax.legend(fontsize=6.5, loc="upper right")
 
-# %% fig2d
-td = load_figure_data('fig2_td_auc.csv')
-if td.empty:
-    print('fig2_td_auc.csv is empty; skipping panel D')
+if km_examples.empty:
+    for ax in axes:
+        _missing(ax, "fig2_km_examples.csv empty")
 else:
-    events_to_plot = list(td['event'].unique())
-    fig, axes = plt.subplots(1, len(events_to_plot),
-                             figsize=(4 * len(events_to_plot), 4), sharey=True, squeeze=False)
-    for ax, ev in zip(axes[0], events_to_plot):
-        sub = td[td['event'] == ev].sort_values('time_months')
-        ax.plot(sub['time_months'], sub['auc_text'], '-o', color=MODEL_COLORS['text'], label='text')
-        ax.plot(sub['time_months'], sub['auc_base'], '-o', color=MODEL_COLORS['base'], label='base')
-        ax.set_xlabel('Months from first treatment')
-        ax.set_title(ev)
-        ax.set_ylim(0.4, 0.95)
-    axes[0, 0].set_ylabel('Time-dependent AUC')
-    axes[0, -1].legend(loc='lower left')
-    fig.tight_layout()
-    save_panel(fig, 'fig2d')
-    plt.close(fig)
+    events = list(km_examples["event"].dropna().unique())[:3]
+    for ax, event in zip(axes, events):
+        sub = km_examples[km_examples["event"] == event]
+        _plot_km(ax, sub, str(event).replace("_", " ").title())
+    for ax in axes[len(events):]:
+        _missing(ax, "no additional KM event")
+fig.tight_layout()
+save_panel(fig, "fig2d")
+plt.close(fig)
