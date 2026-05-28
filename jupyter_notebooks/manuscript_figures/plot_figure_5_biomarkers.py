@@ -298,15 +298,15 @@ def _plot_km(ax: plt.Axes, data: pd.DataFrame, title: str) -> None:
 
 
 def _hr_suffix(data: pd.DataFrame) -> str:
-    """marker×ICI interaction HR + 95% CI title suffix, read from carried-through columns."""
+    """marker×ICI interaction HR title suffix.
+
+    No CI is shown because run_IPTW_analysis does not emit an SE for the interaction
+    term; the upstream CI95_marker_ICI_* columns are for the marker *main* effect.
+    """
     if "hr" not in data.columns or pd.isna(data["hr"].iloc[0]):
         return ""
     hr = data["hr"].iloc[0]
-    lo = data["ci_low"].iloc[0] if "ci_low" in data.columns else np.nan
-    hi = data["ci_high"].iloc[0] if "ci_high" in data.columns else np.nan
-    if pd.notna(lo) and pd.notna(hi):
-        return f"\nHR={hr:.2f} (95% CI {lo:.2f}-{hi:.2f})"
-    return f"\nHR={hr:.2f}"
+    return f"\nHR(marker×ICI)={hr:.2f}"
 
 
 if not km_examples.empty:

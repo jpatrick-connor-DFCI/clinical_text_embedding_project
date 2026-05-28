@@ -55,7 +55,7 @@ ROBUST_COLUMNS = [
 KM_COLUMNS = ["DFCI_MRN", "marker_value", "PX_on_ICI", "death", "tt_death"]
 KM_EXAMPLE_COLUMNS = [
     "DFCI_MRN", "example_id", "title", "marker", "cancer", "marker_value",
-    "PX_on_ICI", "death", "tt_death", "hr", "ci_low", "ci_high",
+    "PX_on_ICI", "death", "tt_death", "hr",
 ]
 TOP_HIT_META_COLUMNS = ["marker", "cancer", "cohort", "ps_model", "weight_type"]
 LOVE_SMD_COLUMNS = ["covariate", "smd_unweighted", "smd_weighted"]
@@ -284,9 +284,10 @@ def _km_examples() -> pd.DataFrame:
         cancer = getattr(row, "cancer_type")
         cohort = getattr(row, "cohort")
         ps_model = getattr(row, "ps_model")
+        # NOTE: HR_markerxICI is the interaction-term HR; CI95_marker_ICI_* upstream
+        # are the *marker main-effect* CI (different term) and would mismatch, so we
+        # do not carry them through. run_IPTW_analysis emits no SE for the interaction.
         hr = getattr(row, "HR_markerxICI")
-        ci_low = getattr(row, "CI95_marker_ICI_low", np.nan)
-        ci_high = getattr(row, "CI95_marker_ICI_high", np.nan)
         iptw_fp = os.path.join(BIOMARKER_PATH, f"IPTW_df_{cohort}_{ps_model}.csv.gz")
         if not os.path.exists(iptw_fp):
             print(f"  missing {iptw_fp}")
@@ -313,8 +314,6 @@ def _km_examples() -> pd.DataFrame:
         cur["marker"] = marker
         cur["cancer"] = cancer
         cur["hr"] = hr
-        cur["ci_low"] = ci_low
-        cur["ci_high"] = ci_high
         frames.append(cur.reindex(columns=KM_EXAMPLE_COLUMNS))
     if not frames:
         return pd.DataFrame(columns=KM_EXAMPLE_COLUMNS)

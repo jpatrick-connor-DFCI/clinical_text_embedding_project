@@ -47,7 +47,7 @@ KM_COLUMNS = ["DFCI_MRN", "cluster", "death", "tt_death"]
 SEVERITY_COLUMNS = ["cluster", "mean_met_sites", "rmst_months", "n_patients"]
 SILHOUETTE_COLUMNS = ["k", "silhouette"]
 MET_EVENTS = ["brainM", "boneM", "adrenalM", "liverM", "lungM", "nodeM", "peritonealM"]
-RMST_TAU_MONTHS = 60  # restricted-mean-survival horizon, matches the KM x-range
+RMST_TAU_MONTHS = 120  # 5y past the 60-mo landmark entry requirement; avoids saturation at the entry cap
 SILHOUETTE_K_RANGE = range(2, 9)
 
 

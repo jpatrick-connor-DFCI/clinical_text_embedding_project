@@ -137,9 +137,11 @@ severity = load_figure_data("fig4_cluster_severity.csv")
 # Composition CSVs carry one column per top category with the prefix stripped
 # (e.g. "CANCER_STAGE_IV" -> "IV"), plus a trailing "OTHER" column. Match exact
 # tokens so "IV" doesn't catch "IIV" and "ICI" doesn't catch "ICI_PLUS_CHEMO".
-STAGE_IV_TOKENS = re.compile(r"^(IV|4)[A-D]?$", re.IGNORECASE)
+STAGE_IV_TOKENS = re.compile(r"^(IV|4(\.0+)?)[A-D]?$", re.IGNORECASE)
 ICI_TOKENS = re.compile(
-    r"^(ICI|IMMUNOTHERAPY|PD1|PDL1|PD_?L1|CHECKPOINT(?:_INHIBITOR)?)$",
+    r"^(ICI|IMMUNOTHERAPY|PD1|PDL1|PD_?L1|"
+    r"IMMUNE[ _]CHECKPOINT[ _]INHIBITORS?|"
+    r"CHECKPOINT(?:_INHIBITOR)?)$",
     re.IGNORECASE,
 )
 
@@ -169,7 +171,7 @@ characteristics = [
     ("% Stage IV", "Percentage (%)", stage_iv),
     ("% ICI Treated", "Percentage (%)", ici),
     ("Mean # met sites", "Sites (0-7)", met_sites),
-    ("5-yr RMST", "Months", rmst),
+    ("10-yr RMST", "Months", rmst),
 ]
 
 cluster_ids = sorted({int(k) for _, _, d in characteristics for k in d})

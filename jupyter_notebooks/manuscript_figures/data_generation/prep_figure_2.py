@@ -133,11 +133,12 @@ _STAGE_TOKEN = re.compile(r"^(IV|III|II|I|4|3|2|1)[A-D]?$")
 
 def _normalize_stage(raw) -> str | None:
     """Map a raw stage string to a major stage in {I, II, III, IV}, collapsing
-    substages (e.g. IVA -> IV) and arabic numerals (4 -> IV). Returns None for
-    unknown / in-situ (0) / unstageable values so they can be dropped."""
+    substages (e.g. IVA -> IV), arabic numerals (4 -> IV), and float repr (2.0 -> II).
+    Returns None for unknown / in-situ (0) / unstageable values so they can be dropped."""
     if pd.isna(raw):
         return None
     s = str(raw).upper().strip().replace("STAGE", "").strip()
+    s = re.sub(r"\.0+$", "", s)  # the source pickle stores stages as floats (e.g. 2.0)
     m = _STAGE_TOKEN.match(s)
     if not m:
         return None
