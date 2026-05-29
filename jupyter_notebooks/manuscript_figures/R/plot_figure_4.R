@@ -43,9 +43,16 @@ month_to_num <- function(x) {
 
 logrank_p <- function(df, time_col, event_col, group_col, start_col = NULL) {
   if (nrow(df) == 0) return(NA_real_)
-  rhs <- if (is.null(start_col)) sprintf("Surv(%s, %s)", time_col, event_col)
-         else sprintf("Surv(%s, %s, %s)", start_col, time_col, event_col)
-  f <- as.formula(paste(rhs, "~", group_col))
+  # survdiff() does NOT support left-truncated Surv(start, stop, event); fall back
+  # to the coxph score test, which is asymptotically equivalent to log-rank.
+  if (!is.null(start_col)) {
+    f <- as.formula(sprintf("Surv(%s, %s, %s) ~ %s",
+                            start_col, time_col, event_col, group_col))
+    cx <- tryCatch(survival::coxph(f, data = df), error = function(e) NULL)
+    if (is.null(cx)) return(NA_real_)
+    return(unname(summary(cx)$sctest["pvalue"]))
+  }
+  f <- as.formula(sprintf("Surv(%s, %s) ~ %s", time_col, event_col, group_col))
   sd <- tryCatch(survival::survdiff(f, data = df), error = function(e) NULL)
   if (is.null(sd)) return(NA_real_)
   if (!is.null(sd$pvalue)) return(sd$pvalue)
@@ -74,9 +81,22 @@ build_fig4a <- function() {
   yticks <- bounds$mid
   ylabs  <- cluster_label(bounds$cluster, bounds$n)
 
+  # The prep z-scores each month column across the cohort (StandardScaler), so
+  # `risk` is a signed Z-score in roughly [-3, 3]. A diverging palette centered
+  # at 0 makes "above-cohort-average" vs "below-cohort-average" pop within each
+  # month — under a sequential scale on raw values the cluster structure was
+  # washed out by the cohort-wide mean trend toward event time.
+  Z_LIMIT <- 2.5
   ggplot(long, aes(month, row_idx, fill = risk)) +
     geom_raster() +
-    scale_fill_viridis_c(option = "A", name = "Std.\nmortality\nrisk", na.value = "grey90") +
+    scale_fill_distiller(
+      palette  = "RdBu", direction = -1,
+      limits   = c(-Z_LIMIT, Z_LIMIT), oob = scales::squish,
+      breaks   = c(-Z_LIMIT, 0, Z_LIMIT),
+      labels   = c(sprintf("≤ -%.1f", Z_LIMIT), "0", sprintf("≥ +%.1f", Z_LIMIT)),
+      name     = "Mortality risk\n(z vs cohort,\nper month)",
+      na.value = "grey90"
+    ) +
     scale_x_continuous(expand = c(0, 0), breaks = pretty(long$month, n = 6)) +
     scale_y_reverse(expand = c(0, 0), breaks = yticks, labels = ylabs) +
     geom_hline(data = bounds[-nrow(bounds), ],
@@ -98,29 +118,35 @@ build_fig4b <- function() {
   km <- load_figure_data("fig4_km_data.csv")
   if (nrow(km) == 0) return(placeholder_panel("fig4_km_data.csv empty"))
   km <- km %>%
-    mutate(months  = tt_death / 30.44,
-           death   = as.integer(death),
-           cluster = factor(cluster)) %>%
-    filter(months > 60)
+    mutate(months     = tt_death / 30.44,
+           death      = as.integer(death),
+           cluster_id = suppressWarnings(as.integer(as.character(cluster)))) %>%
+    filter(months > 60, !is.na(cluster_id))
   if (nrow(km) == 0) return(placeholder_panel("no patients survive to month 60"))
-  km <- km %>% mutate(entry = 60)
+  km$entry <- 60
 
-  ns <- km %>% group_by(cluster) %>% summarise(n = n(), .groups = "drop")
-  cluster_levels <- as.character(ns$cluster)
-  km <- km %>% mutate(strat_lbl = cluster_label(cluster, ns$n[match(cluster, ns$cluster)]),
-                      strat_lbl = factor(strat_lbl,
-                                         levels = cluster_label(ns$cluster, ns$n)))
-  fit <- survfit2(Surv(entry, months, death) ~ strat_lbl, data = km)
+  # Stable cluster-id → (label, color) map; we stratify on the SHORT id to avoid
+  # any quirks of strata-name handling on long labels with parens/equals.
+  cluster_ids  <- sort(unique(km$cluster_id))
+  n_by_id      <- as.integer(table(km$cluster_id)[as.character(cluster_ids)])
+  labels_by_id <- setNames(cluster_label(cluster_ids, n_by_id),
+                           as.character(cluster_ids))
+  colors_by_id <- setNames(CLUSTER_COLORS[seq_along(cluster_ids)],
+                           as.character(cluster_ids))
+
+  km <- km %>% mutate(strat = as.character(cluster_id))
+  fit <- survfit2(Surv(entry, months, death) ~ strat, data = km)
   td <- ggsurvfit::tidy_survfit(fit) %>%
-    mutate(stratum = sub("^[^=]+=", "", as.character(strata)))
+    mutate(strat_id = sub("^[^=]+=", "", as.character(strata)),
+           label    = factor(labels_by_id[strat_id],
+                             levels = unname(labels_by_id)))
 
-  lp <- logrank_p(km, "months", "death", "cluster", start_col = "entry")
-  pal <- setNames(CLUSTER_COLORS[seq_along(levels(km$strat_lbl))],
-                  levels(km$strat_lbl))
+  pal <- setNames(unname(colors_by_id), unname(labels_by_id))
+  lp  <- logrank_p(km, "months", "death", "strat", start_col = "entry")
 
-  ggplot(td, aes(time, estimate, color = stratum)) +
+  ggplot(td, aes(time, estimate, color = label)) +
     geom_step(linewidth = 0.9) +
-    scale_color_manual(values = pal, name = NULL) +
+    scale_color_manual(values = pal, name = NULL, drop = FALSE) +
     coord_cartesian(xlim = c(60, 120)) +
     annotate("text", x = 62, y = 0.05,
              label = sprintf("Log-rank p=%.1e", lp),
@@ -137,45 +163,33 @@ build_fig4b <- function() {
 # ============================================================================
 # fig4c: disease-severity small multiples
 # ============================================================================
-STAGE_IV_PATTERN <- "^(IV|4(\\.0+)?)[A-D]?$"
-ICI_PATTERN <- paste0("^(ICI|IMMUNOTHERAPY|PD1|PDL1|PD_?L1|",
-                      "IMMUNE[ _]CHECKPOINT[ _]INHIBITORS?|",
-                      "CHECKPOINT(?:_INHIBITOR)?)$")
-
-share_by_token <- function(comp, pattern) {
-  if (nrow(comp) == 0) return(setNames(numeric(0), character(0)))
-  cols <- setdiff(names(comp), c("cluster", "OTHER"))
-  match_cols <- cols[grepl(pattern, cols, ignore.case = TRUE, perl = TRUE)]
-  if (length(match_cols) == 0) return(setNames(numeric(0), character(0)))
-  idx <- comp$cluster
-  val <- rowSums(comp[, match_cols, drop = FALSE]) * 100
-  setNames(val, as.character(idx))
-}
-
+# All four metrics now come from fig4_cluster_severity.csv. % Stage IV and
+# % ICI Treated used to be derived by token-matching the top-N composition
+# CSVs, but those top-N filters silently dropped ICI from the panel and tied
+# the panel to fragile column-name regexes. The prep computes both directly
+# from the raw stage pickle and the per-patient ever-on-ICI flag now.
 build_fig4c <- function() {
-  stage    <- load_figure_data("fig4_cluster_composition_stage.csv")
-  treat    <- load_figure_data("fig4_cluster_composition_treatment.csv")
   severity <- load_figure_data("fig4_cluster_severity.csv")
+  if (nrow(severity) == 0) return(placeholder_panel("fig4_cluster_severity.csv empty"))
+  clusters <- sort(unique(severity$cluster))
+  if (length(clusters) == 0) return(placeholder_panel("severity CSV has no clusters"))
 
-  stage_iv <- share_by_token(stage, STAGE_IV_PATTERN)
-  ici      <- share_by_token(treat, ICI_PATTERN)
-  met      <- if ("mean_met_sites" %in% names(severity))
-                setNames(severity$mean_met_sites, as.character(severity$cluster)) else NULL
-  rmst     <- if ("rmst_months" %in% names(severity))
-                setNames(severity$rmst_months, as.character(severity$cluster)) else NULL
-
-  clusters <- sort(unique(as.integer(c(names(stage_iv), names(ici), names(met), names(rmst)))))
-  if (length(clusters) == 0) return(placeholder_panel("cluster characteristic data empty"))
+  by_id <- function(col) {
+    if (!col %in% names(severity)) return(NULL)
+    v <- severity[[col]]
+    if (all(is.na(v))) return(NULL)
+    setNames(v, as.character(severity$cluster))
+  }
 
   characteristics <- list(
-    list(title = "% Stage IV",        units = "Percentage (%)", vals = stage_iv, is_pct = TRUE),
-    list(title = "% ICI Treated",     units = "Percentage (%)", vals = ici,      is_pct = TRUE),
-    list(title = "Mean # met sites",  units = "Sites (0-7)",    vals = met,      is_pct = FALSE),
-    list(title = "10-yr RMST",        units = "Months",         vals = rmst,     is_pct = FALSE)
+    list(title = "% Stage IV",       units = "Percentage (%)", vals = by_id("pct_stage_iv"),   is_pct = TRUE),
+    list(title = "% ICI Treated",    units = "Percentage (%)", vals = by_id("pct_ici"),        is_pct = TRUE),
+    list(title = "Mean # met sites", units = "Sites (0-7)",    vals = by_id("mean_met_sites"), is_pct = FALSE),
+    list(title = "10-yr RMST",       units = "Months",         vals = by_id("rmst_months"),    is_pct = FALSE)
   )
 
   panel_for <- function(spec) {
-    if (length(spec$vals) == 0) return(placeholder_panel(paste("no data:", spec$title)))
+    if (is.null(spec$vals)) return(placeholder_panel(paste("no data:", spec$title)))
     df <- tibble::tibble(cluster = clusters,
                          value = unname(spec$vals[as.character(clusters)]))
     p <- ggplot(df, aes(factor(cluster), value, fill = factor(cluster))) +

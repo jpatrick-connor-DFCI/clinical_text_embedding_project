@@ -29,10 +29,15 @@ source(file.path(script_dir, "figure_utils.R"))
 
 
 # ---------------- helpers local to Fig 1 ----------------
+# Accepts either Roman (post-_normalize_stage in prep_figure_1.py) or arabic
+# (legacy one-hot path); collapses substages and float repr to a major stage.
 stage_label <- function(x) {
   x_str   <- as.character(x)
-  x_clean <- sub("\\.0+$", "", x_str)
-  roman   <- c("1" = "I", "2" = "II", "3" = "III", "4" = "IV")
+  x_clean <- sub("\\.0+$", "", toupper(x_str))
+  x_clean <- sub("^STAGE\\s*", "", x_clean)
+  x_clean <- sub("[A-D]$", "", x_clean)                       # IIIA -> III
+  roman   <- c("1" = "I", "2" = "II", "3" = "III", "4" = "IV",
+               "I" = "I", "II" = "II", "III" = "III", "IV" = "IV")
   ifelse(x_clean %in% names(roman), paste("Stage", roman[x_clean]), x_str)
 }
 

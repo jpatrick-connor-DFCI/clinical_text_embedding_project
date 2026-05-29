@@ -13,6 +13,8 @@ Writes to FIGURE_DATA_DIR (defined in _figure_utils.py):
 from __future__ import annotations
 
 import os
+import pickle
+import re
 import sys
 from pathlib import Path
 
@@ -32,6 +34,52 @@ from slurm_array_utils import _get_common_feature_mrns
 
 SCHEME_FOR_EMBED = "icd3_post"  # widest cohort
 ENDPOINT_COUNT_COLUMNS = ["scheme", "n_endpoints"]
+
+# Raw, complete stage labels — `cancer_stage_df.csv.gz` is produced with
+# pd.get_dummies(drop_first=True) (generate_all_non_text_covariates.py:39) which
+# silently drops Stage I from the one-hot. Read the pickle directly to recover it.
+# Same pattern as prep_figure_2._major_stage_labels().
+STAGE_PATH = (
+    "/data/gusev/PROFILE/CLINICAL/OncDRS/DERIVED_FROM_CLINICAL_TEXTS_2024_03/"
+    "derived_files/cancer_stage/dfci_cancer_mrn_to_derived_cancer_stage.pkl"
+)
+STAGE_ORDER = ["I", "II", "III", "IV"]
+_STAGE_TOKEN = re.compile(r"^(IV|III|II|I|4|3|2|1)[A-D]?$")
+
+
+def _normalize_stage(raw) -> str | None:
+    if pd.isna(raw):
+        return None
+    s = str(raw).upper().strip().replace("STAGE", "").strip()
+    s = re.sub(r"\.0+$", "", s)
+    m = _STAGE_TOKEN.match(s)
+    if not m:
+        return None
+    arabic_to_roman = {"1": "I", "2": "II", "3": "III", "4": "IV"}
+    token = m.group(1)
+    return arabic_to_roman.get(token, token)
+
+
+def _stage_counts_from_pickle(cohort_mrns: set[int]) -> pd.DataFrame:
+    """Major-stage breakdown (I/II/III/IV) for the analysis cohort."""
+    try:
+        with open(STAGE_PATH, "rb") as f:
+            mrn_to_stage = pickle.load(f)
+    except (FileNotFoundError, OSError, pickle.UnpicklingError) as e:
+        print(f"  stage pickle unavailable ({type(e).__name__}); falling back to one-hot CSV")
+        oh = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_stage_df.csv.gz"))
+        oh = oh[oh["DFCI_MRN"].isin(cohort_mrns)]
+        stage_cols = [c for c in oh.columns if c.startswith("CANCER_STAGE_")]
+        present = [_normalize_stage(c.replace("CANCER_STAGE_", "")) for c in stage_cols]
+        reference = next((s for s in STAGE_ORDER if s not in present), None)
+        active = oh[stage_cols].to_numpy()
+        labels = [reference if row.max() <= 0 else present[int(row.argmax())]
+                  for row in active]
+    else:
+        labels = [_normalize_stage(v) for k, v in mrn_to_stage.items() if k in cohort_mrns]
+    s = pd.Series([x for x in labels if x in STAGE_ORDER]).value_counts()
+    s = s.reindex(STAGE_ORDER, fill_value=0)
+    return pd.DataFrame({"category": s.index.astype(str), "n": s.values.astype(int)})
 
 
 def _cohort_counts(emb_df: pd.DataFrame, cancer_type_df: pd.DataFrame) -> pd.DataFrame:
@@ -105,22 +153,20 @@ def _endpoint_counts() -> pd.DataFrame:
 def main() -> None:
     emb_df = pd.read_csv(os.path.join(SURV_PATH, EMBEDDING_FILES[SCHEME_FOR_EMBED]))
     cancer_type_df = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_type_df.csv.gz"))
-    stage_df = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_stage_df.csv.gz"))
     treatment_df = pd.read_csv(os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv.gz"))
     notes_meta = pd.read_csv(os.path.join(NOTES_PATH, "full_VTE_embeddings_metadata.csv.gz"))
 
     type_cols = [c for c in cancer_type_df.columns if c.startswith("CANCER_TYPE_")]
-    stage_cols = [c for c in stage_df.columns if c.startswith("CANCER_STAGE_")]
     tx_cols = [c for c in treatment_df.columns if c.startswith("PX_on_")]
     tx1 = treatment_df.loc[treatment_df["treatment_line"] == 1]
+    cohort_mrns = set(emb_df["DFCI_MRN"])
 
     save_figure_data(_cohort_counts(emb_df, cancer_type_df), "fig1_cohort_counts.csv")
     save_figure_data(_endpoint_counts(), "fig1_endpoint_counts.csv")
     save_figure_data(_note_volume(notes_meta), "fig1_note_volume.csv")
     save_figure_data(_composition_counts(cancer_type_df, type_cols, "CANCER_TYPE_", 15),
                      "fig1_cancer_type_counts.csv")
-    save_figure_data(_composition_counts(stage_df, stage_cols, "CANCER_STAGE_", 15),
-                     "fig1_stage_counts.csv")
+    save_figure_data(_stage_counts_from_pickle(cohort_mrns), "fig1_stage_counts.csv")
     save_figure_data(_composition_counts(tx1, tx_cols, "PX_on_", 15),
                      "fig1_treatment_counts.csv")
     save_figure_data(_notes_per_patient(notes_meta), "fig1_notes_per_patient.csv")
