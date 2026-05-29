@@ -60,10 +60,10 @@ build_fig2a <- function(metrics) {
   top <- d %>% slice_max(delta, n = 5)
 
   ggplot(d, aes(base_cindex, text_cindex, color = scheme, shape = scheme)) +
-    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "#666") +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "#666666") +
     geom_point(size = 1.8, alpha = 0.65) +
     ggrepel::geom_text_repel(data = top, aes(label = stringr::str_trunc(event, 22)),
-                             size = 2.2, color = "#222", min.segment.length = 0.1,
+                             size = 2.2, color = "#222222", min.segment.length = 0.1,
                              max.overlaps = 12) +
     scale_color_manual(values = SCHEME_COLORS,
                        labels = SCHEME_LABELS[names(SCHEME_COLORS)],
@@ -99,12 +99,12 @@ build_fig2b <- function(metrics) {
   ymax <- max(d$delta, na.rm = TRUE) * 1.20
 
   ggplot(d, aes(x = scheme, y = delta, fill = scheme)) +
-    geom_violin(alpha = 0.45, color = "#444", linewidth = 0.4, scale = "width") +
+    geom_violin(alpha = 0.45, color = "#444444", linewidth = 0.4, scale = "width") +
     geom_jitter(width = 0.18, size = 0.7, alpha = 0.35,
                 aes(color = scheme), show.legend = FALSE) +
-    geom_hline(yintercept = 0, color = "#333", linetype = "dashed") +
+    geom_hline(yintercept = 0, color = "#333333", linetype = "dashed") +
     geom_text(data = ann, aes(x = scheme, y = ymax, label = label),
-              inherit.aes = FALSE, vjust = 1, size = 2.5, color = "#222") +
+              inherit.aes = FALSE, vjust = 1, size = 2.5, color = "#222222") +
     scale_fill_manual(values = SCHEME_COLORS, guide = "none") +
     scale_color_manual(values = SCHEME_COLORS, guide = "none") +
     scale_x_discrete(labels = SCHEME_LABELS) +
@@ -113,7 +113,7 @@ build_fig2b <- function(metrics) {
          caption = "Stars: Wilcoxon signed-rank vs Δ=0  (*<.05, **<.01, ***<.001, ****<1e-4)") +
     theme_manuscript() +
     theme(plot.caption = element_text(size = 6.5, hjust = 1,
-                                      face = "italic", color = "#666"),
+                                      face = "italic", color = "#666666"),
           panel.grid.major.y = element_line(color = "grey90"))
 }
 
@@ -186,7 +186,7 @@ build_fig2d <- function() {
     coord_cartesian(xlim = c(0, 60), ylim = c(0, 1.03)) +
     annotate("text", x = 1, y = 0.06,
              label = sprintf("text logrank p=%.1e\nbase logrank p=%.1e", lr_t, lr_b),
-             hjust = 0, vjust = 0, size = 2.6, fontface = "italic", color = "#444") +
+             hjust = 0, vjust = 0, size = 2.6, fontface = "italic", color = "#444444") +
     labs(x = "Months from first treatment", y = "Overall survival",
          title = "Mortality by Risk-Score Tertile\n(text solid, base dashed)") +
     theme_manuscript() +
@@ -231,7 +231,7 @@ build_fig2e <- function() {
       coord_cartesian(xlim = c(0, 60), ylim = c(0, 1.03)) +
       annotate("text", x = 1, y = 0.06, label = ann,
                hjust = 0, vjust = 0, size = 2.6,
-               fontface = "italic", color = "#444") +
+               fontface = "italic", color = "#444444") +
       labs(x = "Months from first treatment", y = "Overall survival",
            title = title_text) +
       theme_manuscript() +

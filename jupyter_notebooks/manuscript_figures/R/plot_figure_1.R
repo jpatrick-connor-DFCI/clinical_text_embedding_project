@@ -81,7 +81,7 @@ build_fig1a <- function() {
     geom_point(data = dots, aes(x = x, y = y, color = g),
                size = 1.3, alpha = 0.85, show.legend = FALSE) +
     annotate("text", x = 0.41, y = 0.36, label = "768-dim patient embeddings",
-             size = 2.8, fontface = "italic", color = "#444") +
+             size = 2.8, fontface = "italic", color = "#444444") +
     scale_color_manual(values = unname(MODALITY_COLORS)) +
     coord_cartesian(xlim = c(0, 1), ylim = c(0, 1), expand = FALSE) +
     theme_void()
@@ -129,7 +129,7 @@ build_fig1c <- function() {
   stars  <- p_to_stars(kw_p)
 
   ggplot(d, aes(x = n_notes, y = note_type, fill = note_type)) +
-    geom_boxplot(outlier.shape = NA, width = 0.55, color = "#333", alpha = 0.7) +
+    geom_boxplot(outlier.shape = NA, width = 0.55, color = "#333333", alpha = 0.7) +
     scale_x_log10(labels = scales::label_log()) +
     scale_fill_manual(values = unname(grDevices::hcl.colors(length(ord), "Set 2")),
                       guide = "none") +
@@ -137,7 +137,7 @@ build_fig1c <- function() {
              label = sprintf("Kruskal-Wallis p=%.1e  %s",
                              ifelse(is.na(kw_p), NA, kw_p), stars),
              hjust = 1.05, vjust = -0.5, size = 2.7, fontface = "italic",
-             color = "#444") +
+             color = "#444444") +
     labs(x = "Notes per patient (log; among patients with ≥1 of type)",
          y = NULL, title = "Notes per Patient by Type") +
     theme_manuscript() +

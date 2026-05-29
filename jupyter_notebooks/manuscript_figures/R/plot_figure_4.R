@@ -31,7 +31,9 @@ CLUSTER_NAMES <- c("Stable Low", "Intermediate", "Stable High",
                    "Rapidly Increasing", "Rebounding")
 
 cluster_label <- function(k, n = NA_integer_) {
-  nm <- CLUSTER_NAMES[pmin(as.integer(k) + 1L, length(CLUSTER_NAMES))]
+  # Coerce via character so factors return their underlying integer (not level codes).
+  k_int <- suppressWarnings(as.integer(as.character(k)))
+  nm <- CLUSTER_NAMES[pmin(k_int + 1L, length(CLUSTER_NAMES))]
   if (any(!is.na(n))) sprintf("%s (n=%s)", nm, scales::comma(n)) else nm
 }
 
@@ -122,7 +124,7 @@ build_fig4b <- function() {
     coord_cartesian(xlim = c(60, 120)) +
     annotate("text", x = 62, y = 0.05,
              label = sprintf("Log-rank p=%.1e", lp),
-             hjust = 0, size = 2.7, fontface = "italic", color = "#444") +
+             hjust = 0, size = 2.7, fontface = "italic", color = "#444444") +
     labs(x = "Months from first treatment",
          y = "Overall Survival Probability (conditional)",
          title = "KM Overall Survival by Cluster\n(conditional on survival to month 60)") +

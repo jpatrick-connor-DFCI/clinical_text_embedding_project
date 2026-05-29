@@ -76,7 +76,7 @@ build_fig5a <- function() {
   if (nzchar(cohort_sub)) ttl <- paste0(ttl, "\n", cohort_sub)
 
   main <- ggplot(roc_df, aes(fpr, tpr, color = model)) +
-    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "#777") +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "#777777") +
     geom_step(linewidth = 1.1) +
     scale_color_manual(values = model_colors,
                        breaks = legend_labels$model,
@@ -84,7 +84,7 @@ build_fig5a <- function() {
     coord_cartesian(xlim = c(0, 1), ylim = c(0, 1.02)) +
     annotate("text", x = 0.03, y = 0.1,
              label = "AUC from held-out CV predictions",
-             hjust = 0, vjust = 0, size = 2.5, fontface = "italic", color = "#555") +
+             hjust = 0, vjust = 0, size = 2.5, fontface = "italic", color = "#555555") +
     labs(x = "False Positive Rate", y = "True Positive Rate", title = ttl) +
     theme_manuscript() +
     theme(legend.position = c(0.65, 0.18),
@@ -141,13 +141,13 @@ build_fig5b <- function() {
   ggplot(d) +
     geom_segment(aes(x = smd_unweighted, xend = smd_weighted,
                      y = covariate_lbl, yend = covariate_lbl),
-                 color = "#CCC", linewidth = 0.6) +
+                 color = "#CCCCCC", linewidth = 0.6) +
     geom_point(aes(x = smd_unweighted, y = covariate_lbl, color = "Unweighted"),
                size = 2.2) +
     geom_point(aes(x = smd_weighted, y = covariate_lbl, color = "IPTW-weighted"),
                size = 2.2) +
-    geom_vline(xintercept = 0, color = "#333", linewidth = 0.4) +
-    geom_vline(xintercept = c(-0.1, 0.1), linetype = "dotted", color = "#999") +
+    geom_vline(xintercept = 0, color = "#333333", linewidth = 0.4) +
+    geom_vline(xintercept = c(-0.1, 0.1), linetype = "dotted", color = "#999999") +
     scale_color_manual(values = c("Unweighted" = HARM_COLOR,
                                    "IPTW-weighted" = TEAL),
                        breaks = c("Unweighted", "IPTW-weighted"),
@@ -239,9 +239,9 @@ build_fig5c <- function() {
          subtitle = subtitle_txt,
          caption = defn) +
     theme_manuscript() +
-    theme(plot.subtitle = element_text(size = 7, color = "#666"),
+    theme(plot.subtitle = element_text(size = 7, color = "#666666"),
           plot.caption = element_text(size = 6.5, hjust = 0.5,
-                                      color = "#555"),
+                                      color = "#555555"),
           axis.text.x = element_text(size = 7),
           axis.text.y = element_text(face = "bold", size = 8),
           strip.text = element_text(face = "bold", size = 9),

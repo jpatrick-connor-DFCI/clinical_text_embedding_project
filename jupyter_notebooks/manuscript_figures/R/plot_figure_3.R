@@ -123,7 +123,7 @@ build_fig3c <- function() {
     geom_col(width = 0.62, color = "white") +
     geom_errorbarh(aes(xmin = mean_rank - sem_rank,
                        xmax = mean_rank + sem_rank),
-                   height = 0.25, color = "#222", linewidth = 0.5) +
+                   height = 0.25, color = "#222222", linewidth = 0.5) +
     geom_text(aes(label = sprintf("%.2f", mean_rank),
                   x = mean_rank + sem_rank + 0.05),
               hjust = 0, size = 2.7) +
@@ -186,15 +186,15 @@ build_fig3d <- function(betas) {
 
   ymax <- max(plot_df$z, na.rm = TRUE)
   ggplot(plot_df, aes(modality, z, fill = modality)) +
-    geom_violin(scale = "width", alpha = 0.45, color = "#444", linewidth = 0.4) +
+    geom_violin(scale = "width", alpha = 0.45, color = "#444444", linewidth = 0.4) +
     geom_jitter(aes(color = modality), width = 0.18, size = 0.7, alpha = 0.30,
                 show.legend = FALSE) +
-    geom_hline(yintercept = 0, color = "#333", linetype = "dashed") +
-    geom_hline(yintercept = c(-1.96, 1.96), color = "#999",
+    geom_hline(yintercept = 0, color = "#333333", linetype = "dashed") +
+    geom_hline(yintercept = c(-1.96, 1.96), color = "#999999",
                linetype = "dotted") +
     geom_text(data = ann, aes(modality, ymax * 1.04, label = stars),
               inherit.aes = FALSE,
-              size = 3.2, fontface = "bold", color = "#222") +
+              size = 3.2, fontface = "bold", color = "#222222") +
     scale_fill_manual(values = MODALITY_COLORS, guide = "none") +
     scale_color_manual(values = MODALITY_COLORS, guide = "none") +
     scale_x_discrete(labels = MODALITY_DISPLAY) +
@@ -207,7 +207,7 @@ build_fig3d <- function(betas) {
     theme_manuscript() +
     theme(axis.text.x = element_text(angle = 20, hjust = 1),
           plot.caption = element_text(size = 6.5, hjust = 0,
-                                      face = "italic", color = "#777"),
+                                      face = "italic", color = "#777777"),
           panel.grid.major.y = element_line(color = "grey90"))
 }
 

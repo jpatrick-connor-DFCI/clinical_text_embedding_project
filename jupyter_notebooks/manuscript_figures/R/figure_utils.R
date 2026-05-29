@@ -124,7 +124,7 @@ save_figure <- function(plot, stem, width = 12.0, height = 10.0) {
 
 placeholder_panel <- function(msg) {
   ggplot() +
-    annotate("text", x = 0.5, y = 0.5, label = msg, color = "#777",
+    annotate("text", x = 0.5, y = 0.5, label = msg, color = "#777777",
              hjust = 0.5, vjust = 0.5, size = 3) +
     theme_void() +
     xlim(0, 1) + ylim(0, 1)
