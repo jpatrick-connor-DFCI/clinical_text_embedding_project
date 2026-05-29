@@ -9,7 +9,22 @@ suppressPackageStartupMessages({
   library(forcats); library(scales); library(ggsignif); library(cowplot)
 })
 
-script_dir <- dirname(normalizePath(sys.frame(1)$ofile))
+script_dir <- local({
+  # Notebook path: render_figures.ipynb sets R_DIR in globalenv before sys.source-ing us.
+  if (exists("R_DIR", envir = globalenv(), inherits = FALSE)) {
+    return(get("R_DIR", envir = globalenv()))
+  }
+  # Rscript path: --file=... on the command line.
+  args <- commandArgs(trailingOnly = FALSE)
+  fa <- sub("^--file=", "", grep("^--file=", args, value = TRUE))
+  if (length(fa) && nzchar(fa[1])) return(dirname(normalizePath(fa[1])))
+  # source() path: ofile lives on the call stack.
+  for (n in seq_len(sys.nframe())) {
+    ofile <- sys.frame(n)$ofile
+    if (!is.null(ofile) && nzchar(ofile)) return(dirname(normalizePath(ofile)))
+  }
+  stop("Could not determine script directory (set R_DIR in globalenv, run via Rscript, or source() directly)")
+})
 source(file.path(script_dir, "figure_utils.R"))
 
 
