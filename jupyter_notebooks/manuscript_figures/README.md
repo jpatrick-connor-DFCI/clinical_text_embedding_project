@@ -1,29 +1,38 @@
 # Manuscript figures
 
-Five-figure manuscript layout (cohort → text vs base → modality comparison → mortality trajectories → ICI biomarker discovery). Each panel is a standalone PNG, then `compose_target_figures.py` assembles the target full figures.
+Five-figure manuscript layout (cohort → text vs base → modality comparison → mortality trajectories → ICI biomarker discovery) plus an appendix (Fig S1, silhouette). **Data generation is Python; figure rendering is R (`ggplot2 + patchwork`)**. Each R script builds every panel as a ggplot object and composes the final figure in-memory — there is no separate compose script.
 
 ## Layout
 
 ```
 manuscript_figures/
-├── _figure_utils.py              # paths, palettes, save_panel, load/save_figure_data
-├── data_generation/
-│   ├── prep_figure_1.py          # cohort counts, endpoint counts, note volume, composition
-│   ├── prep_figure_2.py          # full-cohort C-index, cancer/endpoint heatmap, KM examples
-│   ├── prep_figure_3.py          # modality C-index, joint betas, risk-score corr, univ-vs-joint AUC
-│   ├── prep_figure_4.py          # trajectory clustering, cluster means, composition, KM merge
-│   └── prep_figure_5.py          # PS predictions, robust hits, KM examples, top-hit metadata
-├── plot_figure_1_cohort.py       # load + plot only; writes PNG panels
-├── plot_figure_2_text_vs_base.py
-├── plot_figure_3_modality_comparison.py
-├── plot_figure_4_trajectories.py
-├── plot_figure_5_biomarkers.py
-├── compose_target_figures.py     # assemble current panel PNGs into old-style full figures
-├── run_all_figures.ipynb         # one notebook to call prep + plot scripts
-└── figures/                      # panel PNGs + target_figures/ composites
+├── _figure_utils.py              # shared module for Python preps
+├── data_generation/              # Python — compute tier, writes CSVs to figure_data/
+│   ├── prep_figure_1.py          # cohort, endpoint, notes/patient, stage/treatment counts
+│   ├── prep_figure_2.py          # full-cohort C-index, cancer×endpoint heatmap, KMs, stage-vs-risk
+│   ├── prep_figure_3.py          # modality C-index, avg-rank, joint betas, risk-score corr
+│   ├── prep_figure_4.py          # trajectory clustering, severity (mean met, RMST), silhouette
+│   └── prep_figure_5.py          # PS predictions, robust hits, KM examples, love-plot SMDs
+├── R/                            # R — rendering tier (ggplot2 + patchwork)
+│   ├── figure_utils.R            # paths, palettes, theme, IO, stats helpers, KM helper
+│   ├── install_packages.R        # one-time CRAN bootstrap
+│   ├── plot_figure_1.R           # 6 panels → figure1_schematic.{png,pdf}
+│   ├── plot_figure_2.R           # 5 panels → figure2_text_results.{png,pdf}
+│   ├── plot_figure_3.R           # 4 panels → figure3_feature_comps.{png,pdf}
+│   ├── plot_figure_4.R           # 3 panels + figS1 → figure4_trajectories.{png,pdf} + figureS1_*
+│   └── plot_figure_5.R           # 4 panels → figure5_biomarkers.{png,pdf}
+├── generate_figure_data.ipynb    # Python-kernel notebook — runs all preps
+├── render_figures.ipynb          # R-kernel notebook — sources all R plot scripts
+└── figures/                      # panel PNGs + target_figures/ composites (output dir)
 ```
 
 ## Workflow
+
+0. **One-time R bootstrap** (any host with R):
+
+   ```bash
+   Rscript jupyter_notebooks/manuscript_figures/R/install_packages.R
+   ```
 
 1. **Compute** (cluster, reads from `DATA_PATH`, writes `SURV_PATH/results/figure_data/`):
 
@@ -33,29 +42,31 @@ manuscript_figures/
    done
    ```
 
-2. **Plot** (anywhere `figure_data/` is reachable):
+2. **Render** (anywhere `figure_data/` is reachable; honors the `CLINICAL_FIGURES_OUT`
+   environment variable for the output directory):
 
    ```bash
    for n in 1 2 3 4 5; do
-     python jupyter_notebooks/manuscript_figures/plot_figure_${n}_*.py
+     Rscript jupyter_notebooks/manuscript_figures/R/plot_figure_${n}.R
    done
    ```
 
-   PNGs land in `jupyter_notebooks/manuscript_figures/figures/`.
+   Each R script emits one composite (`figureN_*.png` + `.pdf`) into
+   `$CLINICAL_FIGURES_OUT/target_figures/`, plus individual panel PNGs (`figNx.png`) in
+   `$CLINICAL_FIGURES_OUT/` for inspection. Fig 4's script also emits the appendix
+   `figureS1_cluster_silhouette.{png,pdf}`.
 
-3. **Compose target figures** (uses the old full-figure layouts from the prior
-   `python_scripts/figure_generation/` workflow, but only reads the current panel PNGs):
+3. **Notebook orchestration** (two kernels, run in order):
 
-   ```bash
-   python jupyter_notebooks/manuscript_figures/compose_target_figures.py
-   ```
+   1. Open [`generate_figure_data.ipynb`](generate_figure_data.ipynb) — **Python kernel** — and
+      run all cells. It calls the five `prep_figure_*.py` scripts via the active kernel's
+      interpreter (`sys.executable`).
+   2. Open [`render_figures.ipynb`](render_figures.ipynb) — **R kernel** (`IRkernel`) — and
+      run all cells. It `sys.source()`s each `R/plot_figure_N.R` in its own environment so
+      per-script ggplot objects don't leak between scripts.
 
-   Full PNG/PDF figures land in
-   `jupyter_notebooks/manuscript_figures/figures/target_figures/`.
-
-4. **Notebook orchestration**: open `run_all_figures.ipynb` and run all cells. It calls
-   every prep and plotting script with the active kernel Python (`sys.executable`), so
-   it uses the same conda environment as the notebook kernel rather than shell `python`.
+   The two notebooks are deliberately split so each runs in its native kernel — no subprocess
+   bridge between Python and R.
 
 ## Key design decisions
 
@@ -76,6 +87,7 @@ manuscript_figures/
 - **Average modality rank (Fig 3C).** Panel C ranks modalities per endpoint by c-index (1 = best) and averages the ranks per modality across the same complete-case endpoints.
 - **Modality risk-score correlation (Fig 3B).** Panel B is a correlation heatmap of the per-modality held-out risk scores (`fig3_risk_score_corr.csv`, death endpoint) — text is largely orthogonal to genomics/clinical modalities, i.e. it adds independent signal.
 - **Standardized coefficients (Fig 3D).** Panel D plots the signed Wald z (β/SE) from the joint Cox fit, not raw log-HR — scale-free and stable (no unpenalized blow-ups, no penalized shrinkage), with ±1.96 reference lines and a display-only Tukey 1.5×IQR trim. Shared `fig3_joint_betas.csv` is untouched.
+- **Significance stars on distribution panels.** GraphPad convention (`*` <.05, `**` <.01, `***` <.001, `****` <1e-4, `ns` otherwise). Fig 2B uses Wilcoxon signed-rank vs Δ=0 per scheme; Fig 3D uses Wilcoxon signed-rank vs z=0 per modality; Fig 1C uses an omnibus Kruskal-Wallis across note types. Tests live in the plot scripts (light compute, no new CSVs).
 - **Disease-severity characteristics (Fig 4C).** Panel C is a 1×4 small-multiples row (% Stage IV, % ICI treated, mean # metastatic sites, **10-yr RMST** in months) reading `fig4_cluster_severity.csv`. RMST (`restricted_mean_survival_time`, **τ=120 mo** = 5 y past the 60-mo landmark entry requirement, so RMST does not saturate at the entry cap). Stage and ICI tokens accept float repr (`4.0`) and the long form `Immune Checkpoint Inhibitors`.
 - **Cluster-count selection (Fig S1, appendix).** `prep_figure_4._silhouette_scan` computes silhouette vs k (2–8) on the same scaled trajectory matrix; `figS1a` plots it and marks the chosen k=4. Composed as `figureS1_cluster_silhouette` (compose key `s1`).
 - **Cohort distributions (Fig 1).** The timeline schematic is replaced by population panels: notes-per-patient by type (box/violin, `fig1_notes_per_patient.csv`; shown among patients with ≥1 note of that type), cancer-stage and first-line-treatment breakdowns (`fig1_stage_counts.csv`, `fig1_treatment_counts.csv`), alongside the cancer-type pie. (The embedding UMAP was dropped — it did not read well.)
@@ -102,5 +114,10 @@ manuscript_figures/
 
 ## Dependencies
 
-- Plotting scripts: `matplotlib`, `pandas`, `numpy`, `lifelines`
-- Prep (data_generation scripts): plotting deps + `scikit-survival`, `scikit-learn`, optionally `umap-learn` (PCA fallback if absent)
+- **Python prep** (`data_generation/`): `numpy`, `pandas`, `scipy`, `lifelines`, `scikit-survival`, `scikit-learn`.
+- **R rendering** (`R/`, pinned in `R/install_packages.R`): core ggplot stack —
+  `ggplot2`, `patchwork`, `scales`, `dplyr`, `tidyr`, `readr`, `forcats`, `tibble`, `stringr`,
+  `purrr`; survival — `survival` + `ggsurvfit` (pure-ggplot KMs that compose cleanly with
+  patchwork — `add_pvalue()` for log-rank, `add_risktable()` for at-risk strips);
+  significance stars — `ggsignif`; correlation heatmap — `ggcorrplot`; schematic + insets —
+  `cowplot`, `viridisLite`; top-Δ labels — `ggrepel`. R ≥ 4.1 recommended.

@@ -1,0 +1,223 @@
+# Render Figure 3 (modality comparison) in ggplot2 + patchwork.
+#
+# A complete-case significant endpoints per modality (joint Cox BH-FDR<.05),
+# B modality risk-score correlation heatmap (death endpoint),
+# C average modality rank across endpoints (1 = best),
+# D Wald-z violins (β/SE) + Wilcoxon-vs-0 stars + Tukey-IQR trim.
+
+suppressPackageStartupMessages({
+  library(ggplot2); library(patchwork); library(dplyr); library(tidyr)
+  library(forcats); library(scales); library(ggcorrplot); library(stringr)
+})
+
+script_dir <- dirname(normalizePath(sys.frame(1)$ofile))
+source(file.path(script_dir, "figure_utils.R"))
+
+FDR_ALPHA  <- 0.05
+IQR_WHISKER <- 1.5
+
+
+# BH-FDR per (scheme, event) cell — matches the Python pipeline
+bh_within_cell <- function(betas) {
+  if (nrow(betas) == 0) return(betas)
+  betas %>%
+    group_by(scheme, event) %>%
+    mutate(q_value = stats::p.adjust(replace(p_value, is.na(p_value), 1),
+                                     method = "BH")) %>%
+    ungroup() %>%
+    mutate(sig = q_value < FDR_ALPHA & !is.na(beta))
+}
+
+
+# ============================================================================
+# fig3a: significant endpoints per modality (complete-case only)
+# ============================================================================
+build_fig3a <- function(betas) {
+  if (nrow(betas) == 0 || !"sig" %in% names(betas))
+    return(placeholder_panel("fig3_joint_betas.csv missing p-values"))
+
+  # Complete-case endpoints = (scheme, event) groups with all modalities fit
+  present <- betas %>% filter(!is.na(beta)) %>%
+    group_by(scheme, event) %>%
+    summarise(mods = list(unique(modality)), .groups = "drop") %>%
+    filter(vapply(mods, function(s) all(MODALITY_ORDER %in% s), logical(1))) %>%
+    select(scheme, event)
+  cc <- betas %>% inner_join(present, by = c("scheme", "event"))
+  n_cc <- nrow(present)
+  counts <- cc %>%
+    group_by(modality) %>%
+    summarise(n = sum(sig, na.rm = TRUE), .groups = "drop") %>%
+    mutate(modality = factor(modality, levels = MODALITY_ORDER))
+
+  ggplot(counts, aes(modality, n, fill = modality)) +
+    geom_col(width = 0.6, color = "white") +
+    geom_text(aes(label = n), vjust = -0.3, size = 3) +
+    scale_fill_manual(values = MODALITY_COLORS, guide = "none") +
+    scale_x_discrete(labels = MODALITY_DISPLAY) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
+    labs(x = NULL,
+         y = sprintf("# endpoints (joint Cox BH-FDR < %.2f)", FDR_ALPHA),
+         title = sprintf("Significant Endpoints per Modality\n(joint Cox, %d complete-case endpoints)",
+                         n_cc)) +
+    theme_manuscript() +
+    theme(axis.text.x = element_text(angle = 20, hjust = 1),
+          panel.grid.major.y = element_line(color = "grey90"))
+}
+
+
+# ============================================================================
+# fig3b: modality risk-score correlation heatmap (death endpoint)
+# ============================================================================
+build_fig3b <- function() {
+  d <- load_figure_data("fig3_risk_score_corr.csv")
+  if (nrow(d) == 0 || !"modality" %in% names(d))
+    return(placeholder_panel("fig3_risk_score_corr.csv empty"))
+  npat <- if ("n_patients" %in% names(d) && any(!is.na(d$n_patients))) {
+    as.integer(d$n_patients[!is.na(d$n_patients)][1])
+  } else NA_integer_
+  mat <- d %>% select(any_of(c("modality", MODALITY_ORDER))) %>%
+    tibble::column_to_rownames("modality") %>% as.matrix()
+  mods <- intersect(MODALITY_ORDER, rownames(mat))
+  mat <- mat[mods, mods, drop = FALSE]
+  mat[!is.finite(mat)] <- NA_real_
+
+  ggcorrplot::ggcorrplot(mat, lab = TRUE, lab_size = 3,
+                         colors = c("#2E86C1", "#FFFFFF", "#E74C3C"),
+                         outline.color = "white") +
+    scale_x_discrete(labels = MODALITY_DISPLAY) +
+    scale_y_discrete(labels = MODALITY_DISPLAY) +
+    labs(title = paste0("Modality Risk-Score Correlation (death)",
+                        if (!is.na(npat)) sprintf("\n(n=%s)", scales::comma(npat)) else ""),
+         x = NULL, y = NULL, fill = "Pearson r") +
+    theme_manuscript() +
+    theme(axis.text.x = element_text(angle = 35, hjust = 1),
+          panel.grid = element_blank())
+}
+
+
+# ============================================================================
+# fig3c: average modality rank across endpoints (1 = best)
+# ============================================================================
+build_fig3c <- function() {
+  d <- load_figure_data("fig3_modality_avg_rank.csv")
+  if (nrow(d) == 0) return(placeholder_panel("fig3_modality_avg_rank.csv empty"))
+  d <- d %>% filter(!is.na(mean_rank)) %>%
+    mutate(modality = factor(modality, levels = MODALITY_ORDER)) %>%
+    arrange(mean_rank) %>%
+    mutate(modality = fct_reorder(modality, mean_rank, .desc = TRUE))
+  n_ev <- if ("n_events" %in% names(d)) as.integer(d$n_events[1]) else NA_integer_
+
+  ggplot(d, aes(mean_rank, modality, fill = as.character(modality))) +
+    geom_col(width = 0.62, color = "white") +
+    geom_errorbarh(aes(xmin = mean_rank - sem_rank,
+                       xmax = mean_rank + sem_rank),
+                   height = 0.25, color = "#222", linewidth = 0.5) +
+    geom_text(aes(label = sprintf("%.2f", mean_rank),
+                  x = mean_rank + sem_rank + 0.05),
+              hjust = 0, size = 2.7) +
+    scale_fill_manual(values = MODALITY_COLORS, guide = "none") +
+    scale_y_discrete(labels = MODALITY_DISPLAY) +
+    coord_cartesian(xlim = c(0.5, length(MODALITY_ORDER) + 0.5)) +
+    labs(x = "Average rank across endpoints (1 = best)", y = NULL,
+         title = sprintf("Average Modality Rank\n(complete-case endpoints, n=%s)",
+                         ifelse(is.na(n_ev), "NA", scales::comma(n_ev)))) +
+    theme_manuscript() +
+    theme(panel.grid.major.x = element_line(color = "grey90"))
+}
+
+
+# ============================================================================
+# fig3d: Wald-z (β/SE) violins by modality + Tukey-trim + Wilcoxon-vs-0 stars
+# ============================================================================
+tukey_trim <- function(x, k = IQR_WHISKER) {
+  qs <- stats::quantile(x, c(0.25, 0.75), na.rm = TRUE)
+  iqr <- qs[2] - qs[1]
+  lo  <- qs[1] - k * iqr
+  hi  <- qs[2] + k * iqr
+  list(kept = x[x >= lo & x <= hi & is.finite(x)],
+       n_trim = sum(x < lo | x > hi, na.rm = TRUE))
+}
+
+build_fig3d <- function(betas) {
+  if (nrow(betas) == 0)
+    return(placeholder_panel("fig3_joint_betas.csv empty"))
+  d <- betas %>%
+    mutate(z = beta / se) %>%
+    filter(is.finite(z))
+
+  trimmed <- d %>% group_by(modality) %>%
+    summarise(t = list(tukey_trim(z)), .groups = "drop") %>%
+    mutate(kept = purrr::map(t, "kept"), n_trim = purrr::map_int(t, "n_trim"))
+  # purrr may not be loaded; fall back to base
+  if (!requireNamespace("purrr", quietly = TRUE)) {
+    trimmed <- d %>% group_by(modality) %>%
+      do(tibble(t = list(tukey_trim(.$z)))) %>%
+      mutate(kept = lapply(t, function(x) x$kept),
+             n_trim = vapply(t, function(x) x$n_trim, integer(1))) %>%
+      ungroup() %>% select(modality, kept, n_trim)
+  }
+
+  plot_df <- trimmed %>%
+    select(modality, kept) %>%
+    tidyr::unnest(kept) %>%
+    rename(z = kept) %>%
+    mutate(modality = factor(modality, levels = MODALITY_ORDER))
+
+  ann <- trimmed %>%
+    rowwise() %>%
+    mutate(p = wilcoxon_vs0(unlist(kept)),
+           stars = p_to_stars(p),
+           modality = factor(modality, levels = MODALITY_ORDER)) %>%
+    ungroup() %>%
+    select(modality, stars)
+  n_tot <- sum(trimmed$n_trim, na.rm = TRUE)
+
+  ymax <- max(plot_df$z, na.rm = TRUE)
+  ggplot(plot_df, aes(modality, z, fill = modality)) +
+    geom_violin(scale = "width", alpha = 0.45, color = "#444", linewidth = 0.4) +
+    geom_jitter(aes(color = modality), width = 0.18, size = 0.7, alpha = 0.30,
+                show.legend = FALSE) +
+    geom_hline(yintercept = 0, color = "#333", linetype = "dashed") +
+    geom_hline(yintercept = c(-1.96, 1.96), color = "#999",
+               linetype = "dotted") +
+    geom_text(data = ann, aes(modality, ymax * 1.04, label = stars),
+              inherit.aes = FALSE,
+              size = 3.2, fontface = "bold", color = "#222") +
+    scale_fill_manual(values = MODALITY_COLORS, guide = "none") +
+    scale_color_manual(values = MODALITY_COLORS, guide = "none") +
+    scale_x_discrete(labels = MODALITY_DISPLAY) +
+    labs(x = NULL, y = "Joint Cox standardized coefficient (z = β/SE)",
+         title = sprintf("Joint Cox Model: Standardized Coefficient by Modality%s",
+                         if (n_tot > 0) sprintf("\n(%d extreme outliers trimmed, Tukey %.1f×IQR)",
+                                                 n_tot, IQR_WHISKER) else ""),
+         caption = paste0("z from L2-penalized fit; ±1.96 lines are descriptive, not an exact test.",
+                          "  Stars: Wilcoxon vs z=0  (*<.05, **<.01, ***<.001, ****<1e-4)")) +
+    theme_manuscript() +
+    theme(axis.text.x = element_text(angle = 20, hjust = 1),
+          plot.caption = element_text(size = 6.5, hjust = 0,
+                                      face = "italic", color = "#777"),
+          panel.grid.major.y = element_line(color = "grey90"))
+}
+
+
+# ============================================================================
+# Compose
+# ============================================================================
+betas <- load_figure_data("fig3_joint_betas.csv")
+if (nrow(betas) > 0 && "p_value" %in% names(betas)) betas <- bh_within_cell(betas)
+
+p3a <- build_fig3a(betas)
+p3b <- build_fig3b()
+p3c <- build_fig3c()
+p3d <- build_fig3d(betas)
+
+save_panel(p3a, "fig3a", width = 6.0, height = 4.8)
+save_panel(p3b, "fig3b", width = 6.0, height = 5.0)
+save_panel(p3c, "fig3c", width = 6.0, height = 5.0)
+save_panel(p3d, "fig3d", width = 6.0, height = 5.0)
+
+fig3 <- (p3a + p3b) / (p3c + p3d) +
+        plot_annotation(tag_levels = "A") &
+        theme(plot.tag = element_text(size = 14, face = "bold"))
+
+save_figure(fig3, "figure3_feature_comps", width = 15.0, height = 13.0)
