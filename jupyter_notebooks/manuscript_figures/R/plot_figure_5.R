@@ -273,7 +273,12 @@ build_fig5d <- function() {
 
   hr_suffix <- function(d) {
     if (!"hr" %in% names(d) || is.na(d$hr[1])) return("")
-    sprintf("\nHR(marker×ICI)=%.2f", d$hr[1])
+    # Track 2 rows carry hr_label = "HR(marker×ICI)"; Track 1 fallback carries
+    # "HR(marker | ICI)". Use the per-row label so the title is honest about
+    # which estimate is being shown (interaction vs prognostic-within-ICI).
+    lbl <- if ("hr_label" %in% names(d) && !is.na(d$hr_label[1]) && nzchar(d$hr_label[1]))
+             d$hr_label[1] else "HR"
+    sprintf("\n%s=%.2f", lbl, d$hr[1])
   }
 
   km_panel <- function(data, title) {
@@ -343,23 +348,114 @@ build_fig5d <- function() {
 
 
 # ============================================================================
+# fig5e: synthesis forest — T1 (prognostic-in-ICI) vs T2 (predictive-of-ICI)
+# for the headline gene set, with literature-validation strip on the right.
+#
+# T1 brackets are the Cox HR's 95% CI (from primary spec). T2 brackets are
+# inter-spec range (min/max across robust specs) — upstream emits no SE for
+# the marker × ICI interaction term, so this is honest spec-spread, not an
+# inferential CI. Documented in the figure caption.
+# ============================================================================
+TRACK_LABEL  <- c(T1_prognostic_in_ICI = "T1 · Prognostic within ICI",
+                  T2_predictive_of_ICI = "T2 · Predictive of ICI benefit")
+TRACK_COLORS <- c(`T1 · Prognostic within ICI` = BENEFIT_COLOR,
+                  `T2 · Predictive of ICI benefit` = HARM_COLOR)
+TRACK_SHAPES <- c(`T1 · Prognostic within ICI` = 16,
+                  `T2 · Predictive of ICI benefit` = 17)
+# 7-tier validation ramp (Very Strong → No Evidence). Use a sequential blue so
+# strong-evidence rows pop and absent-evidence rows are faint.
+VAL_LEVELS <- c("Very Strong","Strong","Moderate","Partial","Weak","Indirect","No Evidence")
+VAL_COLORS <- c("#0B3D91","#1F5FBF","#3A82DC","#79A8E7","#B0CBED","#D4E2F4","#EFEFEF")
+
+build_fig5e <- function() {
+  d <- load_figure_data("fig5_forest_headline.csv")
+  if (nrow(d) == 0) return(placeholder_panel("fig5_forest_headline.csv empty"))
+  d <- d %>%
+    mutate(track_lbl = TRACK_LABEL[as.character(track)],
+           track_lbl = factor(track_lbl, levels = unname(TRACK_LABEL)),
+           # Row label = gene with cohort tag (cohort 2 = validation).
+           # Compose order matches HEADLINE_FOREST in prep_figure_5.py — display
+           # MET first as the protagonist, then T1-replication genes, then T2-only.
+           row_lbl = sprintf("%s · %s · %s", label, cancer,
+                             ifelse(cohort == "cohort2", "C2", "C1"))) %>%
+    arrange(desc(row_number()))                      # patchwork plots bottom-up
+  row_order <- unique(d$row_lbl)
+  d$row_lbl <- factor(d$row_lbl, levels = row_order)
+
+  # Validation strip: one tile per row at fixed x position, colored by level
+  val_df <- d %>% distinct(row_lbl, validation_level) %>%
+    mutate(validation_level = ifelse(is.na(validation_level) | validation_level == "",
+                                     "No Evidence", validation_level),
+           validation_level = factor(validation_level, levels = VAL_LEVELS))
+
+  # Dodge T1 / T2 within each row so they don't sit on top of each other
+  dodge <- position_dodge(width = 0.55)
+  xmin <- min(c(d$CI95_low, d$HR), na.rm = TRUE) * 0.85
+  xmax <- max(c(d$CI95_high, d$HR), na.rm = TRUE) * 1.15
+
+  forest <- ggplot(d, aes(x = HR, y = row_lbl,
+                          color = track_lbl, shape = track_lbl)) +
+    geom_vline(xintercept = 1, linetype = "dashed", color = "#777777") +
+    geom_errorbarh(aes(xmin = CI95_low, xmax = CI95_high),
+                   height = 0.25, linewidth = 0.55, position = dodge) +
+    geom_point(size = 2.6, position = dodge) +
+    scale_color_manual(values = TRACK_COLORS, name = NULL,
+                       breaks = unname(TRACK_LABEL)) +
+    scale_shape_manual(values = TRACK_SHAPES, name = NULL,
+                       breaks = unname(TRACK_LABEL)) +
+    scale_x_log10(limits = c(xmin, xmax),
+                  breaks = c(0.1, 0.25, 0.5, 1, 2, 4, 10),
+                  oob = scales::squish) +
+    labs(x = "Hazard ratio (log scale)\nT1: Cox HR (95% CI) · T2: interaction HR (inter-spec range)",
+         y = NULL,
+         title = "Synthesis · Prognostic vs Predictive Signal for Headline Markers") +
+    theme_manuscript() +
+    theme(legend.position = "top",
+          plot.title = element_text(size = 10, face = "bold"),
+          panel.grid.major.y = element_line(color = "grey92"),
+          axis.title.x = element_text(size = 8),
+          axis.text.y = element_text(size = 8))
+
+  strip <- ggplot(val_df, aes(x = 1, y = row_lbl, fill = validation_level)) +
+    geom_tile(color = "white", linewidth = 0.6) +
+    geom_text(aes(label = validation_level),
+              size = 2.4, color = ifelse(val_df$validation_level %in% c("Very Strong","Strong"),
+                                          "white", "#222222")) +
+    scale_fill_manual(values = VAL_COLORS, name = NULL, drop = FALSE) +
+    scale_x_continuous(expand = c(0, 0)) +
+    labs(x = NULL, y = NULL, title = "Literature\nvalidation") +
+    theme_void() +
+    theme(plot.title = element_text(size = 8, face = "bold", hjust = 0.5,
+                                    margin = margin(b = 4)),
+          axis.text.y = element_blank(),
+          legend.position = "none",
+          plot.margin = margin(0, 4, 0, 0))
+
+  forest + strip + plot_layout(widths = c(5, 1))
+}
+
+
+# ============================================================================
 # Compose Figure 5
 # ============================================================================
 p5a <- build_fig5a()
 p5b <- build_fig5b()
 p5c <- build_fig5c()
 p5d <- build_fig5d()
+p5e <- build_fig5e()
 
 save_panel(p5a, "fig5a", width = 8.0, height = 6.0)
 save_panel(p5b, "fig5b", width = 6.5, height = 6.0)
 save_panel(p5c, "fig5c", width = 9.0, height = 6.5)
 save_panel(p5d, "fig5d", width = 15.0, height = 5.0)
+save_panel(p5e, "fig5e", width = 11.0, height = 5.8)
 
 fig5 <- (p5a + p5b) /
         p5c /
-        p5d +
-        plot_layout(heights = c(1, 1, 0.85)) +
+        p5d /
+        p5e +
+        plot_layout(heights = c(1, 1, 0.85, 0.95)) +
         plot_annotation(tag_levels = "A") &
         theme(plot.tag = element_text(size = 14, face = "bold"))
 
-save_figure(fig5, "figure5_biomarkers", width = 15.5, height = 17.0)
+save_figure(fig5, "figure5_biomarkers", width = 15.5, height = 22.0)
