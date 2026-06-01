@@ -14,7 +14,7 @@ from embed_surv_utils import run_grid_CoxPH_parallel, get_heldout_risk_scores_Co
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
 SURV_PATH = os.path.join(DATA_PATH, 'time-to-event_analysis/')
 RESULTS_PATH = os.path.join(SURV_PATH, 'results/')
-TREATMENT_PATH = os.path.join(DATA_PATH, 'treatment_prediction/first_line_treatment_prediction_data/')
+FEATURE_PATH = os.path.join(DATA_PATH, 'clinical_and_genomic_features/')
 
 os.environ["JOBLIB_DEFAULT_WORKER_TIMEOUT"] = "600"
 
@@ -32,7 +32,17 @@ types_to_keep = cancer_type_counts[cancer_type_counts >= 500].index.tolist()
 cancer_type_sub['CANCER_TYPE'] = cancer_type_sub['CANCER_TYPE'].where(cancer_type_sub['CANCER_TYPE'].isin(types_to_keep), 'OTHER')
 cancer_type_sub = pd.get_dummies(cancer_type_sub, columns=['CANCER_TYPE'], drop_first=True)
 
-treatment_df = pd.read_csv(os.path.join(TREATMENT_PATH, 'first_line_treatment_classes.csv'))
+# First-line treatment class per patient, derived from the same one-hot source Figure 1 uses
+# (categorical_treatment_data_by_line.csv.gz: DFCI_MRN, treatment_line, PX_on_<class> dummies).
+# Take the first line (treatment_line == 1) and assign each patient the single present class.
+# These dummies are NOT drop_first encoded (a PX_on_OTHER column exists), so a patient with any
+# first-line med has at least one 1; idxmax picks the first class when first line is combination.
+treatment_by_line = pd.read_csv(os.path.join(FEATURE_PATH, 'categorical_treatment_data_by_line.csv.gz'))
+tx_cols = [c for c in treatment_by_line.columns if c.startswith('PX_on_')]
+tx1 = treatment_by_line.loc[treatment_by_line['treatment_line'] == 1].copy()
+tx1 = tx1.loc[tx1[tx_cols].sum(axis=1) > 0]  # keep patients with a known first-line class
+tx1['TREATMENT_CLASSIFICATION'] = tx1[tx_cols].idxmax(axis=1).str.replace('PX_on_', '', regex=False)
+treatment_df = tx1[['DFCI_MRN', 'TREATMENT_CLASSIFICATION']].drop_duplicates(subset='DFCI_MRN')
 treatment_types = treatment_df['TREATMENT_CLASSIFICATION'].unique()
 
 # Merge embeddings + cancer types + events
