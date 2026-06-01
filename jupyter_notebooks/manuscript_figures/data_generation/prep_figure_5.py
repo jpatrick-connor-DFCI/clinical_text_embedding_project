@@ -68,7 +68,9 @@ LOVE_TOP_N = 15  # covariates shown beyond the always-kept demographics
 # ---------------------------------------------------------------------------
 # Headline gene set for the synthesis forest panel (fig5e) + KM panels (fig5d)
 #
-# Picked from biomarker_triage.py output:
+# Hand-curated from a manual literature-triage of the compiled IPTW hits
+# (the one-off triage script that produced this shortlist has been removed;
+# recover it from git history at commit 8774b85 if the selection needs revisiting):
 #   - MET: only Tier-A gene (T1+T2 robust, both-benefit, Moderate validation)
 #   - STK11, KEAP1, ARID1A, CD274, PDCD1LG2: Tier-B T1-robust with Strong+ prior
 #     literature support (pipeline replicates known ICI biomarkers)
@@ -109,9 +111,21 @@ def _patient_cancer_type() -> pd.DataFrame:
     if not os.path.exists(fp):
         return pd.DataFrame(columns=["DFCI_MRN", "cancer_type"])
     cancer = pd.read_csv(fp)
-    type_cols = [c for c in cancer.columns if c.startswith("CANCER_TYPE_")]
-    if "DFCI_MRN" not in cancer.columns or not type_cols:
+    if "DFCI_MRN" not in cancer.columns:
         return pd.DataFrame(columns=["DFCI_MRN", "cancer_type"])
+    # Prefer the raw label column (added by generate_all_non_text_covariates.py).
+    # Falling back to idxmax over drop_first dummies mislabels the dropped
+    # reference category (all-zero rows), so only use it when the raw column is
+    # absent (legacy files) — and warn so the result is regenerated.
+    if "CANCER_TYPE" in cancer.columns:
+        out = cancer[["DFCI_MRN", "CANCER_TYPE"]].copy()
+        out["cancer_type"] = out["CANCER_TYPE"].astype(str)
+        return out[["DFCI_MRN", "cancer_type"]]
+    type_cols = [c for c in cancer.columns if c.startswith("CANCER_TYPE_")]
+    if not type_cols:
+        return pd.DataFrame(columns=["DFCI_MRN", "cancer_type"])
+    print("  WARN: cancer_type_df.csv.gz has no raw CANCER_TYPE column; "
+          "reference-category patients may be mislabeled. Regenerate covariates.")
     out = cancer[["DFCI_MRN"] + type_cols].copy()
     out["cancer_type"] = out[type_cols].idxmax(axis=1).str.replace("CANCER_TYPE_", "", regex=False)
     return out[["DFCI_MRN", "cancer_type"]]

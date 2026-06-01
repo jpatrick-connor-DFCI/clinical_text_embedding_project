@@ -27,8 +27,13 @@ script_dir <- local({
 source(file.path(script_dir, "figure_utils.R"))
 
 N_CLUSTERS  <- 4
-CLUSTER_NAMES <- c("Stable Low", "Intermediate", "Stable High",
-                   "Rapidly Increasing", "Rebounding")
+# prep_figure_4 relabels clusters 0..N-1 by ASCENDING mean risk (cluster 0 =
+# lowest risk). Names therefore describe risk LEVEL (the quantity the clusters
+# are actually ordered on), not an assumed temporal shape, which the rank does
+# not determine. Length must equal N_CLUSTERS.
+CLUSTER_NAMES <- c("Lowest Risk", "Low-Intermediate Risk",
+                   "High-Intermediate Risk", "Highest Risk")
+stopifnot(length(CLUSTER_NAMES) == N_CLUSTERS)
 
 cluster_label <- function(k, n = NA_integer_) {
   # Coerce via character so factors return their underlying integer (not level codes).

@@ -119,8 +119,38 @@ for COHORT in COHORTS:
         else:
             patient_df = patient_df.drop(columns=['line_category'], errors='ignore')
 
-        # Drop patients with non-positive survival
-        patient_df = patient_df.loc[patient_df['tt_death'] > 0].copy()
+        # === Landmark re-anchoring to remove immortal-time bias ===
+        # `tt_death` is measured from the first-line treatment start
+        # (`first_treatment_date`), but in the matched cohort ICI can begin at
+        # line 2 or 3. The time a patient must survive to reach that line is
+        # "immortal" and would otherwise be wrongly credited to the ICI arm.
+        # Re-anchor every patient's survival clock to their line-specific
+        # landmark (`treatment_start_date`, the propensity/exposure anchor) and
+        # require survival to that landmark, so ICI and matched controls are
+        # compared from the line at which exposure is defined.
+        # NOTE: for cohort 1 (all first-line) the shift is ~0, so this is a
+        # no-op there. When you run this on the real data, check the diagnostic
+        # below: a near-zero shift for cohort 2 would mean `treatment_start_date`
+        # is NOT line-specific and the re-anchoring must be sourced differently.
+        landmark_shift = (
+            (patient_df['treatment_start_date'] - patient_df['first_treatment_date'])
+            .dt.days.clip(lower=0)
+        )
+        patient_df = patient_df.assign(_landmark_shift=landmark_shift)
+        n_pre = len(patient_df)
+        print(f"  Landmark shift (days, first-line→line start): "
+              f"median={landmark_shift.median():.0f}, max={landmark_shift.max():.0f}, "
+              f">0 for {(landmark_shift > 0).sum()}/{n_pre} patients")
+
+        # Drop patients who did not survive to their landmark (removes immortal
+        # time), then re-anchor tt_death so time 0 = landmark. The strict '>'
+        # also enforces positive post-landmark survival.
+        pre_landmark = patient_df['tt_death'] <= patient_df['_landmark_shift']
+        if pre_landmark.any():
+            print(f"  Dropping {int(pre_landmark.sum())} patients who died/censored before their landmark")
+        patient_df = patient_df.loc[~pre_landmark].copy()
+        patient_df['tt_death'] = patient_df['tt_death'] - patient_df['_landmark_shift']
+        patient_df = patient_df.drop(columns='_landmark_shift')
 
         # === Assign treatment group and propensity scores ===
         patient_df['PX_on_ICI'] = patient_df['ground_truth'].astype(int)

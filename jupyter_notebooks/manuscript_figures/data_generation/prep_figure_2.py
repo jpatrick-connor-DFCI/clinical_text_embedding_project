@@ -223,8 +223,14 @@ def _stage_vs_risk_cindex(df: pd.DataFrame) -> pd.DataFrame:
 def _cancer_type_labels(cancer_df: pd.DataFrame) -> pd.DataFrame:
     type_cols = [c for c in cancer_df.columns if c.startswith("CANCER_TYPE_")]
     if "CANCER_TYPE" in cancer_df.columns:
+        # Raw label (added by generate_all_non_text_covariates.py) — correct for
+        # all patients including the drop_first reference category.
         labels = cancer_df["CANCER_TYPE"].astype(str)
     elif type_cols:
+        # Legacy fallback: idxmax over drop_first dummies mislabels the dropped
+        # reference category (all-zero rows). Warn and regenerate covariates.
+        print("  WARN: cancer_type_df.csv.gz has no raw CANCER_TYPE column; "
+              "reference-category patients may be mislabeled. Regenerate covariates.")
         labels = cancer_df[type_cols].apply(pd.to_numeric, errors="coerce").fillna(0).idxmax(axis=1)
         labels = labels.str.replace("CANCER_TYPE_", "", regex=False)
     else:

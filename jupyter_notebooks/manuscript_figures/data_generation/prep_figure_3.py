@@ -5,7 +5,6 @@ Writes to FIGURE_DATA_DIR:
 - fig3_modality_avg_rank.csv      modality, mean_rank, sem_rank, n_events  (complete-case endpoints)
 - fig3_joint_betas.csv            scheme, event, modality, beta, se, hr, p_value, n, n_events
 - fig3_risk_score_corr.csv        modality x modality correlation, plus n_patients in metadata row
-- fig3_univariate_vs_joint.csv    modality, univariate_auc, joint_auc
 """
 
 from __future__ import annotations
@@ -30,7 +29,6 @@ from _figure_utils import (
 from slurm_array_utils import get_events_from_df, load_embedding_prediction_df
 
 
-SCHEME = "icd3_post"          # representative scheme for legacy correlation / joint-AUC helpers
 SCHEMES = list(SCHEME_RESULT_DIRS)
 DEATH_SCHEME = "death_met"    # scheme for the correlation heatmap
 
@@ -41,7 +39,6 @@ JOINT_BETA_COLUMNS = [
     "beta", "se", "hr", "p_value", "n", "n_events",
 ]
 RISK_SCORE_CORR_COLUMNS = ["modality", *MODALITY_ORDER, "n_patients"]
-UNIVARIATE_VS_JOINT_COLUMNS = ["modality", "univariate_auc", "joint_auc"]
 
 
 def _modality_cindex(scheme: str) -> pd.DataFrame:
@@ -70,11 +67,11 @@ def _modality_cindex(scheme: str) -> pd.DataFrame:
 def _joint_betas(scheme: str) -> pd.DataFrame:
     """Refit the joint Cox model per (scheme, event) so we have p-values.
 
-    Upstream `feature_risk_score_coxph.py` saves point estimates only (sksurv's
-    `CoxPHSurvivalAnalysis` does not expose SEs). For Fig 3A we need
-    significance, so we redo the joint fit with `lifelines.CoxPHFitter` on the
-    same merged inputs (held-out modality risk scores × event surv data) and
-    standardize features to mirror the upstream pipeline.
+    The held-out modality risk scores are produced at training time by
+    `run_feature_comp_task.py` (written under `<scheme>/held_out_risk_scores/`).
+    sksurv's `CoxPHSurvivalAnalysis` does not expose SEs, so for Fig 3A we redo
+    the joint fit here with `lifelines.CoxPHFitter` on the same merged inputs
+    (held-out modality risk scores × event surv data), standardizing features.
     """
     risk_root = os.path.normpath(
         os.path.join(scheme_results_dir(scheme), "held_out_risk_scores")
@@ -255,29 +252,12 @@ def _risk_score_corr(scheme: str, event: str = "death") -> pd.DataFrame:
     return out.reindex(columns=RISK_SCORE_CORR_COLUMNS)
 
 
-def _univariate_vs_joint(scheme: str) -> pd.DataFrame:
-    base = os.path.join(scheme_results_dir(scheme), "risk_score_coxph")
-    univ_fp = os.path.join(base, "univariate_modality_metrics.csv")
-    joint_fp = os.path.join(base, "joint_model_metrics.csv")
-    if not (os.path.exists(univ_fp) and os.path.exists(joint_fp)):
-        print(f"  missing univariate/joint metrics; skipping")
-        return pd.DataFrame(columns=UNIVARIATE_VS_JOINT_COLUMNS)
-    univ = pd.read_csv(univ_fp)
-    joint = pd.read_csv(joint_fp)
-    univ_mean = univ.groupby("modality")["mean_auc(t)"].mean()
-    joint_mean = joint["mean_auc(t)"].mean()
-    rows = [{"modality": mod, "univariate_auc": univ_mean.get(mod), "joint_auc": joint_mean}
-            for mod in MODALITY_ORDER if mod in univ_mean.index]
-    return pd.DataFrame(rows, columns=UNIVARIATE_VS_JOINT_COLUMNS)
-
-
 def main() -> None:
     cindex_all = _modality_cindex_all()
     save_figure_data(cindex_all, "fig3_modality_cindex.csv")
     save_figure_data(_modality_avg_rank(cindex_all), "fig3_modality_avg_rank.csv")
     save_figure_data(_joint_betas_all(), "fig3_joint_betas.csv")
     save_figure_data(_risk_score_corr(DEATH_SCHEME, "death"), "fig3_risk_score_corr.csv")
-    save_figure_data(_univariate_vs_joint(SCHEME), "fig3_univariate_vs_joint.csv")
 
 
 if __name__ == "__main__":

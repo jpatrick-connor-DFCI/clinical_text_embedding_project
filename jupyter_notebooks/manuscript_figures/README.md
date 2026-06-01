@@ -71,15 +71,16 @@ manuscript_figures/
 ## Key design decisions
 
 - **Compute is separate from plotting.** Prep scripts do the heavy work; plotting scripts are load-and-plot only, so styling can be iterated without re-running risk scoring, Cox refits, clustering, or biomarker aggregation.
-- **Plotting targets the historical mockups.** The plot scripts keep reading the
-  current `figure_data/` CSVs, but the panel contents and final layouts now follow
-  the rendered old mockups committed under `manuscript_figures/mockups/` in
-  `e27dfa8` (Figure 1 schematic, Figure 2 heatmap/KM examples, Figure 3 modality
-  overlap/comparison, Figure 4 three-panel trajectory analysis, Figure 5
-  propensity ROC / biomarker robustness / KM interaction strip).
+- **Plotting targets the agreed panel layouts.** The plot scripts read the
+  current `figure_data/` CSVs; the panel contents and final layouts follow the
+  reference mockups that were committed under `manuscript_figures/mockups/` in
+  commit `e27dfa8` and have since been removed from the working tree (recover them
+  from that commit if needed): Figure 1 schematic, Figure 2 heatmap/KM examples,
+  Figure 3 modality overlap/comparison, Figure 4 three-panel trajectory analysis,
+  Figure 5 propensity ROC / biomarker robustness / KM interaction strip.
 - **Schema-stable empty outputs.** When an upstream input is missing, prep scripts still emit a header-only CSV with the expected columns, so the corresponding plot script degrades to "no data — skipping" instead of crashing the whole run.
-- **Stable cluster labels (Fig 4).** Trajectory clusters are relabeled by ascending mean risk in prep, so Cluster 0 is always the lowest-risk group across reruns. The `CLUSTER_COLORS` palette then maps consistently to the same semantic cluster.
-- **Joint-Cox p-values (Fig 3A).** Upstream `feature_risk_score_coxph.py` stores betas only (sksurv does not expose SEs). `prep_figure_3` re-fits the joint model per (scheme, event) with `lifelines.CoxPHFitter` on the standardized held-out modality risk scores to derive p-values; panel A counts endpoints surviving BH-FDR < 0.05 within each fit, restricted to complete-case endpoints (see below).
+- **Stable cluster labels (Fig 4).** Trajectory clusters are relabeled by ascending mean risk in prep, so Cluster 0 is always the lowest-risk group across reruns. The `CLUSTER_COLORS` palette then maps consistently to the same semantic cluster. The R cluster names (`plot_figure_4.R`) describe risk **level** (the quantity the clusters are ordered on), not an assumed temporal shape.
+- **Joint-Cox p-values (Fig 3A).** The held-out modality risk scores are written at training time by `run_feature_comp_task.py` (under `<scheme>/held_out_risk_scores/`); sksurv exposes no SEs, so `prep_figure_3` re-fits the joint model per (scheme, event) with `lifelines.CoxPHFitter` on the standardized held-out modality risk scores to derive p-values. Panel A counts endpoints surviving BH-FDR < 0.05 within each fit, restricted to complete-case endpoints (see below).
 - **Geometric mean for HR aggregation (Fig 5B).** Hazard ratios are multiplicative; the arithmetic mean of `[0.5, 2.0]` is `1.25` but the geometric mean is `1.0`. Robust-marker ranking uses the latter.
 - **Primary-spec top hit (Fig 5C).** Panel C's KM examples are drawn from the primary spec (`cohort2 / covariates_plus_embeddings / ATE`), not whichever sensitivity spec happens to have the smallest p-value.
 - **Two cohorts (Fig 5).** Cohort 1 = first-line ICI vs. *all* never-ICI controls (unmatched, discovery); Cohort 2 = ICI lines 1-3 vs. 1:1 matched controls (matched, validation). Panels A and C use the primary Cohort-2 spec (labeled in their subtitles); panel B's robustness columns are grouped by cohort (header + divider) with a definitions caption, and a "spec" = `cohort | ps_model | weight_type`.
@@ -100,7 +101,7 @@ manuscript_figures/
 |---|---|
 | 1 | `fig1_endpoint_counts.csv`, `fig1_cancer_type_counts.csv`, `fig1_notes_per_patient.csv`, `fig1_stage_counts.csv`, `fig1_treatment_counts.csv` |
 | 2 | `fig2_full_cohort_metrics.csv`, `fig2_cancer_endpoint_heatmap.csv`, `fig2_km_tertiles.csv`, `fig2_km_stage_vs_risk.csv`, `fig2_stage_vs_risk_cindex.csv` |
-| 3 | `fig3_modality_cindex.csv`, `fig3_modality_avg_rank.csv`, `fig3_joint_betas.csv` (includes p-values), `fig3_risk_score_corr.csv`, `fig3_univariate_vs_joint.csv` |
+| 3 | `fig3_modality_cindex.csv`, `fig3_modality_avg_rank.csv`, `fig3_joint_betas.csv` (includes p-values), `fig3_risk_score_corr.csv` |
 | 4 | `fig4_trajectories_heatmap.csv` (panel A), `fig4_cluster_composition_{stage,treatment}.csv`, `fig4_km_data.csv`, `fig4_cluster_severity.csv`, `fig4_silhouette.csv` (appendix Fig S1) |
 | 5 | `fig5_ps_predictions.csv`, `fig5_robust_hits.csv`, `fig5_km_top_hit.csv`, `fig5_km_examples.csv`, `fig5_top_hit_meta.csv`, `fig5_love_smd.csv` |
 
@@ -108,7 +109,7 @@ manuscript_figures/
 
 - **prep_figure_1**: nothing beyond standard pipeline outputs.
 - **prep_figure_2**: requires `run_full_cohort_event.py` + `run_full_cohort_risk_scores.py` to have completed for `death_met`. The stage-vs-risk panel (E) also reads the derived cancer-stage pickle (`STAGE_PATH`), falling back to the one-hot `cancer_stage_df.csv.gz` if it is unavailable.
-- **prep_figure_3**: requires feature-comp held-out risk scores for all schemes (panels A/B/D do a per-(scheme, event) lifelines refit on the held-out scores), `death_met` for the correlation heatmap (panel C), and `feature_risk_score_coxph.py` output in `<scheme_results>/risk_score_coxph/`.
+- **prep_figure_3**: requires feature-comp held-out risk scores for all schemes (written at training time by `run_feature_comp_task.py` under `<scheme>/held_out_risk_scores/`; panels A/B/D do a per-(scheme, event) lifelines refit on those scores) and `death_met` for the correlation heatmap (panel C).
 - **prep_figure_4**: requires `generate_mortality_trajectories.py` output. Defaults to `decay_param=0.1`; override with `--decay <val>` or `--input <path>`.
 - **prep_figure_5**: requires `ICI_train_propensity.py` predictions, `run_IPTW_analysis.py` per-spec outputs, `compile_IPTW_results.py` compiled hits, and IPTW input CSVs.
 

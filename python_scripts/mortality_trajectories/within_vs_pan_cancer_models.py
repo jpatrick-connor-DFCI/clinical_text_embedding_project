@@ -45,10 +45,10 @@ cancer_type_counts = full_df['CANCER_TYPE'].value_counts()
 types_to_keep = cancer_type_counts[cancer_type_counts >= 500].index.tolist()
 full_df['CANCER_TYPE'] = full_df['CANCER_TYPE'].where(full_df['CANCER_TYPE'].isin(types_to_keep), 'OTHER')
 
-# === Train/held-out split ===
-eval_mrns = full_df['DFCI_MRN'].sample(frac=0.75, random_state=1234).tolist()
-train_df = full_df.loc[~full_df['DFCI_MRN'].isin(eval_mrns)].reset_index(drop=True)
-held_df  = full_df.loc[ full_df['DFCI_MRN'].isin(eval_mrns)].reset_index(drop=True)
+# === Train/held-out split (75% train, 25% held-out evaluation) ===
+held_mrns = full_df['DFCI_MRN'].sample(frac=0.25, random_state=1234).tolist()
+train_df = full_df.loc[~full_df['DFCI_MRN'].isin(held_mrns)].reset_index(drop=True)
+held_df  = full_df.loc[ full_df['DFCI_MRN'].isin(held_mrns)].reset_index(drop=True)
 
 # === One-hot encode cancer type ===
 train_df = pd.get_dummies(train_df, columns=['CANCER_TYPE'], drop_first=True)

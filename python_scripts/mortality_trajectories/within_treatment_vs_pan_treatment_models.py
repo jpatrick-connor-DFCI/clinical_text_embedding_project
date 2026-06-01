@@ -50,10 +50,10 @@ tt_events = [f"tt_{e}" for e in events]
 # Embedding features
 embed_cols = [c for c in full_df.columns if ('EMBEDDING' in c or '2015' in c)]
 
-# === Train/held-out split ===
-eval_mrns = full_df['DFCI_MRN'].sample(frac=0.75, random_state=1234).tolist()
-train_df = full_df.loc[~full_df['DFCI_MRN'].isin(eval_mrns)].reset_index(drop=True)
-held_df  = full_df.loc[ full_df['DFCI_MRN'].isin(eval_mrns)].reset_index(drop=True)
+# === Train/held-out split (75% train, 25% held-out evaluation) ===
+held_mrns = full_df['DFCI_MRN'].sample(frac=0.25, random_state=1234).tolist()
+train_df = full_df.loc[~full_df['DFCI_MRN'].isin(held_mrns)].reset_index(drop=True)
+held_df  = full_df.loc[ full_df['DFCI_MRN'].isin(held_mrns)].reset_index(drop=True)
 
 # Ensure consistent column order
 held_df = held_df[train_df.columns]

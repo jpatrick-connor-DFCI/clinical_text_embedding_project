@@ -30,7 +30,15 @@ cancer_type_sub = cancer_type_df.loc[cancer_type_df['DFCI_MRN'].isin(time_decaye
 cancer_type_counts = cancer_type_sub['CANCER_TYPE'].value_counts()
 types_to_keep = cancer_type_counts[cancer_type_counts >= 500].index.tolist()
 cancer_type_sub['CANCER_TYPE'] = cancer_type_sub['CANCER_TYPE'].where(cancer_type_sub['CANCER_TYPE'].isin(types_to_keep), 'OTHER')
+# Preserve the raw (collapsed) label alongside the dummies. `drop_first=True`
+# removes the reference category's column, so patients in that category are
+# all-zero across CANCER_TYPE_* and would be mislabeled by a downstream idxmax.
+# Keeping the string label lets consumers recover the true type directly. The
+# column is named 'CANCER_TYPE' (no trailing underscore) so it is never picked
+# up by `startswith('CANCER_TYPE_')` feature-column filters.
+_raw_cancer_type = cancer_type_sub['CANCER_TYPE'].copy()
 cancer_type_sub = pd.get_dummies(cancer_type_sub, columns=['CANCER_TYPE'], drop_first=True)
+cancer_type_sub.insert(1, 'CANCER_TYPE', _raw_cancer_type.values)
 
 # === Cancer stage ===
 mrn_stage_dict = pickle.load(open(os.path.join(STAGE_PATH, 'dfci_cancer_mrn_to_derived_cancer_stage.pkl'), 'rb'))

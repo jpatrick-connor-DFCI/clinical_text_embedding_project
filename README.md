@@ -27,8 +27,65 @@ clinical_text_embedding_project/
 │   └── embed_surv_utils/         # Shared preprocessing and Cox model utilities (installable package)
 ├── bash_scripts/                 # SLURM submission and worker scripts
 │   └── slurm_manifests/          # Generated task TSV files
-└── jupyter_notebooks/            # Top-level analysis notebooks (per-pipeline notebooks live alongside their scripts)
+├── jupyter_notebooks/            # Top-level analysis notebooks (per-pipeline notebooks live alongside their scripts)
+│   └── manuscript_figures/       # PUBLICATION TARGET: Python data-prep + R rendering for Figures 1–5 + S1
+├── README.md                     # This file
+└── CODE_REVIEW.md                # Known issues / correctness review (read before trusting a result)
 ```
+
+> **Publication deliverable.** The five composite figures rendered under
+> `jupyter_notebooks/manuscript_figures/` (`figure1_schematic` … `figure5_biomarkers`, plus
+> appendix `figureS1`) are the target outputs of the whole repository. Everything in Pipelines 1–4
+> exists to produce the inputs those figures consume. See
+> [`jupyter_notebooks/manuscript_figures/README.md`](jupyter_notebooks/manuscript_figures/README.md)
+> for the figure-by-figure build.
+
+---
+
+## End-to-end workflow
+
+The repository is a four-stage DAG that terminates in the manuscript figures. Each stage writes
+artifacts consumed by the next; the manuscript-figure tier reads from several stages at once.
+
+```text
+                    ┌─────────────────────────────────────────────────────────────┐
+ raw EHR / PROFILE  │ Pipeline 1 · Data preprocessing                              │
+ notes, ICD, labs,  │  text → tokenize → Clinical-Longformer embed → knit          │
+ mutations, PRS ───▶│  ICD times · phecode map · pooled survival datasets ·        │
+                    │  non-text covariate matrices (stage/treatment/somatic/PRS/labs)│
+                    └───────────────┬─────────────────────────────────────────────┘
+                                    │ embedding + covariate matrices, time-to-event datasets
+        ┌───────────────────────────┼───────────────────────────────────┐
+        ▼                           ▼                                     ▼
+ ┌──────────────────┐   ┌─────────────────────────┐        ┌──────────────────────────┐
+ │ Pipeline 2 ·     │   │ Pipeline 3 ·            │        │ Pipeline 4 ·             │
+ │ Survival training│   │ Mortality trajectories  │        │ Biomarker analysis       │
+ │ (SLURM arrays)   │   │ & model evaluation      │        │ (ICI propensity + IPTW)  │
+ │ text vs base ·   │   │ held-out modality risk ·│        │ line-matched cohorts ·   │
+ │ feature comp ·   │   │ 2nd-stage Cox · rolling │        │ PS models · IPTW Cox ·   │
+ │ held-out scores  │   │ trajectories · clusters │        │ compile + validate hits  │
+ └───────┬──────────┘   └────────────┬────────────┘        └────────────┬─────────────┘
+         │                           │                                   │
+         └───────────────┬───────────┴───────────────────┬───────────────┘
+                         ▼                                ▼
+              ┌──────────────────────────────────────────────────────┐
+              │ Manuscript figures (jupyter_notebooks/manuscript_figures)│
+              │  Python prep (data_generation/prep_figure_*.py) → CSVs  │
+              │  R render (R/plot_figure_*.R) → figureN_*.{png,pdf}      │
+              └──────────────────────────────────────────────────────┘
+```
+
+**Figure ← pipeline provenance:**
+
+| Figure | Theme | Reads from |
+|--------|-------|-----------|
+| 1 | Cohort & endpoint description | Pipeline 1 (covariates, endpoint counts, notes/patient) |
+| 2 | Text vs. base survival prediction | Pipeline 2 full-cohort training + held-out risk scores (`death_met`) |
+| 3 | Modality comparison | Pipeline 2 feature-comparison + Pipeline 3 second-stage joint Cox |
+| 4 | Mortality trajectories | Pipeline 3 rolling-window trajectories + clustering |
+| 5 | ICI biomarker discovery | Pipeline 4 propensity scores, IPTW results, compiled hits |
+
+Run order: **Pipeline 1 → (2, 3, 4 in any order, 3 depends on 2's trained models) → figure prep → figure render.**
 
 ---
 
@@ -121,13 +178,11 @@ python python_scripts/model_training/run_full_cohort_risk_scores.py --scheme dea
 
 ## Pipeline 3: Mortality Trajectories & Model Evaluation
 
-Scripts under `python_scripts/mortality_trajectories/`. Evaluates trained models through held-out risk scoring, second-stage Cox modeling on those risk scores, mortality trajectory analysis, and stratified model comparisons.
+Scripts under `python_scripts/mortality_trajectories/`. Covers mortality trajectory analysis and stratified model comparisons. Per-modality held-out risk scores are produced at training time by `run_feature_comp_task.py` (Pipeline 2), which writes them under `<scheme>/held_out_risk_scores/`; the manuscript second-stage joint Cox refit (for Figure 3 p-values) is done directly in `manuscript_figures/data_generation/prep_figure_3.py` with `lifelines`.
+
+> **Note:** the standalone `feature_ICD10_level_3_risk_scores.py` (per-modality risk-score regeneration) and `feature_risk_score_coxph.py` (second-stage Cox) scripts were **removed** — both duplicated work now done at training time / in the figure-prep tier. Recover from git history if needed.
 
 ### Logic and design decisions
-
-**Per-modality held-out risk scores for metastasis endpoints** (`feature_ICD10_level_3_risk_scores.py`): For each ICD-10 level 3 endpoint (and the metastasis endpoints with baseline-metastasis exclusion), loads the best hyperparameters from each modality's `*_val.csv` and generates 5-fold held-out risk scores using `get_heldout_risk_scores_CoxPH`. Produces a merged per-patient risk-score DataFrame across modalities for downstream KM and second-stage Cox analyses.
-
-**Second-stage CoxPH on risk scores** (`feature_risk_score_coxph.py`): For each event with a complete set of modality risk-score files, fits (a) univariate Cox models per modality and (b) a joint Cox model over all modality risk scores. Writes `univariate_modality_metrics.csv`, `joint_model_metrics.csv`, and `joint_model_betas.csv`. Supports running across one or all schemes and a configurable modality set.
 
 **Mortality trajectories** (`generate_mortality_trajectories.py`): Fits a pan-cancer embedding-based Cox model at time 0, then generates risk scores at rolling 3-month intervals (3, 6, ..., 60 months post-treatment). At each interval, re-pools embeddings using all notes up to that time point with time-decay weighting (decay=1.0 for sharper recency focus). Produces a patient × time matrix of risk scores that captures how predicted mortality evolves with accumulating clinical information.
 
@@ -231,6 +286,24 @@ Installable Python package (`pip install -e python_utils/`) providing core funct
 | `python_scripts/model_training/` | `run_full_cohort_risk_scores.ipynb` | Orchestrates `run_full_cohort_risk_scores.py` across every `(scheme, event)` whose training has completed. |
 | `python_scripts/biomarker_analysis/` | `run_biomarker_pipeline.ipynb` | End-to-end driver for the biomarker discovery pipeline (cohorts × PS models × tracks). |
 | `python_scripts/biomarker_analysis/` | `propensity_score_evaluation.ipynb` | Compares the two propensity score specifications (covariates-only vs +embeddings) for ICI prediction. |
+| `jupyter_notebooks/manuscript_figures/` | `generate_figure_data.ipynb` | **Python kernel** — runs the five `prep_figure_*.py` scripts to write figure-data CSVs. |
+| `jupyter_notebooks/manuscript_figures/` | `render_figures.ipynb` | **R kernel** — sources `R/plot_figure_*.R` to render the composite manuscript figures. |
+
+---
+
+## Known issues & correctness review
+
+A full correctness review of the repository lives in [`CODE_REVIEW.md`](CODE_REVIEW.md). **Read it before
+trusting a published number.** It documents 36 verified findings. The five publication-critical ones have
+been **fixed** — the inverted train/eval split in the within-vs-pan comparisons (Pipeline 3), double-scoring
+of metastasis endpoints (resolved by removing two deprecated scripts), immortal-time bias in the matched ICI
+cohort (Pipeline 4 → Figure 5, via landmark re-anchoring), the cancer-type mislabeling in the Figure 2/5 prep,
+and the Figure 4 cluster naming. **After pulling these fixes you must re-run the affected pipelines/figures**
+(covariate generation, the two within-vs-pan scripts, the IPTW dataset builder, and the figure preps) to
+regenerate results — and check the landmark-shift diagnostic that `generate_IPTW_df.py` now prints. The core
+cross-validation machinery in `embed_surv_utils` was verified leakage-safe (per-fold PCA/scaling/imputation).
+The remaining medium/low findings (notably the biomarker-pipeline statistics) are left documented-but-unfixed
+for review with a statistician; each lists the exact file, line, impact, and fix.
 
 ---
 
