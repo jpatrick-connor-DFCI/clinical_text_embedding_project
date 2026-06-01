@@ -1,8 +1,9 @@
 # Render Figure 2 (text vs base, full cohort) in ggplot2 + patchwork.
 #
 # A scatter (text vs base c-index), B Δc-index violins + Wilcoxon stars,
-# C cancer×endpoint heatmap, D KM by risk-score tertile (text solid / base dashed),
-# E stage vs text risk-quartile KM (1×2) + c-index annotation.
+# C pan vs within-cancer model (dumbbell, mean AUC), D pan vs within-treatment model,
+# E KM by risk-score tertile (text solid / base dashed),
+# F stage vs text risk-quartile KM (1×2) + c-index annotation.
 
 suppressPackageStartupMessages({
   library(ggplot2); library(patchwork); library(dplyr); library(tidyr)
@@ -119,37 +120,35 @@ build_fig2b <- function(metrics) {
 
 
 # ============================================================================
-# fig2c: heatmap of text c-index by cancer type × endpoint
+# fig2c / fig2d: pan vs. within-stratum model dumbbell (mean time-dependent AUC).
+# Grey dot = pan model, red dot = within-stratum model; dashed line = overall pan AUC.
+# Shared by the cancer-stratified and treatment-stratified panels.
 # ============================================================================
-build_fig2c <- function() {
-  d <- load_figure_data("fig2_cancer_endpoint_heatmap.csv")
-  if (nrow(d) == 0) return(placeholder_panel("fig2_cancer_endpoint_heatmap.csv empty"))
-  d <- d %>%
-    filter(!is.na(text_cindex)) %>%
-    mutate(event = gsub("_", " ", as.character(event)),
-           cancer_type = as.character(cancer_type),
-           star = ifelse(text_cindex >= 0.60, "*", ""))
-  event_order <- d %>% group_by(event) %>%
-    summarise(m = mean(text_cindex)) %>% arrange(desc(m)) %>% pull(event)
-  cancer_order <- d %>% group_by(cancer_type) %>%
-    summarise(s = sum(n)) %>% arrange(desc(s)) %>% pull(cancer_type)
-  d <- d %>%
-    mutate(event = factor(event, levels = event_order),
-           cancer_type = factor(cancer_type, levels = cancer_order))
-  ggplot(d, aes(cancer_type, event, fill = text_cindex)) +
-    geom_tile(color = "white") +
-    geom_text(aes(label = star), color = "white", size = 4, fontface = "bold",
-              vjust = 0.55) +
-    scale_fill_distiller(palette = "Blues", direction = 1,
-                         limits = c(0.5, 1.0), name = "C-index",
-                         na.value = "grey90") +
-    labs(x = NULL, y = NULL,
-         title = "Text Model C-index by Cancer Type and Endpoint") +
+build_within_vs_pan <- function(csv, stratum_title) {
+  d <- load_figure_data(csv)
+  if (nrow(d) == 0) return(placeholder_panel(paste(csv, "empty")))
+  is_ov <- as.character(d$is_overall) %in% c("True", "TRUE", "true")
+  overall_pan <- d$auc_pan[is_ov]
+  d <- d[!is_ov, , drop = FALSE]
+  if (nrow(d) == 0) return(placeholder_panel(paste(csv, "no per-stratum rows")))
+  d$stratum <- forcats::fct_reorder(as.character(d$stratum), d$delta)
+  p <- ggplot(d) +
+    geom_segment(aes(y = stratum, yend = stratum, x = auc_pan, xend = auc_within),
+                 color = "#BBBBBB", linewidth = 0.9) +
+    geom_point(aes(y = stratum, x = auc_pan,    color = "Pan"),    size = 2.6) +
+    geom_point(aes(y = stratum, x = auc_within, color = "Within"), size = 2.6) +
+    geom_text(aes(y = stratum, x = pmax(auc_pan, auc_within), label = paste0("n=", n_heldout)),
+              hjust = -0.2, size = 2.5, color = "#666666") +
+    scale_color_manual(values = c(Pan    = unname(MODEL_COLORS[["base"]]),
+                                  Within = unname(MODEL_COLORS[["text"]])), name = NULL) +
+    scale_x_continuous(expand = expansion(mult = c(0.02, 0.13))) +
+    labs(title = stratum_title, x = "Held-out mean time-dependent AUC", y = NULL) +
     theme_manuscript() +
-    theme(axis.text.x = element_text(angle = 35, hjust = 1),
-          axis.text.y = element_text(size = 7),
-          panel.grid = element_blank(),
-          axis.line = element_blank(), axis.ticks = element_blank())
+    theme(legend.position = "top")
+  if (length(overall_pan) == 1 && is.finite(overall_pan)) {
+    p <- p + geom_vline(xintercept = overall_pan, linetype = "dashed", color = "#999999")
+  }
+  p
 }
 
 
@@ -253,18 +252,20 @@ metrics <- load_figure_data("fig2_full_cohort_metrics.csv")
 
 p2a <- build_fig2a(metrics)
 p2b <- build_fig2b(metrics)
-p2c <- build_fig2c()
+p2_wc <- build_within_vs_pan("fig2_within_vs_pan_cancer.csv",    "Pan vs. within-cancer model")
+p2_wt <- build_within_vs_pan("fig2_within_vs_pan_treatment.csv", "Pan vs. within-treatment model")
 p2d <- build_fig2d()
 p2e <- build_fig2e()
 
 save_panel(p2a, "fig2a", width = 6.4, height = 5.0)
 save_panel(p2b, "fig2b", width = 6.0, height = 4.8)
-save_panel(p2c, "fig2c", width = 10.8, height = 4.2)
-save_panel(p2d, "fig2d", width = 6.4, height = 5.0)
-save_panel(p2e, "fig2e", width = 11.0, height = 4.8)
+save_panel(p2_wc, "fig2c", width = 5.6, height = 4.6)
+save_panel(p2_wt, "fig2d", width = 5.6, height = 4.6)
+save_panel(p2d, "fig2e", width = 6.4, height = 5.0)
+save_panel(p2e, "fig2f", width = 11.0, height = 4.8)
 
 fig2 <- (p2a + p2b) /
-        p2c /
+        (p2_wc + p2_wt) /
         p2d /
         p2e +
         plot_annotation(tag_levels = "A") &

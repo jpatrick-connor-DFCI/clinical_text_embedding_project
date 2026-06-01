@@ -9,7 +9,7 @@ manuscript_figures/
 ├── _figure_utils.py              # shared module for Python preps
 ├── data_generation/              # Python — compute tier, writes CSVs to figure_data/
 │   ├── prep_figure_1.py          # cohort, endpoint, notes/patient, stage/treatment counts
-│   ├── prep_figure_2.py          # full-cohort C-index, cancer×endpoint heatmap, KMs, stage-vs-risk
+│   ├── prep_figure_2.py          # full-cohort C-index, pan-vs-within models, KMs, stage-vs-risk
 │   ├── prep_figure_3.py          # modality C-index, avg-rank, joint betas, risk-score corr
 │   ├── prep_figure_4.py          # trajectory clustering, severity (mean met, RMST), silhouette
 │   └── prep_figure_5.py          # PS predictions, robust hits, KM examples, love-plot SMDs
@@ -17,7 +17,7 @@ manuscript_figures/
 │   ├── figure_utils.R            # paths, palettes, theme, IO, stats helpers, KM helper
 │   ├── install_packages.R        # one-time CRAN bootstrap
 │   ├── plot_figure_1.R           # 6 panels → figure1_schematic.{png,pdf}
-│   ├── plot_figure_2.R           # 5 panels → figure2_text_results.{png,pdf}
+│   ├── plot_figure_2.R           # 6 panels → figure2_text_results.{png,pdf}
 │   ├── plot_figure_3.R           # 4 panels → figure3_feature_comps.{png,pdf}
 │   ├── plot_figure_4.R           # 3 panels + figS1 → figure4_trajectories.{png,pdf} + figureS1_*
 │   └── plot_figure_5.R           # 4 panels → figure5_biomarkers.{png,pdf}
@@ -91,6 +91,7 @@ manuscript_figures/
 - **Significance stars on distribution panels.** GraphPad convention (`*` <.05, `**` <.01, `***` <.001, `****` <1e-4, `ns` otherwise). Fig 2B uses Wilcoxon signed-rank vs Δ=0 per scheme; Fig 3D uses Wilcoxon signed-rank vs z=0 per modality; Fig 1C uses an omnibus Kruskal-Wallis across note types. Tests live in the plot scripts (light compute, no new CSVs).
 - **Disease-severity characteristics (Fig 4C).** Panel C is a 1×4 small-multiples row (% Stage IV, % ICI treated, mean # metastatic sites, **10-yr RMST** in months) reading `fig4_cluster_severity.csv`. RMST (`restricted_mean_survival_time`, **τ=120 mo** = 5 y past the 60-mo landmark entry requirement, so RMST does not saturate at the entry cap). Stage and ICI tokens accept float repr (`4.0`) and the long form `Immune Checkpoint Inhibitors`.
 - **Cluster-count selection (Fig S1, appendix).** `prep_figure_4._silhouette_scan` computes silhouette vs k (2–8) on the same scaled trajectory matrix; `figS1a` plots it and marks the chosen k=4. Composed as `figureS1_cluster_silhouette` (compose key `s1`).
+- **Pan vs. within-stratum models (Fig 2C/2D).** Dumbbell (Cleveland) panels replacing the old cancer×endpoint heatmap: per stratum, grey dot = single pan-cohort embedding model, red dot = stratum-specific model, connected and sorted by Δ, with a dashed line at the overall-pan value. Metric is **mean time-dependent AUC** (not C-index) to match Fig 2A/Fig 3 and the CV-selection metric; it is computed upstream in `within_vs_pan_cancer_models.py` / `within_treatment_vs_pan_treatment_models.py` (train-based IPCW, train 5–95th-percentile eval grid clipped to each stratum's follow-up), which also write an `Overall` row. Death endpoint only; per-stratum rows require n≥30 held-out. Most within dots sitting at/below the dashed line is the intended "a single pan-cohort text model generalizes" message.
 - **Cohort distributions (Fig 1).** The timeline schematic is replaced by population panels: notes-per-patient by type (box/violin, `fig1_notes_per_patient.csv`; shown among patients with ≥1 note of that type), cancer-stage and first-line-treatment breakdowns (`fig1_stage_counts.csv`, `fig1_treatment_counts.csv`), alongside the cancer-type pie. (The embedding UMAP was dropped — it did not read well.)
 - **Trajectory heatmap (Fig 4A).** Panel A is the per-patient mortality-risk heatmap (`fig4_trajectories_heatmap.csv`, ≤500 patients/cluster, ordered by within-cluster mean risk), with white separators and cluster-name y-labels.
 - **Covariate balance love plot (Fig 5).** `prep_figure_5._love_smd` recomputes stabilized ATE weights from the held-out propensity (`ICI_prediction`, dropping rows missing it) and reports SMD before vs after weighting (`fig5_love_smd.csv`, primary spec, pooled across cancers). Panel A notes the AUC is held-out CV; panel B annotates the denominator (robust hits of markers significant in ≥1 spec — `n_significant_markers`); panel C titles carry the marker×ICI interaction HR + 95% CI (carried through `fig5_km_examples.csv`).
@@ -100,7 +101,7 @@ manuscript_figures/
 | Figure | Inputs from `figure_data/` |
 |---|---|
 | 1 | `fig1_endpoint_counts.csv`, `fig1_cancer_type_counts.csv`, `fig1_notes_per_patient.csv`, `fig1_stage_counts.csv`, `fig1_treatment_counts.csv` |
-| 2 | `fig2_full_cohort_metrics.csv`, `fig2_cancer_endpoint_heatmap.csv`, `fig2_km_tertiles.csv`, `fig2_km_stage_vs_risk.csv`, `fig2_stage_vs_risk_cindex.csv` |
+| 2 | `fig2_full_cohort_metrics.csv`, `fig2_within_vs_pan_cancer.csv`, `fig2_within_vs_pan_treatment.csv`, `fig2_km_tertiles.csv`, `fig2_km_stage_vs_risk.csv`, `fig2_stage_vs_risk_cindex.csv` |
 | 3 | `fig3_modality_cindex.csv`, `fig3_modality_avg_rank.csv`, `fig3_joint_betas.csv` (includes p-values), `fig3_risk_score_corr.csv` |
 | 4 | `fig4_trajectories_heatmap.csv` (panel A), `fig4_cluster_composition_{stage,treatment}.csv`, `fig4_km_data.csv`, `fig4_cluster_severity.csv`, `fig4_silhouette.csv` (appendix Fig S1) |
 | 5 | `fig5_ps_predictions.csv`, `fig5_robust_hits.csv`, `fig5_km_top_hit.csv`, `fig5_km_examples.csv`, `fig5_top_hit_meta.csv`, `fig5_love_smd.csv` |
@@ -108,7 +109,7 @@ manuscript_figures/
 ## Prerequisites for each prep script
 
 - **prep_figure_1**: nothing beyond standard pipeline outputs.
-- **prep_figure_2**: requires `run_full_cohort_event.py` + `run_full_cohort_risk_scores.py` to have completed for `death_met`. The stage-vs-risk panel (E) also reads the derived cancer-stage pickle (`STAGE_PATH`), falling back to the one-hot `cancer_stage_df.csv.gz` if it is unavailable.
+- **prep_figure_2**: requires `run_full_cohort_event.py` + `run_full_cohort_risk_scores.py` to have completed for `death_met`. The pan-vs-within panels (C/D) read the Pipeline-3 outputs `results/pan_vs_within_cancer/metrics_by_cancer_type.csv` and `results/pan_vs_within_treatment/metrics_by_treatment.csv` (directly under the scheme-agnostic `time-to-event_analysis/results/` dir, so `within_vs_pan_cancer_models.py` and `within_treatment_vs_pan_treatment_models.py` must be run first; they now report mean time-dependent AUC). The stage-vs-risk panel (F) also reads the derived cancer-stage pickle (`STAGE_PATH`), falling back to the one-hot `cancer_stage_df.csv.gz` if it is unavailable.
 - **prep_figure_3**: requires feature-comp held-out risk scores for all schemes (written at training time by `run_feature_comp_task.py` under `<scheme>/held_out_risk_scores/`; panels A/B/D do a per-(scheme, event) lifelines refit on those scores) and `death_met` for the correlation heatmap (panel C).
 - **prep_figure_4**: requires `generate_mortality_trajectories.py` output. Defaults to `decay_param=0.1`; override with `--decay <val>` or `--input <path>`.
 - **prep_figure_5**: requires `ICI_train_propensity.py` predictions, `run_IPTW_analysis.py` per-spec outputs, `compile_IPTW_results.py` compiled hits, and IPTW input CSVs.

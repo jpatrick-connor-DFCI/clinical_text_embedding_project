@@ -42,7 +42,7 @@ For Cohort 2, ICI can be received at line 1, 2, or 3, but the survival clock (`t
 `jupyter_notebooks/manuscript_figures/data_generation/prep_figure_5.py:107–117`
 
 Cancer type was recovered with `idxmax` over `drop_first=True` dummy columns. Rows belonging to the dropped **reference** category are all-zero, so `idxmax` silently returned the first dummy column — mislabeling every reference-category patient as some other cancer. This corrupted the cancer-type breakdowns in the Fig 2 heatmap and the Fig 5 PS-prediction annotation. (`generate_all_non_text_covariates.py:33` confirmed `drop_first=True`.)
-**Resolution:** `generate_all_non_text_covariates.py` now also writes the raw collapsed `CANCER_TYPE` string column into `cancer_type_df.csv.gz` (named without a trailing `_` so it is never picked up as a feature column). `prep_figure_2._cancer_type_labels` and `prep_figure_5._patient_cancer_type` now prefer that raw label and only fall back to the dummy `idxmax` (with a warning) for legacy files. ⚠️ **Regenerate `cancer_type_df.csv.gz`** (re-run `generate_all_non_text_covariates.py`) so the raw column exists before re-running the figure preps.
+**Resolution:** `generate_all_non_text_covariates.py` now also writes the raw collapsed `CANCER_TYPE` string column into `cancer_type_df.csv.gz` (named without a trailing `_` so it is never picked up as a feature column). `prep_figure_5._patient_cancer_type` prefers that raw label and only falls back to the dummy `idxmax` (with a warning) for legacy files. (The `prep_figure_2._cancer_type_labels` consumer was subsequently **removed** when the cancer×endpoint heatmap panel was retired — see M8 — so H4 now affects only `prep_figure_5`.) ⚠️ **Regenerate `cancer_type_df.csv.gz`** (re-run `generate_all_non_text_covariates.py`) so the raw column exists before re-running the figure preps.
 
 ### H5 · Figure 4 cluster names assert trajectory shapes that aren't tested — ✅ FIXED
 `jupyter_notebooks/manuscript_figures/R/plot_figure_4.R:29–38`
@@ -81,15 +81,14 @@ The notebook re-ran events where the text model underperformed the base model, b
 
 ### M6 · `evaluate_surv_model` time grid can exceed eval-fold follow-up
 `embed_surv_utils/cox_models.py:66–76, 359–360, 412–414, 607–609` — `eval_times` are drawn from *training-fold* survival percentiles; if an eval fold's max follow-up is shorter, `cumulative_dynamic_auc`/`integrated_brier_score` raise and the fold silently becomes NaN, biasing CV means toward folds with longer follow-up.
-**Fix:** clip `eval_times` to each eval fold's support (and log when a metric is NaN for time-grid reasons vs. true failure).
+**Fix:** clip `eval_times` to each eval fold's support (and log when a metric is NaN for time-grid reasons vs. true failure). *(Still open in `cox_models.py`. Note: the new mean-AUC(t) code added to the two within-vs-pan scripts already applies this clip per stratum, so it does not exhibit the bug.)*
 
 ### M7 · `brainM` eligibility count ignores the brain-cancer exclusion
 `python_scripts/model_training/build_slurm_manifests.py:22–29` — the manifest builder counts `brainM` cases on the un-merged cohort (no `CANCER_TYPE_BRAIN` column), so the ≥50-case gate uses a cohort that differs from the one training actually uses after excluding brain-cancer patients.
 **Fix:** build the same merged cohort used at training time before counting.
 
-### M8 · Fig 2C heatmap stars are a cosmetic threshold, not significance
-`jupyter_notebooks/manuscript_figures/R/plot_figure_2.R:131` — cells get a `*` when `text_cindex >= 0.60`, which reads as a significance marker but is a fixed cutoff.
-**Fix:** use a real criterion (e.g. bootstrap CI of the c-index excluding 0.5) or relabel the marker explicitly as "c-index ≥ 0.60" in the legend.
+### M8 · Fig 2C heatmap stars are a cosmetic threshold, not significance — ✅ RESOLVED (panel removed)
+`jupyter_notebooks/manuscript_figures/R/plot_figure_2.R:131` — cells got a `*` when `text_cindex >= 0.60`, reading as a significance marker but actually a fixed cutoff. **Resolution:** the cancer×endpoint heatmap panel was **removed** from Figure 2 (its `build_fig2c`, the `_cancer_endpoint_heatmap` prep, and `fig2_cancer_endpoint_heatmap.csv` are gone) and replaced by the pan-vs-within-model dumbbell panels (Fig 2C/2D), which carry no cosmetic stars.
 
 ---
 

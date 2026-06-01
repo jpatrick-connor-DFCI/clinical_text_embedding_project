@@ -2,7 +2,8 @@
 
 Writes to FIGURE_DATA_DIR:
 - fig2_full_cohort_metrics.csv      scheme, event, text_cindex, base_cindex, text_auc, base_auc
-- fig2_cancer_endpoint_heatmap.csv  event, cancer_type, text_cindex, n, n_events
+- fig2_within_vs_pan_cancer.csv     stratum, auc_pan, auc_within, delta, n_heldout, is_overall
+- fig2_within_vs_pan_treatment.csv  stratum, auc_pan, auc_within, delta, n_heldout, is_overall
 - fig2_km_tertiles.csv              DFCI_MRN, text_risk_score, base_risk_score, death, tt_death,
                                     text_tertile, base_tertile
 - fig2_km_stage_vs_risk.csv         DFCI_MRN, tt_death, death, text_risk_score, stage_group,
@@ -24,7 +25,7 @@ from sksurv.metrics import concordance_index_censored
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from _figure_utils import (
-    FEATURE_PATH, SURV_PATH,
+    FEATURE_PATH, RESULTS_PATH, SURV_PATH,
     full_cohort_event_dir, full_cohort_risk_dir, list_trained_events,
     save_figure_data,
 )
@@ -38,7 +39,6 @@ STAGE_PATH = (
 
 
 SCHEMES = ["death_met", "icd3_post", "icd4_post", "phecode_post"]
-DEATH_EVENTS = ["death", "brainM", "boneM", "adrenalM", "liverM", "lungM", "nodeM", "peritonealM"]
 
 # Major-stage ordering / ordinal encoding for the stage-vs-risk comparison
 STAGE_ORDER = ["I", "II", "III", "IV"]
@@ -48,7 +48,12 @@ RISK_QUARTILE_LABELS = ["Q1", "Q2", "Q3", "Q4"]
 FULL_COHORT_METRIC_COLUMNS = [
     "scheme", "event", "text_cindex", "base_cindex", "text_auc", "base_auc",
 ]
-CANCER_ENDPOINT_COLUMNS = ["event", "cancer_type", "text_cindex", "n", "n_events"]
+WITHIN_VS_PAN_COLUMNS = ["stratum", "auc_pan", "auc_within", "delta", "n_heldout", "is_overall"]
+# (subdir, filename, stratum-column) for each within-vs-pan comparison written by Pipeline 3.
+_WITHIN_VS_PAN_SPEC = {
+    "cancer":    ("pan_vs_within_cancer",    "metrics_by_cancer_type.csv", "CANCER_TYPE"),
+    "treatment": ("pan_vs_within_treatment", "metrics_by_treatment.csv",   "TREATMENT"),
+}
 KM_TERTILE_COLUMNS = [
     "DFCI_MRN", "text_risk_score", "base_risk_score", "death", "tt_death",
     "text_tertile", "base_tertile",
@@ -220,71 +225,44 @@ def _stage_vs_risk_cindex(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=STAGE_VS_RISK_CINDEX_COLUMNS)
 
 
-def _cancer_type_labels(cancer_df: pd.DataFrame) -> pd.DataFrame:
-    type_cols = [c for c in cancer_df.columns if c.startswith("CANCER_TYPE_")]
-    if "CANCER_TYPE" in cancer_df.columns:
-        # Raw label (added by generate_all_non_text_covariates.py) — correct for
-        # all patients including the drop_first reference category.
-        labels = cancer_df["CANCER_TYPE"].astype(str)
-    elif type_cols:
-        # Legacy fallback: idxmax over drop_first dummies mislabels the dropped
-        # reference category (all-zero rows). Warn and regenerate covariates.
-        print("  WARN: cancer_type_df.csv.gz has no raw CANCER_TYPE column; "
-              "reference-category patients may be mislabeled. Regenerate covariates.")
-        labels = cancer_df[type_cols].apply(pd.to_numeric, errors="coerce").fillna(0).idxmax(axis=1)
-        labels = labels.str.replace("CANCER_TYPE_", "", regex=False)
-    else:
-        return pd.DataFrame(columns=["DFCI_MRN", "cancer_type"])
-    return pd.DataFrame({
-        "DFCI_MRN": cancer_df["DFCI_MRN"],
-        "cancer_type": labels.astype(str).str.replace("_", " ", regex=False),
+def _within_vs_pan(kind: str) -> pd.DataFrame:
+    """Read a Pipeline-3 pan-vs-within metrics CSV (mean time-dependent AUC).
+
+    Maps the upstream schema to the unified figure schema, keeps the `Overall`
+    row, drops NaN-AUC strata, and applies an n>=30 floor to per-stratum rows
+    (the treatment script writes all strata; the cancer script already filters).
+    Returns a header-only frame if the upstream file is missing or pre-dates the
+    AUC columns (re-run the Pipeline-3 script), so the R panel degrades gracefully.
+    """
+    subdir, fname, stratum_col = _WITHIN_VS_PAN_SPEC[kind]
+    fp = os.path.join(RESULTS_PATH, subdir, fname)
+    if not os.path.exists(fp):
+        print(f"  missing {fp}; skipping within-vs-pan {kind}")
+        return pd.DataFrame(columns=WITHIN_VS_PAN_COLUMNS)
+    df = pd.read_csv(fp)
+    if not {stratum_col, "AUC_PAN", "AUC_WITHIN", "N_HELDOUT"}.issubset(df.columns):
+        print(f"  {fp} has no AUC columns — re-run the Pipeline-3 script; skipping {kind}")
+        return pd.DataFrame(columns=WITHIN_VS_PAN_COLUMNS)
+    out = pd.DataFrame({
+        "stratum": df[stratum_col].astype(str),
+        "auc_pan": df["AUC_PAN"],
+        "auc_within": df["AUC_WITHIN"],
+        "delta": df["DELTA_AUC_WITHIN_MINUS_PAN"] if "DELTA_AUC_WITHIN_MINUS_PAN" in df
+                 else df["AUC_WITHIN"] - df["AUC_PAN"],
+        "n_heldout": df["N_HELDOUT"],
     })
-
-
-def _cancer_endpoint_heatmap(surv_df: pd.DataFrame, top_n_cancers: int = 8,
-                             min_n: int = 50, min_events: int = 5) -> pd.DataFrame:
-    cancer_df = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_type_df.csv.gz"))
-    labels = _cancer_type_labels(cancer_df)
-    if labels.empty:
-        return pd.DataFrame(columns=CANCER_ENDPOINT_COLUMNS)
-    top_cancers = labels["cancer_type"].value_counts().head(top_n_cancers).index.tolist()
-    rows = []
-    for ev in DEATH_EVENTS:
-        m = _merge_risk_with_surv(ev, surv_df)
-        if m is None:
-            continue
-        merged = m.merge(labels, on="DFCI_MRN", how="inner")
-        for cancer_type in top_cancers:
-            sub = merged[merged["cancer_type"] == cancer_type].dropna(subset=["text_risk_score", ev, f"tt_{ev}"])
-            n = len(sub)
-            n_events = int(sub[ev].sum()) if n else 0
-            if n < min_n or n_events < min_events:
-                continue
-            try:
-                cidx = concordance_index_censored(
-                    sub[ev].astype(bool).values,
-                    sub[f"tt_{ev}"].astype(float).values,
-                    sub["text_risk_score"].astype(float).values,
-                )[0]
-            except (ValueError, ZeroDivisionError):
-                continue
-            rows.append({
-                "event": ev,
-                "cancer_type": cancer_type,
-                "text_cindex": cidx,
-                "n": n,
-                "n_events": n_events,
-            })
-    return pd.DataFrame(rows, columns=CANCER_ENDPOINT_COLUMNS)
-
-
+    out["is_overall"] = out["stratum"] == "Overall"
+    out = out.dropna(subset=["auc_pan", "auc_within"])
+    out = out[out["is_overall"] | (out["n_heldout"] >= 30)]
+    return out[WITHIN_VS_PAN_COLUMNS]
 
 
 def main() -> None:
     surv_df = pd.read_csv(os.path.join(SURV_PATH, "death_met_surv_df.csv.gz"))
 
     save_figure_data(_full_cohort_metrics(), "fig2_full_cohort_metrics.csv")
-    save_figure_data(_cancer_endpoint_heatmap(surv_df), "fig2_cancer_endpoint_heatmap.csv")
+    save_figure_data(_within_vs_pan("cancer"), "fig2_within_vs_pan_cancer.csv")
+    save_figure_data(_within_vs_pan("treatment"), "fig2_within_vs_pan_treatment.csv")
     save_figure_data(_km_tertiles(surv_df), "fig2_km_tertiles.csv")
 
     stage_vs_risk_df = _stage_vs_risk(surv_df)
