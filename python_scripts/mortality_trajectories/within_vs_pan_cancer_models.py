@@ -94,6 +94,17 @@ scaler = StandardScaler()
 train_df[continuous_vars] = scaler.fit_transform(train_df[continuous_vars])
 held_df[continuous_vars] = scaler.transform(held_df[continuous_vars])
 
+# Impute any remaining missing features to the TRAIN column mean. Pooled embeddings are
+# NaN for patients lacking notes of a given type; run_grid/get_heldout impute internally,
+# but the direct model.predict(held_df) below does not — so do it here for every model
+# feature (StandardScaler ignores NaN in fit and preserves it in transform). Standardized
+# columns have mean ~0; binary covariates get the train proportion. Matches the per-fold
+# mean imputation used during fitting and prevents 'Input X contains NaN' at predict time.
+_feature_cols = base_vars + type_cols + embed_cols
+_train_means = train_df[_feature_cols].mean()
+train_df[_feature_cols] = train_df[_feature_cols].fillna(_train_means)
+held_df[_feature_cols] = held_df[_feature_cols].fillna(_train_means)
+
 # === Train Pan-Cancer Model ===
 alphas_to_test = np.logspace(-5, 0, 25)
 l1_ratios = [0.5, 1.0]
