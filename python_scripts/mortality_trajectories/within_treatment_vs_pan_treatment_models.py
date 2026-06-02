@@ -2,6 +2,7 @@
 
 # === Imports ===
 import os
+import warnings
 from tqdm import tqdm
 import numpy as np
 import pandas as pd
@@ -9,6 +10,10 @@ from sklearn.preprocessing import StandardScaler
 from sksurv.metrics import concordance_index_censored, cumulative_dynamic_auc
 from sksurv.util import Surv
 from embed_surv_utils import run_grid_CoxPH_parallel, get_heldout_risk_scores_CoxPH
+
+# Silence joblib/loky's benign worker-respawn warning; it floods the Jupyter IOPub
+# channel during long runs and triggers "IOStream.flush timed out".
+warnings.filterwarnings("ignore", message="A worker stopped while some jobs were given to the executor")
 
 # === Paths ===
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
@@ -92,7 +97,7 @@ pan_treatment_l1, pan_treatment_alpha = embed_val_results.sort_values(by='mean_a
 trained_pan_treatment = (
     get_heldout_risk_scores_CoxPH(train_df, base_vars, continuous_vars, embed_cols,
                                   event_col=event, tstop_col=f'tt_{event}', penalized=True, max_iter=3000,
-                                  l1_ratio=pan_treatment_l1, alpha=pan_treatment_alpha)
+                                  l1_ratio=pan_treatment_l1, alpha=pan_treatment_alpha, backend="threading")
     .rename(columns={'risk_score': 'pan_treatment_risk_score'})
 )
 
@@ -100,7 +105,7 @@ trained_pan_treatment = (
 within_models = {}
 within_scores = []
 
-for treatment in tqdm(treatment_types):
+for treatment in tqdm(treatment_types, mininterval=30):
     sub_df = train_df.loc[train_df['TREATMENT_CLASSIFICATION'] == treatment]
     
     if len(sub_df) < 100:
@@ -122,7 +127,7 @@ for treatment in tqdm(treatment_types):
     trained_sub = get_heldout_risk_scores_CoxPH(
         sub_df, base_vars, continuous_vars, embed_cols,
         event_col=event, tstop_col=f'tt_{event}', penalized=True, max_iter=3000,
-        l1_ratio=best_l1, alpha=best_alpha
+        l1_ratio=best_l1, alpha=best_alpha, backend="threading"
     )
 
     within_models[treatment] = cur_model
@@ -159,7 +164,7 @@ print(f"\nTrain set: Pan-cancer C-index = {c_pan_train:.3f}, Within-cancer C-ind
 # === Held-out Evaluation ===
 within_scores, pan_scores, mrns = [], [], []
 
-for treatment in tqdm(treatment_types):
+for treatment in tqdm(treatment_types, mininterval=30):
 
     sub_df = held_df.loc[held_df['TREATMENT_CLASSIFICATION'] == treatment]
     if len(sub_df) == 0 or treatment not in within_models:
@@ -226,7 +231,7 @@ print(f"Held-out set: Pan-treatment mean AUC(t) = {auc_pan_held:.3f}, "
 
 # === Per-Treatment Comparison (Held-out) ===
 cindex_by_treatment = []
-for treatment in tqdm(sorted(held_scores['TREATMENT_CLASSIFICATION'].dropna().unique())):
+for treatment in tqdm(sorted(held_scores['TREATMENT_CLASSIFICATION'].dropna().unique()), mininterval=30):
     sub_df = held_scores.loc[held_scores['TREATMENT_CLASSIFICATION'] == treatment]
 
     times = sub_df[f'tt_{event}']

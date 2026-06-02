@@ -2,6 +2,7 @@
 
 # === Imports ===
 import os
+import warnings
 from tqdm import tqdm
 import numpy as np
 import pandas as pd
@@ -9,6 +10,10 @@ from sklearn.preprocessing import StandardScaler
 from sksurv.metrics import concordance_index_censored, cumulative_dynamic_auc
 from sksurv.util import Surv
 from embed_surv_utils import run_grid_CoxPH_parallel, get_heldout_risk_scores_CoxPH
+
+# Silence joblib/loky's benign worker-respawn warning; it floods the Jupyter IOPub
+# channel during long runs and triggers "IOStream.flush timed out".
+warnings.filterwarnings("ignore", message="A worker stopped while some jobs were given to the executor")
 
 # === Paths ===
 DATA_PATH = '/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/'
@@ -104,7 +109,7 @@ pan_cancer_l1, pan_cancer_alpha = embed_val_results.sort_values(by='mean_auc(t)'
 trained_pan_cancer = (
     get_heldout_risk_scores_CoxPH(train_df, base_vars + type_cols, continuous_vars, embed_cols,
                                   event_col=event, tstop_col=f'tt_{event}', penalized=True, max_iter=3000,
-                                  l1_ratio=pan_cancer_l1, alpha=pan_cancer_alpha)
+                                  l1_ratio=pan_cancer_l1, alpha=pan_cancer_alpha, backend="threading")
     .rename(columns={'risk_score': 'pan_cancer_risk_score'})
 )
 
@@ -112,7 +117,7 @@ trained_pan_cancer = (
 within_models = {}
 within_scores = []
 
-for cancer_type in tqdm([c.replace('CANCER_TYPE_', '') for c in type_cols]):
+for cancer_type in tqdm([c.replace('CANCER_TYPE_', '') for c in type_cols], mininterval=30):
     mask_col = f'CANCER_TYPE_{cancer_type}'
     sub_df = train_df.loc[train_df[mask_col].astype(bool)]
     if len(sub_df) < 100:
@@ -134,7 +139,7 @@ for cancer_type in tqdm([c.replace('CANCER_TYPE_', '') for c in type_cols]):
     trained_sub = get_heldout_risk_scores_CoxPH(
         sub_df, base_vars, continuous_vars, embed_cols,
         event_col=event, tstop_col=f'tt_{event}', penalized=True, max_iter=3000,
-        l1_ratio=best_l1, alpha=best_alpha
+        l1_ratio=best_l1, alpha=best_alpha, backend="threading"
     )
 
     within_models[cancer_type] = cur_model
@@ -171,7 +176,7 @@ print(f"\nTrain set: Pan-cancer C-index = {c_pan_train:.3f}, Within-cancer C-ind
 # === Held-out Evaluation ===
 within_scores, pan_scores, mrns = [], [], []
 
-for cancer_type in tqdm([c.replace('CANCER_TYPE_', '') for c in type_cols]):
+for cancer_type in tqdm([c.replace('CANCER_TYPE_', '') for c in type_cols], mininterval=30):
     mask_col = f'CANCER_TYPE_{cancer_type}'
     if mask_col not in held_df.columns or mask_col not in train_df.columns:
         continue
@@ -255,7 +260,7 @@ print(f"Held-out set: Pan-cancer mean AUC(t) = {auc_pan_held:.3f}, "
 
 # === Per-Cancer-Type Comparison (Held-out) ===
 cindex_by_type = []
-for cancer_type in tqdm(sorted(held_scores['CANCER_TYPE'].dropna().unique())):
+for cancer_type in tqdm(sorted(held_scores['CANCER_TYPE'].dropna().unique()), mininterval=30):
     sub_df = held_scores.loc[held_scores['CANCER_TYPE'] == cancer_type]
     if sub_df.shape[0] < 30:
         continue

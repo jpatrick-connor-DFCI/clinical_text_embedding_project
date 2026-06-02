@@ -23,6 +23,9 @@ _SUPPRESSED_WARNINGS = [
     (ConvergenceWarning, ""),
     (RuntimeWarning, ""),
     (DeprecationWarning, ".*`trapz` is deprecated.*"),
+    # joblib/loky emits this when a parallel worker is respawned; noisy and benign,
+    # and it floods the Jupyter IOPub channel during long runs (IOStream.flush timeouts).
+    (UserWarning, "A worker stopped while some jobs were given to the executor"),
 ]
 
 def scale_model_data(X_train: pd.DataFrame, X_test: pd.DataFrame, continuous_vars: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
