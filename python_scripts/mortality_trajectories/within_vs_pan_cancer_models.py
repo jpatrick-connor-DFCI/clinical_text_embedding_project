@@ -2,6 +2,7 @@
 
 # === Imports ===
 import os
+import time
 import warnings
 from tqdm import tqdm
 import numpy as np
@@ -9,7 +10,7 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from sksurv.metrics import concordance_index_censored, cumulative_dynamic_auc
 from sksurv.util import Surv
-from embed_surv_utils import run_grid_CoxPH_parallel, get_heldout_risk_scores_CoxPH
+from embed_surv_utils import run_grid_CoxPH_parallel, get_heldout_risk_scores_CoxPH, RunCheckpoint
 
 # Silence joblib/loky's benign worker-respawn warning; it floods the Jupyter IOPub
 # channel during long runs and triggers "IOStream.flush timed out".
@@ -114,45 +115,107 @@ _train_means = train_df[_feature_cols].mean()
 train_df[_feature_cols] = train_df[_feature_cols].fillna(_train_means)
 held_df[_feature_cols] = held_df[_feature_cols].fillna(_train_means)
 
+# === Checkpoint store (writes intermediate results during the run; enables resume) ===
+RESUME = True
+train_outdir = os.path.join(RESULTS_PATH, 'pan_vs_within_cancer')
+os.makedirs(train_outdir, exist_ok=True)
+
+# Fingerprint the deterministic inputs; a mismatch on a later run means the cohort/strata changed,
+# so the stored checkpoints are stale and are ignored (RunCheckpoint starts fresh).
+fingerprint = {
+    'script': 'pan_vs_within_cancer',
+    'n_train': int(len(train_df)),
+    'n_held': int(len(held_df)),
+    'n_embed': int(len(embed_cols)),
+    'n_base': int(len(base_vars)),
+    'n_type': int(len(type_cols)),
+    'strata': sorted(c.replace('CANCER_TYPE_', '') for c in type_cols),
+    'seed': 1234,
+}
+ckpt = RunCheckpoint(os.path.join(train_outdir, 'checkpoints'), fingerprint, resume=RESUME)
+
 # === Train Pan-Cancer Model ===
 alphas_to_test = np.logspace(-5, 0, 25)
 l1_ratios = [0.5, 1.0]
 
+if ckpt.pan_done():
+    trained_pan_cancer, pan_held = ckpt.load_pan()
+else:
+    _, embed_val_results, pan_cancer_model = run_grid_CoxPH_parallel(
+        train_df, base_vars + type_cols, continuous_vars, embed_cols,
+        l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}', max_iter=3000
+    )
+    pan_cancer_l1, pan_cancer_alpha = embed_val_results.sort_values(
+        by='mean_auc(t)', ascending=False).iloc[0][['l1_ratio', 'alpha']]
 
-_, embed_val_results, pan_cancer_model = run_grid_CoxPH_parallel(
-    train_df, base_vars + type_cols, continuous_vars, embed_cols,
-    l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}', max_iter=3000
-)
+    trained_pan_cancer = (
+        get_heldout_risk_scores_CoxPH(train_df, base_vars + type_cols, continuous_vars, embed_cols,
+                                      event_col=event, tstop_col=f'tt_{event}', penalized=True, max_iter=3000,
+                                      l1_ratio=pan_cancer_l1, alpha=pan_cancer_alpha, backend="threading")
+        .rename(columns={'risk_score': 'pan_cancer_risk_score'})
+    )
+    # Held-out pan predictions, computed once on the full held set (covers every stratum) so the
+    # within loop and resume never need the fitted pan model back.
+    pan_held = pd.DataFrame({
+        'DFCI_MRN': held_df['DFCI_MRN'].values,
+        'pan_cancer_risk_score': pan_cancer_model.predict(held_df[base_vars + type_cols + embed_cols]),
+    })
+    ckpt.save_pan(trained_pan_cancer, pan_held,
+                  meta={'n_train': int(len(train_df)), 'n_held': int(len(held_df)),
+                        'l1': float(pan_cancer_l1), 'alpha': float(pan_cancer_alpha)})
 
-pan_cancer_l1, pan_cancer_alpha = embed_val_results.sort_values(by='mean_auc(t)', ascending=False).iloc[0][['l1_ratio', 'alpha']]
 
-trained_pan_cancer = (
-    get_heldout_risk_scores_CoxPH(train_df, base_vars + type_cols, continuous_vars, embed_cols,
-                                  event_col=event, tstop_col=f'tt_{event}', penalized=True, max_iter=3000,
-                                  l1_ratio=pan_cancer_l1, alpha=pan_cancer_alpha, backend="threading")
-    .rename(columns={'risk_score': 'pan_cancer_risk_score'})
-)
+def _provisional_cindex(held_within_df):
+    """Reference-free per-stratum held-out C-index (pan vs within) for the progress manifest."""
+    m = (held_within_df
+         .merge(pan_held, on='DFCI_MRN')
+         .merge(full_df[['DFCI_MRN', f'tt_{event}', event]], on='DFCI_MRN'))
+    cols = ['within_cancer_risk_score', 'pan_cancer_risk_score', f'tt_{event}', event]
+    m[cols] = m[cols].replace([np.inf, -np.inf], np.nan)
+    m = m.dropna(subset=cols)
+    if len(m) < MIN_HELDOUT_N or m[event].sum() == 0:
+        return None, None, len(m)
+    eb = m[event].astype(bool)
+    t = m[f'tt_{event}']
+    try:
+        cp = concordance_index_censored(eb, t, m['pan_cancer_risk_score'])[0]
+        cw = concordance_index_censored(eb, t, m['within_cancer_risk_score'])[0]
+    except Exception:
+        return None, None, len(m)
+    return float(cp), float(cw), len(m)
 
-# === Train Within-Cancer Models ===
-within_models = {}
-within_scores = []
+
+# === Train + score within-cancer models (single resumable pass) ===
+# Each stratum's train OOF scores AND held-out predictions are written to disk as it completes,
+# so a crashed/interrupted run reloads finished strata instead of refitting them.
+train_score_frames, held_score_frames = [], []
 
 for cancer_type in tqdm([c.replace('CANCER_TYPE_', '') for c in type_cols], mininterval=30):
     mask_col = f'CANCER_TYPE_{cancer_type}'
-    sub_df = train_df.loc[train_df[mask_col].astype(bool)]
-    if len(sub_df) < MIN_TRAIN_N:
+
+    st = ckpt.status(cancer_type)
+    if st == 'done':
+        _tr, _hd = ckpt.load_stratum(cancer_type)
+        train_score_frames.append(_tr)
+        held_score_frames.append(_hd)
+        continue
+    if st == 'skipped':
         continue
 
+    sub_df = train_df.loc[train_df[mask_col].astype(bool)]
+    if len(sub_df) < MIN_TRAIN_N:
+        ckpt.mark_skipped(cancer_type, 'too_small', meta={'n_train': int(len(sub_df))})
+        continue
+
+    _t0 = time.time()
     cur_test, cur_val, cur_model = run_grid_CoxPH_parallel(
         sub_df, base_vars, continuous_vars, embed_cols,
         l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}', max_iter=3000
     )
 
-    # Skip strata whose final model failed to converge (returned None) — otherwise the
-    # held-out loop below would call None.predict(...). Their patients are excluded from
-    # both the train and held-out comparison so the two cohorts stay consistent.
+    # Skip strata whose final model failed to converge (returned None).
     if cur_model is None:
-        print(f"  skipping cancer type '{cancer_type}': final model did not converge")
+        ckpt.mark_skipped(cancer_type, 'no_converge', meta={'n_train': int(len(sub_df))})
         continue
 
     best_l1, best_alpha = cur_val.sort_values(by='mean_auc(t)', ascending=False).iloc[0][['l1_ratio', 'alpha']]
@@ -160,12 +223,26 @@ for cancer_type in tqdm([c.replace('CANCER_TYPE_', '') for c in type_cols], mini
         sub_df, base_vars, continuous_vars, embed_cols,
         event_col=event, tstop_col=f'tt_{event}', penalized=True, max_iter=3000,
         l1_ratio=best_l1, alpha=best_alpha, backend="threading"
-    )
+    ).rename(columns={'risk_score': 'within_cancer_risk_score'})
 
-    within_models[cancer_type] = cur_model
-    within_scores.append(trained_sub)
+    # Held-out predictions for this stratum, taken now while the model is in memory.
+    sub_held = held_df.loc[held_df[mask_col].astype(bool)]
+    held_sub = pd.DataFrame({
+        'DFCI_MRN': sub_held['DFCI_MRN'].values,
+        'within_cancer_risk_score': cur_model.predict(sub_held[base_vars + embed_cols]),
+    })
 
-trained_within = pd.concat(within_scores).rename(columns={'risk_score': 'within_cancer_risk_score'})
+    c_pan, c_within, n_held = _provisional_cindex(held_sub)
+    ckpt.save_stratum(cancer_type, trained_sub, held_sub,
+                      meta={'n_train': int(len(sub_df)), 'n_held': int(n_held),
+                            'l1': float(best_l1), 'alpha': float(best_alpha),
+                            'c_pan': c_pan, 'c_within': c_within,
+                            'elapsed_s': round(time.time() - _t0, 1)})
+    train_score_frames.append(trained_sub)
+    held_score_frames.append(held_sub)
+
+trained_within = pd.concat(train_score_frames, ignore_index=True)
+within_held_all = pd.concat(held_score_frames, ignore_index=True)
 
 # === Evaluate on Training Set ===
 complete_train = trained_within.merge(trained_pan_cancer, on='DFCI_MRN').merge(
@@ -193,33 +270,8 @@ c_within_train = concordance_index_censored(events_bool, times, complete_train['
 
 print(f"\nTrain set: Pan-cancer C-index = {c_pan_train:.3f}, Within-cancer C-index = {c_within_train:.3f}")
 
-# === Held-out Evaluation ===
-within_scores, pan_scores, mrns = [], [], []
-
-for cancer_type in tqdm([c.replace('CANCER_TYPE_', '') for c in type_cols], mininterval=30):
-    mask_col = f'CANCER_TYPE_{cancer_type}'
-    if mask_col not in held_df.columns or mask_col not in train_df.columns:
-        continue
-
-    sub_df = held_df.loc[held_df[mask_col].astype(bool)]
-    if len(sub_df) == 0 or cancer_type not in within_models:
-        continue
-
-    within_pred = within_models[cancer_type].predict(sub_df[base_vars + embed_cols])
-    pan_pred = pan_cancer_model.predict(sub_df[base_vars + type_cols + embed_cols])
-
-    within_scores += within_pred.tolist()
-    pan_scores += pan_pred.tolist()
-    mrns += sub_df['DFCI_MRN'].tolist()
-
-# === Safe merge with held_df (CANCER_TYPE from full_df) ===
-merged = pd.DataFrame({
-    'DFCI_MRN': mrns,
-    'within_cancer_risk_score': within_scores,
-    'pan_cancer_risk_score': pan_scores
-})
-
-held_scores = merged.merge(
+# === Held-out Evaluation (assemble per-stratum within scores + pan held scores) ===
+held_scores = within_held_all.merge(pan_held, on='DFCI_MRN').merge(
     full_df[['DFCI_MRN', 'CANCER_TYPE', f'tt_{event}', event]],
     on='DFCI_MRN', how='left'
 )
@@ -233,7 +285,7 @@ if len(held_scores) < _n0:
 
 # === Merge consistency checks ===
 print("\n=== Held-out Merge Consistency Check ===")
-print(f"Total predictions: {len(merged)}")
+print(f"Total predictions: {len(within_held_all)}")
 print(f"Matched to held_df metadata: {held_scores['CANCER_TYPE'].notna().sum()}")
 missing = held_scores[held_scores[f'tt_{event}'].isna()]
 if len(missing) > 0:
@@ -319,10 +371,7 @@ overall_row = pd.DataFrame([{
 }])
 metrics_df = pd.concat([overall_row, metrics_df], ignore_index=True)
 
-# === Save Results ===
-train_outdir = os.path.join(RESULTS_PATH, 'pan_vs_within_cancer')
-os.makedirs(train_outdir, exist_ok=True)
-
+# === Save Results === (train_outdir / checkpoints dir were created at the checkpoint-store setup)
 complete_train.to_csv(os.path.join(train_outdir, 'train_risk_scores.csv'), index=False)
 held_scores.to_csv(os.path.join(train_outdir, 'held_out_risk_scores.csv'), index=False)
 metrics_df.to_csv(os.path.join(train_outdir, 'metrics_by_cancer_type.csv'), index=False)
@@ -332,6 +381,8 @@ print(metrics_df)
 print(f"\nSaved per-cancer-type metrics to: {os.path.join(train_outdir, 'metrics_by_cancer_type.csv')}")
 
 n_strata = int((metrics_df['CANCER_TYPE'] != 'Overall').sum())
-print(f"\n[summary] {len(within_models)} within-cancer models fit; "
+_resumed, _fit, _skipped = ckpt.counts()
+print(f"\n[summary] within-cancer models: {_resumed} resumed, {_fit} fit, {_skipped} skipped; "
       f"{n_strata} cancer-type strata in the comparison across {len(held_scores)} held-out patients "
       f"(strata floored at n>={MIN_HELDOUT_N} held-out patients).")
+print(f"[summary] intermediate checkpoints + progress log under: {os.path.join(train_outdir, 'checkpoints')}")
