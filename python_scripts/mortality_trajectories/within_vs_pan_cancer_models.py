@@ -123,6 +123,13 @@ for cancer_type in tqdm([c.replace('CANCER_TYPE_', '') for c in type_cols]):
         l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}', max_iter=3000
     )
 
+    # Skip strata whose final model failed to converge (returned None) — otherwise the
+    # held-out loop below would call None.predict(...). Their patients are excluded from
+    # both the train and held-out comparison so the two cohorts stay consistent.
+    if cur_model is None:
+        print(f"  skipping cancer type '{cancer_type}': final model did not converge")
+        continue
+
     best_l1, best_alpha = cur_val.sort_values(by='mean_auc(t)', ascending=False).iloc[0][['l1_ratio', 'alpha']]
     trained_sub = get_heldout_risk_scores_CoxPH(
         sub_df, base_vars, continuous_vars, embed_cols,
@@ -139,6 +146,19 @@ trained_within = pd.concat(within_scores).rename(columns={'risk_score': 'within_
 complete_train = trained_within.merge(trained_pan_cancer, on='DFCI_MRN').merge(
     full_df[['DFCI_MRN', 'CANCER_TYPE', f'tt_{event}', event]], on='DFCI_MRN'
 )
+
+# Some within-cancer strata diverge during Cox fitting and emit non-finite OOF risk
+# scores; drop those rows so the pan-vs-within comparison runs on the same set of
+# patients with finite predictions from both models. Also guard the time/event columns:
+# concordance_index_censored / cumulative_dynamic_auc reject any non-finite input, so
+# every metric call below sees only finite values.
+_score_cols = ['pan_cancer_risk_score', 'within_cancer_risk_score']
+_finite_cols = _score_cols + [f'tt_{event}', event]
+complete_train[_finite_cols] = complete_train[_finite_cols].replace([np.inf, -np.inf], np.nan)
+_n0 = len(complete_train)
+complete_train = complete_train.dropna(subset=_finite_cols)
+if len(complete_train) < _n0:
+    print(f"Train: dropped {_n0 - len(complete_train)} rows with non-finite risk scores / outcomes")
 
 times = complete_train[f'tt_{event}']
 events_bool = complete_train[event].astype(bool)
@@ -178,6 +198,13 @@ held_scores = merged.merge(
     full_df[['DFCI_MRN', 'CANCER_TYPE', f'tt_{event}', event]],
     on='DFCI_MRN', how='left'
 )
+
+# Drop non-finite held-out risk scores / outcomes (divergent within-cancer strata).
+held_scores[_finite_cols] = held_scores[_finite_cols].replace([np.inf, -np.inf], np.nan)
+_n0 = len(held_scores)
+held_scores = held_scores.dropna(subset=_finite_cols)
+if len(held_scores) < _n0:
+    print(f"Held-out: dropped {_n0 - len(held_scores)} rows with non-finite risk scores / outcomes")
 
 # === Merge consistency checks ===
 print("\n=== Held-out Merge Consistency Check ===")
@@ -275,6 +302,11 @@ complete_train.to_csv(os.path.join(train_outdir, 'train_risk_scores.csv'), index
 held_scores.to_csv(os.path.join(train_outdir, 'held_out_risk_scores.csv'), index=False)
 metrics_df.to_csv(os.path.join(train_outdir, 'metrics_by_cancer_type.csv'), index=False)
 
-print("\n=== Per-Cancer-Type C-Index Results (Held-out) ===")
+print("\n=== Per-Cancer-Type Results (Held-out) ===")
 print(metrics_df)
 print(f"\nSaved per-cancer-type metrics to: {os.path.join(train_outdir, 'metrics_by_cancer_type.csv')}")
+
+n_strata = int((metrics_df['CANCER_TYPE'] != 'Overall').sum())
+print(f"\n[summary] {len(within_models)} within-cancer models fit; "
+      f"{n_strata} cancer-type strata in the comparison across {len(held_scores)} held-out patients "
+      f"(figure prep applies an additional n>=30 floor).")
