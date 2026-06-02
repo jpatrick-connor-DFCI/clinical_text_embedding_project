@@ -22,6 +22,15 @@ RESULTS_PATH = os.path.join(SURV_PATH, 'results/')
 
 os.environ["JOBLIB_DEFAULT_WORKER_TIMEOUT"] = "600"
 
+# === Minimum patient counts ===
+# MIN_STRATUM_N: rare cancer types below this are collapsed into 'OTHER' before modeling.
+# MIN_TRAIN_N:   a within-cancer model is only fit for strata with at least this many train patients.
+# MIN_HELDOUT_N: a stratum only enters the per-type held-out comparison (and the figure) if it
+#                has at least this many held-out patients — small n gives unstable AUC/C-index.
+MIN_STRATUM_N = 500
+MIN_TRAIN_N = 100
+MIN_HELDOUT_N = 30
+
 # === Load datasets ===
 cancer_type_df = pd.read_csv(
     '/data/gusev/PROFILE/CLINICAL/robust_VTE_pred_project_2025_03_cohort/data/first_treatments_dfci_w_inferred_cancers.csv',
@@ -48,7 +57,7 @@ embed_cols = [c for c in full_df.columns if ('EMBEDDING' in c or '2015' in c)]
 
 # Collapse rare cancer types
 cancer_type_counts = full_df['CANCER_TYPE'].value_counts()
-types_to_keep = cancer_type_counts[cancer_type_counts >= 500].index.tolist()
+types_to_keep = cancer_type_counts[cancer_type_counts >= MIN_STRATUM_N].index.tolist()
 full_df['CANCER_TYPE'] = full_df['CANCER_TYPE'].where(full_df['CANCER_TYPE'].isin(types_to_keep), 'OTHER')
 
 # === Train/held-out split (75% train, 25% held-out evaluation) ===
@@ -131,7 +140,7 @@ within_scores = []
 for cancer_type in tqdm([c.replace('CANCER_TYPE_', '') for c in type_cols], mininterval=30):
     mask_col = f'CANCER_TYPE_{cancer_type}'
     sub_df = train_df.loc[train_df[mask_col].astype(bool)]
-    if len(sub_df) < 100:
+    if len(sub_df) < MIN_TRAIN_N:
         continue
 
     cur_test, cur_val, cur_model = run_grid_CoxPH_parallel(
@@ -273,7 +282,7 @@ print(f"Held-out set: Pan-cancer mean AUC(t) = {auc_pan_held:.3f}, "
 cindex_by_type = []
 for cancer_type in tqdm(sorted(held_scores['CANCER_TYPE'].dropna().unique()), mininterval=30):
     sub_df = held_scores.loc[held_scores['CANCER_TYPE'] == cancer_type]
-    if sub_df.shape[0] < 30:
+    if sub_df.shape[0] < MIN_HELDOUT_N:
         continue
 
     times = sub_df[f'tt_{event}']
@@ -325,4 +334,4 @@ print(f"\nSaved per-cancer-type metrics to: {os.path.join(train_outdir, 'metrics
 n_strata = int((metrics_df['CANCER_TYPE'] != 'Overall').sum())
 print(f"\n[summary] {len(within_models)} within-cancer models fit; "
       f"{n_strata} cancer-type strata in the comparison across {len(held_scores)} held-out patients "
-      f"(figure prep applies an additional n>=30 floor).")
+      f"(strata floored at n>={MIN_HELDOUT_N} held-out patients).")

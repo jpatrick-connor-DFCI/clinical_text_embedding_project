@@ -23,6 +23,18 @@ FEATURE_PATH = os.path.join(DATA_PATH, 'clinical_and_genomic_features/')
 
 os.environ["JOBLIB_DEFAULT_WORKER_TIMEOUT"] = "600"
 
+# === Minimum patient counts ===
+# No patients are ever dropped from the cohort — the pan-treatment model always trains on everyone.
+# MIN_STRATUM_N: a within-treatment model is only FIT for classes with at least this many patients in
+#                the embedding cohort. Smaller classes keep all their patients in the pan model but get
+#                no within-model, so they don't enter the within-vs-pan comparison.
+# MIN_TRAIN_N:   defensive floor on the actual train-split subset before fitting a within-model.
+# MIN_HELDOUT_N: a treatment class only enters the per-treatment held-out comparison (and the figure)
+#                if it has at least this many held-out patients — small n gives unstable AUC/C-index.
+MIN_STRATUM_N = 500
+MIN_TRAIN_N = 100
+MIN_HELDOUT_N = 30
+
 # === Load datasets ===
 time_decayed_events_df = pd.read_csv(os.path.join(SURV_PATH, 'level_3_ICD_post_embedding_prediction_df.csv.gz'))
 
@@ -49,6 +61,12 @@ tx1 = tx1.loc[tx1[tx_cols].sum(axis=1) > 0]  # keep patients with a known first-
 tx1['TREATMENT_CLASSIFICATION'] = tx1[tx_cols].idxmax(axis=1).str.replace('PX_on_', '', regex=False)
 treatment_df = tx1[['DFCI_MRN', 'TREATMENT_CLASSIFICATION']].drop_duplicates(subset='DFCI_MRN')
 treatment_types = treatment_df['TREATMENT_CLASSIFICATION'].unique()
+
+# Per-class patient counts within the embedding cohort. These gate WHICH classes get a within-model;
+# no patients are dropped — every patient with a known first-line class stays in the pan-treatment model.
+_cohort_mrns = time_decayed_events_df['DFCI_MRN'].unique()
+treatment_counts = treatment_df.loc[treatment_df['DFCI_MRN'].isin(_cohort_mrns), 'TREATMENT_CLASSIFICATION'].value_counts()
+within_eligible = set(treatment_counts[treatment_counts >= MIN_STRATUM_N].index)
 
 # Merge embeddings + cancer types + events
 full_df = (time_decayed_events_df
@@ -117,9 +135,11 @@ within_models = {}
 within_scores = []
 
 for treatment in tqdm(treatment_types, mininterval=30):
+    if treatment not in within_eligible:
+        continue
     sub_df = train_df.loc[train_df['TREATMENT_CLASSIFICATION'] == treatment]
-    
-    if len(sub_df) < 100:
+
+    if len(sub_df) < MIN_TRAIN_N:
         continue
 
     cur_test, cur_val, cur_model = run_grid_CoxPH_parallel(
@@ -244,6 +264,8 @@ print(f"Held-out set: Pan-treatment mean AUC(t) = {auc_pan_held:.3f}, "
 cindex_by_treatment = []
 for treatment in tqdm(sorted(held_scores['TREATMENT_CLASSIFICATION'].dropna().unique()), mininterval=30):
     sub_df = held_scores.loc[held_scores['TREATMENT_CLASSIFICATION'] == treatment]
+    if sub_df.shape[0] < MIN_HELDOUT_N:
+        continue
 
     times = sub_df[f'tt_{event}']
     events_bool = sub_df[event].astype(bool)
@@ -294,4 +316,4 @@ print(f"\nSaved per-treatment metrics to: {os.path.join(train_outdir, 'metrics_b
 n_strata = int((metrics_df['TREATMENT'] != 'Overall').sum())
 print(f"\n[summary] {len(within_models)} within-treatment models fit; "
       f"{n_strata} treatment strata in the comparison across {len(held_scores)} held-out patients "
-      f"(figure prep applies an additional n>=30 floor).")
+      f"(strata floored at n>={MIN_HELDOUT_N} held-out patients).")
