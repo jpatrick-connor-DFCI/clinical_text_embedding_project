@@ -3,7 +3,8 @@
 # A scatter (text vs base c-index), B Δc-index violins + Wilcoxon stars,
 # C pan vs within-cancer model (dumbbell, mean AUC), D pan vs within-treatment model,
 # E KM by risk-score tertile (text solid / base dashed),
-# F stage vs text risk-quartile KM (1×2) + c-index annotation.
+# F survival by cancer stage, G survival by text risk-score quartile.
+# E/F/G share a single side-by-side row of KM curves, each with 95% CI bands.
 
 suppressPackageStartupMessages({
   library(ggplot2); library(patchwork); library(dplyr); library(tidyr)
@@ -34,6 +35,23 @@ tidy_km <- function(fit) {
   td <- ggsurvfit::tidy_survfit(fit)
   if ("strata" %in% names(td)) td$stratum <- sub("^[^=]+=", "", as.character(td$strata))
   td
+}
+
+# ----------------------------------------------------------------------------
+# Stepped CI helper: expand a tidy_survfit frame into right-continuous KM "stairs"
+# so a 95% CI band can be drawn as a true step (geom_rect spanning each event time
+# to the next), per group. Returns an empty frame if CI columns are absent.
+# ----------------------------------------------------------------------------
+step_ci_df <- function(td, group_cols) {
+  if (!all(c("conf.low", "conf.high", "time") %in% names(td)) || nrow(td) == 0) {
+    return(td[0, , drop = FALSE])
+  }
+  td %>%
+    dplyr::filter(!is.na(conf.low), !is.na(conf.high)) %>%
+    dplyr::group_by(dplyr::across(dplyr::all_of(group_cols))) %>%
+    dplyr::arrange(time, .by_group = TRUE) %>%
+    dplyr::mutate(time_next = dplyr::lead(time, default = dplyr::last(time))) %>%
+    dplyr::ungroup()
 }
 
 # Multivariate log-rank p (survdiff on a formula)
@@ -121,15 +139,22 @@ build_fig2b <- function(metrics) {
 
 # ============================================================================
 # fig2c / fig2d: pan vs. within-stratum model dumbbell (mean time-dependent AUC).
-# Grey dot = pan model, red dot = within-stratum model; dashed line = overall pan AUC.
+# Grey dot = pan model, red dot = within-stratum model. Dashed vertical lines mark
+# the overall (pooled) held-out mean performance of each model — grey = pan,
+# red = within. The catch-all "OTHER" stratum is not plotted as its own dumbbell.
 # Shared by the cancer-stratified and treatment-stratified panels.
 # ============================================================================
 build_within_vs_pan <- function(csv, stratum_title) {
   d <- load_figure_data(csv)
   if (nrow(d) == 0) return(placeholder_panel(paste(csv, "empty")))
   is_ov <- as.character(d$is_overall) %in% c("True", "TRUE", "true")
-  overall_pan <- d$auc_pan[is_ov]
+  # Overall (pooled) held-out performance of each model -> reference lines.
+  overall_pan    <- d$auc_pan[is_ov]
+  overall_within <- d$auc_within[is_ov]
   d <- d[!is_ov, , drop = FALSE]
+  # Drop the collapsed catch-all stratum (rare cancer types pooled as OTHER); it is
+  # not a clinically interpretable group and clutters the per-stratum comparison.
+  d <- d[!toupper(as.character(d$stratum)) %in% c("OTHER"), , drop = FALSE]
   if (nrow(d) == 0) return(placeholder_panel(paste(csv, "no per-stratum rows")))
   d$stratum <- forcats::fct_reorder(as.character(d$stratum), d$delta)
   p <- ggplot(d) +
@@ -142,11 +167,18 @@ build_within_vs_pan <- function(csv, stratum_title) {
     scale_color_manual(values = c(Pan    = unname(MODEL_COLORS[["base"]]),
                                   Within = unname(MODEL_COLORS[["text"]])), name = NULL) +
     scale_x_continuous(expand = expansion(mult = c(0.02, 0.13))) +
-    labs(title = stratum_title, x = "Held-out mean time-dependent AUC", y = NULL) +
+    labs(title = stratum_title, x = "Held-out mean time-dependent AUC", y = NULL,
+         caption = "Dashed lines: overall held-out mean AUC (grey = pan, red = within)") +
     theme_manuscript() +
-    theme(legend.position = "top")
+    theme(legend.position = "top",
+          plot.caption = element_text(size = 6.5, hjust = 1, face = "italic", color = "#666666"))
   if (length(overall_pan) == 1 && is.finite(overall_pan)) {
-    p <- p + geom_vline(xintercept = overall_pan, linetype = "dashed", color = "#999999")
+    p <- p + geom_vline(xintercept = overall_pan, linetype = "dashed",
+                        color = unname(MODEL_COLORS[["base"]]), linewidth = 0.5)
+  }
+  if (length(overall_within) == 1 && is.finite(overall_within)) {
+    p <- p + geom_vline(xintercept = overall_within, linetype = "dashed",
+                        color = unname(MODEL_COLORS[["text"]]), linewidth = 0.5)
   }
   p
 }
@@ -178,9 +210,15 @@ build_fig2d <- function() {
   lr_t <- logrank_p(km, "months", "death", "text_tertile")
   lr_b <- logrank_p(km, "months", "death", "base_tertile")
 
+  td_ci <- step_ci_df(td, c("stratum", "model"))
+
   ggplot(td, aes(x = time, y = estimate, color = stratum, linetype = model)) +
+    geom_rect(data = td_ci,
+              aes(xmin = time, xmax = time_next, ymin = conf.low, ymax = conf.high, fill = stratum),
+              inherit.aes = FALSE, alpha = 0.12, color = NA) +
     geom_step(linewidth = 0.9) +
     scale_color_manual(values = RISK_COLORS, name = NULL) +
+    scale_fill_manual(values = RISK_COLORS, guide = "none") +
     scale_linetype_manual(values = c(text = "solid", base = "dashed"), name = NULL) +
     coord_cartesian(xlim = c(0, 60), ylim = c(0, 1.03)) +
     annotate("text", x = 1, y = 0.06,
@@ -201,7 +239,10 @@ build_fig2d <- function() {
 build_fig2e <- function() {
   d  <- load_figure_data("fig2_km_stage_vs_risk.csv")
   ci <- load_figure_data("fig2_stage_vs_risk_cindex.csv")
-  if (nrow(d) == 0) return(placeholder_panel("fig2_km_stage_vs_risk.csv empty"))
+  if (nrow(d) == 0) {
+    ph <- placeholder_panel("fig2_km_stage_vs_risk.csv empty")
+    return(list(stage = ph, quartile = ph))
+  }
   d <- d %>% mutate(months = tt_death / 30.44,
                     death = as.integer(death),
                     stage_group   = factor(stage_group,   levels = c("I","II","III","IV")),
@@ -222,11 +263,16 @@ build_fig2e <- function() {
 
   panel_km <- function(td, palette, lr_p, cidx, title_text) {
     ts2 <- td %>% mutate(stratum = factor(stratum, levels = names(palette)))
+    td_ci <- step_ci_df(ts2, "stratum")
     ann <- sprintf("c-index=%.3f\nlogrank p=%.1e",
                    ifelse(is.na(cidx), NA, cidx), lr_p)
     ggplot(ts2, aes(time, estimate, color = stratum)) +
+      geom_rect(data = td_ci,
+                aes(xmin = time, xmax = time_next, ymin = conf.low, ymax = conf.high, fill = stratum),
+                inherit.aes = FALSE, alpha = 0.15, color = NA) +
       geom_step(linewidth = 0.9) +
       scale_color_manual(values = palette, name = NULL) +
+      scale_fill_manual(values = palette, guide = "none") +
       coord_cartesian(xlim = c(0, 60), ylim = c(0, 1.03)) +
       annotate("text", x = 1, y = 0.06, label = ann,
                hjust = 0, vjust = 0, size = 2.6,
@@ -239,9 +285,10 @@ build_fig2e <- function() {
   }
 
   pL <- panel_km(ts, ord4,  lr_s, cidx_s, "Survival by Cancer Stage")
-  pR <- panel_km(tq, ord4q, lr_q, cidx_q, "Survival by Text Risk-Score Quartile") +
-        labs(y = NULL)
-  pL | pR
+  pR <- panel_km(tq, ord4q, lr_q, cidx_q, "Survival by Text Risk-Score Quartile")
+  # Return the two KM panels separately so they can be laid out beside the
+  # risk-tertile panel (build_fig2d) as a single side-by-side-by-side row.
+  list(stage = pL, quartile = pR)
 }
 
 
@@ -250,25 +297,44 @@ build_fig2e <- function() {
 # ============================================================================
 metrics <- load_figure_data("fig2_full_cohort_metrics.csv")
 
+# Panels A/B only: drop the single ICD-3 event whose Δc-index (text - base) is a large
+# negative outlier. It compresses the scatter/violin scale and is not representative of
+# the scheme; removed here so it doesn't distort both panels.
+if (nrow(metrics) > 0 && any(metrics$scheme == "icd3_post")) {
+  .delta <- metrics$text_cindex - metrics$base_cindex
+  .icd3  <- metrics$scheme == "icd3_post"
+  .out   <- which(.icd3 & .delta == min(.delta[.icd3], na.rm = TRUE))
+  if (length(.out)) {
+    message(sprintf("fig2 A/B: dropping ICD-3 outlier '%s' (delta c-index = %.3f)",
+                    metrics$event[.out[1]], .delta[.out[1]]))
+    metrics <- metrics[-.out[1], , drop = FALSE]
+  }
+}
+
 p2a <- build_fig2a(metrics)
 p2b <- build_fig2b(metrics)
 p2_wc <- build_within_vs_pan("fig2_within_vs_pan_cancer.csv",    "Pan vs. within-cancer model")
 p2_wt <- build_within_vs_pan("fig2_within_vs_pan_treatment.csv", "Pan vs. within-treatment model")
-p2d <- build_fig2d()
-p2e <- build_fig2e()
+p2d <- build_fig2d()                       # E: risk-score tertile KM (text vs base)
+e_panels <- build_fig2e()
+p2_stage <- e_panels$stage                 # F: survival by cancer stage
+p2_quart <- e_panels$quartile              # G: survival by text risk-score quartile
+
+# E/F/G: three KM curves side-by-side-by-side.
+risk_row <- p2d | p2_stage | p2_quart
 
 save_panel(p2a, "fig2a", width = 6.4, height = 5.0)
 save_panel(p2b, "fig2b", width = 6.0, height = 4.8)
 save_panel(p2_wc, "fig2c", width = 5.6, height = 4.6)
 save_panel(p2_wt, "fig2d", width = 5.6, height = 4.6)
-save_panel(p2d, "fig2e", width = 6.4, height = 5.0)
-save_panel(p2e, "fig2f", width = 11.0, height = 4.8)
+save_panel(p2d,       "fig2e", width = 5.6, height = 4.6)
+save_panel(p2_stage,  "fig2f", width = 5.6, height = 4.6)
+save_panel(p2_quart,  "fig2g", width = 5.6, height = 4.6)
 
 fig2 <- (p2a + p2b) /
         (p2_wc + p2_wt) /
-        p2d /
-        p2e +
+        risk_row +
         plot_annotation(tag_levels = "A") &
         theme(plot.tag = element_text(size = 14, face = "bold"))
 
-save_figure(fig2, "figure2_text_results", width = 15.5, height = 16.8)
+save_figure(fig2, "figure2_text_results", width = 16.5, height = 14.2)
