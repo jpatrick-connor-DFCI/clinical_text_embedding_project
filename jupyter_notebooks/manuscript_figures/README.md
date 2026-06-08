@@ -14,10 +14,11 @@ manuscript_figures/
 │   ├── prep_figure_4.py          # trajectory clustering, severity (mean met, RMST), silhouette
 │   └── prep_figure_5.py          # PS predictions, robust hits, KM examples, love-plot SMDs
 ├── R/                            # R — rendering tier (ggplot2 + patchwork)
-│   ├── figure_utils.R            # paths, palettes, theme, IO, stats helpers, KM helper
+│   ├── figure_utils.R            # paths, palettes, theme, IO, stats + KM helpers (tidy_km, logrank_p, step_ci_df)
 │   ├── install_packages.R        # one-time CRAN bootstrap
 │   ├── plot_figure_1.R           # 6 panels → figure1_schematic.{png,pdf}
-│   ├── plot_figure_2.R           # 6 panels → figure2_text_results.{png,pdf}
+│   ├── plot_figure_2.R           # 7 panels (A–G) → figure2_text_results.{png,pdf}
+│   ├── plot_figure_2_supp.R      # within-stage KM by overall risk quartile → figureS2_stage_stratified_risk.{png,pdf}
 │   ├── plot_figure_3.R           # 4 panels → figure3_feature_comps.{png,pdf}
 │   ├── plot_figure_4.R           # 3 panels + figS1 → figure4_trajectories.{png,pdf} + figureS1_*
 │   └── plot_figure_5.R           # 4 panels → figure5_biomarkers.{png,pdf}

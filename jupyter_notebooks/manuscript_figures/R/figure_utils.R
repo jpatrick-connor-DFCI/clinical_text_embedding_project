@@ -182,6 +182,39 @@ build_survfit <- function(df, time_col, event_col, group_col = NULL,
   ggsurvfit::survfit2(f, data = df)
 }
 
+# Tidy a survfit2 object into a long, step-ready data frame (adds a clean `stratum` col).
+tidy_km <- function(fit) {
+  if (is.null(fit)) return(tibble::tibble())
+  td <- ggsurvfit::tidy_survfit(fit)
+  if ("strata" %in% names(td)) td$stratum <- sub("^[^=]+=", "", as.character(td$strata))
+  td
+}
+
+# Multivariate log-rank p (survdiff on a Surv(time, event) ~ group formula).
+logrank_p <- function(df, time_col, event_col, group_col) {
+  if (nrow(df) == 0) return(NA_real_)
+  f <- as.formula(sprintf("Surv(%s, %s) ~ %s", time_col, event_col, group_col))
+  sd <- tryCatch(survival::survdiff(f, data = df), error = function(e) NULL)
+  if (is.null(sd)) return(NA_real_)
+  if (!is.null(sd$pvalue)) return(sd$pvalue)
+  stats::pchisq(sd$chisq, df = length(sd$n) - 1, lower.tail = FALSE)
+}
+
+# Expand a tidy_survfit frame into right-continuous KM "stairs" so a 95% CI band can be
+# drawn as a true step (geom_rect spanning each event time to the next), per group.
+# Returns an empty frame if CI columns are absent.
+step_ci_df <- function(td, group_cols) {
+  if (!all(c("conf.low", "conf.high", "time") %in% names(td)) || nrow(td) == 0) {
+    return(td[0, , drop = FALSE])
+  }
+  td %>%
+    dplyr::filter(!is.na(conf.low), !is.na(conf.high)) %>%
+    dplyr::group_by(dplyr::across(dplyr::all_of(group_cols))) %>%
+    dplyr::arrange(time, .by_group = TRUE) %>%
+    dplyr::mutate(time_next = dplyr::lead(time, default = dplyr::last(time))) %>%
+    dplyr::ungroup()
+}
+
 # ----------------------------------------------------------------------------
 # Scheme-formatting (Fig 5 spec parser)
 # ----------------------------------------------------------------------------
