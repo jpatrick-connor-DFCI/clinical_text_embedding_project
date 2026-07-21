@@ -16,12 +16,12 @@ manuscript_figures/
 ├── R/                            # R — rendering tier (ggplot2 + patchwork)
 │   ├── figure_utils.R            # paths, palettes, theme, IO, stats + KM helpers (tidy_km, logrank_p, step_ci_df)
 │   ├── install_packages.R        # one-time CRAN bootstrap
-│   ├── plot_figure_1.R           # 6 panels → figure1_schematic.{png,pdf}
-│   ├── plot_figure_2.R           # 7 panels (A–G) → figure2_text_results.{png,pdf}
-│   ├── plot_figure_2_supp.R      # within-stage KM by overall risk quartile → figureS2_stage_stratified_risk.{png,pdf}
-│   ├── plot_figure_3.R           # 4 panels → figure3_feature_comps.{png,pdf}
-│   ├── plot_figure_4.R           # 3 panels + figS1 → figure4_trajectories.{png,pdf} + figureS1_*
-│   └── plot_figure_5.R           # 5 panels (A–E) → figure5_biomarkers.{png,pdf}
+│   ├── plot_figure_1.R           # 6 panels → figure1_schematic.png
+│   ├── plot_figure_2.R           # 7 panels (A–G) → figure2_text_results.png
+│   ├── plot_figure_2_supp.R      # within-stage KM by overall risk quartile → figureS2_stage_stratified_risk.png
+│   ├── plot_figure_3.R           # 4 panels → figure3_feature_comps.png
+│   ├── plot_figure_4.R           # 3 panels + figS1 → figure4_trajectories.png + figureS1_*
+│   └── plot_figure_5.R           # 5 panels (A–E) → figure5_biomarkers.png
 ├── generate_figure_data.ipynb    # Python-kernel notebook — runs all preps
 ├── render_figures.ipynb          # R-kernel notebook — sources all R plot scripts
 └── figures/                      # panel PNGs + target_figures/ composites (output dir)
@@ -52,10 +52,10 @@ manuscript_figures/
    done
    ```
 
-   Each R script emits one composite (`figureN_*.png` + `.pdf`) into
+   Each R script emits one composite PNG (`figureN_*.png`) into
    `$CLINICAL_FIGURES_OUT/target_figures/`, plus individual panel PNGs (`figNx.png`) in
    `$CLINICAL_FIGURES_OUT/` for inspection. Fig 4's script also emits the appendix
-   `figureS1_cluster_silhouette.{png,pdf}`.
+   `figureS1_cluster_silhouette.png`.
 
 3. **Notebook orchestration** (two kernels, run in order):
 

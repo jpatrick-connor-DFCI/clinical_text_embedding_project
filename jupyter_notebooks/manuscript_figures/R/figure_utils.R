@@ -91,7 +91,7 @@ theme_manuscript <- function(base_size = 10) {
 
 
 # ----------------------------------------------------------------------------
-# IO helpers (ggsave produces pdf.fonttype=42 by default via cairo_pdf)
+# IO helpers
 # ----------------------------------------------------------------------------
 load_figure_data <- function(name) {
   fp <- file.path(FIGURE_DATA_DIR, name)
@@ -112,14 +112,10 @@ save_panel <- function(plot, name, width = 6.0, height = 4.8) {
 
 save_figure <- function(plot, stem, width = 12.0, height = 10.0) {
   out_png <- file.path(TARGET_OUT_DIR, paste0(stem, ".png"))
-  out_pdf <- file.path(TARGET_OUT_DIR, paste0(stem, ".pdf"))
   ggsave(out_png, plot, width = width, height = height, dpi = 300,
          bg = "white")
-  ggsave(out_pdf, plot, width = width, height = height,
-         device = cairo_pdf, bg = "white")
   message(sprintf("[composed] %s", out_png))
-  message(sprintf("[composed] %s", out_pdf))
-  invisible(c(out_png, out_pdf))
+  invisible(out_png)
 }
 
 placeholder_panel <- function(msg) {

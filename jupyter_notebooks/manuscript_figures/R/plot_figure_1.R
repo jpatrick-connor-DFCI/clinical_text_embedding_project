@@ -2,7 +2,7 @@
 #
 # Panels: A pipeline schematic, B endpoint counts, C notes/patient by type,
 #         D cancer-type pie, E stage breakdown, F first-line treatment breakdown.
-# Output: target_figures/figure1_schematic.{png,pdf} plus per-panel PNGs.
+# Output: target_figures/figure1_schematic.png plus per-panel PNGs.
 
 suppressPackageStartupMessages({
   library(ggplot2); library(patchwork); library(dplyr); library(tidyr)
