@@ -1,9 +1,7 @@
 """Pre-compute inputs for Figure 1 (cohort & embedding overview).
 
 Writes to FIGURE_DATA_DIR (defined in _figure_utils.py):
-- fig1_cohort_counts.csv          step → n
 - fig1_endpoint_counts.csv        scheme → n_endpoints
-- fig1_note_volume.csv            year_bin × note_type → count
 - fig1_cancer_type_counts.csv     category, n
 - fig1_stage_counts.csv           category, n
 - fig1_treatment_counts.csv       category, n
@@ -18,7 +16,6 @@ import re
 import sys
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 # Make sibling _figure_utils importable
@@ -29,7 +26,6 @@ from _figure_utils import (
     SCHEME_RESULT_DIRS, list_trained_events,
     save_figure_data,
 )
-from slurm_array_utils import _get_common_feature_mrns
 
 
 SCHEME_FOR_EMBED = "icd3_post"  # widest cohort
@@ -82,46 +78,6 @@ def _stage_counts_from_pickle(cohort_mrns: set[int]) -> pd.DataFrame:
     return pd.DataFrame({"category": s.index.astype(str), "n": s.values.astype(int)})
 
 
-def _cohort_counts(emb_df: pd.DataFrame, cancer_type_df: pd.DataFrame) -> pd.DataFrame:
-    with_notes = emb_df["DFCI_MRN"].nunique()
-    with_cancer = len(set(emb_df["DFCI_MRN"]) & set(cancer_type_df["DFCI_MRN"]))
-    common = _get_common_feature_mrns()
-    with_all = len(set(emb_df["DFCI_MRN"]) & common)
-    return pd.DataFrame([
-        {"step": "with_notes", "n": with_notes},
-        {"step": "with_cancer_type", "n": with_cancer},
-        {"step": "full_cohort_analysis_set", "n": with_cancer},
-        {"step": "modality_comparison_set", "n": with_all},
-    ])
-
-
-def _note_volume(notes_meta: pd.DataFrame) -> pd.DataFrame:
-    # (column_name, unit) — first matching column wins; unit declared explicitly
-    # because not all column names carry "days"/"years" in their text.
-    TIME_CANDIDATES = [
-        ("NOTE_TIME_REL_FIRST_TREATMENT_START", "days"),  # written by knit_longformer_embeddings.py
-        ("YEAR_RELATIVE_TO_FIRST_TREATMENT", "years"),
-        ("years_since_first_treatment", "years"),
-        ("days_since_first_treatment", "days"),
-        ("NOTE_DT_OFFSET_DAYS", "days"),
-    ]
-    time_col, unit = next(((c, u) for c, u in TIME_CANDIDATES if c in notes_meta.columns),
-                          (None, None))
-    type_col = next((c for c in ("NOTE_TYPE", "note_type", "NOTE_KIND")
-                     if c in notes_meta.columns), None)
-    if time_col is None or type_col is None:
-        raise RuntimeError(
-            f"Could not find time/type columns in notes_meta; have: {list(notes_meta.columns)[:25]}")
-    nm = notes_meta[[time_col, type_col]].copy()
-    nm["_years"] = nm[time_col] / 365.25 if unit == "days" else nm[time_col]
-    nm = nm[(nm["_years"] >= -5) & (nm["_years"] <= 0)].copy()
-    nm["year_bin"] = nm["_years"].round().astype(int)
-    out = (nm.groupby(["year_bin", type_col]).size()
-             .reset_index(name="n_notes")
-             .rename(columns={type_col: "note_type"}))
-    return out
-
-
 def _notes_per_patient(notes_meta: pd.DataFrame) -> pd.DataFrame:
     """Per-(patient, note_type) note counts → distribution input for the Fig 1 box/violin."""
     type_col = next((c for c in ("NOTE_TYPE", "note_type", "NOTE_KIND")
@@ -161,9 +117,7 @@ def main() -> None:
     tx1 = treatment_df.loc[treatment_df["treatment_line"] == 1]
     cohort_mrns = set(emb_df["DFCI_MRN"])
 
-    save_figure_data(_cohort_counts(emb_df, cancer_type_df), "fig1_cohort_counts.csv")
     save_figure_data(_endpoint_counts(), "fig1_endpoint_counts.csv")
-    save_figure_data(_note_volume(notes_meta), "fig1_note_volume.csv")
     save_figure_data(_composition_counts(cancer_type_df, type_cols, "CANCER_TYPE_", 15),
                      "fig1_cancer_type_counts.csv")
     save_figure_data(_stage_counts_from_pickle(cohort_mrns), "fig1_stage_counts.csv")

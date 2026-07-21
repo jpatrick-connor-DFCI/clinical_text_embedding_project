@@ -1,14 +1,9 @@
 """Pre-compute inputs for Figure 4 (mortality trajectories).
 
 Writes to FIGURE_DATA_DIR:
-- fig4_trajectories_with_clusters.csv  DFCI_MRN, cluster, <month columns kept>  (full cohort)
-- fig4_trajectories_heatmap.csv        same schema, downsampled to <= HEATMAP_ROWS_PER_CLUSTER
-                                       per cluster and ordered by within-cluster mean risk
-                                       (panel A reads this so the heatmap renders cleanly)
-- fig4_cluster_means.csv               cluster, month, mean, sem  (computed on full cohort)
-- fig4_cluster_composition_cancer.csv  cluster, top categories, OTHER
-- fig4_cluster_composition_stage.csv   same
-- fig4_cluster_composition_treatment.csv same
+- fig4_trajectories_heatmap.csv        DFCI_MRN, cluster, <month columns kept>, downsampled to
+                                       <= HEATMAP_ROWS_PER_CLUSTER per cluster and ordered by
+                                       within-cluster mean risk (panel A reads this)
 - fig4_km_data.csv                     DFCI_MRN, cluster, death, tt_death
 - fig4_cluster_severity.csv            cluster, mean_met_sites, rmst_months, n_patients
 - fig4_silhouette.csv                  k, silhouette  (cluster-count justification, appendix)
@@ -43,8 +38,6 @@ N_CLUSTERS = 4
 DEFAULT_DECAY = 0.1
 HEATMAP_ROWS_PER_CLUSTER = 500
 
-CLUSTER_MEAN_COLUMNS = ["cluster", "month", "mean", "sem", "n_patients"]
-COMPOSITION_COLUMNS = ["cluster", "OTHER"]
 KM_COLUMNS = ["DFCI_MRN", "cluster", "death", "tt_death"]
 SEVERITY_COLUMNS = ["cluster", "mean_met_sites", "rmst_months",
                     "pct_stage_iv", "pct_ici", "n_patients"]
@@ -167,34 +160,6 @@ def _silhouette_scan(input_path: str) -> pd.DataFrame:
         labels = AgglomerativeClustering(n_clusters=k, linkage="ward").fit_predict(X_z)
         rows.append({"k": int(k), "silhouette": float(silhouette_score(X_z, labels))})
     return pd.DataFrame(rows, columns=SILHOUETTE_COLUMNS)
-
-
-def _cluster_means(traj_sub: pd.DataFrame, months_to_keep: list[str]) -> pd.DataFrame:
-    rows = []
-    for k in sorted(traj_sub["cluster"].unique()):
-        sub = traj_sub.loc[traj_sub["cluster"] == k, months_to_keep].values
-        mean = sub.mean(axis=0)
-        sem = sub.std(axis=0) / np.sqrt(sub.shape[0])
-        for col, m, s in zip(months_to_keep, mean, sem):
-            rows.append({"cluster": int(k), "month": col, "mean": m, "sem": s,
-                         "n_patients": sub.shape[0]})
-    return pd.DataFrame(rows, columns=CLUSTER_MEAN_COLUMNS)
-
-
-def _composition(traj_sub: pd.DataFrame, lookup_df: pd.DataFrame,
-                 cols: list[str], prefix: str, top_n: int = 8) -> pd.DataFrame:
-    if traj_sub.empty:
-        return pd.DataFrame(columns=COMPOSITION_COLUMNS)
-    merged = traj_sub[["DFCI_MRN", "cluster"]].merge(
-        lookup_df[["DFCI_MRN"] + cols], on="DFCI_MRN", how="left",
-    )
-    agg = merged.groupby("cluster")[cols].sum()
-    agg = agg.div(agg.sum(axis=1), axis=0)
-    top = agg.sum(axis=0).sort_values(ascending=False).head(top_n).index.tolist()
-    keep = agg[top].copy()
-    keep["OTHER"] = 1 - keep.sum(axis=1)
-    keep.columns = [c.replace(prefix, "") for c in keep.columns]
-    return keep.reset_index()
 
 
 def _heatmap_downsample(traj_sub: pd.DataFrame, months_to_keep: list[str],
@@ -324,25 +289,11 @@ def main() -> None:
     input_path = args.input or _default_trajectory_input(args.decay)
     print(f"  trajectory input: {input_path}")
 
-    cancer_type_df = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_type_df.csv.gz"))
-    stage_df = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_stage_df.csv.gz"))
     treatment_df = pd.read_csv(os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv.gz"))
-    type_cols = [c for c in cancer_type_df.columns if c.startswith("CANCER_TYPE_")]
-    stage_cols = [c for c in stage_df.columns if c.startswith("CANCER_STAGE_")]
-    tx_cols = [c for c in treatment_df.columns if c.startswith("PX_on_")]
-    tx1 = treatment_df.loc[treatment_df["treatment_line"] == 1]
 
     traj_sub, months_to_keep, X_z = _cluster_trajectories(input_path)
-    save_figure_data(traj_sub, "fig4_trajectories_with_clusters.csv")
     save_figure_data(_heatmap_downsample(traj_sub, months_to_keep, X_z),
                      "fig4_trajectories_heatmap.csv")
-    save_figure_data(_cluster_means(traj_sub, months_to_keep), "fig4_cluster_means.csv")
-    save_figure_data(_composition(traj_sub, cancer_type_df, type_cols, "CANCER_TYPE_"),
-                     "fig4_cluster_composition_cancer.csv")
-    save_figure_data(_composition(traj_sub, stage_df, stage_cols, "CANCER_STAGE_"),
-                     "fig4_cluster_composition_stage.csv")
-    save_figure_data(_composition(traj_sub, tx1, tx_cols, "PX_on_"),
-                     "fig4_cluster_composition_treatment.csv")
     save_figure_data(_km_data(traj_sub), "fig4_km_data.csv")
     save_figure_data(_cluster_severity(traj_sub, treatment_df), "fig4_cluster_severity.csv")
     save_figure_data(_silhouette_scan(input_path), "fig4_silhouette.csv")

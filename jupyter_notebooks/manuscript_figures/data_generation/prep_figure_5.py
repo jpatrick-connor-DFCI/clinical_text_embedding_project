@@ -3,8 +3,6 @@
 Writes to FIGURE_DATA_DIR:
 - fig5_ps_predictions.csv         DFCI_MRN, ps_model, model_probs, ground_truth,
                                   cancer_type
-- fig5_volcano_track2.csv         marker, cancer, HR_markerxICI, p_markerxICI,
-                                  log_hr, neglog10_p, significant
 - fig5_robust_hits.csv            marker, cancer_type, spec, HR_markerxICI,
                                   CI95_marker_ICI_low, CI95_marker_ICI_high,
                                   p_markerxICI, n_specs, mean_HR,
@@ -46,10 +44,6 @@ PS_BASE = os.path.join(DATA_PATH, f"treatment_prediction/{COHORT}/")
 PRIMARY_SPEC_DIR = os.path.join(BIOMARKER_PATH, f"IPTW_runs_{COHORT}_covariates_plus_embeddings/")
 
 PS_PREDICTION_COLUMNS = ["DFCI_MRN", "ps_model", "model_probs", "ground_truth", "cancer_type", "cohort"]
-VOLCANO_COLUMNS = [
-    "marker", "cancer", "HR_markerxICI", "p_markerxICI",
-    "log_hr", "neglog10_p", "significant",
-]
 ROBUST_COLUMNS = [
     "marker", "cancer_type", "spec", "HR_markerxICI",
     "CI95_marker_ICI_low", "CI95_marker_ICI_high", "p_markerxICI",
@@ -155,26 +149,6 @@ def _ps_predictions() -> pd.DataFrame:
     if not rows:
         return pd.DataFrame(columns=PS_PREDICTION_COLUMNS)
     return pd.concat(rows, ignore_index=True)
-
-
-def _volcano_track2() -> pd.DataFrame:
-    if not os.path.isdir(PRIMARY_SPEC_DIR):
-        print(f"  no primary spec dir at {PRIMARY_SPEC_DIR}")
-        return pd.DataFrame(columns=VOLCANO_COLUMNS)
-    files = [os.path.join(PRIMARY_SPEC_DIR, f) for f in os.listdir(PRIMARY_SPEC_DIR)
-             if f.endswith(f"_track2_{TRACK2_WEIGHT}_interaction.csv.gz")]
-    if not files:
-        return pd.DataFrame(columns=VOLCANO_COLUMNS)
-    frames = [pd.read_csv(fp).assign(cancer=os.path.basename(fp).split("_track2_")[0])
-              for fp in files]
-    df = pd.concat(frames, ignore_index=True)
-    df = df.dropna(subset=["HR_markerxICI", "p_markerxICI"]).copy()
-    df["log_hr"] = np.log(df["HR_markerxICI"])
-    df["neglog10_p"] = -np.log10(df["p_markerxICI"].clip(lower=1e-300))
-    df["significant"] = df.get("significant_predictive",
-                                pd.Series(False, index=df.index)).astype(bool)
-    return df[["marker", "cancer", "HR_markerxICI", "p_markerxICI",
-               "log_hr", "neglog10_p", "significant"]]
 
 
 def _robust_hits() -> pd.DataFrame:
@@ -624,7 +598,6 @@ def _love_smd() -> pd.DataFrame:
 
 def main() -> None:
     save_figure_data(_ps_predictions(), "fig5_ps_predictions.csv")
-    save_figure_data(_volcano_track2(), "fig5_volcano_track2.csv")
     save_figure_data(_robust_hits(), "fig5_robust_hits.csv")
     km, meta = _km_top_hit()
     save_figure_data(km, "fig5_km_top_hit.csv")

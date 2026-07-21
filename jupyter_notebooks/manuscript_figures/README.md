@@ -21,7 +21,7 @@ manuscript_figures/
 │   ├── plot_figure_2_supp.R      # within-stage KM by overall risk quartile → figureS2_stage_stratified_risk.{png,pdf}
 │   ├── plot_figure_3.R           # 4 panels → figure3_feature_comps.{png,pdf}
 │   ├── plot_figure_4.R           # 3 panels + figS1 → figure4_trajectories.{png,pdf} + figureS1_*
-│   └── plot_figure_5.R           # 4 panels → figure5_biomarkers.{png,pdf}
+│   └── plot_figure_5.R           # 5 panels (A–E) → figure5_biomarkers.{png,pdf}
 ├── generate_figure_data.ipynb    # Python-kernel notebook — runs all preps
 ├── render_figures.ipynb          # R-kernel notebook — sources all R plot scripts
 └── figures/                      # panel PNGs + target_figures/ composites (output dir)
@@ -104,8 +104,8 @@ manuscript_figures/
 | 1 | `fig1_endpoint_counts.csv`, `fig1_cancer_type_counts.csv`, `fig1_notes_per_patient.csv`, `fig1_stage_counts.csv`, `fig1_treatment_counts.csv` |
 | 2 | `fig2_full_cohort_metrics.csv`, `fig2_within_vs_pan_cancer.csv`, `fig2_within_vs_pan_treatment.csv`, `fig2_km_tertiles.csv`, `fig2_km_stage_vs_risk.csv`, `fig2_stage_vs_risk_cindex.csv` |
 | 3 | `fig3_modality_cindex.csv`, `fig3_modality_avg_rank.csv`, `fig3_joint_betas.csv` (includes p-values), `fig3_risk_score_corr.csv` |
-| 4 | `fig4_trajectories_heatmap.csv` (panel A), `fig4_cluster_composition_{stage,treatment}.csv`, `fig4_km_data.csv`, `fig4_cluster_severity.csv`, `fig4_silhouette.csv` (appendix Fig S1) |
-| 5 | `fig5_ps_predictions.csv`, `fig5_robust_hits.csv`, `fig5_km_top_hit.csv`, `fig5_km_examples.csv`, `fig5_top_hit_meta.csv`, `fig5_love_smd.csv` |
+| 4 | `fig4_trajectories_heatmap.csv` (panel A), `fig4_km_data.csv`, `fig4_cluster_severity.csv`, `fig4_silhouette.csv` (appendix Fig S1) |
+| 5 | `fig5_ps_predictions.csv`, `fig5_robust_hits.csv`, `fig5_km_top_hit.csv`, `fig5_km_examples.csv`, `fig5_top_hit_meta.csv`, `fig5_love_smd.csv`, `fig5_forest_headline.csv` |
 
 ## Prerequisites for each prep script
 
