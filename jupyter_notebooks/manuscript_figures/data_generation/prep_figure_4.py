@@ -162,7 +162,7 @@ def _scaled_trajectory_matrix(input_path: str) -> tuple[pd.DataFrame, np.ndarray
     pxs_to_keep = missing_rowwise[missing_rowwise > 18].index
     traj_sub = traj_df.loc[pxs_to_keep, ["DFCI_MRN"] + months_to_keep].copy()
 
-    if len(traj_sub) < N_CLUSTERS:
+    if len(traj_sub) < N_SLOPE_GROUPS:
         return traj_sub, None, months_to_keep
 
     X = traj_sub[months_to_keep].values
