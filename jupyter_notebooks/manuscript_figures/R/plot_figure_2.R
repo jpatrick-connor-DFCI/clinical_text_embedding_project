@@ -73,14 +73,25 @@ build_fig2a <- function(metrics, metric = METRIC) {
   lo <- max(0.45, min(c(d$base_val, d$text_val)) - 0.02)
   hi <- min(1.00, max(c(d$base_val, d$text_val)) + 0.02)
   top <- d %>% group_by(plot_group) %>% slice_max(delta, n = 2) %>% ungroup()
+  # Repel data covers every point (blank labels for non-annotated ones) so labels
+  # are pushed clear of all markers, not just the ones being annotated.
+  top_key <- paste(top$scheme, top$event)
+  repel_d <- d %>%
+    mutate(event_lbl = ifelse(paste(scheme, event) %in% top_key, event_lbl, ""))
   lbl <- metric_label(metric)
 
   ggplot(d, aes(base_val, text_val, color = plot_group, shape = plot_group)) +
     geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "#666666") +
     geom_point(size = 1.8, alpha = 0.65) +
-    ggrepel::geom_text_repel(data = top, aes(label = event_lbl),
-                             size = 2.2, color = "#222222", min.segment.length = 0.1,
-                             max.overlaps = 12) +
+    ggrepel::geom_text_repel(
+      data = repel_d, aes(label = event_lbl),
+      size = 2.2, fontface = "bold", color = "#222222",
+      # Repel against every point, not just the labeled ones, so annotations
+      # never sit on top of a marker.
+      point.size = 1.8, point.padding = 0.4, box.padding = 0.6,
+      force = 3, force_pull = 0.5, min.segment.length = 0.1,
+      segment.color = "#888888", segment.size = 0.3,
+      max.overlaps = Inf, seed = 0) +
     scale_color_manual(values = FIG2A_GROUP_COLORS, labels = FIG2A_GROUP_LABELS,
                        name = NULL, drop = FALSE) +
     scale_shape_manual(values = FIG2A_GROUP_SHAPES, labels = FIG2A_GROUP_LABELS,
@@ -199,7 +210,7 @@ build_within_vs_pan <- function(csv, stratum_title, metric = METRIC) {
     p <- p + geom_vline(xintercept = overall_pan, linetype = "dashed",
                         color = unname(MODEL_COLORS[["base"]]), linewidth = 0.5) +
       annotate("text", x = overall_pan, y = Inf,
-               label = sprintf("Pan avg %s = %.3f", lbl, overall_pan),
+               label = sprintf("%s = %.3f", lbl, overall_pan),
                color = unname(MODEL_COLORS[["base"]]), size = 2.5,
                fontface = "italic", hjust = 0.5, vjust = -1.6)
   }
@@ -207,7 +218,7 @@ build_within_vs_pan <- function(csv, stratum_title, metric = METRIC) {
     p <- p + geom_vline(xintercept = overall_within, linetype = "dashed",
                         color = unname(MODEL_COLORS[["text"]]), linewidth = 0.5) +
       annotate("text", x = overall_within, y = Inf,
-               label = sprintf("Within avg %s = %.3f", lbl, overall_within),
+               label = sprintf("%s = %.3f", lbl, overall_within),
                color = unname(MODEL_COLORS[["text"]]), size = 2.5,
                fontface = "italic", hjust = 0.5, vjust = -0.4)
   }
