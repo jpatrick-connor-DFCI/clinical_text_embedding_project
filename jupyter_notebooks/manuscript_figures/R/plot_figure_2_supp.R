@@ -73,7 +73,8 @@ build_stage_panel <- function(df, stage_lbl, title_text) {
              hjust = 0, vjust = 0, size = 2.6, fontface = "italic", color = "#444444") +
     labs(x = "Months from first treatment", y = "Overall survival", title = title_text) +
     theme_manuscript() +
-    theme(legend.position = c(0.82, 0.80),
+    theme(legend.position = c(0.98, 0.97),
+          legend.justification = c(1, 1),
           legend.background = element_rect(fill = "white", color = NA))
 }
 
@@ -89,11 +90,11 @@ if (nrow(d) > 0) {
 pS_iv <- build_stage_panel(d, "IV", "Stage IV: survival by overall risk-score quartile")
 pS_i  <- build_stage_panel(d, "I",  "Stage I: survival by overall risk-score quartile")
 
-save_panel(pS_iv, "figS2_stage4_by_risk", width = 5.6, height = 4.6)
-save_panel(pS_i,  "figS2_stage1_by_risk", width = 5.6, height = 4.6)
+save_panel(pS_iv, "figS2_stage4_by_risk", width = 7.2, height = 6.0)
+save_panel(pS_i,  "figS2_stage1_by_risk", width = 7.2, height = 6.0)
 
 figS2 <- (pS_iv | pS_i) +
          plot_annotation(tag_levels = "A") &
          theme(plot.tag = element_text(size = 14, face = "bold"))
 
-save_figure(figS2, "figureS2_stage_stratified_risk", width = 11.2, height = 4.8)
+save_figure(figS2, "figureS2_stage_stratified_risk", width = 14.4, height = 6.4)

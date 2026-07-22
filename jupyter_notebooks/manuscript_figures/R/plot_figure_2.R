@@ -30,6 +30,16 @@ source(file.path(script_dir, "figure_utils.R"))
 # supplementary stage-stratified script (plot_figure_2_supp.R) can share them.
 
 
+# Human-readable label for a single event code. death_met events are either the
+# literal "death" or a metastatic-site name (see MET_SITES in
+# generate_embedding_prediction_datasets.py); everything else (ICD-10 codes,
+# phecodes) just gets underscore-cleanup + title-casing.
+event_description <- function(scheme, event) {
+  ifelse(scheme == "death_met" & event == "death", "Death",
+  ifelse(scheme == "death_met", paste("Mets:", stringr::str_to_title(event)),
+         stringr::str_trunc(stringr::str_to_title(gsub("_", " ", event)), 22)))
+}
+
 # ============================================================================
 # fig2a: text vs base scatter
 # ============================================================================
@@ -41,12 +51,13 @@ build_fig2a <- function(metrics) {
            scheme_lbl = SCHEME_LABELS[as.character(scheme)])
   lo <- max(0.45, min(c(d$base_cindex, d$text_cindex)) - 0.02)
   hi <- min(1.00, max(c(d$base_cindex, d$text_cindex)) + 0.02)
-  top <- d %>% slice_max(delta, n = 5)
+  top <- d %>% slice_max(delta, n = 5) %>%
+    mutate(event_lbl = event_description(scheme, event))
 
   ggplot(d, aes(base_cindex, text_cindex, color = scheme, shape = scheme)) +
     geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "#666666") +
     geom_point(size = 1.8, alpha = 0.65) +
-    ggrepel::geom_text_repel(data = top, aes(label = stringr::str_trunc(event, 22)),
+    ggrepel::geom_text_repel(data = top, aes(label = event_lbl),
                              size = 2.2, color = "#222222", min.segment.length = 0.1,
                              max.overlaps = 12) +
     scale_color_manual(values = SCHEME_COLORS,
@@ -75,11 +86,12 @@ build_fig2b <- function(metrics) {
            scheme = factor(scheme, levels = names(SCHEME_LABELS)))
   ann <- d %>% group_by(scheme) %>%
     summarise(n = n(),
-              med = median(delta),
+              mean_delta = mean(delta),
+              sd_delta = sd(delta),
               p = wilcoxon_vs0(delta),
               .groups = "drop") %>%
     mutate(stars = vapply(p, p_to_stars, character(1)),
-           label = sprintf("n=%d\nmed=%+.3f\n%s", n, med, stars))
+           label = sprintf("n=%d\nmean=%+.3f\n%s", n, mean_delta, stars))
   ymax <- max(d$delta, na.rm = TRUE) * 1.20
 
   ggplot(d, aes(x = scheme, y = delta, fill = scheme)) +
@@ -87,6 +99,13 @@ build_fig2b <- function(metrics) {
     geom_jitter(width = 0.18, size = 0.7, alpha = 0.35,
                 aes(color = scheme), show.legend = FALSE) +
     geom_hline(yintercept = 0, color = "#333333", linetype = "dashed") +
+    geom_errorbar(data = ann,
+                  aes(x = scheme, y = mean_delta,
+                      ymin = mean_delta - sd_delta, ymax = mean_delta + sd_delta),
+                  inherit.aes = FALSE, width = 0.15, linewidth = 0.6, color = "#111111") +
+    geom_point(data = ann, aes(x = scheme, y = mean_delta),
+              inherit.aes = FALSE, shape = 23, size = 2.2,
+              fill = "white", color = "#111111", stroke = 0.7) +
     geom_text(data = ann, aes(x = scheme, y = ymax, label = label),
               inherit.aes = FALSE, vjust = 1, size = 2.5, color = "#222222") +
     scale_fill_manual(values = SCHEME_COLORS, guide = "none") +
@@ -94,7 +113,8 @@ build_fig2b <- function(metrics) {
     scale_x_discrete(labels = SCHEME_LABELS) +
     labs(x = NULL, y = "Delta C-index (Text - Base)",
          title = "C-index Improvement by Scheme",
-         caption = "Stars: Wilcoxon signed-rank vs Δ=0  (*<.05, **<.01, ***<.001, ****<1e-4)") +
+         caption = paste("Stars: Wilcoxon signed-rank vs Δ=0  (*<.05, **<.01, ***<.001, ****<1e-4).",
+                         "Diamond ± bar: mean ± SD.")) +
     theme_manuscript() +
     theme(plot.caption = element_text(size = 6.5, hjust = 1,
                                       face = "italic", color = "#666666"),
@@ -139,11 +159,19 @@ build_within_vs_pan <- function(csv, stratum_title) {
           plot.caption = element_text(size = 6.5, hjust = 1, face = "italic", color = "#666666"))
   if (length(overall_pan) == 1 && is.finite(overall_pan)) {
     p <- p + geom_vline(xintercept = overall_pan, linetype = "dashed",
-                        color = unname(MODEL_COLORS[["base"]]), linewidth = 0.5)
+                        color = unname(MODEL_COLORS[["base"]]), linewidth = 0.5) +
+      annotate("text", x = overall_pan, y = Inf,
+               label = sprintf("Pan avg AUC = %.3f", overall_pan),
+               color = unname(MODEL_COLORS[["base"]]), size = 2.5,
+               fontface = "italic", angle = 90, hjust = 1.05, vjust = -0.4)
   }
   if (length(overall_within) == 1 && is.finite(overall_within)) {
     p <- p + geom_vline(xintercept = overall_within, linetype = "dashed",
-                        color = unname(MODEL_COLORS[["text"]]), linewidth = 0.5)
+                        color = unname(MODEL_COLORS[["text"]]), linewidth = 0.5) +
+      annotate("text", x = overall_within, y = Inf,
+               label = sprintf("Within avg AUC = %.3f", overall_within),
+               color = unname(MODEL_COLORS[["text"]]), size = 2.5,
+               fontface = "italic", angle = 90, hjust = 1.05, vjust = 1.4)
   }
   p
 }
@@ -184,7 +212,7 @@ build_fig2d <- function() {
     geom_step(linewidth = 0.9) +
     scale_color_manual(values = RISK_COLORS, name = NULL) +
     scale_fill_manual(values = RISK_COLORS, guide = "none") +
-    scale_linetype_manual(values = c(text = "solid", base = "dashed"), name = NULL) +
+    scale_linetype_manual(values = c(text = "solid", base = "dashed"), guide = "none") +
     coord_cartesian(xlim = c(0, 60), ylim = c(0, 1.03)) +
     annotate("text", x = 1, y = 0.06,
              label = sprintf("text logrank p=%.1e\nbase logrank p=%.1e", lr_t, lr_b),
@@ -290,14 +318,14 @@ risk_row <- p2d | p2_stage | p2_quart
 
 save_panel(p2a, "fig2a", width = 6.4, height = 5.0)
 save_panel(p2b, "fig2b", width = 6.0, height = 4.8)
-save_panel(p2_wc, "fig2c", width = 5.6, height = 4.6)
-save_panel(p2_wt, "fig2d", width = 5.6, height = 4.6)
+save_panel(p2_wc, "fig2c", width = 7.0,  height = 4.6)
+save_panel(p2_wt, "fig2d", width = 11.2, height = 4.6)
 save_panel(p2d,       "fig2e", width = 5.6, height = 4.6)
 save_panel(p2_stage,  "fig2f", width = 5.6, height = 4.6)
 save_panel(p2_quart,  "fig2g", width = 5.6, height = 4.6)
 
 fig2 <- (p2a + p2b) /
-        (p2_wc + p2_wt) /
+        (p2_wc + p2_wt + plot_layout(widths = c(1.25, 2))) /
         risk_row +
         plot_annotation(tag_levels = "A") &
         theme(plot.tag = element_text(size = 14, face = "bold"))

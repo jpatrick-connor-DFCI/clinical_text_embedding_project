@@ -37,7 +37,7 @@ dir.create(TARGET_OUT_DIR, showWarnings = FALSE, recursive = TRUE)
 # ----------------------------------------------------------------------------
 SCHEME_COLORS  <- c(death_met = "#E74C3C", icd3_post = "#3498DB",
                     icd4_post = "#2ECC71", phecode_post = "#9B59B6")
-SCHEME_LABELS  <- c(death_met = "death_met", icd3_post = "ICD3",
+SCHEME_LABELS  <- c(death_met = "Death + Mets", icd3_post = "ICD3",
                     icd4_post = "ICD4", phecode_post = "PhecodeX")
 SCHEME_SHAPES  <- c(death_met = 18, icd3_post = 16, icd4_post = 17, phecode_post = 15)
 

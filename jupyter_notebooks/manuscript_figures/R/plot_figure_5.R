@@ -87,7 +87,8 @@ build_fig5a <- function() {
              hjust = 0, vjust = 0, size = 2.5, fontface = "italic", color = "#555555") +
     labs(x = "False Positive Rate", y = "True Positive Rate", title = ttl) +
     theme_manuscript() +
-    theme(legend.position = c(0.65, 0.18),
+    theme(legend.position = c(0.32, 0.90),
+          legend.justification = c(0, 1),
           legend.background = element_rect(fill = "white", color = NA))
 
   # Per-cancer AUC inset (text model)
@@ -102,12 +103,12 @@ build_fig5a <- function() {
       mutate(cancer_type = factor(cancer_type, levels = cancer_type))
     ggplot(cancer_auc, aes(auc, cancer_type, fill = cancer_type)) +
       geom_col(color = "white", width = 0.7) +
-      geom_text(aes(label = sprintf("%.2f", auc), x = auc + 0.005),
-                hjust = 0, size = 2.4) +
+      geom_text(aes(label = sprintf("AUC=%.2f", auc), x = auc + 0.005),
+                hjust = 0, size = 2.4, fontface = "bold") +
       scale_fill_manual(values = unname(grDevices::hcl.colors(nrow(cancer_auc), "Set 2")),
                         guide = "none") +
       coord_cartesian(xlim = c(max(0.5, min(cancer_auc$auc) - 0.08),
-                               min(1.0, max(cancer_auc$auc) + 0.08))) +
+                               min(1.0, max(cancer_auc$auc) + 0.14))) +
       labs(x = "AUC", y = NULL,
            title = "AUC by Cancer Type\n(Text model)") +
       theme_manuscript(base_size = 8) +
@@ -118,8 +119,10 @@ build_fig5a <- function() {
   } else NULL
 
   if (!is.null(inset)) {
+    # Inset sits in the far lower-right corner of the main ROC panel, clear of
+    # the (now upper-left) legend.
     cowplot::ggdraw(main) +
-      cowplot::draw_plot(inset, x = 0.36, y = 0.08, width = 0.46, height = 0.36)
+      cowplot::draw_plot(inset, x = 0.52, y = 0.04, width = 0.46, height = 0.36)
   } else {
     main
   }

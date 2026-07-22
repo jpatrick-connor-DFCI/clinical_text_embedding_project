@@ -3,6 +3,8 @@
 Writes to FIGURE_DATA_DIR:
 - fig3_modality_cindex.csv        scheme, event, modality, cindex
 - fig3_modality_avg_rank.csv      modality, mean_rank, sem_rank, n_events  (complete-case endpoints)
+- fig3_modality_ranks_long.csv    scheme, event, modality, rank  (per-endpoint ranks, complete-case;
+                                  lets the R tier run a Friedman test across modalities)
 - fig3_joint_betas.csv            scheme, event, modality, beta, se, hr, p_value, n, n_events
 - fig3_risk_score_corr.csv        modality x modality correlation, plus n_patients in metadata row
 """
@@ -34,6 +36,7 @@ DEATH_SCHEME = "death_met"    # scheme for the correlation heatmap
 
 MODALITY_CINDEX_COLUMNS = ["scheme", "event", "modality", "cindex"]
 MODALITY_AVG_RANK_COLUMNS = ["modality", "mean_rank", "sem_rank", "n_events"]
+MODALITY_RANKS_LONG_COLUMNS = ["scheme", "event", "modality", "rank"]
 JOINT_BETA_COLUMNS = [
     "scheme", "event", "modality",
     "beta", "se", "hr", "p_value", "n", "n_events",
@@ -225,6 +228,32 @@ def _modality_avg_rank(cindex_df: pd.DataFrame) -> pd.DataFrame:
     return out.reindex(columns=MODALITY_AVG_RANK_COLUMNS)
 
 
+def _modality_ranks_long(cindex_df: pd.DataFrame) -> pd.DataFrame:
+    """Per-endpoint modality ranks (1 = best), complete-case only.
+
+    Long-format companion to _modality_avg_rank's aggregated mean/SEM, so the
+    R tier can run a Friedman test (repeated measures across modalities, one
+    block per endpoint) for Fig 3C.
+    """
+    if cindex_df.empty:
+        return pd.DataFrame(columns=MODALITY_RANKS_LONG_COLUMNS)
+
+    mat = cindex_df.pivot_table(
+        index=["scheme", "event"], columns="modality", values="cindex", aggfunc="mean",
+    )
+    modalities = [m for m in MODALITY_ORDER if m in mat.columns]
+    mat = mat.reindex(columns=modalities)
+    mat = mat.dropna(how="any")
+    if mat.empty:
+        return pd.DataFrame(columns=MODALITY_RANKS_LONG_COLUMNS)
+
+    ranks = mat.rank(axis=1, ascending=False, method="average")
+    out = ranks.reset_index().melt(
+        id_vars=["scheme", "event"], var_name="modality", value_name="rank",
+    )
+    return out.reindex(columns=MODALITY_RANKS_LONG_COLUMNS)
+
+
 def _risk_score_corr(scheme: str, event: str = "death") -> pd.DataFrame:
     risk_dir = feature_held_out_dir(scheme, event)
     dfs = []
@@ -256,6 +285,7 @@ def main() -> None:
     cindex_all = _modality_cindex_all()
     save_figure_data(cindex_all, "fig3_modality_cindex.csv")
     save_figure_data(_modality_avg_rank(cindex_all), "fig3_modality_avg_rank.csv")
+    save_figure_data(_modality_ranks_long(cindex_all), "fig3_modality_ranks_long.csv")
     save_figure_data(_joint_betas_all(), "fig3_joint_betas.csv")
     save_figure_data(_risk_score_corr(DEATH_SCHEME, "death"), "fig3_risk_score_corr.csv")
 

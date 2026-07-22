@@ -107,6 +107,19 @@ build_fig3b <- function() {
 }
 
 
+# Friedman omnibus test across modalities (repeated-measures ranks, one block
+# per endpoint) — answers whether modality rank differs at all before any
+# pairwise comparison would be considered.
+friedman_p <- function(ranks_long) {
+  if (nrow(ranks_long) == 0) return(NA_real_)
+  mat <- ranks_long %>%
+    tidyr::pivot_wider(id_cols = c(scheme, event), names_from = modality, values_from = rank) %>%
+    select(-scheme, -event) %>%
+    as.matrix()
+  if (nrow(mat) < 2 || ncol(mat) < 2) return(NA_real_)
+  tryCatch(stats::friedman.test(mat)$p.value, error = function(e) NA_real_)
+}
+
 # ============================================================================
 # fig3c: average modality rank across endpoints (1 = best)
 # ============================================================================
@@ -118,6 +131,10 @@ build_fig3c <- function() {
     arrange(mean_rank) %>%
     mutate(modality = fct_reorder(modality, mean_rank, .desc = TRUE))
   n_ev <- if ("n_events" %in% names(d)) as.integer(d$n_events[1]) else NA_integer_
+
+  ranks_long <- load_figure_data("fig3_modality_ranks_long.csv")
+  fp <- friedman_p(ranks_long)
+  stars <- p_to_stars(fp)
 
   ggplot(d, aes(mean_rank, modality, fill = as.character(modality))) +
     geom_col(width = 0.62, color = "white") +
@@ -132,9 +149,13 @@ build_fig3c <- function() {
     coord_cartesian(xlim = c(0.5, length(MODALITY_ORDER) + 0.5)) +
     labs(x = "Average rank across endpoints (1 = best)", y = NULL,
          title = sprintf("Average Modality Rank\n(complete-case endpoints, n=%s)",
-                         ifelse(is.na(n_ev), "NA", scales::comma(n_ev)))) +
+                         ifelse(is.na(n_ev), "NA", scales::comma(n_ev))),
+         caption = sprintf("Friedman test across modalities: p=%s  %s",
+                           ifelse(is.na(fp), "n/a", sprintf("%.1e", fp)), stars)) +
     theme_manuscript() +
-    theme(panel.grid.major.x = element_line(color = "grey90"))
+    theme(panel.grid.major.x = element_line(color = "grey90"),
+          plot.caption = element_text(size = 6.5, hjust = 1,
+                                      face = "italic", color = "#666666"))
 }
 
 
@@ -179,10 +200,14 @@ build_fig3d <- function(betas) {
     rowwise() %>%
     mutate(p = wilcoxon_vs0(unlist(kept)),
            stars = p_to_stars(p),
+           mean_z = mean(unlist(kept), na.rm = TRUE),
+           sd_z = sd(unlist(kept), na.rm = TRUE),
            modality = factor(modality, levels = MODALITY_ORDER)) %>%
     ungroup() %>%
-    select(modality, stars)
+    select(modality, stars, mean_z, sd_z)
   n_tot <- sum(trimmed$n_trim, na.rm = TRUE)
+  means_str <- paste(sprintf("%s: %.2f", MODALITY_DISPLAY[as.character(ann$modality)], ann$mean_z),
+                     collapse = "   ")
 
   ymax <- max(plot_df$z, na.rm = TRUE)
   ggplot(plot_df, aes(modality, z, fill = modality)) +
@@ -192,6 +217,12 @@ build_fig3d <- function(betas) {
     geom_hline(yintercept = 0, color = "#333333", linetype = "dashed") +
     geom_hline(yintercept = c(-1.96, 1.96), color = "#999999",
                linetype = "dotted") +
+    geom_errorbar(data = ann,
+                  aes(x = modality, y = mean_z, ymin = mean_z - sd_z, ymax = mean_z + sd_z),
+                  inherit.aes = FALSE, width = 0.15, linewidth = 0.6, color = "#111111") +
+    geom_point(data = ann, aes(x = modality, y = mean_z),
+              inherit.aes = FALSE, shape = 23, size = 2.2,
+              fill = "white", color = "#111111", stroke = 0.7) +
     geom_text(data = ann, aes(modality, ymax * 1.04, label = stars),
               inherit.aes = FALSE,
               size = 3.2, fontface = "bold", color = "#222222") +
@@ -202,8 +233,10 @@ build_fig3d <- function(betas) {
          title = sprintf("Joint Cox Model: Standardized Coefficient by Modality%s",
                          if (n_tot > 0) sprintf("\n(%d extreme outliers trimmed, Tukey %.1f×IQR)",
                                                  n_tot, IQR_WHISKER) else ""),
-         caption = paste0("z from L2-penalized fit; ±1.96 lines are descriptive, not an exact test.",
-                          "  Stars: Wilcoxon vs z=0  (*<.05, **<.01, ***<.001, ****<1e-4)")) +
+         caption = paste0("Mean z by modality: ", means_str, "\n",
+                          "z from L2-penalized fit; ±1.96 lines are descriptive, not an exact test.",
+                          "  Stars: Wilcoxon vs z=0  (*<.05, **<.01, ***<.001, ****<1e-4).",
+                          "  Diamond ± bar: mean ± SD.")) +
     theme_manuscript() +
     theme(axis.text.x = element_text(angle = 20, hjust = 1),
           plot.caption = element_text(size = 6.5, hjust = 0,

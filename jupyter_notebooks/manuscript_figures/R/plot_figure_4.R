@@ -144,14 +144,26 @@ build_fig4b <- function() {
   td <- ggsurvfit::tidy_survfit(fit) %>%
     mutate(strat_id = sub("^[^=]+=", "", as.character(strata)),
            label    = factor(labels_by_id[strat_id],
-                             levels = unname(labels_by_id)))
+                             levels = unname(labels_by_id))) %>%
+    # survfit2 emits a synthetic time=0, estimate=1 row per stratum (curve
+    # start) that predates the entry=60 left-truncation point; drawing it
+    # produces an unstratified flat segment before month 60 once geom_step
+    # connects it to the first real event. Drop anything before entry.
+    filter(time >= 60)
 
   pal <- setNames(unname(colors_by_id), unname(labels_by_id))
   lp  <- logrank_p(km, "months", "death", "strat", start_col = "entry")
+  ci  <- step_ci_df(td, "label")
 
   ggplot(td, aes(time, estimate, color = label)) +
+    { if (nrow(ci) > 0) geom_rect(data = ci,
+                                  aes(xmin = time, xmax = time_next,
+                                      ymin = conf.low, ymax = conf.high,
+                                      fill = label),
+                                  color = NA, alpha = 0.15, inherit.aes = FALSE) } +
     geom_step(linewidth = 0.9) +
     scale_color_manual(values = pal, name = NULL, drop = FALSE) +
+    scale_fill_manual(values = pal, guide = "none", drop = FALSE) +
     coord_cartesian(xlim = c(60, 120)) +
     annotate("text", x = 62, y = 0.05,
              label = sprintf("Log-rank p=%.1e", lp),

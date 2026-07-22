@@ -118,7 +118,7 @@ build_fig1b <- function() {
 
 
 # ============================================================================
-# fig1c: notes per patient by type (horizontal boxplot, log10 x, KW stars)
+# fig1c: notes per patient by type (horizontal boxplot, raw scale)
 # ============================================================================
 build_fig1c <- function() {
   d <- load_figure_data("fig1_notes_per_patient.csv")
@@ -129,21 +129,12 @@ build_fig1c <- function() {
     arrange(m) %>% pull(note_type)
   d <- d %>% mutate(note_type = factor(note_type, levels = ord))
 
-  groups <- split(d$n_notes, d$note_type)
-  kw_p   <- kruskal_p(groups)
-  stars  <- p_to_stars(kw_p)
-
   ggplot(d, aes(x = n_notes, y = note_type, fill = note_type)) +
     geom_boxplot(outlier.shape = NA, width = 0.55, color = "#333333", alpha = 0.7) +
-    scale_x_log10(labels = scales::label_log()) +
+    scale_x_continuous(labels = scales::comma) +
     scale_fill_manual(values = unname(grDevices::hcl.colors(length(ord), "Set 2")),
                       guide = "none") +
-    annotate("text", x = Inf, y = -Inf,
-             label = sprintf("Kruskal-Wallis p=%.1e  %s",
-                             ifelse(is.na(kw_p), NA, kw_p), stars),
-             hjust = 1.05, vjust = -0.5, size = 2.7, fontface = "italic",
-             color = "#444444") +
-    labs(x = "Notes per patient (log; among patients with ≥1 of type)",
+    labs(x = "Notes per patient (among patients with ≥1 of type)",
          y = NULL, title = "Notes per Patient by Type") +
     theme_manuscript() +
     theme(panel.grid.major.x = element_line(color = "grey90"))
@@ -231,11 +222,11 @@ save_panel(p1b, "fig1b", width = 5.4, height = 4.4)
 save_panel(p1c, "fig1c", width = 7.0, height = 4.4)
 save_panel(p1d, "fig1d", width = 7.0, height = 5.2)
 save_panel(p1e, "fig1e", width = 6.0, height = 4.4)
-save_panel(p1f, "fig1f", width = 6.0, height = 4.4)
+save_panel(p1f, "fig1f", width = 9.0, height = 4.4)
 
 fig1 <- (p1a + p1b + plot_layout(widths = c(2, 1))) /
         (p1c + p1d) /
-        (p1e + p1f) +
+        (p1e + p1f + plot_layout(widths = c(1, 1.5))) +
         plot_annotation(tag_levels = "A") &
         theme(plot.tag = element_text(size = 14, face = "bold"))
 

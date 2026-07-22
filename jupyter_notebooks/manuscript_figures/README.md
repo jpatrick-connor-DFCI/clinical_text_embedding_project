@@ -1,6 +1,6 @@
 # Manuscript figures
 
-Five-figure manuscript layout (cohort → text vs base → modality comparison → mortality trajectories → ICI biomarker discovery) plus an appendix (Fig S1, silhouette). **Data generation is Python; figure rendering is R (`ggplot2 + patchwork`)**. Each R script builds every panel as a ggplot object and composes the final figure in-memory — there is no separate compose script.
+Six-figure manuscript layout (cohort data availability → cohort/population characteristics → text vs base → modality comparison → mortality trajectories → ICI biomarker discovery) plus an appendix (Fig S1 silhouette, Fig S2 within-stage risk stratification). **Data generation is Python; figure rendering is R (`ggplot2 + patchwork`)**. Each R script builds every panel as a ggplot object and composes the final figure in-memory — there is no separate compose script.
 
 ## Layout
 
@@ -8,14 +8,16 @@ Five-figure manuscript layout (cohort → text vs base → modality comparison �
 manuscript_figures/
 ├── _figure_utils.py              # shared module for Python preps
 ├── data_generation/              # Python — compute tier, writes CSVs to figure_data/
+│   ├── prep_figure_0.py          # cohort data-availability cascade (text/stage/treatment/somatic/PRS)
 │   ├── prep_figure_1.py          # cohort, endpoint, notes/patient, stage/treatment counts
 │   ├── prep_figure_2.py          # full-cohort C-index, pan-vs-within models, KMs, stage-vs-risk
-│   ├── prep_figure_3.py          # modality C-index, avg-rank, joint betas, risk-score corr
+│   ├── prep_figure_3.py          # modality C-index, avg-rank, modality ranks (long), joint betas, risk-score corr
 │   ├── prep_figure_4.py          # trajectory clustering, severity (mean met, RMST), silhouette
 │   └── prep_figure_5.py          # PS predictions, robust hits, KM examples, love-plot SMDs
 ├── R/                            # R — rendering tier (ggplot2 + patchwork)
 │   ├── figure_utils.R            # paths, palettes, theme, IO, stats + KM helpers (tidy_km, logrank_p, step_ci_df)
 │   ├── install_packages.R        # one-time CRAN bootstrap
+│   ├── plot_figure_0.R           # 1 panel → figure0_data_availability.png
 │   ├── plot_figure_1.R           # 6 panels → figure1_schematic.png
 │   ├── plot_figure_2.R           # 7 panels (A–G) → figure2_text_results.png
 │   ├── plot_figure_2_supp.R      # within-stage KM by overall risk quartile → figureS2_stage_stratified_risk.png
@@ -38,7 +40,7 @@ manuscript_figures/
 1. **Compute** (cluster, reads from `DATA_PATH`, writes `SURV_PATH/results/figure_data/`):
 
    ```bash
-   for n in 1 2 3 4 5; do
+   for n in 0 1 2 3 4 5; do
      python jupyter_notebooks/manuscript_figures/data_generation/prep_figure_${n}.py
    done
    ```
@@ -47,7 +49,7 @@ manuscript_figures/
    environment variable for the output directory):
 
    ```bash
-   for n in 1 2 3 4 5; do
+   for n in 0 1 2 3 4 5; do
      Rscript jupyter_notebooks/manuscript_figures/R/plot_figure_${n}.R
    done
    ```
@@ -60,7 +62,7 @@ manuscript_figures/
 3. **Notebook orchestration** (two kernels, run in order):
 
    1. Open [`generate_figure_data.ipynb`](generate_figure_data.ipynb) — **Python kernel** — and
-      run all cells. It calls the five `prep_figure_*.py` scripts via the active kernel's
+      run all cells. It calls the six `prep_figure_*.py` scripts via the active kernel's
       interpreter (`sys.executable`).
    2. Open [`render_figures.ipynb`](render_figures.ipynb) — **R kernel** (`IRkernel`) — and
       run all cells. It `sys.source()`s each `R/plot_figure_N.R` in its own environment so
@@ -71,6 +73,8 @@ manuscript_figures/
 
 ## Key design decisions
 
+- **Cohort data-availability cascade (Fig 0).** A CONSORT-style attrition panel run just ahead of Figure 1: from the base VTE cohort (`follow_up_vte_df_cohort.csv`, the pre-embedding-merge cohort file also used by `generate_embedding_prediction_datasets.py`), how many patients have text, stage, first-line treatment, somatic risk scores, and PRS risk scores, down to how many pass every threshold at once (the set usable for the full multi-modal comparison in Figures 3+). Somatic/PRS presence is read from the held-out risk-score files for the representative `death_met`/`death` endpoint, the same representative-endpoint convention used by the Fig 3B correlation heatmap.
+- **`death_met` display label.** The internal scheme key `death_met` is displayed everywhere in figures/captions as **"Death + Mets"** (via `SCHEME_LABELS` in `figure_utils.R`); all filtering logic still keys off the raw string `death_met`, so this is a display-only rename.
 - **Compute is separate from plotting.** Prep scripts do the heavy work; plotting scripts are load-and-plot only, so styling can be iterated without re-running risk scoring, Cox refits, clustering, or biomarker aggregation.
 - **Plotting targets the agreed panel layouts.** The plot scripts read the
   current `figure_data/` CSVs; the panel contents and final layouts follow the
@@ -89,10 +93,16 @@ manuscript_figures/
 - **Average modality rank (Fig 3C).** Panel C ranks modalities per endpoint by c-index (1 = best) and averages the ranks per modality across the same complete-case endpoints.
 - **Modality risk-score correlation (Fig 3B).** Panel B is a correlation heatmap of the per-modality held-out risk scores (`fig3_risk_score_corr.csv`, death endpoint) — text is largely orthogonal to genomics/clinical modalities, i.e. it adds independent signal.
 - **Standardized coefficients (Fig 3D).** Panel D plots the signed Wald z (β/SE) from the joint Cox fit, not raw log-HR — scale-free and stable (no unpenalized blow-ups, no penalized shrinkage), with ±1.96 reference lines and a display-only Tukey 1.5×IQR trim. Shared `fig3_joint_betas.csv` is untouched.
-- **Significance stars on distribution panels.** GraphPad convention (`*` <.05, `**` <.01, `***` <.001, `****` <1e-4, `ns` otherwise). Fig 2B uses Wilcoxon signed-rank vs Δ=0 per scheme; Fig 3D uses Wilcoxon signed-rank vs z=0 per modality; Fig 1C uses an omnibus Kruskal-Wallis across note types. Tests live in the plot scripts (light compute, no new CSVs).
+- **Significance stars on distribution panels.** GraphPad convention (`*` <.05, `**` <.01, `***` <.001, `****` <1e-4, `ns` otherwise). Fig 2B uses Wilcoxon signed-rank vs Δ=0 per scheme, annotated with the **mean** Δ (a diamond ± SD errorbar overlays the mean on the violin; the annotation text also switched from median to mean); Fig 3D uses Wilcoxon signed-rank vs z=0 per modality. Fig 1C shows raw notes-per-patient on a **linear** scale (no log transform, no omnibus test). Fig 3C adds a **Friedman test** (repeated-measures ranks, one block per endpoint, `fig3_modality_ranks_long.csv`) as an omnibus check that modality rank differs at all across the complete-case endpoints. Tests live in the plot scripts (light compute; Fig 3C's per-endpoint ranks are precomputed in `prep_figure_3.py` since they aren't otherwise stored).
+- **Event labels by description, not code (Fig 2A).** Top-event labels use a small `event_description()` heuristic in `plot_figure_2.R`: `death_met` events are either the literal `"death"` (labeled "Death") or a metastatic-site name from `MET_SITES` (labeled "Mets: " followed by the site name); other schemes' raw ICD-10/phecode event strings get underscore-cleanup + title-casing. Death and Mets are always distinguishable labels, never a shared raw code.
 - **Disease-severity characteristics (Fig 4C).** Panel C is a 1×4 small-multiples row (% Stage IV, % ICI treated, mean # metastatic sites, **10-yr RMST** in months) reading `fig4_cluster_severity.csv`. RMST (`restricted_mean_survival_time`, **τ=120 mo** = 5 y past the 60-mo landmark entry requirement, so RMST does not saturate at the entry cap). Stage and ICI tokens accept float repr (`4.0`) and the long form `Immune Checkpoint Inhibitors`.
 - **Cluster-count selection (Fig S1, appendix).** `prep_figure_4._silhouette_scan` computes silhouette vs k (2–8) on the same scaled trajectory matrix; `figS1a` plots it and marks the chosen k=4. Composed as `figureS1_cluster_silhouette` (compose key `s1`).
-- **Pan vs. within-stratum models (Fig 2C/2D).** Dumbbell (Cleveland) panels replacing the old cancer×endpoint heatmap: per stratum, grey dot = single pan-cohort embedding model, red dot = stratum-specific model, connected and sorted by Δ, with a dashed line at the overall-pan value. Metric is **mean time-dependent AUC** (not C-index) to match Fig 2A/Fig 3 and the CV-selection metric; it is computed upstream in `within_vs_pan_cancer_models.py` / `within_treatment_vs_pan_treatment_models.py` (train-based IPCW, train 5–95th-percentile eval grid clipped to each stratum's follow-up), which also write an `Overall` row. Death endpoint only; per-stratum rows require n≥30 held-out. Most within dots sitting at/below the dashed line is the intended "a single pan-cohort text model generalizes" message.
+- **Pan vs. within-stratum models (Fig 2C/2D).** Dumbbell (Cleveland) panels replacing the old cancer×endpoint heatmap: per stratum, grey dot = single pan-cohort embedding model, red dot = stratum-specific model, connected and sorted by Δ, with a dashed line at the overall-pan value. Metric is **mean time-dependent AUC** (not C-index) to match Fig 2A/Fig 3 and the CV-selection metric; it is computed upstream in `within_vs_pan_cancer_models.py` / `within_treatment_vs_pan_treatment_models.py` (train-based IPCW, train 5–95th-percentile eval grid clipped to each stratum's follow-up), which also write an `Overall` row. Death endpoint only; per-stratum rows require n≥30 held-out. Most within dots sitting at/below the dashed line is the intended "a single pan-cohort text model generalizes" message. Each dashed reference line is annotated in-panel with its numeric value (e.g. "Pan avg AUC = 0.71"). Panel widths: Fig 2C ×1.25, Fig 2D ×2 (relative widths `c(1.25, 2)` in the composed row) to give the longer within-stratum dumbbells room to breathe.
+- **Overlay mean ± SD on distribution panels (Fig 2B/3D).** Both panels overlay a white diamond at the mean with a ±1 SD errorbar directly on the violins, in addition to the significance-star annotation text; Fig 3D's caption also prints the per-modality mean.
+- **KM tertile legend (Fig 2E).** The redundant text/base linetype legend was removed (the panel title already states "(text solid, base dashed)" in plain text); the risk-tertile color legend and its 95% CI bands (`step_ci_df`/`geom_rect`) are retained.
+- **Left-truncated KM curves (Fig 4B).** `ggsurvfit::tidy_survfit()` emits a synthetic `time=0, estimate=1` row per stratum for the curve start, which predates the `entry=60` left-truncation point; left un-filtered it renders as a spurious unstratified flat segment from month 0–60 once `geom_step` connects it to the first real (post-truncation) event. `build_fig4b` now filters `time >= 60` before plotting, and adds 95% CI bands (`step_ci_df`/`geom_rect`) matching the other KM panels.
+- **AUC-by-cancer-type inset (Fig 5A).** The per-cancer-type AUC bar inset sits in the far lower-right corner of the main ROC panel (`cowplot::draw_plot`), with each bar annotated `AUC=x.xx`; the main ROC legend moved to the upper-left to stay clear of it.
+- **Overall-risk legend placement (Fig S2).** The risk-quartile legend anchors to the true top-right corner of each stage panel (`legend.position = c(0.98, 0.97)`, `legend.justification = c(1, 1)`); both panels and the composed figure were enlarged to give the KM curves and legend more room.
 - **Cohort distributions (Fig 1).** The timeline schematic is replaced by population panels: notes-per-patient by type (box/violin, `fig1_notes_per_patient.csv`; shown among patients with ≥1 note of that type), cancer-stage and first-line-treatment breakdowns (`fig1_stage_counts.csv`, `fig1_treatment_counts.csv`), alongside the cancer-type pie. (The embedding UMAP was dropped — it did not read well.)
 - **Trajectory heatmap (Fig 4A).** Panel A is the per-patient mortality-risk heatmap (`fig4_trajectories_heatmap.csv`, ≤500 patients/cluster, ordered by within-cluster mean risk), with white separators and cluster-name y-labels.
 - **Covariate balance love plot (Fig 5).** `prep_figure_5._love_smd` recomputes stabilized ATE weights from the held-out propensity (`ICI_prediction`, dropping rows missing it) and reports SMD before vs after weighting (`fig5_love_smd.csv`, primary spec, pooled across cancers). Panel A notes the AUC is held-out CV; panel B annotates the denominator (robust hits of markers significant in ≥1 spec — `n_significant_markers`); panel C titles carry the marker×ICI interaction HR + 95% CI (carried through `fig5_km_examples.csv`).
@@ -101,17 +111,20 @@ manuscript_figures/
 
 | Figure | Inputs from `figure_data/` |
 |---|---|
+| 0 | `fig0_data_availability.csv` |
 | 1 | `fig1_endpoint_counts.csv`, `fig1_cancer_type_counts.csv`, `fig1_notes_per_patient.csv`, `fig1_stage_counts.csv`, `fig1_treatment_counts.csv` |
 | 2 | `fig2_full_cohort_metrics.csv`, `fig2_within_vs_pan_cancer.csv`, `fig2_within_vs_pan_treatment.csv`, `fig2_km_tertiles.csv`, `fig2_km_stage_vs_risk.csv`, `fig2_stage_vs_risk_cindex.csv` |
-| 3 | `fig3_modality_cindex.csv`, `fig3_modality_avg_rank.csv`, `fig3_joint_betas.csv` (includes p-values), `fig3_risk_score_corr.csv` |
+| 3 | `fig3_modality_cindex.csv`, `fig3_modality_avg_rank.csv`, `fig3_modality_ranks_long.csv`, `fig3_joint_betas.csv` (includes p-values), `fig3_risk_score_corr.csv` |
 | 4 | `fig4_trajectories_heatmap.csv` (panel A), `fig4_km_data.csv`, `fig4_cluster_severity.csv`, `fig4_silhouette.csv` (appendix Fig S1) |
 | 5 | `fig5_ps_predictions.csv`, `fig5_robust_hits.csv`, `fig5_km_top_hit.csv`, `fig5_km_examples.csv`, `fig5_top_hit_meta.csv`, `fig5_love_smd.csv`, `fig5_forest_headline.csv` |
+| S2 | `fig2_km_stage_vs_risk.csv` (reused from Figure 2 prep; no separate prep script) |
 
 ## Prerequisites for each prep script
 
+- **prep_figure_0**: requires the base VTE cohort file (`follow_up_vte_df_cohort.csv`), the post-text-merge embedding file for `icd3_post` (text availability), the derived cancer-stage pickle (falling back to the one-hot `cancer_stage_df.csv.gz`), `categorical_treatment_data_by_line.csv.gz` (treatment line 1), and the held-out `somatic_risk_scores.csv` / `prs_risk_scores.csv` for the representative `death_met`/`death` endpoint (same held-out risk-score directory as `prep_figure_3`).
 - **prep_figure_1**: nothing beyond standard pipeline outputs.
 - **prep_figure_2**: requires `run_full_cohort_event.py` + `run_full_cohort_risk_scores.py` to have completed for `death_met`. The pan-vs-within panels (C/D) read the Pipeline-3 outputs `results/pan_vs_within_cancer/metrics_by_cancer_type.csv` and `results/pan_vs_within_treatment/metrics_by_treatment.csv` (directly under the scheme-agnostic `time-to-event_analysis/results/` dir, so `within_vs_pan_cancer_models.py` and `within_treatment_vs_pan_treatment_models.py` must be run first; they now report mean time-dependent AUC). The stage-vs-risk panel (F) also reads the derived cancer-stage pickle (`STAGE_PATH`), falling back to the one-hot `cancer_stage_df.csv.gz` if it is unavailable.
-- **prep_figure_3**: requires feature-comp held-out risk scores for all schemes (written at training time by `run_feature_comp_task.py` under `<scheme>/held_out_risk_scores/`; panels A/B/D do a per-(scheme, event) lifelines refit on those scores) and `death_met` for the correlation heatmap (panel C).
+- **prep_figure_3**: requires feature-comp held-out risk scores for all schemes (written at training time by `run_feature_comp_task.py` under `<scheme>/held_out_risk_scores/`; panels A/B/D do a per-(scheme, event) lifelines refit on those scores) and `death_met` for the correlation heatmap (panel C). Also writes `fig3_modality_ranks_long.csv` (per-endpoint modality ranks, complete-case only) for the Fig 3C Friedman test.
 - **prep_figure_4**: requires `generate_mortality_trajectories.py` output. Defaults to `decay_param=0.1`; override with `--decay <val>` or `--input <path>`.
 - **prep_figure_5**: requires `ICI_train_propensity.py` predictions, `run_IPTW_analysis.py` per-spec outputs, `compile_IPTW_results.py` compiled hits, and IPTW input CSVs.
 
