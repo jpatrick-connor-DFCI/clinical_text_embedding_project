@@ -15,10 +15,23 @@ Writes to FIGURE_DATA_DIR:
 - fig2_km_stage_vs_risk.csv         DFCI_MRN, tt_death, death, text_risk_score, stage_group,
                                     stage_ordinal, risk_quartile   (known-stage cohort)
 - fig2_stage_vs_risk_cindex.csv     predictor, cindex, n   (stage ordinal vs text risk score, OS)
-- fig2_stage_vs_risk_cindex_by_stage.csv  stage_group, cindex, n   (within-stage C-index of text
-                                    risk score for OS; FigS2 stage-panel annotation, cindex mode)
-- fig2_stage_vs_risk_auc.csv        stage_group, mean_auc, n   (within-stage AUC(t) of text
-                                    risk score for OS; FigS2 stage-panel annotation, auc mode)
+- fig2_stage_vs_risk_cindex_by_stage.csv  stage_group, cindex, n   (within-stratum C-index of text
+                                    risk score for OS, including pooled I-II; FigS2 annotation)
+- fig2_stage_vs_risk_auc.csv        stage_group, mean_auc, n   (within-stratum AUC(t) of text
+                                    risk score for OS, including pooled I-II; FigS2 annotation)
+- fig2_scheme_delta_topk.csv        category, rank, scheme, event, event_lbl, text_cindex,
+                                    base_cindex, delta   (top-3 events per category by largest
+                                    positive delta C-index (text - base); category in
+                                    {mets, ICD10, phecodes} — mets = death_met minus the literal
+                                    "death" event, ICD10 = icd3_post + icd4_post pooled,
+                                    phecodes = phecode_post. Categories with fewer than 3
+                                    positive-delta events yield fewer rows.)
+- fig2_scheme_event_km.csv          category, scheme, event, event_lbl, DFCI_MRN, text_risk_score,
+                                    base_risk_score, event_flag, tt, text_tertile, base_tertile
+                                    (held-out risk scores + survival for the events selected in
+                                    fig2_scheme_delta_topk.csv, merged from each scheme's
+                                    full_cohort_risk_scores/<event>/ output; events missing
+                                    risk-score files are skipped)
 """
 
 from __future__ import annotations
@@ -42,6 +55,7 @@ from _figure_utils import (
     full_cohort_event_dir, full_cohort_risk_dir, list_trained_events,
     save_figure_data,
 )
+from slurm_array_utils import filter_event_rows, load_embedding_prediction_df
 
 # Raw, complete stage labels (avoids the drop_first ambiguity in cancer_stage_df.csv.gz).
 # Mirrors generate_all_non_text_covariates.py:17.
@@ -78,6 +92,34 @@ def _event_label(scheme: str, event: str) -> str:
     if scheme in ("icd3_post", "icd4_post"):
         return find_icd_code(event)
     return event.replace("_", " ").title()[:22]
+
+
+# Category grouping for the Fig 2 per-scheme Δ C-index barplots + event KM panels: mets =
+# death_met minus the literal "death" event, ICD10 = icd3_post + icd4_post pooled,
+# phecodes = phecode_post. death_met's "death" event itself has no category (excluded).
+CATEGORY_ORDER = ["mets", "ICD10", "phecodes"]
+TOPK_PER_CATEGORY = 3
+SCHEME_DELTA_TOPK_COLUMNS = [
+    "category", "rank", "scheme", "event", "event_lbl", "text_cindex", "base_cindex", "delta",
+]
+SCHEME_EVENT_KM_COLUMNS = [
+    "category", "scheme", "event", "event_lbl", "DFCI_MRN",
+    "text_risk_score", "base_risk_score", "event_flag", "tt",
+    "text_tertile", "base_tertile",
+]
+
+
+def _event_category(scheme: str, event: str) -> str | None:
+    """Map a (scheme, event) row to one of CATEGORY_ORDER, or None to exclude it."""
+    if scheme == "death_met":
+        return None if event == "death" else "mets"
+    if scheme in ("icd3_post", "icd4_post"):
+        return "ICD10"
+    if scheme == "phecode_post":
+        return "phecodes"
+    return None
+
+
 WITHIN_VS_PAN_COLUMNS = [
     "stratum", "auc_pan", "auc_within", "delta",
     "cindex_pan", "cindex_within", "cindex_delta",
@@ -126,8 +168,15 @@ def _full_cohort_metrics() -> pd.DataFrame:
     return pd.DataFrame(rows, columns=FULL_COHORT_METRIC_COLUMNS)
 
 
-def _merge_risk_with_surv(event: str, surv_df: pd.DataFrame) -> pd.DataFrame | None:
-    rd = full_cohort_risk_dir("death_met", event)
+def _merge_risk_with_surv(
+    event: str, surv_df: pd.DataFrame, scheme: str = "death_met",
+) -> pd.DataFrame | None:
+    """Merge a scheme's per-event held-out text/base risk scores with survival labels.
+
+    `surv_df` must already carry the `event`/`tt_{event}` columns for `scheme` (for
+    death_met that's death_met_surv_df.csv.gz; for other schemes, the scheme's
+    embedding_prediction_df via load_embedding_prediction_df)."""
+    rd = full_cohort_risk_dir(scheme, event)
     tp = os.path.join(rd, "text_risk_scores.csv")
     bp = os.path.join(rd, "base_risk_scores.csv")
     if not (os.path.exists(tp) and os.path.exists(bp)):
@@ -169,6 +218,66 @@ def _km_tertiles(surv_df: pd.DataFrame) -> pd.DataFrame:
     m["text_tertile"] = _safe_tertiles(m["text_risk_score"], "text")
     m["base_tertile"] = _safe_tertiles(m["base_risk_score"], "base")
     return m[KM_TERTILE_COLUMNS]
+
+
+def _scheme_delta_topk(metrics: pd.DataFrame, k: int = TOPK_PER_CATEGORY) -> pd.DataFrame:
+    """Top-k events per category (mets/ICD10/phecodes) by largest *positive* delta C-index
+    (text - base). Events with delta <= 0 are excluded — a "top" event is never a
+    net-negative one. Categories with fewer than k positive-delta events yield fewer rows."""
+    if metrics.empty:
+        return pd.DataFrame(columns=SCHEME_DELTA_TOPK_COLUMNS)
+    d = metrics.copy()
+    d["category"] = [
+        _event_category(s, e) for s, e in zip(d["scheme"], d["event"])
+    ]
+    d["delta"] = d["text_cindex"] - d["base_cindex"]
+    d = d.dropna(subset=["delta", "category"])
+    d = d[d["delta"] > 0]
+    rows = []
+    for category in CATEGORY_ORDER:
+        sub = d[d["category"] == category].sort_values("delta", ascending=False).head(k)
+        for rank, (_, r) in enumerate(sub.iterrows(), start=1):
+            rows.append({
+                "category": category, "rank": rank, "scheme": r["scheme"], "event": r["event"],
+                "event_lbl": r["event_lbl"], "text_cindex": r["text_cindex"],
+                "base_cindex": r["base_cindex"], "delta": r["delta"],
+            })
+    return pd.DataFrame(rows, columns=SCHEME_DELTA_TOPK_COLUMNS)
+
+
+def _scheme_event_km(topk: pd.DataFrame) -> pd.DataFrame:
+    """Patient-level held-out text/base risk scores + survival for the events selected in
+    fig2_scheme_delta_topk.csv, one row per (event, patient). Events whose held-out
+    risk-score files don't yet exist on disk (run_full_cohort_risk_scores.py not yet run
+    for that scheme/event) are skipped with a printed note rather than raising."""
+    if topk.empty:
+        return pd.DataFrame(columns=SCHEME_EVENT_KM_COLUMNS)
+    frames = []
+    surv_cache: dict[str, pd.DataFrame] = {}
+    for _, row in topk.iterrows():
+        scheme, event = row["scheme"], row["event"]
+        if scheme not in surv_cache:
+            surv_cache[scheme] = load_embedding_prediction_df(scheme)
+        surv_df = filter_event_rows(surv_cache[scheme], event)
+        m = _merge_risk_with_surv(event, surv_df, scheme=scheme)
+        if m is None:
+            print(f"  [{scheme}:{event}] skipped fig2_scheme_event_km — missing risk-score files")
+            continue
+        if m.empty:
+            print(f"  [{scheme}:{event}] skipped fig2_scheme_event_km — no overlapping patients")
+            continue
+        m = m.copy()
+        m["category"] = row["category"]
+        m["event_lbl"] = row["event_lbl"]
+        m["text_tertile"] = _safe_tertiles(m["text_risk_score"], f"{scheme}:{event} text")
+        m["base_tertile"] = _safe_tertiles(m["base_risk_score"], f"{scheme}:{event} base")
+        m = m.rename(columns={event: "event_flag", f"tt_{event}": "tt"})
+        m["scheme"] = scheme
+        m["event"] = event
+        frames.append(m[SCHEME_EVENT_KM_COLUMNS])
+    if not frames:
+        return pd.DataFrame(columns=SCHEME_EVENT_KM_COLUMNS)
+    return pd.concat(frames, ignore_index=True)
 
 
 _STAGE_TOKEN = re.compile(r"^(IV|III|II|I|4|3|2|1)[A-D]?$")
@@ -264,7 +373,7 @@ def _stage_vs_risk_cindex(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _stage_vs_risk_cindex_by_stage(df: pd.DataFrame) -> pd.DataFrame:
-    """Concordance of the text risk score for OS, within each stage.
+    """Concordance of the text risk score within each stage and pooled Stages I-II.
 
     Per-stage analogue of _stage_vs_risk_cindex (which reports one pooled
     cindex for the whole known-stage cohort), matching the per-stage grouping
@@ -273,7 +382,11 @@ def _stage_vs_risk_cindex_by_stage(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=STAGE_VS_RISK_AUC_COLUMNS[:1] + ["cindex", "n"])
     rows = []
-    for stage_lbl, sub in df.groupby("stage_group"):
+    groups = list(df.groupby("stage_group"))
+    early_stage = df[df["stage_group"].isin(["I", "II"])]
+    if not early_stage.empty:
+        groups.append(("I-II", early_stage))
+    for stage_lbl, sub in groups:
         event = sub["death"].astype(bool).to_numpy()
         time = sub["tt_death"].astype(float).to_numpy()
         try:
@@ -287,7 +400,7 @@ def _stage_vs_risk_cindex_by_stage(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _stage_vs_risk_auc(df: pd.DataFrame) -> pd.DataFrame:
-    """Mean time-dependent AUC of the text risk score for OS, within each stage.
+    """Mean time-dependent AUC within each stage and pooled Stages I-II.
 
     IPCW reference + eval-time grid (5th-95th percentile, 50 points) are fit on the
     pooled known-stage cohort (this table has no train/test split, unlike
@@ -302,7 +415,11 @@ def _stage_vs_risk_auc(df: pd.DataFrame) -> pd.DataFrame:
     base_eval_times = np.linspace(lo, hi, AUC_TIME_GRID_POINTS)
 
     rows = []
-    for stage_lbl, sub in df.groupby("stage_group"):
+    groups = list(df.groupby("stage_group"))
+    early_stage = df[df["stage_group"].isin(["I", "II"])]
+    if not early_stage.empty:
+        groups.append(("I-II", early_stage))
+    for stage_lbl, sub in groups:
         et = base_eval_times[(base_eval_times > sub["tt_death"].min())
                              & (base_eval_times < sub["tt_death"].max())]
         mean_auc = float("nan")
@@ -361,7 +478,8 @@ def _within_vs_pan(kind: str) -> pd.DataFrame:
 def main() -> None:
     surv_df = pd.read_csv(os.path.join(SURV_PATH, "death_met_surv_df.csv.gz"))
 
-    save_figure_data(_full_cohort_metrics(), "fig2_full_cohort_metrics.csv")
+    full_cohort_metrics = _full_cohort_metrics()
+    save_figure_data(full_cohort_metrics, "fig2_full_cohort_metrics.csv")
     save_figure_data(_within_vs_pan("cancer"), "fig2_within_vs_pan_cancer.csv")
     save_figure_data(_within_vs_pan("treatment"), "fig2_within_vs_pan_treatment.csv")
     save_figure_data(_km_tertiles(surv_df), "fig2_km_tertiles.csv")
@@ -372,6 +490,10 @@ def main() -> None:
     save_figure_data(_stage_vs_risk_cindex_by_stage(stage_vs_risk_df),
                       "fig2_stage_vs_risk_cindex_by_stage.csv")
     save_figure_data(_stage_vs_risk_auc(stage_vs_risk_df), "fig2_stage_vs_risk_auc.csv")
+
+    scheme_delta_topk = _scheme_delta_topk(full_cohort_metrics)
+    save_figure_data(scheme_delta_topk, "fig2_scheme_delta_topk.csv")
+    save_figure_data(_scheme_event_km(scheme_delta_topk), "fig2_scheme_event_km.csv")
 
 
 if __name__ == "__main__":

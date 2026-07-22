@@ -1,11 +1,11 @@
 # Render Figure 2 supplement: within-stage KM curves stratified by overall risk score.
 #
-# Shows that the overall (text) risk score separates survival even WITHIN a single
-# clinical stage. Two panels, each a KM of one stage stratified by the patient's
+# Shows that the overall (text) risk score separates survival within stage-defined
+# strata. Two panels, each stratified by the patient's
 # overall risk-score quartile (the same quartiles used in Figure 2G, defined across
 # the known-stage cohort — i.e. NOT re-binned within stage):
 #   A  Stage IV patients, by overall risk-score quartile
-#   B  Stage I  patients, by overall risk-score quartile
+#   B  Stages I-II patients pooled, by overall risk-score quartile
 #
 # Reuses fig2_km_stage_vs_risk.csv and fig2_stage_vs_risk_{cindex_by_stage,auc}.csv
 # (all written by prep_figure_2.py); the latter two carry the per-stage annotation
@@ -33,13 +33,14 @@ source(file.path(script_dir, "figure_utils.R"))  # provides tidy_km, logrank_p, 
 
 
 # ============================================================================
-# One KM panel: a single stage, stratified by overall risk-score quartile (+95% CI)
+# One KM panel: a stage-defined stratum, by overall risk-score quartile (+95% CI)
 # ============================================================================
 RISK_QUARTILE_COLORS <- setNames(ORDINAL4, c("Q1", "Q2", "Q3", "Q4"))
 
-build_stage_panel <- function(df, perf_df, stage_lbl, title_text, metric = METRIC) {
-  sub <- df %>% filter(stage_group == stage_lbl)
-  if (nrow(sub) == 0) return(placeholder_panel(paste0("no Stage ", stage_lbl, " patients")))
+build_stage_panel <- function(df, perf_df, stage_values, stage_label, perf_group,
+                              title_text, metric = METRIC) {
+  sub <- df %>% filter(stage_group %in% stage_values)
+  if (nrow(sub) == 0) return(placeholder_panel(paste0("no ", stage_label, " patients")))
   sub <- sub %>% mutate(risk_quartile = factor(risk_quartile,
                                                levels = names(RISK_QUARTILE_COLORS)))
 
@@ -53,7 +54,7 @@ build_stage_panel <- function(df, perf_df, stage_lbl, title_text, metric = METRI
   # or fig2_stage_vs_risk_cindex_by_stage.csv, both precomputed in prep_figure_2.py),
   # matching whichever metric is active (MANUSCRIPT_METRIC=cindex|auc).
   perf_col <- if (metric == "cindex") "cindex" else "mean_auc"
-  perf <- if (nrow(perf_df) > 0) perf_df[[perf_col]][perf_df$stage_group == stage_lbl][1] else NA_real_
+  perf <- if (nrow(perf_df) > 0) perf_df[[perf_col]][perf_df$stage_group == perf_group][1] else NA_real_
   ann <- sprintf("n=%s\n%s=%.3f\nlogrank p=%.1e",
                  scales::comma(nrow(sub)), metric_label(metric), perf, lr)
 
@@ -85,14 +86,18 @@ if (nrow(d) > 0) {
 perf_csv <- if (METRIC == "cindex") "fig2_stage_vs_risk_cindex_by_stage.csv" else "fig2_stage_vs_risk_auc.csv"
 perf_df <- load_figure_data(perf_csv)
 
-pS_iv <- build_stage_panel(d, perf_df, "IV", "Stage IV: survival by overall risk-score quartile")
-pS_i  <- build_stage_panel(d, perf_df, "I",  "Stage I: survival by overall risk-score quartile")
+pS_iv <- build_stage_panel(
+  d, perf_df, "IV", "Stage IV", "IV",
+  "Stage IV: survival by overall risk-score quartile")
+pS_i_ii <- build_stage_panel(
+  d, perf_df, c("I", "II"), "Stages I-II", "I-II",
+  "Stages I-II: survival by overall risk-score quartile")
 
 .tag <- metric_tag(METRIC)
 save_panel(pS_iv, paste0("figS2_stage4_by_risk", .tag), width = 7.2, height = 6.0)
-save_panel(pS_i,  paste0("figS2_stage1_by_risk", .tag), width = 7.2, height = 6.0)
+save_panel(pS_i_ii, paste0("figS2_stage1_2_by_risk", .tag), width = 7.2, height = 6.0)
 
-figS2 <- (pS_iv | pS_i) +
+figS2 <- (pS_iv | pS_i_ii) +
          plot_annotation(tag_levels = "A") &
          theme(plot.tag = element_text(size = 14, face = "bold"))
 

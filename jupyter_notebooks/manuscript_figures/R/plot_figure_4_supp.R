@@ -4,9 +4,9 @@
 # Companion to plot_figure_2_supp.R (which stratifies each stage by overall
 # risk-score quartile). Here each stage is stratified by the Fig 4 risk-DYNAMICS
 # group (Falling / Stable / Rising), so the panels show that trajectory dynamics
-# separate survival WITHIN a single clinical stage. Two panels:
+# separate survival within stage-defined strata. Two panels:
 #   A  Stage IV patients, by risk-dynamics group
-#   B  Stage I  patients, by risk-dynamics group
+#   B  Stages I-II patients pooled, by risk-dynamics group
 #
 # Conditional on survival to the slope-window landmark (left-truncated entry),
 # matching main-figure panel 4b. The curves start at the trajectory-observation
@@ -64,11 +64,11 @@ logrank_p_lt <- function(df, start_col, time_col, event_col, group_col) {
 
 
 # ============================================================================
-# One KM panel: a single stage, conditional on the landmark, stratified by cluster
+# One KM panel: a stage-defined stratum, conditional on the landmark, by cluster
 # ============================================================================
-build_stage_dynamics_panel <- function(df, stage_lbl, title_text) {
-  sub <- df %>% filter(stage == stage_lbl)
-  if (nrow(sub) == 0) return(placeholder_panel(paste0("no Stage ", stage_lbl, " patients")))
+build_stage_dynamics_panel <- function(df, stage_values, stage_label, title_text) {
+  sub <- df %>% filter(stage %in% stage_values)
+  if (nrow(sub) == 0) return(placeholder_panel(paste0("no ", stage_label, " patients")))
 
   # Stratify on the SHORT cluster id (avoids strata-name quirks with parenthesized
   # labels), then map id -> (label, color). Conditional entry at the landmark.
@@ -82,10 +82,10 @@ build_stage_dynamics_panel <- function(df, stage_lbl, title_text) {
   td  <- tidy_km(fit) %>%
     mutate(label = factor(labels_by_id[stratum], levels = unname(labels_by_id))) %>%
     # Drop the synthetic time=0 curve-start row that predates the landmark
-    # left-truncation point (see plot_figure_4.R::build_fig4b for the rationale).
+  # left-truncation point (see plot_figure_4.R::build_fig4b for the rationale).
     filter(time >= LANDMARK)
   if (nrow(td) == 0) return(placeholder_panel(
-    paste0("no Stage ", stage_lbl, " events after month ", LANDMARK)))
+    paste0("no ", stage_label, " events after month ", LANDMARK)))
 
   pal   <- setNames(unname(colors_by_id), unname(labels_by_id))
   lr    <- logrank_p_lt(sub, "entry", "months", "death", "strat")
@@ -129,13 +129,15 @@ if (nrow(d) > 0) {
   d$entry <- LANDMARK
 }
 
-pS_iv <- build_stage_dynamics_panel(d, "IV", "Stage IV: survival by risk-dynamics group")
-pS_i  <- build_stage_dynamics_panel(d, "I",  "Stage I: survival by risk-dynamics group")
+pS_iv <- build_stage_dynamics_panel(
+  d, "IV", "Stage IV", "Stage IV: survival by risk-dynamics group")
+pS_i_ii <- build_stage_dynamics_panel(
+  d, c("I", "II"), "Stages I-II", "Stages I-II: survival by risk-dynamics group")
 
 save_panel(pS_iv, "figS_stage4_by_dynamics", width = 7.2, height = 6.0)
-save_panel(pS_i,  "figS_stage1_by_dynamics", width = 7.2, height = 6.0)
+save_panel(pS_i_ii, "figS_stage1_2_by_dynamics", width = 7.2, height = 6.0)
 
-figS4 <- (pS_iv | pS_i) +
+figS4 <- (pS_iv | pS_i_ii) +
          plot_annotation(tag_levels = "A") &
          theme(plot.tag = element_text(size = 14, face = "bold"))
 

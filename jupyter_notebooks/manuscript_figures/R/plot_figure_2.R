@@ -5,11 +5,16 @@
 # E KM by risk-score tertile (text solid / base dashed),
 # F survival by cancer stage, G survival by text risk-score quartile.
 # E/F/G share a single side-by-side row of KM curves, each with 95% CI bands.
+# H/I/J: top-3-by-Δ-C-index event barplots for mets/ICD10/phecodes.
+# K/L/M: text-vs-base held-out-risk KM for each category's rank-1 event.
+# (Ranks 2-3 for each category are in the plot_figure_2_supp_events.R supplement.)
 #
 # Metric switch: set MANUSCRIPT_METRIC=cindex|auc (see figure_utils.R::METRIC) to
 # render this whole figure scored by Harrell's C-index or by mean AUC(t). Panels
 # A-D and F/G read whichever metric's columns/CSV match; outputs are suffixed
 # (e.g. figure2_text_results_cindex.png / _auc.png) so both sets can coexist.
+# Panels H-M (Δ C-index barplots + per-event KM) are always C-index-only and
+# carry no metric suffix — they render identically regardless of METRIC.
 
 suppressPackageStartupMessages({
   library(ggplot2); library(patchwork); library(dplyr); library(tidyr)
@@ -227,16 +232,18 @@ build_within_vs_pan <- function(csv, stratum_title, metric = METRIC) {
 
 
 # ============================================================================
-# fig2d: KM by risk-score tertile (text solid, base dashed)
+# Shared KM-by-risk-tertile renderer (text solid, base dashed) — used by fig2d
+# (OS / death_met risk score) and the per-scheme-event panels below, which
+# share the same text_tertile/base_tertile/text-vs-base structure but differ
+# in which event/time columns and title to use.
 # ============================================================================
-build_fig2d <- function() {
-  km <- load_figure_data("fig2_km_tertiles.csv")
-  if (nrow(km) == 0) return(placeholder_panel("fig2_km_tertiles.csv empty"))
-  km <- km %>% mutate(months = tt_death / 30.44,
-                      death = as.integer(death))
+km_tertile_panel <- function(km, time_col, event_col, title) {
+  if (nrow(km) == 0) return(placeholder_panel("no data for KM panel"))
+  km <- km %>% mutate(months = .data[[time_col]] / 30.44,
+                      .event = as.integer(.data[[event_col]]))
 
-  fit_t <- survfit2(Surv(months, death) ~ text_tertile, data = km)
-  fit_b <- survfit2(Surv(months, death) ~ base_tertile, data = km)
+  fit_t <- survfit2(Surv(months, .event) ~ text_tertile, data = km)
+  fit_b <- survfit2(Surv(months, .event) ~ base_tertile, data = km)
   td <- bind_rows(
     tidy_km(fit_t) %>% mutate(model = "text"),
     tidy_km(fit_b) %>% mutate(model = "base")
@@ -244,13 +251,8 @@ build_fig2d <- function() {
     mutate(stratum = factor(stratum, levels = c("low", "mid", "high")),
            model   = factor(model,   levels = c("text", "base")))
 
-  n_by <- km %>% group_by(text_tertile) %>% summarise(n = n(), .groups = "drop") %>%
-    mutate(label = sprintf("text %s (n=%s)", text_tertile, scales::comma(n)))
-  n_by_b <- km %>% group_by(base_tertile) %>% summarise(n = n(), .groups = "drop") %>%
-    mutate(label = sprintf("base %s (n=%s)", base_tertile, scales::comma(n)))
-
-  lr_t <- logrank_p(km, "months", "death", "text_tertile")
-  lr_b <- logrank_p(km, "months", "death", "base_tertile")
+  lr_t <- logrank_p(km, "months", ".event", "text_tertile")
+  lr_b <- logrank_p(km, "months", ".event", "base_tertile")
 
   td_ci <- step_ci_df(td, c("stratum", "model"))
 
@@ -266,13 +268,23 @@ build_fig2d <- function() {
     annotate("text", x = 1, y = 0.06,
              label = sprintf("text logrank p=%.1e\nbase logrank p=%.1e", lr_t, lr_b),
              hjust = 0, vjust = 0, size = 2.6, fontface = "italic", color = "#444444") +
-    labs(x = "Months from first treatment", y = "Overall survival",
-         title = "Mortality by Risk-Score Tertile\n(text solid, base dashed)") +
+    labs(x = "Months from first treatment", y = "Overall survival", title = title) +
     theme_manuscript() +
     theme(legend.position = c(0.98, 0.98),
           legend.justification = c(1, 1),
           legend.background = element_rect(fill = "white", color = NA),
           legend.spacing.y = unit(0.05, "in"))
+}
+
+
+# ============================================================================
+# fig2d: KM by risk-score tertile (text solid, base dashed)
+# ============================================================================
+build_fig2d <- function() {
+  km <- load_figure_data("fig2_km_tertiles.csv")
+  if (nrow(km) == 0) return(placeholder_panel("fig2_km_tertiles.csv empty"))
+  km_tertile_panel(km, "tt_death", "death",
+                   "Mortality by Risk-Score Tertile\n(text solid, base dashed)")
 }
 
 
@@ -350,11 +362,47 @@ build_fig2e <- function(metric = METRIC) {
 
 
 # ============================================================================
+# Per-scheme Δ C-index barplots + top-event KM panels (mets / ICD10 / phecodes).
+# C-index only — these panels do not follow the MANUSCRIPT_METRIC switch; the
+# underlying fig2_scheme_delta_topk.csv / fig2_scheme_event_km.csv are always
+# ranked by delta C-index (text - base), largest positive delta only (a "top"
+# event is never a net-negative one; see prep_figure_2.py::_scheme_delta_topk).
+# ============================================================================
+SCHEME_CATEGORY_SCHEME <- c(mets = "death_met", ICD10 = "icd3_post", phecodes = "phecode_post")
+SCHEME_CATEGORY_TITLES <- c(mets = "Mets", ICD10 = "ICD10", phecodes = "Phecodes")
+
+build_scheme_delta_bars <- function(topk, category) {
+  d <- topk %>% filter(category == !!category) %>% arrange(delta)
+  if (nrow(d) == 0) return(placeholder_panel(sprintf("no positive-delta %s events", category)))
+  d <- d %>% mutate(event_lbl = factor(event_lbl, levels = unique(event_lbl)))
+  fill_color <- unname(SCHEME_COLORS[[SCHEME_CATEGORY_SCHEME[[category]]]])
+
+  ggplot(d, aes(delta, event_lbl)) +
+    geom_col(width = 0.6, fill = fill_color, color = "white") +
+    geom_text(aes(label = sprintf("%.3f", delta)), hjust = -0.15, size = 2.8) +
+    scale_x_continuous(expand = expansion(mult = c(0, 0.18))) +
+    labs(x = "Δ C-index (Text − Base)", y = NULL,
+         title = sprintf("Top %s Events by Δ C-index", SCHEME_CATEGORY_TITLES[[category]])) +
+    theme_manuscript() +
+    theme(panel.grid.major.x = element_line(color = "grey90"))
+}
+
+build_scheme_event_km <- function(km_data, topk, category, rank_n) {
+  ev <- topk %>% filter(category == !!category, rank == rank_n)
+  if (nrow(ev) == 0) return(placeholder_panel(sprintf("no rank-%d %s event", rank_n, category)))
+  km <- km_data %>% filter(category == !!category, scheme == ev$scheme[1], event == ev$event[1])
+  if (nrow(km) == 0) return(placeholder_panel(sprintf("%s: no held-out risk scores yet", ev$event_lbl[1])))
+  km_tertile_panel(km, "tt", "event_flag",
+                   sprintf("%s\n(text solid, base dashed)", ev$event_lbl[1]))
+}
+
+
+# ============================================================================
 # Compose Figure 2
 # ============================================================================
 metrics <- load_figure_data("fig2_full_cohort_metrics.csv")
 
-# Panels A/B only: drop the single ICD-3 event whose delta performance (text - base)
+# Panels A/B only: drop the single ICD10 Level 3 event whose delta performance (text - base)
 # is a large negative outlier. It compresses the scatter/violin scale and is not
 # representative of the scheme; removed here so it doesn't distort both panels.
 # Always determined from C-index (regardless of the active METRIC) so the same
@@ -365,7 +413,7 @@ if (nrow(metrics) > 0 && any(metrics$scheme == "icd3_post")) {
   .icd3  <- metrics$scheme == "icd3_post"
   .out   <- which(.icd3 & .delta == min(.delta[.icd3], na.rm = TRUE))
   if (length(.out)) {
-    message(sprintf("fig2 A/B: dropping ICD-3 outlier '%s' (delta cindex = %.3f), applied to both metrics",
+    message(sprintf("fig2 A/B: dropping ICD10 (Level 3) outlier '%s' (delta cindex = %.3f), applied to both metrics",
                     metrics$event[.out[1]], .delta[.out[1]]))
     metrics <- metrics[-.out[1], , drop = FALSE]
   }
@@ -383,6 +431,20 @@ p2_quart <- e_panels$quartile              # G: survival by text risk-score quar
 # E/F/G: three KM curves side-by-side-by-side.
 risk_row <- p2d | p2_stage | p2_quart
 
+# Per-scheme Δ C-index barplots + top-1 event KM (C-index only, no metric suffix).
+scheme_topk <- load_figure_data("fig2_scheme_delta_topk.csv")
+scheme_km   <- load_figure_data("fig2_scheme_event_km.csv")
+
+p2_bars_mets     <- build_scheme_delta_bars(scheme_topk, "mets")
+p2_bars_icd      <- build_scheme_delta_bars(scheme_topk, "ICD10")
+p2_bars_phecodes <- build_scheme_delta_bars(scheme_topk, "phecodes")
+bars_row <- p2_bars_mets | p2_bars_icd | p2_bars_phecodes
+
+p2_km_mets1     <- build_scheme_event_km(scheme_km, scheme_topk, "mets", 1)
+p2_km_icd1      <- build_scheme_event_km(scheme_km, scheme_topk, "ICD10", 1)
+p2_km_phecodes1 <- build_scheme_event_km(scheme_km, scheme_topk, "phecodes", 1)
+top_km_row <- p2_km_mets1 | p2_km_icd1 | p2_km_phecodes1
+
 .tag <- metric_tag(METRIC)
 save_panel(p2a, paste0("fig2a", .tag), width = 6.4, height = 5.0)
 save_panel(p2b, paste0("fig2b", .tag), width = 6.0, height = 4.8)
@@ -391,11 +453,19 @@ save_panel(p2_wt, paste0("fig2d", .tag), width = 9.6, height = 4.6)
 save_panel(p2d,       paste0("fig2e", .tag), width = 5.6, height = 4.6)
 save_panel(p2_stage,  paste0("fig2f", .tag), width = 5.6, height = 4.6)
 save_panel(p2_quart,  paste0("fig2g", .tag), width = 5.6, height = 4.6)
+save_panel(p2_bars_mets,     "fig2h", width = 5.6, height = 4.6)
+save_panel(p2_bars_icd,      "fig2i", width = 5.6, height = 4.6)
+save_panel(p2_bars_phecodes, "fig2j", width = 5.6, height = 4.6)
+save_panel(p2_km_mets1,     "fig2k", width = 5.6, height = 4.6)
+save_panel(p2_km_icd1,      "fig2l", width = 5.6, height = 4.6)
+save_panel(p2_km_phecodes1, "fig2m", width = 5.6, height = 4.6)
 
 fig2 <- (p2a + p2b) /
         (p2_wc + p2_wt + plot_layout(widths = c(1.25, 1.7))) /
-        risk_row +
+        risk_row /
+        bars_row /
+        top_km_row +
         plot_annotation(tag_levels = "A") &
         theme(plot.tag = element_text(size = 14, face = "bold"))
 
-save_figure(fig2, paste0("figure2_text_results", .tag), width = 16.5, height = 14.2)
+save_figure(fig2, paste0("figure2_text_results", .tag), width = 16.5, height = 22.8)
