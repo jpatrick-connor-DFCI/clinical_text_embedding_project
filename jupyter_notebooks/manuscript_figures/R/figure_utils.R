@@ -33,6 +33,31 @@ dir.create(TARGET_OUT_DIR, showWarnings = FALSE, recursive = TRUE)
 
 
 # ----------------------------------------------------------------------------
+# Metric switch — lets a single plot script render two parallel figure sets,
+# one scored by Harrell's C-index, one by mean time-dependent AUC(t). Set the
+# MANUSCRIPT_METRIC env var to "cindex" or "auc" before sourcing/Rscript-ing a
+# plot_figure_*.R script; defaults to "cindex" for interactive/unset use.
+# ----------------------------------------------------------------------------
+METRIC <- tolower(Sys.getenv("MANUSCRIPT_METRIC", unset = "cindex"))
+if (!METRIC %in% c("cindex", "auc")) {
+  warning(sprintf("Unrecognized MANUSCRIPT_METRIC=%s; falling back to 'cindex'", METRIC))
+  METRIC <- "cindex"
+}
+
+# Human-readable label for the active metric ("C-index" / "Mean AUC(t)").
+metric_label <- function(metric = METRIC) {
+  c(cindex = "C-index", auc = "Mean AUC(t)")[[metric]]
+}
+
+# Column-name suffix for the active metric ("cindex" / "auc"), matching the
+# `{scheme}_{metric}` naming convention used in the metric-parameterized CSVs.
+metric_suffix <- function(metric = METRIC) metric
+
+# File/panel-name suffix for the active metric output, e.g. "figure2_..._cindex.png".
+metric_tag <- function(metric = METRIC) paste0("_", metric)
+
+
+# ----------------------------------------------------------------------------
 # Palettes (ported verbatim from _figure_utils.py / panel modules)
 # ----------------------------------------------------------------------------
 SCHEME_COLORS  <- c(death_met = "#E74C3C", icd3_post = "#3498DB",

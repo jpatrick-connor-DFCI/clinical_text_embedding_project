@@ -7,7 +7,9 @@
 #   A  Stage IV patients, by overall risk-score quartile
 #   B  Stage I  patients, by overall risk-score quartile
 #
-# Reuses fig2_km_stage_vs_risk.csv (written by prep_figure_2.py); no new prep needed.
+# Reuses fig2_km_stage_vs_risk.csv and fig2_stage_vs_risk_{cindex_by_stage,auc}.csv
+# (all written by prep_figure_2.py); the latter two carry the per-stage annotation
+# for the active metric (see figure_utils.R::METRIC — MANUSCRIPT_METRIC=cindex|auc).
 
 suppressPackageStartupMessages({
   library(ggplot2); library(patchwork); library(dplyr)
@@ -35,17 +37,7 @@ source(file.path(script_dir, "figure_utils.R"))  # provides tidy_km, logrank_p, 
 # ============================================================================
 RISK_QUARTILE_COLORS <- setNames(ORDINAL4, c("Q1", "Q2", "Q3", "Q4"))
 
-# Within-stage concordance of the overall risk score for OS (higher score = higher risk).
-stage_cindex <- function(df) {
-  if (nrow(df) < 2 || length(unique(df$death)) < 2) return(NA_real_)
-  tryCatch(
-    survival::concordance(Surv(months, death) ~ text_risk_score, data = df,
-                          reverse = TRUE)$concordance,
-    error = function(e) NA_real_
-  )
-}
-
-build_stage_panel <- function(df, stage_lbl, title_text) {
+build_stage_panel <- function(df, perf_df, stage_lbl, title_text, metric = METRIC) {
   sub <- df %>% filter(stage_group == stage_lbl)
   if (nrow(sub) == 0) return(placeholder_panel(paste0("no Stage ", stage_lbl, " patients")))
   sub <- sub %>% mutate(risk_quartile = factor(risk_quartile,
@@ -56,10 +48,14 @@ build_stage_panel <- function(df, stage_lbl, title_text) {
     mutate(stratum = factor(stratum, levels = names(RISK_QUARTILE_COLORS)))
   td_ci <- step_ci_df(td, "stratum")
 
-  lr   <- logrank_p(sub, "months", "death", "risk_quartile")
-  cidx <- stage_cindex(sub)
-  ann  <- sprintf("n=%s\nc-index=%.3f\nlogrank p=%.1e",
-                  scales::comma(nrow(sub)), cidx, lr)
+  lr  <- logrank_p(sub, "months", "death", "risk_quartile")
+  # Within-stage performance of the text risk score for OS (fig2_stage_vs_risk_auc.csv
+  # or fig2_stage_vs_risk_cindex_by_stage.csv, both precomputed in prep_figure_2.py),
+  # matching whichever metric is active (MANUSCRIPT_METRIC=cindex|auc).
+  perf_col <- if (metric == "cindex") "cindex" else "mean_auc"
+  perf <- if (nrow(perf_df) > 0) perf_df[[perf_col]][perf_df$stage_group == stage_lbl][1] else NA_real_
+  ann <- sprintf("n=%s\n%s=%.3f\nlogrank p=%.1e",
+                 scales::comma(nrow(sub)), metric_label(metric), perf, lr)
 
   ggplot(td, aes(time, estimate, color = stratum)) +
     geom_rect(data = td_ci,
@@ -86,15 +82,18 @@ d <- load_figure_data("fig2_km_stage_vs_risk.csv")
 if (nrow(d) > 0) {
   d <- d %>% mutate(months = tt_death / 30.44, death = as.integer(death))
 }
+perf_csv <- if (METRIC == "cindex") "fig2_stage_vs_risk_cindex_by_stage.csv" else "fig2_stage_vs_risk_auc.csv"
+perf_df <- load_figure_data(perf_csv)
 
-pS_iv <- build_stage_panel(d, "IV", "Stage IV: survival by overall risk-score quartile")
-pS_i  <- build_stage_panel(d, "I",  "Stage I: survival by overall risk-score quartile")
+pS_iv <- build_stage_panel(d, perf_df, "IV", "Stage IV: survival by overall risk-score quartile")
+pS_i  <- build_stage_panel(d, perf_df, "I",  "Stage I: survival by overall risk-score quartile")
 
-save_panel(pS_iv, "figS2_stage4_by_risk", width = 7.2, height = 6.0)
-save_panel(pS_i,  "figS2_stage1_by_risk", width = 7.2, height = 6.0)
+.tag <- metric_tag(METRIC)
+save_panel(pS_iv, paste0("figS2_stage4_by_risk", .tag), width = 7.2, height = 6.0)
+save_panel(pS_i,  paste0("figS2_stage1_by_risk", .tag), width = 7.2, height = 6.0)
 
 figS2 <- (pS_iv | pS_i) +
          plot_annotation(tag_levels = "A") &
          theme(plot.tag = element_text(size = 14, face = "bold"))
 
-save_figure(figS2, "figureS2_stage_stratified_risk", width = 14.4, height = 6.4)
+save_figure(figS2, paste0("figureS2_stage_stratified_risk", .tag), width = 14.4, height = 6.4)

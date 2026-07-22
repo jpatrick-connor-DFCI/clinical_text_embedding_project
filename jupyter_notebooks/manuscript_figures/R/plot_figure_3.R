@@ -4,6 +4,10 @@
 # B modality risk-score correlation heatmap (death endpoint),
 # C average modality rank across endpoints (1 = best),
 # D Wald-z violins (β/SE) + Wilcoxon-vs-0 stars + Tukey-IQR trim.
+#
+# Metric switch: panel C is ranked by whichever metric MANUSCRIPT_METRIC selects
+# (see figure_utils.R::METRIC) — "cindex" (Harrell's C-index) or "auc" (mean AUC(t)).
+# A/B/D don't depend on the survival ranking metric and are unaffected.
 
 suppressPackageStartupMessages({
   library(ggplot2); library(patchwork); library(dplyr); library(tidyr)
@@ -123,18 +127,19 @@ friedman_p <- function(ranks_long) {
 # ============================================================================
 # fig3c: average modality rank across endpoints (1 = best)
 # ============================================================================
-build_fig3c <- function() {
-  d <- load_figure_data("fig3_modality_avg_rank.csv")
-  if (nrow(d) == 0) return(placeholder_panel("fig3_modality_avg_rank.csv empty"))
+build_fig3c <- function(metric = METRIC) {
+  d <- load_figure_data(sprintf("fig3_modality_avg_rank_%s.csv", metric_suffix(metric)))
+  if (nrow(d) == 0) return(placeholder_panel("fig3_modality_avg_rank_*.csv empty"))
   d <- d %>% filter(!is.na(mean_rank)) %>%
     mutate(modality = factor(modality, levels = MODALITY_ORDER)) %>%
     arrange(mean_rank) %>%
     mutate(modality = fct_reorder(modality, mean_rank, .desc = TRUE))
   n_ev <- if ("n_events" %in% names(d)) as.integer(d$n_events[1]) else NA_integer_
 
-  ranks_long <- load_figure_data("fig3_modality_ranks_long.csv")
+  ranks_long <- load_figure_data(sprintf("fig3_modality_ranks_long_%s.csv", metric_suffix(metric)))
   fp <- friedman_p(ranks_long)
   stars <- p_to_stars(fp)
+  lbl <- metric_label(metric)
 
   ggplot(d, aes(mean_rank, modality, fill = as.character(modality))) +
     geom_col(width = 0.62, color = "white") +
@@ -147,7 +152,7 @@ build_fig3c <- function() {
     scale_fill_manual(values = MODALITY_COLORS, guide = "none") +
     scale_y_discrete(labels = MODALITY_DISPLAY) +
     coord_cartesian(xlim = c(0.5, length(MODALITY_ORDER) + 0.5)) +
-    labs(x = "Average rank across endpoints (1 = best)", y = NULL,
+    labs(x = sprintf("Average rank across endpoints (1 = best, ranked by %s)", lbl), y = NULL,
          title = sprintf("Average Modality Rank\n(complete-case endpoints, n=%s)",
                          ifelse(is.na(n_ev), "NA", scales::comma(n_ev))),
          caption = sprintf("Friedman test across modalities: p=%s  %s",
@@ -256,13 +261,14 @@ p3b <- build_fig3b()
 p3c <- build_fig3c()
 p3d <- build_fig3d(betas)
 
+.tag <- metric_tag(METRIC)
 save_panel(p3a, "fig3a", width = 6.0, height = 4.8)
 save_panel(p3b, "fig3b", width = 6.0, height = 5.0)
-save_panel(p3c, "fig3c", width = 6.0, height = 5.0)
+save_panel(p3c, paste0("fig3c", .tag), width = 6.0, height = 5.0)
 save_panel(p3d, "fig3d", width = 6.0, height = 5.0)
 
 fig3 <- (p3a + p3b) / (p3c + p3d) +
         plot_annotation(tag_levels = "A") &
         theme(plot.tag = element_text(size = 14, face = "bold"))
 
-save_figure(fig3, "figure3_feature_comps", width = 15.0, height = 13.0)
+save_figure(fig3, paste0("figure3_feature_comps", .tag), width = 15.0, height = 13.0)

@@ -1,10 +1,14 @@
 """Pre-compute inputs for Figure 3 (modality comparison).
 
 Writes to FIGURE_DATA_DIR:
-- fig3_modality_cindex.csv        scheme, event, modality, cindex
-- fig3_modality_avg_rank.csv      modality, mean_rank, sem_rank, n_events  (complete-case endpoints)
-- fig3_modality_ranks_long.csv    scheme, event, modality, rank  (per-endpoint ranks, complete-case;
-                                  lets the R tier run a Friedman test across modalities)
+- fig3_modality_cindex.csv        scheme, event, modality, cindex, auc  (both metrics side by side;
+                                  auc is the sibling mean_auc(t) column from the same {mod}_test.csv)
+- fig3_modality_avg_rank_cindex.csv   modality, mean_rank, sem_rank, n_events  (ranked by cindex)
+- fig3_modality_avg_rank_auc.csv      modality, mean_rank, sem_rank, n_events  (ranked by mean AUC(t))
+- fig3_modality_ranks_long_cindex.csv scheme, event, modality, rank  (per-endpoint, cindex-ranked)
+- fig3_modality_ranks_long_auc.csv    scheme, event, modality, rank  (per-endpoint, AUC(t)-ranked)
+                                  (the two ranks_long files let the R tier run a Friedman test across
+                                  modalities for whichever metric is active)
 - fig3_joint_betas.csv            scheme, event, modality, beta, se, hr, p_value, n, n_events
 - fig3_risk_score_corr.csv        modality x modality correlation, plus n_patients in metadata row
 """
@@ -34,7 +38,7 @@ from slurm_array_utils import get_events_from_df, load_embedding_prediction_df
 SCHEMES = list(SCHEME_RESULT_DIRS)
 DEATH_SCHEME = "death_met"    # scheme for the correlation heatmap
 
-MODALITY_CINDEX_COLUMNS = ["scheme", "event", "modality", "cindex"]
+MODALITY_CINDEX_COLUMNS = ["scheme", "event", "modality", "cindex", "auc"]
 MODALITY_AVG_RANK_COLUMNS = ["modality", "mean_rank", "sem_rank", "n_events"]
 MODALITY_RANKS_LONG_COLUMNS = ["scheme", "event", "modality", "rank"]
 JOINT_BETA_COLUMNS = [
@@ -57,7 +61,10 @@ def _modality_cindex(scheme: str) -> pd.DataFrame:
                 continue
             try:
                 row = pd.read_csv(fp).iloc[0]
-                rows.append({"scheme": scheme, "event": ev, "modality": mod, "cindex": row["mean_c_index"]})
+                rows.append({
+                    "scheme": scheme, "event": ev, "modality": mod,
+                    "cindex": row["mean_c_index"], "auc": row["mean_auc(t)"],
+                })
             except (KeyError, IndexError, pd.errors.EmptyDataError, pd.errors.ParserError) as e:
                 print(f"  [{ev}:{mod}] failed to load test metrics — {type(e).__name__}: {e}")
                 n_failed += 1
@@ -196,18 +203,19 @@ def _joint_betas_all() -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=JOINT_BETA_COLUMNS)
 
 
-def _modality_avg_rank(cindex_df: pd.DataFrame) -> pd.DataFrame:
+def _modality_avg_rank(metrics_df: pd.DataFrame, value_col: str = "cindex") -> pd.DataFrame:
     """Average performance rank per modality across endpoints.
 
-    For each (scheme, event) endpoint, rank the modalities by c-index (1 = best);
-    average those ranks per modality. Restricted to *complete-case* endpoints where
-    every modality in MODALITY_ORDER has a c-index, so all averages rank the same set.
+    For each (scheme, event) endpoint, rank the modalities by `value_col` (cindex or
+    auc; 1 = best); average those ranks per modality. Restricted to *complete-case*
+    endpoints where every modality in MODALITY_ORDER has a value, so all averages
+    rank the same set.
     """
-    if cindex_df.empty:
+    if metrics_df.empty:
         return pd.DataFrame(columns=MODALITY_AVG_RANK_COLUMNS)
 
-    mat = cindex_df.pivot_table(
-        index=["scheme", "event"], columns="modality", values="cindex", aggfunc="mean",
+    mat = metrics_df.pivot_table(
+        index=["scheme", "event"], columns="modality", values=value_col, aggfunc="mean",
     )
     modalities = [m for m in MODALITY_ORDER if m in mat.columns]
     mat = mat.reindex(columns=modalities)
@@ -215,7 +223,7 @@ def _modality_avg_rank(cindex_df: pd.DataFrame) -> pd.DataFrame:
     if mat.empty:
         return pd.DataFrame(columns=MODALITY_AVG_RANK_COLUMNS)
 
-    # Higher c-index -> better -> rank 1; ties share the average rank.
+    # Higher value -> better -> rank 1; ties share the average rank.
     ranks = mat.rank(axis=1, ascending=False, method="average")
     n_events = len(ranks)
     out = pd.DataFrame({
@@ -228,18 +236,18 @@ def _modality_avg_rank(cindex_df: pd.DataFrame) -> pd.DataFrame:
     return out.reindex(columns=MODALITY_AVG_RANK_COLUMNS)
 
 
-def _modality_ranks_long(cindex_df: pd.DataFrame) -> pd.DataFrame:
-    """Per-endpoint modality ranks (1 = best), complete-case only.
+def _modality_ranks_long(metrics_df: pd.DataFrame, value_col: str = "cindex") -> pd.DataFrame:
+    """Per-endpoint modality ranks (1 = best) by `value_col`, complete-case only.
 
     Long-format companion to _modality_avg_rank's aggregated mean/SEM, so the
     R tier can run a Friedman test (repeated measures across modalities, one
     block per endpoint) for Fig 3C.
     """
-    if cindex_df.empty:
+    if metrics_df.empty:
         return pd.DataFrame(columns=MODALITY_RANKS_LONG_COLUMNS)
 
-    mat = cindex_df.pivot_table(
-        index=["scheme", "event"], columns="modality", values="cindex", aggfunc="mean",
+    mat = metrics_df.pivot_table(
+        index=["scheme", "event"], columns="modality", values=value_col, aggfunc="mean",
     )
     modalities = [m for m in MODALITY_ORDER if m in mat.columns]
     mat = mat.reindex(columns=modalities)
@@ -282,10 +290,13 @@ def _risk_score_corr(scheme: str, event: str = "death") -> pd.DataFrame:
 
 
 def main() -> None:
-    cindex_all = _modality_cindex_all()
-    save_figure_data(cindex_all, "fig3_modality_cindex.csv")
-    save_figure_data(_modality_avg_rank(cindex_all), "fig3_modality_avg_rank.csv")
-    save_figure_data(_modality_ranks_long(cindex_all), "fig3_modality_ranks_long.csv")
+    metrics_all = _modality_cindex_all()
+    save_figure_data(metrics_all, "fig3_modality_cindex.csv")
+    for value_col, tag in [("cindex", "cindex"), ("auc", "auc")]:
+        save_figure_data(_modality_avg_rank(metrics_all, value_col),
+                          f"fig3_modality_avg_rank_{tag}.csv")
+        save_figure_data(_modality_ranks_long(metrics_all, value_col),
+                          f"fig3_modality_ranks_long_{tag}.csv")
     save_figure_data(_joint_betas_all(), "fig3_joint_betas.csv")
     save_figure_data(_risk_score_corr(DEATH_SCHEME, "death"), "fig3_risk_score_corr.csv")
 

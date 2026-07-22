@@ -1,10 +1,15 @@
 # Render Figure 2 (text vs base, full cohort) in ggplot2 + patchwork.
 #
-# A scatter (text vs base c-index), B Δc-index violins + Wilcoxon stars,
-# C pan vs within-cancer model (dumbbell, mean AUC), D pan vs within-treatment model,
+# A scatter (text vs base performance), B delta-performance violins + Wilcoxon stars,
+# C pan vs within-cancer model (dumbbell), D pan vs within-treatment model,
 # E KM by risk-score tertile (text solid / base dashed),
 # F survival by cancer stage, G survival by text risk-score quartile.
 # E/F/G share a single side-by-side row of KM curves, each with 95% CI bands.
+#
+# Metric switch: set MANUSCRIPT_METRIC=cindex|auc (see figure_utils.R::METRIC) to
+# render this whole figure scored by Harrell's C-index or by mean AUC(t). Panels
+# A-D and F/G read whichever metric's columns/CSV match; outputs are suffixed
+# (e.g. figure2_text_results_cindex.png / _auc.png) so both sets can coexist.
 
 suppressPackageStartupMessages({
   library(ggplot2); library(patchwork); library(dplyr); library(tidyr)
@@ -43,18 +48,22 @@ event_description <- function(scheme, event) {
 # ============================================================================
 # fig2a: text vs base scatter
 # ============================================================================
-build_fig2a <- function(metrics) {
+build_fig2a <- function(metrics, metric = METRIC) {
   if (nrow(metrics) == 0) return(placeholder_panel("fig2_full_cohort_metrics.csv empty"))
+  base_col <- paste0("base_", metric_suffix(metric))
+  text_col <- paste0("text_", metric_suffix(metric))
   d <- metrics %>%
-    filter(!is.na(base_cindex), !is.na(text_cindex)) %>%
-    mutate(delta = text_cindex - base_cindex,
+    filter(!is.na(.data[[base_col]]), !is.na(.data[[text_col]])) %>%
+    mutate(base_val = .data[[base_col]], text_val = .data[[text_col]],
+           delta = text_val - base_val,
            scheme_lbl = SCHEME_LABELS[as.character(scheme)])
-  lo <- max(0.45, min(c(d$base_cindex, d$text_cindex)) - 0.02)
-  hi <- min(1.00, max(c(d$base_cindex, d$text_cindex)) + 0.02)
+  lo <- max(0.45, min(c(d$base_val, d$text_val)) - 0.02)
+  hi <- min(1.00, max(c(d$base_val, d$text_val)) + 0.02)
   top <- d %>% slice_max(delta, n = 5) %>%
     mutate(event_lbl = event_description(scheme, event))
+  lbl <- metric_label(metric)
 
-  ggplot(d, aes(base_cindex, text_cindex, color = scheme, shape = scheme)) +
+  ggplot(d, aes(base_val, text_val, color = scheme, shape = scheme)) +
     geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "#666666") +
     geom_point(size = 1.8, alpha = 0.65) +
     ggrepel::geom_text_repel(data = top, aes(label = event_lbl),
@@ -67,7 +76,7 @@ build_fig2a <- function(metrics) {
                        labels = SCHEME_LABELS[names(SCHEME_SHAPES)],
                        name = NULL) +
     coord_fixed(xlim = c(lo, hi), ylim = c(lo, hi)) +
-    labs(x = "Base Model C-index", y = "Text Model C-index",
+    labs(x = paste("Base Model", lbl), y = paste("Text Model", lbl),
          title = "Text vs. Base Model Performance") +
     theme_manuscript() +
     theme(legend.position = c(0.85, 0.18),
@@ -76,13 +85,16 @@ build_fig2a <- function(metrics) {
 
 
 # ============================================================================
-# fig2b: Δc-index violins by scheme + Wilcoxon-vs-0 stars
+# fig2b: delta-performance violins by scheme + Wilcoxon-vs-0 stars
 # ============================================================================
-build_fig2b <- function(metrics) {
+build_fig2b <- function(metrics, metric = METRIC) {
   if (nrow(metrics) == 0) return(placeholder_panel("fig2_full_cohort_metrics.csv empty"))
+  base_col <- paste0("base_", metric_suffix(metric))
+  text_col <- paste0("text_", metric_suffix(metric))
+  lbl <- metric_label(metric)
   d <- metrics %>%
-    filter(!is.na(base_cindex), !is.na(text_cindex)) %>%
-    mutate(delta = text_cindex - base_cindex,
+    filter(!is.na(.data[[base_col]]), !is.na(.data[[text_col]])) %>%
+    mutate(delta = .data[[text_col]] - .data[[base_col]],
            scheme = factor(scheme, levels = names(SCHEME_LABELS)))
   ann <- d %>% group_by(scheme) %>%
     summarise(n = n(),
@@ -111,8 +123,8 @@ build_fig2b <- function(metrics) {
     scale_fill_manual(values = SCHEME_COLORS, guide = "none") +
     scale_color_manual(values = SCHEME_COLORS, guide = "none") +
     scale_x_discrete(labels = SCHEME_LABELS) +
-    labs(x = NULL, y = "Delta C-index (Text - Base)",
-         title = "C-index Improvement by Scheme",
+    labs(x = NULL, y = sprintf("Delta %s (Text - Base)", lbl),
+         title = sprintf("%s Improvement by Scheme", lbl),
          caption = paste("Stars: Wilcoxon signed-rank vs Δ=0  (*<.05, **<.01, ***<.001, ****<1e-4).",
                          "Diamond ± bar: mean ± SD.")) +
     theme_manuscript() +
@@ -123,37 +135,48 @@ build_fig2b <- function(metrics) {
 
 
 # ============================================================================
-# fig2c / fig2d: pan vs. within-stratum model dumbbell (mean time-dependent AUC).
-# Grey dot = pan model, red dot = within-stratum model. Dashed vertical lines mark
-# the overall (pooled) held-out mean performance of each model — grey = pan,
-# red = within. The catch-all "OTHER" stratum is not plotted as its own dumbbell.
-# Shared by the cancer-stratified and treatment-stratified panels.
+# fig2c / fig2d: pan vs. within-stratum model dumbbell (C-index or mean AUC(t),
+# per the active METRIC). Grey dot = pan model, red dot = within-stratum model.
+# Dashed vertical lines mark the overall (pooled) held-out performance of each
+# model — grey = pan, red = within. The catch-all "OTHER" stratum is not
+# plotted as its own dumbbell. Shared by the cancer- and treatment-stratified
+# panels.
 # ============================================================================
-build_within_vs_pan <- function(csv, stratum_title) {
+build_within_vs_pan <- function(csv, stratum_title, metric = METRIC) {
   d <- load_figure_data(csv)
   if (nrow(d) == 0) return(placeholder_panel(paste(csv, "empty")))
+  pan_col <- if (metric == "cindex") "cindex_pan" else "auc_pan"
+  within_col <- if (metric == "cindex") "cindex_within" else "auc_within"
+  lbl <- metric_label(metric)
+  if (!all(c(pan_col, within_col) %in% names(d)) ||
+      all(is.na(d[[pan_col]])) || all(is.na(d[[within_col]]))) {
+    return(placeholder_panel(paste(csv, "missing", lbl, "columns — re-run prep_figure_2.py")))
+  }
+  d$pan_val <- d[[pan_col]]
+  d$within_val <- d[[within_col]]
   is_ov <- as.character(d$is_overall) %in% c("True", "TRUE", "true")
   # Overall (pooled) held-out performance of each model -> reference lines.
-  overall_pan    <- d$auc_pan[is_ov]
-  overall_within <- d$auc_within[is_ov]
+  overall_pan    <- d$pan_val[is_ov]
+  overall_within <- d$within_val[is_ov]
   d <- d[!is_ov, , drop = FALSE]
   # Drop the collapsed catch-all stratum (rare cancer types pooled as OTHER); it is
   # not a clinically interpretable group and clutters the per-stratum comparison.
   d <- d[!toupper(as.character(d$stratum)) %in% c("OTHER"), , drop = FALSE]
+  d <- d[!is.na(d$pan_val) & !is.na(d$within_val), , drop = FALSE]
   if (nrow(d) == 0) return(placeholder_panel(paste(csv, "no per-stratum rows")))
-  d$stratum <- forcats::fct_reorder(as.character(d$stratum), d$delta)
+  d$stratum <- forcats::fct_reorder(as.character(d$stratum), d$within_val - d$pan_val)
   p <- ggplot(d) +
-    geom_segment(aes(y = stratum, yend = stratum, x = auc_pan, xend = auc_within),
+    geom_segment(aes(y = stratum, yend = stratum, x = pan_val, xend = within_val),
                  color = "#BBBBBB", linewidth = 0.9) +
-    geom_point(aes(y = stratum, x = auc_pan,    color = "Pan"),    size = 2.6) +
-    geom_point(aes(y = stratum, x = auc_within, color = "Within"), size = 2.6) +
-    geom_text(aes(y = stratum, x = pmax(auc_pan, auc_within), label = paste0("n=", n_heldout)),
+    geom_point(aes(y = stratum, x = pan_val,    color = "Pan"),    size = 2.6) +
+    geom_point(aes(y = stratum, x = within_val, color = "Within"), size = 2.6) +
+    geom_text(aes(y = stratum, x = pmax(pan_val, within_val), label = paste0("n=", n_heldout)),
               hjust = -0.2, size = 2.5, color = "#666666") +
     scale_color_manual(values = c(Pan    = unname(MODEL_COLORS[["base"]]),
                                   Within = unname(MODEL_COLORS[["text"]])), name = NULL) +
     scale_x_continuous(expand = expansion(mult = c(0.02, 0.13))) +
-    labs(title = stratum_title, x = "Held-out mean time-dependent AUC", y = NULL,
-         caption = "Dashed lines: overall held-out mean AUC (grey = pan, red = within)") +
+    labs(title = stratum_title, x = paste("Held-out", lbl), y = NULL,
+         caption = sprintf("Dashed lines: overall held-out %s (grey = pan, red = within)", lbl)) +
     theme_manuscript() +
     theme(legend.position = "top",
           plot.caption = element_text(size = 6.5, hjust = 1, face = "italic", color = "#666666"))
@@ -161,7 +184,7 @@ build_within_vs_pan <- function(csv, stratum_title) {
     p <- p + geom_vline(xintercept = overall_pan, linetype = "dashed",
                         color = unname(MODEL_COLORS[["base"]]), linewidth = 0.5) +
       annotate("text", x = overall_pan, y = Inf,
-               label = sprintf("Pan avg AUC = %.3f", overall_pan),
+               label = sprintf("Pan avg %s = %.3f", lbl, overall_pan),
                color = unname(MODEL_COLORS[["base"]]), size = 2.5,
                fontface = "italic", angle = 90, hjust = 1.05, vjust = -0.4)
   }
@@ -169,7 +192,7 @@ build_within_vs_pan <- function(csv, stratum_title) {
     p <- p + geom_vline(xintercept = overall_within, linetype = "dashed",
                         color = unname(MODEL_COLORS[["text"]]), linewidth = 0.5) +
       annotate("text", x = overall_within, y = Inf,
-               label = sprintf("Within avg AUC = %.3f", overall_within),
+               label = sprintf("Within avg %s = %.3f", lbl, overall_within),
                color = unname(MODEL_COLORS[["text"]]), size = 2.5,
                fontface = "italic", angle = 90, hjust = 1.05, vjust = 1.4)
   }
@@ -227,11 +250,24 @@ build_fig2d <- function() {
 
 
 # ============================================================================
-# fig2e: stage vs text risk-quartile (1×2 KM + c-index annotations)
+# fig2e: stage vs text risk-quartile (1×2 KM + C-index/AUC(t) annotations)
 # ============================================================================
-build_fig2e <- function() {
+build_fig2e <- function(metric = METRIC) {
   d  <- load_figure_data("fig2_km_stage_vs_risk.csv")
-  ci <- load_figure_data("fig2_stage_vs_risk_cindex.csv")
+  lbl <- metric_label(metric)
+  if (metric == "cindex") {
+    ci <- load_figure_data("fig2_stage_vs_risk_cindex.csv")
+    perf_s <- if (nrow(ci) > 0) ci$cindex[ci$predictor == "stage"][1] else NA_real_
+    perf_q <- if (nrow(ci) > 0) ci$cindex[ci$predictor == "text_risk"][1] else NA_real_
+  } else {
+    # fig2_stage_vs_risk_auc.csv is per-stage (FigS2 convention), not per-predictor
+    # like the cindex file — it has no pooled "stage" predictor row, only the text
+    # risk score's mean AUC(t) within each stage. Report the n-weighted average
+    # across stages as the closest AUC(t) analogue to the pooled stage C-index.
+    auc_df <- load_figure_data("fig2_stage_vs_risk_auc.csv")
+    perf_s <- NA_real_
+    perf_q <- if (nrow(auc_df) > 0) weighted.mean(auc_df$mean_auc, auc_df$n, na.rm = TRUE) else NA_real_
+  }
   if (nrow(d) == 0) {
     ph <- placeholder_panel("fig2_km_stage_vs_risk.csv empty")
     return(list(stage = ph, quartile = ph))
@@ -251,14 +287,12 @@ build_fig2e <- function() {
 
   lr_s <- logrank_p(d, "months", "death", "stage_group")
   lr_q <- logrank_p(d, "months", "death", "risk_quartile")
-  cidx_s <- if (nrow(ci) > 0) ci$cindex[ci$predictor == "stage"][1] else NA_real_
-  cidx_q <- if (nrow(ci) > 0) ci$cindex[ci$predictor == "text_risk"][1] else NA_real_
 
-  panel_km <- function(td, palette, lr_p, cidx, title_text) {
+  panel_km <- function(td, palette, lr_p, perf, title_text) {
     ts2 <- td %>% mutate(stratum = factor(stratum, levels = names(palette)))
     td_ci <- step_ci_df(ts2, "stratum")
-    ann <- sprintf("c-index=%.3f\nlogrank p=%.1e",
-                   ifelse(is.na(cidx), NA, cidx), lr_p)
+    ann <- if (is.na(perf)) sprintf("logrank p=%.1e", lr_p)
+           else sprintf("%s=%.3f\nlogrank p=%.1e", lbl, perf, lr_p)
     ggplot(ts2, aes(time, estimate, color = stratum)) +
       geom_rect(data = td_ci,
                 aes(xmin = time, xmax = time_next, ymin = conf.low, ymax = conf.high, fill = stratum),
@@ -277,8 +311,8 @@ build_fig2e <- function() {
             legend.background = element_rect(fill = "white", color = NA))
   }
 
-  pL <- panel_km(ts, ord4,  lr_s, cidx_s, "Survival by Cancer Stage")
-  pR <- panel_km(tq, ord4q, lr_q, cidx_q, "Survival by Text Risk-Score Quartile")
+  pL <- panel_km(ts, ord4,  lr_s, perf_s, "Survival by Cancer Stage")
+  pR <- panel_km(tq, ord4q, lr_q, perf_q, "Survival by Text Risk-Score Quartile")
   # Return the two KM panels separately so they can be laid out beside the
   # risk-tertile panel (build_fig2d) as a single side-by-side-by-side row.
   list(stage = pL, quartile = pR)
@@ -290,16 +324,20 @@ build_fig2e <- function() {
 # ============================================================================
 metrics <- load_figure_data("fig2_full_cohort_metrics.csv")
 
-# Panels A/B only: drop the single ICD-3 event whose Δc-index (text - base) is a large
-# negative outlier. It compresses the scatter/violin scale and is not representative of
-# the scheme; removed here so it doesn't distort both panels.
+# Panels A/B only: drop the single ICD-3 event whose delta performance (text - base,
+# on the active metric) is a large negative outlier. It compresses the scatter/violin
+# scale and is not representative of the scheme; removed here so it doesn't distort
+# both panels. Determined per-metric so the C-index and AUC(t) renderings each drop
+# whichever event is the outlier *for that metric*.
 if (nrow(metrics) > 0 && any(metrics$scheme == "icd3_post")) {
-  .delta <- metrics$text_cindex - metrics$base_cindex
+  .base_col <- paste0("base_", metric_suffix(METRIC))
+  .text_col <- paste0("text_", metric_suffix(METRIC))
+  .delta <- metrics[[.text_col]] - metrics[[.base_col]]
   .icd3  <- metrics$scheme == "icd3_post"
   .out   <- which(.icd3 & .delta == min(.delta[.icd3], na.rm = TRUE))
   if (length(.out)) {
-    message(sprintf("fig2 A/B: dropping ICD-3 outlier '%s' (delta c-index = %.3f)",
-                    metrics$event[.out[1]], .delta[.out[1]]))
+    message(sprintf("fig2 A/B [%s]: dropping ICD-3 outlier '%s' (delta %s = %.3f)",
+                    METRIC, metrics$event[.out[1]], metric_label(METRIC), .delta[.out[1]]))
     metrics <- metrics[-.out[1], , drop = FALSE]
   }
 }
@@ -316,13 +354,14 @@ p2_quart <- e_panels$quartile              # G: survival by text risk-score quar
 # E/F/G: three KM curves side-by-side-by-side.
 risk_row <- p2d | p2_stage | p2_quart
 
-save_panel(p2a, "fig2a", width = 6.4, height = 5.0)
-save_panel(p2b, "fig2b", width = 6.0, height = 4.8)
-save_panel(p2_wc, "fig2c", width = 7.0,  height = 4.6)
-save_panel(p2_wt, "fig2d", width = 11.2, height = 4.6)
-save_panel(p2d,       "fig2e", width = 5.6, height = 4.6)
-save_panel(p2_stage,  "fig2f", width = 5.6, height = 4.6)
-save_panel(p2_quart,  "fig2g", width = 5.6, height = 4.6)
+.tag <- metric_tag(METRIC)
+save_panel(p2a, paste0("fig2a", .tag), width = 6.4, height = 5.0)
+save_panel(p2b, paste0("fig2b", .tag), width = 6.0, height = 4.8)
+save_panel(p2_wc, paste0("fig2c", .tag), width = 7.0,  height = 4.6)
+save_panel(p2_wt, paste0("fig2d", .tag), width = 11.2, height = 4.6)
+save_panel(p2d,       paste0("fig2e", .tag), width = 5.6, height = 4.6)
+save_panel(p2_stage,  paste0("fig2f", .tag), width = 5.6, height = 4.6)
+save_panel(p2_quart,  paste0("fig2g", .tag), width = 5.6, height = 4.6)
 
 fig2 <- (p2a + p2b) /
         (p2_wc + p2_wt + plot_layout(widths = c(1.25, 2))) /
@@ -330,4 +369,4 @@ fig2 <- (p2a + p2b) /
         plot_annotation(tag_levels = "A") &
         theme(plot.tag = element_text(size = 14, face = "bold"))
 
-save_figure(fig2, "figure2_text_results", width = 16.5, height = 14.2)
+save_figure(fig2, paste0("figure2_text_results", .tag), width = 16.5, height = 14.2)
