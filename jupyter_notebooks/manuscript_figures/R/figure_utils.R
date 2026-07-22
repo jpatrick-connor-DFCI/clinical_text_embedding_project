@@ -24,14 +24,12 @@ FIGURE_OUT_DIR <- Sys.getenv(
   "CLINICAL_FIGURES_OUT",
   unset = "/data/gusev/USERS/jpconnor/figures/clinical_text_embedding_project/manuscript_figures/"
 )
-# Individual panels only (no composed target figures) — flat, directly under
-# png/ and pdf/; save_panel() writes both formats for every panel.
+# Individual panels only (no composed target figures), grouped by figure under
+# png/<group>/ and pdf/<group>/; save_panel() writes both formats for every
+# panel and creates the group subdirectory on demand. Each plot_figure_*.R
+# script sets FIGURE_GROUP (e.g. "figure1") before its first save_panel() call.
 PNG_OUT_DIR <- file.path(FIGURE_OUT_DIR, "png")
 PDF_OUT_DIR <- file.path(FIGURE_OUT_DIR, "pdf")
-
-# Create output dirs on demand
-dir.create(PNG_OUT_DIR, showWarnings = FALSE, recursive = TRUE)
-dir.create(PDF_OUT_DIR, showWarnings = FALSE, recursive = TRUE)
 
 
 # ----------------------------------------------------------------------------
@@ -129,9 +127,13 @@ load_figure_data <- function(name) {
   suppressMessages(readr::read_csv(fp, show_col_types = FALSE))
 }
 
-save_panel <- function(plot, name, width = 6.0, height = 4.8) {
-  out_png <- file.path(PNG_OUT_DIR, paste0(name, ".png"))
-  out_pdf <- file.path(PDF_OUT_DIR, paste0(name, ".pdf"))
+save_panel <- function(plot, name, width = 6.0, height = 4.8, group = FIGURE_GROUP) {
+  png_dir <- file.path(PNG_OUT_DIR, group)
+  pdf_dir <- file.path(PDF_OUT_DIR, group)
+  dir.create(png_dir, showWarnings = FALSE, recursive = TRUE)
+  dir.create(pdf_dir, showWarnings = FALSE, recursive = TRUE)
+  out_png <- file.path(png_dir, paste0(name, ".png"))
+  out_pdf <- file.path(pdf_dir, paste0(name, ".pdf"))
   ggsave(out_png, plot, width = width, height = height, dpi = 300, bg = "white")
   ggsave(out_pdf, plot, width = width, height = height, bg = "white")
   message(sprintf("[panel] %s / %s", out_png, out_pdf))

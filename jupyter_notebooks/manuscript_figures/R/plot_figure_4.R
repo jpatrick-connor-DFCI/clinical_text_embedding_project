@@ -27,6 +27,7 @@ script_dir <- local({
   stop("Could not determine script directory (set R_DIR in globalenv, run via Rscript, or source() directly)")
 })
 source(file.path(script_dir, "figure_utils.R"))
+FIGURE_GROUP <- "figure4"
 
 N_SLOPE_GROUPS <- 3
 # prep_figure_4 relabels slope groups 0..N-1 by ASCENDING mean OLS slope of

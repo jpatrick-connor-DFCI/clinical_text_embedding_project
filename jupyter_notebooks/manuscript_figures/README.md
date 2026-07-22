@@ -4,7 +4,7 @@ Six-figure manuscript layout (cohort data availability → cohort/population cha
 
 Figures 2, 3, and S2 support a `MANUSCRIPT_METRIC` switch (`"cindex"` / `"auc"`; see `R/figure_utils.R::METRIC`) that can score panels by Harrell's C-index or mean time-dependent AUC(t) — panel filenames carry a matching suffix (e.g. `fig2a_cindex` / `fig2a_auc`). In practice only **C-index** is rendered; the underlying data for both metrics is still computed/written by the Python prep tier, but `render_figures.ipynb` pins `MANUSCRIPT_METRIC="cindex"` so no `_auc` panels are produced.
 
-Every panel is saved in **both PNG and PDF**, in parallel flat trees — `png/` and `pdf/` — with matching filenames (`<name>.png` / `<name>.pdf`); there is no further nesting.
+Every panel is saved in **both PNG and PDF**, in parallel trees — `png/` and `pdf/` — with matching filenames (`<name>.png` / `<name>.pdf`), grouped one subfolder per figure (e.g. `pdf/figure1/fig1a.pdf`). Each `plot_figure_*.R` script sets a `FIGURE_GROUP` constant (see `R/figure_utils.R::save_panel`); supplement scripts share their parent figure's group (e.g. `plot_figure_2_supp.R` and `plot_figure_2_supp_events.R` both use `"figure2"`).
 
 ## Layout
 
@@ -33,9 +33,15 @@ manuscript_figures/
 │   └── plot_figure_5.R           # 5 panels → fig5a–fig5e
 ├── generate_figure_data.ipynb    # Python-kernel notebook — runs all preps
 ├── render_figures.ipynb          # R-kernel notebook — sources all R plot scripts
-├── png/                          # output dir — every panel as PNG (flat, no subfolders)
-└── pdf/                          # output dir — every panel as PDF (flat, no subfolders)
+├── png/                          # output dir — panels as PNG, one subfolder per figure
+│   ├── figure0/  ├── figure1/  ├── figure2/  ├── figure3/  ├── figure4/  └── figure5/
+└── pdf/                          # output dir — panels as PDF, one subfolder per figure
+    ├── figure0/  ├── figure1/  ├── figure2/  ├── figure3/  ├── figure4/  └── figure5/
 ```
+
+Figure 2's supplements (`plot_figure_2_supp.R`, `plot_figure_2_supp_events.R`) write into `figure2/`
+alongside the main-figure panels; Figure 4's supplement (`plot_figure_4_supp.R`) and appendix panel
+(`figS1a`) write into `figure4/`.
 
 ## Workflow
 
@@ -65,9 +71,10 @@ manuscript_figures/
    ```
 
    Each R script emits its individual panels only (no composed multi-panel figure) as both
-   `$CLINICAL_FIGURES_OUT/png/<name>.png` and `$CLINICAL_FIGURES_OUT/pdf/<name>.pdf`, C-index-suffixed
-   for Figs 2/2-supp/3 (e.g. `fig2a_cindex`). Fig 4's script also emits the appendix
-   panel `figS1a.{png,pdf}`.
+   `$CLINICAL_FIGURES_OUT/png/<group>/<name>.png` and `$CLINICAL_FIGURES_OUT/pdf/<group>/<name>.pdf`,
+   grouped by figure (`<group>` = `figureN`; supplements share their parent figure's group),
+   C-index-suffixed for Figs 2/2-supp/3 (e.g. `fig2a_cindex`). Fig 4's script also emits the
+   appendix panel `figS1a.{png,pdf}` into `figure4/`.
 
 3. **Notebook orchestration** (two kernels, run in order):
 

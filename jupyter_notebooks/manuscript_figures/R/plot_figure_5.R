@@ -25,6 +25,7 @@ script_dir <- local({
   stop("Could not determine script directory (set R_DIR in globalenv, run via Rscript, or source() directly)")
 })
 source(file.path(script_dir, "figure_utils.R"))
+FIGURE_GROUP <- "figure5"
 
 
 # ============================================================================

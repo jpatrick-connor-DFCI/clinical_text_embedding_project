@@ -36,6 +36,7 @@ script_dir <- local({
   stop("Could not determine script directory (set R_DIR in globalenv, run via Rscript, or source() directly)")
 })
 source(file.path(script_dir, "figure_utils.R"))
+FIGURE_GROUP <- "figure2"
 # KM helpers (tidy_km, logrank_p, step_ci_df) now live in figure_utils.R so the
 # supplementary stage-stratified script (plot_figure_2_supp.R) can share them.
 

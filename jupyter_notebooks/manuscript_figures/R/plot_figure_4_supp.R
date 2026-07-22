@@ -32,6 +32,7 @@ script_dir <- local({
   stop("Could not determine script directory (set R_DIR in globalenv, run via Rscript, or source() directly)")
 })
 source(file.path(script_dir, "figure_utils.R"))  # tidy_km, step_ci_df, theme_manuscript, palettes
+FIGURE_GROUP <- "figure4"
 
 
 # ----------------------------------------------------------------------------
