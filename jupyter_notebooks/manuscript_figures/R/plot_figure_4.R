@@ -284,7 +284,9 @@ build_fig4c <- function() {
       scale_fill_manual(values = setNames(GROUP_COLORS[clusters + 1],
                                           as.character(clusters)),
                         guide = "none") +
-      labs(x = "Cluster", y = spec$units, title = spec$title) +
+      scale_x_discrete(labels = setNames(GROUP_NAMES[clusters + 1],
+                                         as.character(clusters))) +
+      labs(x = "Risk dynamics", y = spec$units, title = spec$title) +
       theme_manuscript() +
       theme(panel.grid.major.y = element_line(color = "grey90"))
     # is_pct panels are bounded percentages; the other metrics (incl. mean
