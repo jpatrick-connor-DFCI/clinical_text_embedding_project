@@ -25,8 +25,8 @@ script_dir <- local({
 })
 source(file.path(script_dir, "figure_utils.R"))
 
-CASCADE_ORDER <- c("vte_cohort", "text", "stage", "treatment", "somatic", "prs", "all")
-CASCADE_FILL  <- c(vte_cohort = "#5B8DB8", text = MODALITY_COLORS[["text"]],
+CASCADE_ORDER <- c("full_cohort", "text", "stage", "treatment", "somatic", "prs", "all")
+CASCADE_FILL  <- c(full_cohort = "#5B8DB8", text = MODALITY_COLORS[["text"]],
                    stage = MODALITY_COLORS[["stage"]], treatment = MODALITY_COLORS[["treatment"]],
                    somatic = MODALITY_COLORS[["somatic"]], prs = MODALITY_COLORS[["prs"]],
                    all = "#333333")
@@ -49,8 +49,7 @@ build_fig0a <- function() {
     scale_y_discrete(labels = setNames(d$label, d$stage)) +
     scale_x_continuous(expand = expansion(mult = c(0, 0.18)), labels = scales::comma) +
     labs(x = "Number of patients", y = NULL,
-         title = "Cohort Data Availability",
-         caption = "Somatic/PRS availability from held-out risk scores for the death_met/death endpoint (representative of all schemes).") +
+         title = "Cohort Data Availability") +
     theme_manuscript() +
     theme(panel.grid.major.x = element_line(color = "grey90"),
           axis.line.y = element_blank(), axis.ticks.y = element_blank(),

@@ -1,12 +1,19 @@
 """Pre-compute inputs for Figure 0 (cohort data-availability cascade).
 
 A CONSORT-style attrition panel run just ahead of Figure 1: starting from the
-base VTE cohort, how many patients have each successive modality available,
-down to how many pass every data-availability threshold at once (the set
-actually usable for the full multi-modal comparison in Figures 3+).
+full cancer-type cohort, how many patients have each successive modality
+available, down to how many pass every data-availability threshold at once
+(the set actually usable for the full multi-modal comparison in Figures 3+).
 
-Representative (scheme, event) = death_met / death, matching the convention
-already used for the Fig 3B correlation heatmap (prep_figure_3.DEATH_SCHEME).
+All modalities are sourced from the raw feature files under
+clinical_and_genomic_features/ (FEATURE_PATH) — the same files
+generate_all_non_text_covariates.py writes — rather than any downstream,
+event-specific held-out risk-score files:
+- cohort/cancer type: cancer_type_df.csv.gz     (also the Fig 1 cohort source)
+- stage:              cancer_stage pickle, falling back to cancer_stage_df.csv.gz
+- treatment:          categorical_treatment_data_by_line.csv.gz
+- somatic:            complete_somatic_data_df.csv.gz
+- prs:                complete_germline_data_df.csv.gz
 
 Writes to FIGURE_DATA_DIR:
 - fig0_data_availability.csv      stage, label, n_patients, n_total  (in cascade order)
@@ -24,19 +31,9 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from _figure_utils import (
-    EMBEDDING_FILES, FEATURE_PATH, SURV_PATH,
-    feature_held_out_dir, save_figure_data,
-)
+from _figure_utils import EMBEDDING_FILES, FEATURE_PATH, SURV_PATH, save_figure_data
 
-# Base (pre-embedding, pre-filtering) VTE cohort — same source file as
-# generate_embedding_prediction_datasets.py:_load_shared_inputs.
-INTAE_DATA_PATH = "/data/gusev/PROFILE/CLINICAL/robust_VTE_pred_project_2025_03_cohort/data/"
-BASE_COHORT_FILE = os.path.join(INTAE_DATA_PATH, "follow_up_vte_df_cohort.csv")
-
-SCHEME_FOR_EMBED = "icd3_post"       # widest post-text-merge cohort (mirrors prep_figure_1.py)
-REPRESENTATIVE_SCHEME = "death_met"  # mirrors prep_figure_3.DEATH_SCHEME
-REPRESENTATIVE_EVENT = "death"
+SCHEME_FOR_EMBED = "icd3_post"  # widest post-text-merge cohort (mirrors prep_figure_1.py)
 
 # Same stage pickle used by prep_figure_1._stage_counts_from_pickle.
 STAGE_PATH = (
@@ -80,11 +77,8 @@ def _mrns_with_treatment(cohort_mrns: set[int]) -> set[int]:
     return set(tx1["DFCI_MRN"]) & cohort_mrns
 
 
-def _mrns_with_modality_risk_score(modality: str, cohort_mrns: set[int]) -> set[int]:
-    fp = os.path.join(
-        feature_held_out_dir(REPRESENTATIVE_SCHEME, REPRESENTATIVE_EVENT),
-        f"{modality}_risk_scores.csv",
-    )
+def _mrns_with_raw_feature(filename: str, cohort_mrns: set[int]) -> set[int]:
+    fp = os.path.join(FEATURE_PATH, filename)
     if not os.path.exists(fp):
         print(f"  missing {fp}")
         return set()
@@ -93,8 +87,10 @@ def _mrns_with_modality_risk_score(modality: str, cohort_mrns: set[int]) -> set[
 
 
 def _data_availability() -> pd.DataFrame:
-    base = pd.read_csv(BASE_COHORT_FILE, usecols=["DFCI_MRN"])
-    cohort_mrns = set(base["DFCI_MRN"])
+    # Full cohort + cancer type, same source used as the Fig 1 cohort denominator.
+    cancer_type_df = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_type_df.csv.gz"),
+                                 usecols=["DFCI_MRN"])
+    cohort_mrns = set(cancer_type_df["DFCI_MRN"])
     n_total = len(cohort_mrns)
 
     emb_df = pd.read_csv(os.path.join(SURV_PATH, EMBEDDING_FILES[SCHEME_FOR_EMBED]),
@@ -102,14 +98,14 @@ def _data_availability() -> pd.DataFrame:
     text_mrns = set(emb_df["DFCI_MRN"]) & cohort_mrns
     stage_mrns = _mrns_with_stage(cohort_mrns)
     treatment_mrns = _mrns_with_treatment(cohort_mrns)
-    somatic_mrns = _mrns_with_modality_risk_score("somatic", cohort_mrns)
-    prs_mrns = _mrns_with_modality_risk_score("prs", cohort_mrns)
+    somatic_mrns = _mrns_with_raw_feature("complete_somatic_data_df.csv.gz", cohort_mrns)
+    prs_mrns = _mrns_with_raw_feature("complete_germline_data_df.csv.gz", cohort_mrns)
 
     all_thresholds = (text_mrns & stage_mrns & treatment_mrns
                       & somatic_mrns & prs_mrns)
 
     rows = [
-        ("vte_cohort", "VTE Cohort",              cohort_mrns),
+        ("full_cohort", "Full Cohort",              cohort_mrns),
         ("text",       "With Text",                text_mrns),
         ("stage",      "With Stage",                stage_mrns),
         ("treatment",  "With Treatment",            treatment_mrns),
