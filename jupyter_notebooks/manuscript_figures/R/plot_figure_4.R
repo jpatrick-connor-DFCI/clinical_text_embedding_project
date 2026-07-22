@@ -4,7 +4,7 @@
 # B conditional KM survival from the slope-window landmark (left-truncated entry),
 # D mean trajectory per slope group vs. a cohort-average reference band,
 # E stage-matched slope-group composition (dynamics vs. baseline stage),
-# C disease-severity small multiples (% Stage IV, % ICI, mean # met, 10-yr RMST, mean slope).
+# C disease-severity small multiples (% Stage IV, mean # met, 10-yr RMST, mean slope).
 # S1: silhouette vs k (slope-group-count justification).
 
 suppressPackageStartupMessages({
@@ -252,13 +252,9 @@ build_fig4e <- function() {
 # ============================================================================
 # fig4c: disease-severity + slope small multiples
 # ============================================================================
-# All five metrics now come from fig4_cluster_severity.csv. % Stage IV and
-# % ICI Treated used to be derived by token-matching the top-N composition
-# CSVs, but those top-N filters silently dropped ICI from the panel and tied
-# the panel to fragile column-name regexes. The prep computes both directly
-# from the raw stage pickle and the per-patient ever-on-ICI flag now. The
-# mean-slope panel is new — it's the quantity the dynamics groups are defined
-# on, and can be negative for the Falling group (no 0..100 clamp applied).
+# The four displayed metrics come from fig4_cluster_severity.csv. Mean slope is
+# the quantity the dynamics groups are defined on and can be negative for the
+# Falling group (no 0..100 clamp applied).
 build_fig4c <- function() {
   severity <- load_figure_data("fig4_cluster_severity.csv")
   if (nrow(severity) == 0) return(placeholder_panel("fig4_cluster_severity.csv empty"))
@@ -274,7 +270,6 @@ build_fig4c <- function() {
 
   characteristics <- list(
     list(title = "% Stage IV",       units = "Percentage (%)", vals = by_id("pct_stage_iv"),   is_pct = TRUE),
-    list(title = "% ICI Treated",    units = "Percentage (%)", vals = by_id("pct_ici"),        is_pct = TRUE),
     list(title = "Mean # met sites", units = "Sites (0-7)",    vals = by_id("mean_met_sites"), is_pct = FALSE),
     list(title = "10-yr RMST",       units = "Months",         vals = by_id("rmst_months"),    is_pct = FALSE),
     list(title = "Mean risk slope",  units = "Risk / month",   vals = by_id("mean_slope"),     is_pct = FALSE)
@@ -298,7 +293,7 @@ build_fig4c <- function() {
     p
   }
   ps <- lapply(characteristics, panel_for)
-  wrap_plots(ps, nrow = 1) +
+  wrap_plots(ps, nrow = 2, ncol = 2) +
     plot_annotation(title = "Disease-Severity Characteristics by Risk-Dynamics Group") &
     theme(plot.title = element_text(size = 11, face = "bold", hjust = 0.5))
 }
@@ -347,13 +342,13 @@ save_panel(p4a, "fig4a",  width = 6.4, height = 4.8)
 save_panel(p4b, "fig4b",  width = 6.4, height = 4.8)
 save_panel(p4d, "fig4d",  width = 6.4, height = 4.8)
 save_panel(p4e, "fig4e",  width = 6.0, height = 4.4)
-save_panel(p4c, "fig4c",  width = 15.0, height = 3.8)
+save_panel(p4c, "fig4c",  width = 8.0, height = 7.0)
 save_panel(pS1, "figS1a", width = 6.0, height = 4.4)
 
 fig4 <- (p4a + p4b) / (p4d + p4e) / p4c +
-        plot_layout(heights = c(1, 1, 0.85)) +
+        plot_layout(heights = c(1, 1, 1.4)) +
         plot_annotation(tag_levels = "A") &
         theme(plot.tag = element_text(size = 14, face = "bold"))
 
-save_figure(fig4, "figure4_trajectories", width = 14.0, height = 16.0)
+save_figure(fig4, "figure4_trajectories", width = 14.0, height = 18.0)
 save_figure(pS1, "figureS1_cluster_silhouette", width = 7.0, height = 5.5)
