@@ -38,7 +38,8 @@ build_fig0a <- function() {
   d <- load_figure_data("fig0_data_availability.csv")
   if (nrow(d) == 0) return(placeholder_panel("fig0_data_availability.csv empty"))
   d <- d %>%
-    mutate(stage = factor(stage, levels = rev(CASCADE_ORDER)),
+    arrange(n_patients) %>%
+    mutate(stage = factor(stage, levels = stage),
            pct = 100 * n_patients / n_total)
 
   ggplot(d, aes(x = n_patients, y = stage, fill = as.character(stage))) +

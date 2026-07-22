@@ -324,20 +324,19 @@ build_fig2e <- function(metric = METRIC) {
 # ============================================================================
 metrics <- load_figure_data("fig2_full_cohort_metrics.csv")
 
-# Panels A/B only: drop the single ICD-3 event whose delta performance (text - base,
-# on the active metric) is a large negative outlier. It compresses the scatter/violin
-# scale and is not representative of the scheme; removed here so it doesn't distort
-# both panels. Determined per-metric so the C-index and AUC(t) renderings each drop
-# whichever event is the outlier *for that metric*.
+# Panels A/B only: drop the single ICD-3 event whose delta performance (text - base)
+# is a large negative outlier. It compresses the scatter/violin scale and is not
+# representative of the scheme; removed here so it doesn't distort both panels.
+# Always determined from C-index (regardless of the active METRIC) so the same
+# event is excluded from both the C-index and AUC(t) renderings — trimming
+# identically instead of letting AUC(t) pick its own (possibly different) outlier.
 if (nrow(metrics) > 0 && any(metrics$scheme == "icd3_post")) {
-  .base_col <- paste0("base_", metric_suffix(METRIC))
-  .text_col <- paste0("text_", metric_suffix(METRIC))
-  .delta <- metrics[[.text_col]] - metrics[[.base_col]]
+  .delta <- metrics[["text_cindex"]] - metrics[["base_cindex"]]
   .icd3  <- metrics$scheme == "icd3_post"
   .out   <- which(.icd3 & .delta == min(.delta[.icd3], na.rm = TRUE))
   if (length(.out)) {
-    message(sprintf("fig2 A/B [%s]: dropping ICD-3 outlier '%s' (delta %s = %.3f)",
-                    METRIC, metrics$event[.out[1]], metric_label(METRIC), .delta[.out[1]]))
+    message(sprintf("fig2 A/B: dropping ICD-3 outlier '%s' (delta cindex = %.3f), applied to both metrics",
+                    metrics$event[.out[1]], .delta[.out[1]]))
     metrics <- metrics[-.out[1], , drop = FALSE]
   }
 }
