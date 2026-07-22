@@ -1,7 +1,7 @@
 # Render Figure 4 (mortality-risk dynamics) + Figure S1 (silhouette appendix).
 #
 # A per-patient mortality-risk trajectory heatmap (raster) grouped by risk-slope group,
-# B conditional KM survival from month 60 (left-truncated entry at 60),
+# B conditional KM survival from the slope-window landmark (left-truncated entry),
 # D mean trajectory per slope group vs. a cohort-average reference band,
 # E stage-matched slope-group composition (dynamics vs. baseline stage),
 # C disease-severity small multiples (% Stage IV, % ICI, mean # met, 10-yr RMST, mean slope).
@@ -30,7 +30,7 @@ source(file.path(script_dir, "figure_utils.R"))
 
 N_SLOPE_GROUPS <- 3
 # prep_figure_4 relabels slope groups 0..N-1 by ASCENDING mean OLS slope of
-# 0-60mo model risk (group 0 = most falling risk, group N-1 = most rising).
+# months 0..L model risk (group 0 = most falling risk, group N-1 = most rising).
 # Names therefore describe risk DYNAMICS (the quantity the groups are actually
 # ordered on), not a risk level. Length must equal N_SLOPE_GROUPS.
 GROUP_NAMES <- c("Falling Risk", "Stable Risk", "Rising Risk")
@@ -122,18 +122,23 @@ build_fig4a <- function() {
 
 
 # ============================================================================
-# fig4b: conditional KM from month 60 (left-truncated entry)
+# fig4b: conditional KM from the slope-window landmark (left-truncated entry)
 # ============================================================================
 build_fig4b <- function() {
   km <- load_figure_data("fig4_km_data.csv")
   if (nrow(km) == 0) return(placeholder_panel("fig4_km_data.csv empty"))
+  landmark_values <- if ("landmark_month" %in% names(km)) {
+    unique(km$landmark_month[!is.na(km$landmark_month)])
+  } else numeric(0)
+  LANDMARK <- if (length(landmark_values) == 1) as.numeric(landmark_values) else 12
   km <- km %>%
     mutate(months     = tt_death / 30.44,
            death      = as.integer(death),
            cluster_id = suppressWarnings(as.integer(as.character(cluster)))) %>%
-    filter(months > 60, !is.na(cluster_id))
-  if (nrow(km) == 0) return(placeholder_panel("no patients survive to month 60"))
-  km$entry <- 60
+    filter(months > LANDMARK, !is.na(cluster_id))
+  if (nrow(km) == 0) return(placeholder_panel(
+    sprintf("no patients survive to month %s", LANDMARK)))
+  km$entry <- LANDMARK
 
   # Stable cluster-id → (label, color) map; we stratify on the SHORT id to avoid
   # any quirks of strata-name handling on long labels with parens/equals.
@@ -151,10 +156,10 @@ build_fig4b <- function() {
            label    = factor(labels_by_id[strat_id],
                              levels = unname(labels_by_id))) %>%
     # survfit2 emits a synthetic time=0, estimate=1 row per stratum (curve
-    # start) that predates the entry=60 left-truncation point; drawing it
-    # produces an unstratified flat segment before month 60 once geom_step
+    # start) that predates the landmark left-truncation point; drawing it
+    # produces an unstratified flat segment before entry once geom_step
     # connects it to the first real event. Drop anything before entry.
-    filter(time >= 60)
+    filter(time >= LANDMARK)
 
   pal <- setNames(unname(colors_by_id), unname(labels_by_id))
   lp  <- logrank_p(km, "months", "death", "strat", start_col = "entry")
@@ -169,13 +174,14 @@ build_fig4b <- function() {
     geom_step(linewidth = 0.9) +
     scale_color_manual(values = pal, name = NULL, drop = FALSE) +
     scale_fill_manual(values = pal, guide = "none", drop = FALSE) +
-    coord_cartesian(xlim = c(60, 120)) +
-    annotate("text", x = 62, y = 0.05,
+    coord_cartesian(xlim = c(LANDMARK, 120)) +
+    annotate("text", x = LANDMARK + 2, y = 0.05,
              label = sprintf("Log-rank p=%.1e", lp),
              hjust = 0, size = 2.7, fontface = "italic", color = "#444444") +
     labs(x = "Months from first treatment",
-         y = "Overall Survival Probability (conditional)",
-         title = "KM Overall Survival by Risk-Dynamics Group\n(conditional on survival to month 60)") +
+         y = sprintf(paste0("Overall Survival Probability\n",
+                           "(conditional on survival to month %s)"), LANDMARK),
+         title = "KM Overall Survival by Risk-Dynamics Group") +
     theme_manuscript() +
     theme(legend.position = c(0.02, 0.18), legend.justification = c(0, 0),
           legend.background = element_rect(fill = "white", color = NA))

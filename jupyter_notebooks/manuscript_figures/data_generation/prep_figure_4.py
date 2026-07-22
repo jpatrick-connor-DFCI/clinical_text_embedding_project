@@ -1,16 +1,20 @@
 """Pre-compute inputs for Figure 4 (mortality-risk *dynamics*).
 
-Patients are grouped by the SLOPE of their 0-60-month model-estimated mortality
-risk (per-patient OLS slope of risk vs. month), not by their mean risk level, so
-the figure surfaces whose risk is *changing* (Falling / Stable / Rising) as
-clinical notes accumulate over follow-up.
+Patients are grouped by the SLOPE of their model-estimated mortality risk over
+months 0..L, where L = SLOPE_LANDMARK_MONTHS. Each per-patient OLS slope uses
+only that patient's observed landmarks (at least MIN_SLOPE_POINTS; no imputation).
+The resulting landmark cohort is patients alive at L, rather than patients
+selected for near-complete follow-up through a later landmark, so the figure
+surfaces whose risk is *changing* (Falling / Stable / Rising) as clinical notes
+accumulate over early follow-up.
 
 Writes to FIGURE_DATA_DIR:
 - fig4_trajectories_heatmap.csv        DFCI_MRN, cluster, <month columns kept>, downsampled to
                                        <= HEATMAP_ROWS_PER_CLUSTER per slope group and ordered by
                                        within-group mean risk (panel A reads this)
-- fig4_km_data.csv                     DFCI_MRN, cluster, death, tt_death, stage  (stage = major
-                                       stage I-IV for the within-stage supplement, NaN if unknown)
+- fig4_km_data.csv                     DFCI_MRN, cluster, death, tt_death, stage,
+                                       landmark_month  (stage = major stage I-IV for the
+                                       within-stage supplement, NaN if unknown)
 - fig4_cluster_severity.csv            cluster, mean_met_sites, rmst_months, pct_stage_iv,
                                        pct_ici, mean_slope, n_patients
 - fig4_group_trajectories.csv          group, month, mean_risk, q25, q75  (per slope group +
@@ -46,17 +50,19 @@ from _figure_utils import (
 
 
 N_SLOPE_GROUPS = 3  # Falling / Stable / Rising risk dynamics
+SLOPE_LANDMARK_MONTHS = 12  # L; set to 24 for the longer-window variant
+MIN_SLOPE_POINTS = 3
 DEFAULT_DECAY = 0.1
 HEATMAP_ROWS_PER_CLUSTER = 500
 
-KM_COLUMNS = ["DFCI_MRN", "cluster", "death", "tt_death", "stage"]
+KM_COLUMNS = ["DFCI_MRN", "cluster", "death", "tt_death", "stage", "landmark_month"]
 SEVERITY_COLUMNS = ["cluster", "mean_met_sites", "rmst_months",
                     "pct_stage_iv", "pct_ici", "mean_slope", "n_patients"]
 GROUP_TRAJECTORY_COLUMNS = ["group", "month", "mean_risk", "q25", "q75"]
 SLOPE_BY_STAGE_COLUMNS = ["stage", "cluster", "n_patients", "mean_slope"]
 SILHOUETTE_COLUMNS = ["k", "silhouette"]
 MET_EVENTS = ["brainM", "boneM", "adrenalM", "liverM", "lungM", "nodeM", "peritonealM"]
-RMST_TAU_MONTHS = 120  # 5y past the 60-mo landmark entry requirement; avoids saturation at the entry cap
+RMST_TAU_MONTHS = 120  # 10-year horizon from first treatment
 SILHOUETTE_K_RANGE = range(2, 9)
 
 # Raw, complete stage labels — bypasses the drop_first issue in cancer_stage_df.csv.gz
@@ -142,12 +148,13 @@ def _default_trajectory_input(decay: float) -> str:
     )
 
 
-def _scaled_trajectory_matrix(input_path: str) -> tuple[pd.DataFrame, np.ndarray | None, list[str]]:
-    """Load, filter, impute (ffill/bfill) and z-scale the trajectory matrix.
+def _scaled_trajectory_matrix(input_path: str) -> tuple[pd.DataFrame, list[str]]:
+    """Load the un-imputed trajectory window and retain sufficiently observed rows.
 
-    Returns (traj_sub with imputed month columns, X_z or None if too few patients,
-    months_to_keep). Shared by clustering and the silhouette scan so both operate on
-    exactly the same feature matrix.
+    Returns ``(traj_sub, months_to_keep)`` for landmarks in months 0..L. Patients
+    must have at least ``MIN_SLOPE_POINTS`` observed values in the window. Despite
+    the historical function name, standardization now happens only after the
+    per-patient slope feature is computed.
     """
     if not os.path.exists(input_path):
         raise FileNotFoundError(
@@ -159,20 +166,13 @@ def _scaled_trajectory_matrix(input_path: str) -> tuple[pd.DataFrame, np.ndarray
     monthly_cols = [c for c in traj_df.columns if c != "DFCI_MRN"]
     missing_colwise = traj_df[monthly_cols].isna().sum(axis=0)
     months_to_keep = missing_colwise[missing_colwise < 0.9 * len(traj_df)].index.tolist()
-    missing_rowwise = (~traj_df[monthly_cols].isna()).sum(axis=1)
-    pxs_to_keep = missing_rowwise[missing_rowwise > 18].index
+    month_nums = _month_nums(months_to_keep)
+    months_to_keep = [col for col, month in zip(months_to_keep, month_nums)
+                      if month <= SLOPE_LANDMARK_MONTHS]
+    missing_rowwise = (~traj_df[months_to_keep].isna()).sum(axis=1)
+    pxs_to_keep = missing_rowwise[missing_rowwise >= MIN_SLOPE_POINTS].index
     traj_sub = traj_df.loc[pxs_to_keep, ["DFCI_MRN"] + months_to_keep].copy()
-
-    if len(traj_sub) < N_SLOPE_GROUPS:
-        return traj_sub, None, months_to_keep
-
-    X = traj_sub[months_to_keep].values
-    X_filled = pd.DataFrame(X).ffill(axis=1).bfill(axis=1).values
-    X_z = StandardScaler().fit_transform(X_filled)
-    # Replace original X with filled X so downstream uses the same values
-    for i, col in enumerate(months_to_keep):
-        traj_sub[col] = X_filled[:, i]
-    return traj_sub, X_z, months_to_keep
+    return traj_sub, months_to_keep
 
 
 def _month_nums(month_cols: list[str]) -> np.ndarray:
@@ -181,37 +181,49 @@ def _month_nums(month_cols: list[str]) -> np.ndarray:
 
 
 def _ols_slopes(traj_sub: pd.DataFrame, months_to_keep: list[str]) -> np.ndarray:
-    """Per-patient OLS slope of (imputed, raw-scale) risk vs. month over 0-60 mo.
-
-    Closed-form least-squares slope cov(x, y) / var(x) with x = month number,
-    y = risk. Values are already ffill/bfill-imputed by _scaled_trajectory_matrix,
-    so every row is complete over months_to_keep; x is identical across patients,
-    which lets us compute all slopes as a single vectorized dot product.
-    """
+    """Per-patient OLS risk slope using each row's observed landmarks in 0..L."""
     x = _month_nums(months_to_keep)
-    xc = x - x.mean()
-    denom = np.sum(xc ** 2)
-    Y = traj_sub[months_to_keep].to_numpy(dtype=float)      # (n_patients, n_months)
-    Yc = Y - Y.mean(axis=1, keepdims=True)
-    return (Yc @ xc) / denom                                # (n_patients,) risk / month
+    values = traj_sub[months_to_keep].to_numpy(dtype=float)
+    slopes = np.full(len(traj_sub), np.nan, dtype=float)
+    for i, y in enumerate(values):
+        mask = ~np.isnan(y)
+        if mask.sum() < MIN_SLOPE_POINTS:
+            continue
+        x_obs = x[mask]
+        y_obs = y[mask]
+        x_centered = x_obs - x_obs.mean()
+        denom = np.sum(x_centered ** 2)
+        if denom <= 0:
+            continue
+        slopes[i] = np.sum(x_centered * (y_obs - y_obs.mean())) / denom
+    return slopes
 
 
-def _cluster_trajectories(input_path: str) -> tuple[pd.DataFrame, list[str], np.ndarray | None]:
+def _cluster_trajectories(input_path: str) -> tuple[pd.DataFrame, list[str]]:
     """Group patients by risk-trajectory SLOPE (Falling / Stable / Rising).
 
-    Returns (traj_sub with `cluster` and `slope` cols, months_to_keep, X_z aligned
-    to traj_sub). `cluster` is an integer 0..N-1 relabeled by ASCENDING mean slope
+    Returns (traj_sub with `cluster` and `slope` cols, months_to_keep). `cluster`
+    is an integer 0..N-1 relabeled by ASCENDING mean slope
     (0 = most falling risk … N-1 = most rising), preserving the integer-cluster
     contract the KM / severity / heatmap code already keys on.
     """
-    traj_sub, X_z, months_to_keep = _scaled_trajectory_matrix(input_path)
-    if X_z is None:
+    traj_sub, months_to_keep = _scaled_trajectory_matrix(input_path)
+    if len(traj_sub) < N_SLOPE_GROUPS:
         print(f"  only {len(traj_sub)} patients survived filtering; need >= {N_SLOPE_GROUPS} "
               "for slope grouping. Emitting empty figure-data.")
         empty = pd.DataFrame(columns=["DFCI_MRN", "cluster", "slope", *months_to_keep])
-        return empty, months_to_keep, None
+        return empty, months_to_keep
 
     slopes = _ols_slopes(traj_sub, months_to_keep)
+    finite = np.isfinite(slopes)
+    if not finite.all():
+        traj_sub = traj_sub.loc[finite].copy()
+        slopes = slopes[finite]
+    if len(traj_sub) < N_SLOPE_GROUPS:
+        print(f"  only {len(traj_sub)} patients have finite slopes; need >= {N_SLOPE_GROUPS} "
+              "for slope grouping. Emitting empty figure-data.")
+        empty = pd.DataFrame(columns=["DFCI_MRN", "cluster", "slope", *months_to_keep])
+        return empty, months_to_keep
     traj_sub["slope"] = slopes
 
     # Cluster on the standardized 1-D slope so the Falling/Stable/Rising boundaries
@@ -225,16 +237,19 @@ def _cluster_trajectories(input_path: str) -> tuple[pd.DataFrame, list[str], np.
     label_order = sorted(group_mean_slope, key=group_mean_slope.get)
     relabel = {old: new for new, old in enumerate(label_order)}
     traj_sub["cluster"] = pd.Series(raw_labels, index=traj_sub.index).map(relabel)
-    return traj_sub, months_to_keep, X_z
+    return traj_sub, months_to_keep
 
 
 def _silhouette_scan(input_path: str) -> pd.DataFrame:
     """Silhouette score vs k on the standardized slope feature — justifies N_SLOPE_GROUPS."""
-    traj_sub, X_z, months_to_keep = _scaled_trajectory_matrix(input_path)
-    if X_z is None or len(traj_sub) <= max(SILHOUETTE_K_RANGE):
+    traj_sub, months_to_keep = _scaled_trajectory_matrix(input_path)
+    if len(traj_sub) <= max(SILHOUETTE_K_RANGE):
         return pd.DataFrame(columns=SILHOUETTE_COLUMNS)
-    slope_z = StandardScaler().fit_transform(
-        _ols_slopes(traj_sub, months_to_keep).reshape(-1, 1))
+    slopes = _ols_slopes(traj_sub, months_to_keep)
+    slopes = slopes[np.isfinite(slopes)]
+    if len(slopes) <= max(SILHOUETTE_K_RANGE):
+        return pd.DataFrame(columns=SILHOUETTE_COLUMNS)
+    slope_z = StandardScaler().fit_transform(slopes.reshape(-1, 1))
     rows = []
     for k in SILHOUETTE_K_RANGE:
         labels = KMeans(n_clusters=k, random_state=0, n_init=10).fit_predict(slope_z)
@@ -243,14 +258,13 @@ def _silhouette_scan(input_path: str) -> pd.DataFrame:
 
 
 def _heatmap_downsample(traj_sub: pd.DataFrame, months_to_keep: list[str],
-                         X_z: np.ndarray | None = None,
                          rows_per_cluster: int = HEATMAP_ROWS_PER_CLUSTER) -> pd.DataFrame:
     """Within each cluster, sample at most `rows_per_cluster` patients and order
     them by within-cluster mean trajectory so the heatmap shows clean cluster
     blocks rather than an unreadable smear of 30k+ rows.
 
-    When X_z is provided, the saved values are column-wise z-scored — each month's
-    distribution is centered on 0 with unit SD across the cohort. The raw mortality
+    Saved values are column-wise z-scored — each month's distribution is centered
+    on 0 with unit SD across the cohort. The raw mortality
     risk varies hugely across months (e.g. by 100× near event time), washing out
     cluster structure under a single linear color scale. Z-scoring makes each
     cluster's relative-to-cohort signal pop on a diverging scale centered at 0.
@@ -261,14 +275,11 @@ def _heatmap_downsample(traj_sub: pd.DataFrame, months_to_keep: list[str],
     # Panel A reads only DFCI_MRN + cluster + month columns (it treats every other
     # column as a month), so drop the per-patient `slope` helper column here.
     keep = ["DFCI_MRN", "cluster"] + list(months_to_keep)
-    if X_z is not None and X_z.shape[0] == len(traj_sub):
-        # X_z is aligned to traj_sub.index from _scaled_trajectory_matrix.
-        # Swap raw month columns for their column-standardized counterparts.
-        scaled = traj_sub[keep].copy()
-        for i, col in enumerate(months_to_keep):
-            scaled[col] = X_z[:, i]
-    else:
-        scaled = traj_sub[keep]
+    scaled = traj_sub[keep].copy()
+    # Display-only forward fill keeps the raster readable. Grouping slopes above
+    # always use the original, un-imputed observations.
+    display_values = scaled[months_to_keep].ffill(axis=1).to_numpy(dtype=float)
+    scaled.loc[:, months_to_keep] = StandardScaler().fit_transform(display_values)
 
     rng = np.random.default_rng(0)
     chunks = []
@@ -294,7 +305,8 @@ def _km_data(traj_sub: pd.DataFrame) -> pd.DataFrame:
     # pickle is unavailable or the MRN has no recognizable stage.
     stage_map = _major_stage_map()
     out["stage"] = out["DFCI_MRN"].map(stage_map) if stage_map is not None else np.nan
-    return out
+    out["landmark_month"] = SLOPE_LANDMARK_MONTHS
+    return out[KM_COLUMNS]
 
 
 def _cluster_severity(traj_sub: pd.DataFrame, treatment_df: pd.DataFrame) -> pd.DataFrame:
@@ -443,8 +455,8 @@ def main() -> None:
 
     treatment_df = pd.read_csv(os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv.gz"))
 
-    traj_sub, months_to_keep, X_z = _cluster_trajectories(input_path)
-    save_figure_data(_heatmap_downsample(traj_sub, months_to_keep, X_z),
+    traj_sub, months_to_keep = _cluster_trajectories(input_path)
+    save_figure_data(_heatmap_downsample(traj_sub, months_to_keep),
                      "fig4_trajectories_heatmap.csv")
     save_figure_data(_km_data(traj_sub), "fig4_km_data.csv")
     save_figure_data(_cluster_severity(traj_sub, treatment_df), "fig4_cluster_severity.csv")
