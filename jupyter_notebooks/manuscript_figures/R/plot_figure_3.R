@@ -207,10 +207,14 @@ build_fig3d <- function(betas) {
     mutate(p = wilcoxon_vs0(unlist(kept)),
            stars = p_to_stars(p),
            mean_z = mean(unlist(kept), na.rm = TRUE),
-           sd_z = sd(unlist(kept), na.rm = TRUE),
-           modality = factor(modality, levels = MODALITY_ORDER)) %>%
+           sd_z = sd(unlist(kept), na.rm = TRUE)) %>%
     ungroup() %>%
     select(modality, stars, mean_z, sd_z)
+
+  # Order the x-axis by mean standardized coefficient, descending left-to-right.
+  mod_order <- ann %>% arrange(desc(mean_z)) %>% pull(modality) %>% as.character()
+  plot_df <- plot_df %>% mutate(modality = factor(as.character(modality), levels = mod_order))
+  ann      <- ann      %>% mutate(modality = factor(as.character(modality), levels = mod_order))
   n_tot <- sum(trimmed$n_trim, na.rm = TRUE)
   means_str <- paste(sprintf("%s: %.2f", MODALITY_DISPLAY[as.character(ann$modality)], ann$mean_z),
                      collapse = "   ")
