@@ -32,7 +32,6 @@ script_dir <- local({
   stop("Could not determine script directory (set R_DIR in globalenv, run via Rscript, or source() directly)")
 })
 source(file.path(script_dir, "figure_utils.R"))  # tidy_km, step_ci_df, theme_manuscript, palettes
-FIGURE_GROUP <- "figure4"
 
 
 # ----------------------------------------------------------------------------
@@ -135,5 +134,5 @@ pS_iv <- build_stage_dynamics_panel(
 pS_i_ii <- build_stage_dynamics_panel(
   d, c("I", "II"), "Stages I-II", "Stages I-II: survival by risk-dynamics group")
 
-save_panel(pS_iv, "figS_stage4_by_dynamics", width = 7.2, height = 6.0)
-save_panel(pS_i_ii, "figS_stage1_2_by_dynamics", width = 7.2, height = 6.0)
+save_panel(pS_iv, "figS_stage4_by_dynamics", group = "figure4", width = 7.2, height = 6.0)
+save_panel(pS_i_ii, "figS_stage1_2_by_dynamics", group = "figure4", width = 7.2, height = 6.0)

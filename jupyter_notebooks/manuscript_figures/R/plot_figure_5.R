@@ -25,7 +25,6 @@ script_dir <- local({
   stop("Could not determine script directory (set R_DIR in globalenv, run via Rscript, or source() directly)")
 })
 source(file.path(script_dir, "figure_utils.R"))
-FIGURE_GROUP <- "figure5"
 
 
 # ============================================================================
@@ -411,8 +410,8 @@ p5c <- build_fig5c()
 p5d <- build_fig5d()
 p5e <- build_fig5e()
 
-save_panel(p5a, "fig5a", width = 8.0, height = 6.0)
-save_panel(p5b, "fig5b", width = 6.5, height = 6.0)
-save_panel(p5c, "fig5c", width = 9.0, height = 6.5)
-save_panel(p5d, "fig5d", width = 15.0, height = 5.0)
-save_panel(p5e, "fig5e", width = 11.0, height = 5.8)
+save_panel(p5a, "fig5a", group = "figure5", width = 8.0, height = 6.0)
+save_panel(p5b, "fig5b", group = "figure5", width = 6.5, height = 6.0)
+save_panel(p5c, "fig5c", group = "figure5", width = 9.0, height = 6.5)
+save_panel(p5d, "fig5d", group = "figure5", width = 15.0, height = 5.0)
+save_panel(p5e, "fig5e", group = "figure5", width = 11.0, height = 5.8)

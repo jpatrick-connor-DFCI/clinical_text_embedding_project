@@ -26,8 +26,11 @@ FIGURE_OUT_DIR <- Sys.getenv(
 )
 # Individual panels only (no composed target figures), grouped by figure under
 # png/<group>/ and pdf/<group>/; save_panel() writes both formats for every
-# panel and creates the group subdirectory on demand. Each plot_figure_*.R
-# script sets FIGURE_GROUP (e.g. "figure1") before its first save_panel() call.
+# panel and creates the group subdirectory on demand. `group` (e.g. "figure1")
+# is a required argument at every save_panel() call site — not a script-level
+# default — since figure_utils.R is source()'d into globalenv() (source()'s
+# default local=FALSE), so a lexical default couldn't see a caller-defined
+# constant from the sys.source()-ed plot script's own environment.
 PNG_OUT_DIR <- file.path(FIGURE_OUT_DIR, "png")
 PDF_OUT_DIR <- file.path(FIGURE_OUT_DIR, "pdf")
 
@@ -127,7 +130,7 @@ load_figure_data <- function(name) {
   suppressMessages(readr::read_csv(fp, show_col_types = FALSE))
 }
 
-save_panel <- function(plot, name, width = 6.0, height = 4.8, group = FIGURE_GROUP) {
+save_panel <- function(plot, name, group, width = 6.0, height = 4.8) {
   png_dir <- file.path(PNG_OUT_DIR, group)
   pdf_dir <- file.path(PDF_OUT_DIR, group)
   dir.create(png_dir, showWarnings = FALSE, recursive = TRUE)

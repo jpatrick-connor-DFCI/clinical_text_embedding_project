@@ -30,7 +30,6 @@ script_dir <- local({
   stop("Could not determine script directory (set R_DIR in globalenv, run via Rscript, or source() directly)")
 })
 source(file.path(script_dir, "figure_utils.R"))  # provides tidy_km, logrank_p, step_ci_df
-FIGURE_GROUP <- "figure2"
 
 
 # ============================================================================
@@ -95,5 +94,5 @@ pS_i_ii <- build_stage_panel(
   "Stages I-II: survival by overall risk-score quartile")
 
 .tag <- metric_tag(METRIC)
-save_panel(pS_iv, paste0("figS2_stage4_by_risk", .tag), width = 7.2, height = 6.0)
-save_panel(pS_i_ii, paste0("figS2_stage1_2_by_risk", .tag), width = 7.2, height = 6.0)
+save_panel(pS_iv, paste0("figS2_stage4_by_risk", .tag), group = "figure2", width = 7.2, height = 6.0)
+save_panel(pS_i_ii, paste0("figS2_stage1_2_by_risk", .tag), group = "figure2", width = 7.2, height = 6.0)

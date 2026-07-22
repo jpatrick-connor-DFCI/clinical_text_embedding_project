@@ -24,7 +24,6 @@ script_dir <- local({
   stop("Could not determine script directory (set R_DIR in globalenv, run via Rscript, or source() directly)")
 })
 source(file.path(script_dir, "figure_utils.R"))
-FIGURE_GROUP <- "figure0"
 
 CASCADE_ORDER <- c("full_cohort", "text", "stage", "treatment", "somatic", "prs", "all")
 CASCADE_FILL  <- c(full_cohort = "#5B8DB8", text = MODALITY_COLORS[["text"]],
@@ -69,4 +68,4 @@ build_fig0a <- function() {
 # ============================================================================
 p0a <- build_fig0a()
 
-save_panel(p0a, "fig0a", width = 8.0, height = 5.2)
+save_panel(p0a, "fig0a", group = "figure0", width = 8.0, height = 5.2)

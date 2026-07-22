@@ -29,7 +29,6 @@ script_dir <- local({
   stop("Could not determine script directory (set R_DIR in globalenv, run via Rscript, or source() directly)")
 })
 source(file.path(script_dir, "figure_utils.R"))  # provides tidy_km, logrank_p, step_ci_df
-FIGURE_GROUP <- "figure2"
 
 
 # ============================================================================
@@ -100,9 +99,9 @@ pS_icd3      <- build_event_km_panel(km_data, topk, "ICD10", 3)
 pS_phecodes2 <- build_event_km_panel(km_data, topk, "phecodes", 2)
 pS_phecodes3 <- build_event_km_panel(km_data, topk, "phecodes", 3)
 
-save_panel(pS_mets2,     "figS_scheme_km_mets2", width = 5.6, height = 4.6)
-save_panel(pS_mets3,     "figS_scheme_km_mets3", width = 5.6, height = 4.6)
-save_panel(pS_icd2,      "figS_scheme_km_icd2", width = 5.6, height = 4.6)
-save_panel(pS_icd3,      "figS_scheme_km_icd3", width = 5.6, height = 4.6)
-save_panel(pS_phecodes2, "figS_scheme_km_phecodes2", width = 5.6, height = 4.6)
-save_panel(pS_phecodes3, "figS_scheme_km_phecodes3", width = 5.6, height = 4.6)
+save_panel(pS_mets2,     "figS_scheme_km_mets2", group = "figure2", width = 5.6, height = 4.6)
+save_panel(pS_mets3,     "figS_scheme_km_mets3", group = "figure2", width = 5.6, height = 4.6)
+save_panel(pS_icd2,      "figS_scheme_km_icd2", group = "figure2", width = 5.6, height = 4.6)
+save_panel(pS_icd3,      "figS_scheme_km_icd3", group = "figure2", width = 5.6, height = 4.6)
+save_panel(pS_phecodes2, "figS_scheme_km_phecodes2", group = "figure2", width = 5.6, height = 4.6)
+save_panel(pS_phecodes3, "figS_scheme_km_phecodes3", group = "figure2", width = 5.6, height = 4.6)

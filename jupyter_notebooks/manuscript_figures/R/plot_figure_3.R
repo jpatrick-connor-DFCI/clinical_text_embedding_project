@@ -28,7 +28,6 @@ script_dir <- local({
   stop("Could not determine script directory (set R_DIR in globalenv, run via Rscript, or source() directly)")
 })
 source(file.path(script_dir, "figure_utils.R"))
-FIGURE_GROUP <- "figure3"
 
 FDR_ALPHA  <- 0.05
 IQR_WHISKER <- 1.5
@@ -268,7 +267,7 @@ p3c <- build_fig3c()
 p3d <- build_fig3d(betas)
 
 .tag <- metric_tag(METRIC)
-save_panel(p3a, "fig3a", width = 6.0, height = 4.8)
-save_panel(p3b, "fig3b", width = 6.0, height = 5.0)
-save_panel(p3c, paste0("fig3c", .tag), width = 6.0, height = 5.0)
-save_panel(p3d, "fig3d", width = 6.0, height = 5.0)
+save_panel(p3a, "fig3a", group = "figure3", width = 6.0, height = 4.8)
+save_panel(p3b, "fig3b", group = "figure3", width = 6.0, height = 5.0)
+save_panel(p3c, paste0("fig3c", .tag), group = "figure3", width = 6.0, height = 5.0)
+save_panel(p3d, "fig3d", group = "figure3", width = 6.0, height = 5.0)

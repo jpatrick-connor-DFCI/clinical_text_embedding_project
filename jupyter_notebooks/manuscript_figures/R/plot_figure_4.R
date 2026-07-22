@@ -27,7 +27,6 @@ script_dir <- local({
   stop("Could not determine script directory (set R_DIR in globalenv, run via Rscript, or source() directly)")
 })
 source(file.path(script_dir, "figure_utils.R"))
-FIGURE_GROUP <- "figure4"
 
 N_SLOPE_GROUPS <- 3
 # prep_figure_4 relabels slope groups 0..N-1 by ASCENDING mean OLS slope of
@@ -341,9 +340,9 @@ p4e <- build_fig4e()
 p4c <- build_fig4c()
 pS1 <- build_figS1a()
 
-save_panel(p4a, "fig4a",  width = 6.4, height = 4.8)
-save_panel(p4b, "fig4b",  width = 6.4, height = 4.8)
-save_panel(p4d, "fig4d",  width = 6.4, height = 4.8)
-save_panel(p4e, "fig4e",  width = 6.0, height = 4.4)
-save_panel(p4c, "fig4c",  width = 8.0, height = 7.0)
-save_panel(pS1, "figS1a", width = 6.0, height = 4.4)
+save_panel(p4a, "fig4a",  group = "figure4", width = 6.4, height = 4.8)
+save_panel(p4b, "fig4b",  group = "figure4", width = 6.4, height = 4.8)
+save_panel(p4d, "fig4d",  group = "figure4", width = 6.4, height = 4.8)
+save_panel(p4e, "fig4e",  group = "figure4", width = 6.0, height = 4.4)
+save_panel(p4c, "fig4c",  group = "figure4", width = 8.0, height = 7.0)
+save_panel(pS1, "figS1a", group = "figure4", width = 6.0, height = 4.4)
