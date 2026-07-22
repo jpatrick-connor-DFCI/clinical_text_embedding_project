@@ -1,6 +1,6 @@
 # Manuscript figures
 
-Six-figure manuscript layout (cohort data availability → cohort/population characteristics → text vs base → modality comparison → mortality trajectories → ICI biomarker discovery) plus an appendix (Fig S1 silhouette, Fig S2 within-stage risk stratification). **Data generation is Python; figure rendering is R (`ggplot2 + patchwork`)**. Each R script builds every panel as a ggplot object and composes the final figure in-memory — there is no separate compose script.
+Six-figure manuscript layout (cohort data availability → cohort/population characteristics → text vs base → modality comparison → mortality trajectories → ICI biomarker discovery) plus an appendix (Fig S1 silhouette, Fig S2 within-stage risk stratification, and a within-stage risk-dynamics KM supplement). **Data generation is Python; figure rendering is R (`ggplot2 + patchwork`)**. Each R script builds every panel as a ggplot object and composes the final figure in-memory — there is no separate compose script.
 
 Figures 2, 3, and S2 render as **two parallel figure sets** — one scored by Harrell's C-index, one by mean time-dependent AUC(t) — via a `MANUSCRIPT_METRIC` switch (`"cindex"` / `"auc"`; see `R/figure_utils.R::METRIC`). Output files carry a matching suffix (e.g. `figure2_text_results_cindex.png` / `_auc.png`), so both sets coexist under `target_figures/`.
 
@@ -26,6 +26,7 @@ manuscript_figures/
 │   ├── plot_figure_2_supp.R      # within-stage KM by overall risk quartile → figureS2_stage_stratified_risk_{cindex,auc}.png
 │   ├── plot_figure_3.R           # 4 panels → figure3_feature_comps_{cindex,auc}.png
 │   ├── plot_figure_4.R           # 5 panels (A,B,D,E,C) + figS1 → figure4_trajectories.png + figureS1_*
+│   ├── plot_figure_4_supp.R      # within-stage conditional KM by risk-dynamics group → figureS_stage_stratified_dynamics.png
 │   └── plot_figure_5.R           # 5 panels (A–E) → figure5_biomarkers.png
 ├── generate_figure_data.ipynb    # Python-kernel notebook — runs all preps
 ├── render_figures.ipynb          # R-kernel notebook — sources all R plot scripts
@@ -54,7 +55,7 @@ manuscript_figures/
    both parallel figure sets — the other scripts ignore the variable:
 
    ```bash
-   for n in 0 1 4 5; do
+   for n in 0 1 4 4_supp 5; do
      Rscript jupyter_notebooks/manuscript_figures/R/plot_figure_${n}.R
    done
    for n in 2 2_supp 3; do
@@ -114,6 +115,7 @@ manuscript_figures/
 - **Overlay mean ± SD on distribution panels (Fig 2B/3D).** Both panels overlay a white diamond at the mean with a ±1 SD errorbar directly on the violins, in addition to the significance-star annotation text; Fig 3D's caption also prints the per-modality mean.
 - **KM tertile legend (Fig 2E).** The redundant text/base linetype legend was removed (the panel title already states "(text solid, base dashed)" in plain text); the risk-tertile color legend and its 95% CI bands (`step_ci_df`/`geom_rect`) are retained.
 - **Left-truncated KM curves (Fig 4B).** `ggsurvfit::tidy_survfit()` emits a synthetic `time=0, estimate=1` row per stratum for the curve start, which predates the `entry=60` left-truncation point; left un-filtered it renders as a spurious unstratified flat segment from month 0–60 once `geom_step` connects it to the first real (post-truncation) event. `build_fig4b` now filters `time >= 60` before plotting, and adds 95% CI bands (`step_ci_df`/`geom_rect`) matching the other KM panels. Curves are stratified/colored by risk-dynamics group (`GROUP_COLORS`), not risk level.
+- **Within-stage risk-dynamics KM supplement (`plot_figure_4_supp.R`).** Two panels — Stage IV (A) and Stage I (B) — each a conditional-on-month-60 KM (left-truncated `entry=60`, `x = 60–120 mo`, same machinery as Fig 4B) stratified by risk-dynamics group, showing the Falling/Stable/Rising groups separate survival *within* a single clinical stage. Reads `fig4_km_data.csv`, which now carries a `stage` column (major stage I–IV from `_major_stage_map` in `prep_figure_4.py`, `NaN` if the stage pickle is unavailable). The script defines its own `GROUP_NAMES`/`GROUP_COLORS`/`cluster_label` locally (mirroring how `plot_figure_2_supp.R` defines its quartile constants) and a left-truncation-aware log-rank (`coxph` score test, since `survdiff` rejects `Surv(start, stop, event)`). Single-metric (no `MANUSCRIPT_METRIC` switch); composed as `figureS_stage_stratified_dynamics`.
 - **AUC-by-cancer-type inset (Fig 5A).** The per-cancer-type AUC bar inset sits in the far lower-right corner of the main ROC panel (`cowplot::draw_plot`), with each bar annotated `AUC=x.xx`; the main ROC legend moved to the upper-left to stay clear of it.
 - **Overall-risk legend placement (Fig S2).** The risk-quartile legend anchors to the true top-right corner of each stage panel (`legend.position = c(0.98, 0.97)`, `legend.justification = c(1, 1)`); both panels and the composed figure were enlarged to give the KM curves and legend more room.
 - **C-index / mean AUC(t) metric switch (Figs 2, 2-supp, 3).** `figure_utils.R` reads `MANUSCRIPT_METRIC` (`"cindex"` or `"auc"`, default `"cindex"`) into a global `METRIC`, plus `metric_label()`/`metric_suffix()`/`metric_tag()` helpers. Nothing new is computed for the switch — `prep_figure_2.py`/`prep_figure_3.py` already write both metrics side by side (`fig2_full_cohort_metrics.csv`'s `{text,base}_{cindex,auc}` columns (plus a precomputed `event_lbl` — real ICD-10 descriptions for `icd3_post`/`icd4_post` via `embed_surv_utils.find_icd_code`, since that lookup isn't available R-side); `fig2_within_vs_pan_*.csv`'s `{cindex,auc}_{pan,within}` columns; `fig2_stage_vs_risk_{cindex,auc}*.csv`; `fig3_modality_avg_rank_{cindex,auc}.csv`/`fig3_modality_ranks_long_{cindex,auc}.csv`) — the R scripts just select whichever columns/CSVs match `METRIC` and suffix their outputs accordingly. FigS2's per-stage C-index (`fig2_stage_vs_risk_cindex_by_stage.csv`) was added to mirror the existing per-stage mean-AUC(t) table (`fig2_stage_vs_risk_auc.csv`), since the pre-existing `fig2_stage_vs_risk_cindex.csv` only had one pooled cohort-wide row, not a per-stage breakdown. The ICD-3 outlier dropped from Fig 2A/2B (see per-figure design notes) is always determined from C-index and that same event is excluded from both renderings, so the two metric sets show identical events.
@@ -129,9 +131,10 @@ manuscript_figures/
 | 1 | `fig1_endpoint_counts.csv`, `fig1_cancer_type_counts.csv`, `fig1_notes_per_patient.csv`, `fig1_stage_counts.csv`, `fig1_treatment_counts.csv` |
 | 2 | `fig2_full_cohort_metrics.csv`, `fig2_within_vs_pan_cancer.csv`, `fig2_within_vs_pan_treatment.csv`, `fig2_km_tertiles.csv`, `fig2_km_stage_vs_risk.csv`, `fig2_stage_vs_risk_cindex.csv`, `fig2_stage_vs_risk_auc.csv` |
 | 3 | `fig3_modality_cindex.csv`, `fig3_modality_avg_rank_cindex.csv`, `fig3_modality_avg_rank_auc.csv`, `fig3_modality_ranks_long_cindex.csv`, `fig3_modality_ranks_long_auc.csv`, `fig3_joint_betas.csv` (includes p-values), `fig3_risk_score_corr.csv` |
-| 4 | `fig4_trajectories_heatmap.csv` (panel A), `fig4_km_data.csv` (panel B), `fig4_group_trajectories.csv` (panel D), `fig4_slope_by_stage.csv` (panel E), `fig4_cluster_severity.csv` (panel C, incl. `mean_slope`), `fig4_silhouette.csv` (appendix Fig S1, slope feature) |
+| 4 | `fig4_trajectories_heatmap.csv` (panel A), `fig4_km_data.csv` (panel B; now incl. `stage`), `fig4_group_trajectories.csv` (panel D), `fig4_slope_by_stage.csv` (panel E), `fig4_cluster_severity.csv` (panel C, incl. `mean_slope`), `fig4_silhouette.csv` (appendix Fig S1, slope feature) |
 | 5 | `fig5_ps_predictions.csv`, `fig5_robust_hits.csv`, `fig5_km_top_hit.csv`, `fig5_km_examples.csv`, `fig5_top_hit_meta.csv`, `fig5_love_smd.csv`, `fig5_forest_headline.csv` |
 | S2 | `fig2_km_stage_vs_risk.csv`, `fig2_stage_vs_risk_cindex_by_stage.csv`, `fig2_stage_vs_risk_auc.csv` (all reused from Figure 2 prep; no separate prep script) |
+| S (dynamics) | `fig4_km_data.csv` (reused from Figure 4 prep, incl. `stage` + `cluster`; no separate prep script) → `plot_figure_4_supp.R` |
 
 ## Prerequisites for each prep script
 

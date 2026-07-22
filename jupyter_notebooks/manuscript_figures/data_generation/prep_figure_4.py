@@ -9,7 +9,8 @@ Writes to FIGURE_DATA_DIR:
 - fig4_trajectories_heatmap.csv        DFCI_MRN, cluster, <month columns kept>, downsampled to
                                        <= HEATMAP_ROWS_PER_CLUSTER per slope group and ordered by
                                        within-group mean risk (panel A reads this)
-- fig4_km_data.csv                     DFCI_MRN, cluster, death, tt_death
+- fig4_km_data.csv                     DFCI_MRN, cluster, death, tt_death, stage  (stage = major
+                                       stage I-IV for the within-stage supplement, NaN if unknown)
 - fig4_cluster_severity.csv            cluster, mean_met_sites, rmst_months, pct_stage_iv,
                                        pct_ici, mean_slope, n_patients
 - fig4_group_trajectories.csv          group, month, mean_risk, q25, q75  (per slope group +
@@ -48,7 +49,7 @@ N_SLOPE_GROUPS = 3  # Falling / Stable / Rising risk dynamics
 DEFAULT_DECAY = 0.1
 HEATMAP_ROWS_PER_CLUSTER = 500
 
-KM_COLUMNS = ["DFCI_MRN", "cluster", "death", "tt_death"]
+KM_COLUMNS = ["DFCI_MRN", "cluster", "death", "tt_death", "stage"]
 SEVERITY_COLUMNS = ["cluster", "mean_met_sites", "rmst_months",
                     "pct_stage_iv", "pct_ici", "mean_slope", "n_patients"]
 GROUP_TRAJECTORY_COLUMNS = ["group", "month", "mean_risk", "q25", "q75"]
@@ -288,6 +289,11 @@ def _km_data(traj_sub: pd.DataFrame) -> pd.DataFrame:
            .merge(surv_df[["DFCI_MRN", "death", "tt_death"]], on="DFCI_MRN", how="inner")
            .dropna())
     out = out[out["tt_death"] > 0]
+    # Attach major stage (I-IV) so the Fig 4 supplement can build within-stage KM
+    # curves (Stage I / Stage IV) stratified by trajectory cluster. NaN where the
+    # pickle is unavailable or the MRN has no recognizable stage.
+    stage_map = _major_stage_map()
+    out["stage"] = out["DFCI_MRN"].map(stage_map) if stage_map is not None else np.nan
     return out
 
 
