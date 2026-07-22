@@ -4,7 +4,7 @@
 # as each modality's availability requirement is added, ending in the subset
 # that passes every threshold at once (the multi-modal analysis cohort used
 # from Figure 3 onward).
-# Output: target_figures/figure0_data_availability.png plus one panel PNG.
+# Output: panel fig0a (png/pdf).
 
 suppressPackageStartupMessages({
   library(ggplot2); library(dplyr); library(scales)
@@ -69,5 +69,3 @@ build_fig0a <- function() {
 p0a <- build_fig0a()
 
 save_panel(p0a, "fig0a", width = 8.0, height = 5.2)
-
-save_figure(p0a, "figure0_data_availability", width = 9.0, height = 5.6)

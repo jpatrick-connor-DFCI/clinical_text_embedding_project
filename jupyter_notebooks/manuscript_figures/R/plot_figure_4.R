@@ -346,11 +346,3 @@ save_panel(p4d, "fig4d",  width = 6.4, height = 4.8)
 save_panel(p4e, "fig4e",  width = 6.0, height = 4.4)
 save_panel(p4c, "fig4c",  width = 8.0, height = 7.0)
 save_panel(pS1, "figS1a", width = 6.0, height = 4.4)
-
-fig4 <- (p4a + p4b) / (p4d + p4e) / p4c +
-        plot_layout(heights = c(1, 1, 1.4)) +
-        plot_annotation(tag_levels = "A") &
-        theme(plot.tag = element_text(size = 14, face = "bold"))
-
-save_figure(fig4, "figure4_trajectories", width = 14.0, height = 18.0)
-save_figure(pS1, "figureS1_cluster_silhouette", width = 7.0, height = 5.5)

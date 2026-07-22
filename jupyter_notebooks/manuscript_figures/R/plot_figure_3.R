@@ -271,9 +271,3 @@ save_panel(p3a, "fig3a", width = 6.0, height = 4.8)
 save_panel(p3b, "fig3b", width = 6.0, height = 5.0)
 save_panel(p3c, paste0("fig3c", .tag), width = 6.0, height = 5.0)
 save_panel(p3d, "fig3d", width = 6.0, height = 5.0)
-
-fig3 <- (p3a + p3b) / (p3c + p3d) +
-        plot_annotation(tag_levels = "A") &
-        theme(plot.tag = element_text(size = 14, face = "bold"))
-
-save_figure(fig3, paste0("figure3_feature_comps", .tag), width = 15.0, height = 13.0)

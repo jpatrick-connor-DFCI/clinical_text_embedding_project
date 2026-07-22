@@ -24,12 +24,14 @@ FIGURE_OUT_DIR <- Sys.getenv(
   "CLINICAL_FIGURES_OUT",
   unset = "/data/gusev/USERS/jpconnor/figures/clinical_text_embedding_project/manuscript_figures/"
 )
-PANEL_OUT_DIR  <- FIGURE_OUT_DIR
-TARGET_OUT_DIR <- file.path(FIGURE_OUT_DIR, "target_figures")
+# Individual panels only (no composed target figures) — flat, directly under
+# png/ and pdf/; save_panel() writes both formats for every panel.
+PNG_OUT_DIR <- file.path(FIGURE_OUT_DIR, "png")
+PDF_OUT_DIR <- file.path(FIGURE_OUT_DIR, "pdf")
 
 # Create output dirs on demand
-dir.create(PANEL_OUT_DIR,  showWarnings = FALSE, recursive = TRUE)
-dir.create(TARGET_OUT_DIR, showWarnings = FALSE, recursive = TRUE)
+dir.create(PNG_OUT_DIR, showWarnings = FALSE, recursive = TRUE)
+dir.create(PDF_OUT_DIR, showWarnings = FALSE, recursive = TRUE)
 
 
 # ----------------------------------------------------------------------------
@@ -128,19 +130,12 @@ load_figure_data <- function(name) {
 }
 
 save_panel <- function(plot, name, width = 6.0, height = 4.8) {
-  out_png <- file.path(PANEL_OUT_DIR, paste0(name, ".png"))
-  ggsave(out_png, plot, width = width, height = height, dpi = 300,
-         bg = "white")
-  message(sprintf("[panel] %s", out_png))
-  invisible(out_png)
-}
-
-save_figure <- function(plot, stem, width = 12.0, height = 10.0) {
-  out_png <- file.path(TARGET_OUT_DIR, paste0(stem, ".png"))
-  ggsave(out_png, plot, width = width, height = height, dpi = 300,
-         bg = "white")
-  message(sprintf("[composed] %s", out_png))
-  invisible(out_png)
+  out_png <- file.path(PNG_OUT_DIR, paste0(name, ".png"))
+  out_pdf <- file.path(PDF_OUT_DIR, paste0(name, ".pdf"))
+  ggsave(out_png, plot, width = width, height = height, dpi = 300, bg = "white")
+  ggsave(out_pdf, plot, width = width, height = height, bg = "white")
+  message(sprintf("[panel] %s / %s", out_png, out_pdf))
+  invisible(c(out_png, out_pdf))
 }
 
 placeholder_panel <- function(msg) {

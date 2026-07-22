@@ -96,9 +96,3 @@ pS_i_ii <- build_stage_panel(
 .tag <- metric_tag(METRIC)
 save_panel(pS_iv, paste0("figS2_stage4_by_risk", .tag), width = 7.2, height = 6.0)
 save_panel(pS_i_ii, paste0("figS2_stage1_2_by_risk", .tag), width = 7.2, height = 6.0)
-
-figS2 <- (pS_iv | pS_i_ii) +
-         plot_annotation(tag_levels = "A") &
-         theme(plot.tag = element_text(size = 14, face = "bold"))
-
-save_figure(figS2, paste0("figureS2_stage_stratified_risk", .tag), width = 14.4, height = 6.4)

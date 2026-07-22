@@ -136,9 +136,3 @@ pS_i_ii <- build_stage_dynamics_panel(
 
 save_panel(pS_iv, "figS_stage4_by_dynamics", width = 7.2, height = 6.0)
 save_panel(pS_i_ii, "figS_stage1_2_by_dynamics", width = 7.2, height = 6.0)
-
-figS4 <- (pS_iv | pS_i_ii) +
-         plot_annotation(tag_levels = "A") &
-         theme(plot.tag = element_text(size = 14, face = "bold"))
-
-save_figure(figS4, "figureS_stage_stratified_dynamics", width = 14.4, height = 6.4)

@@ -2,7 +2,7 @@
 #
 # Panels: A pipeline schematic, B endpoint counts, C notes/patient by type,
 #         D cancer-type pie, E stage breakdown, F first-line treatment breakdown.
-# Output: target_figures/figure1_schematic.png plus per-panel PNGs.
+# Output: panels fig1a–fig1f (png/pdf).
 
 suppressPackageStartupMessages({
   library(ggplot2); library(patchwork); library(dplyr); library(tidyr)
@@ -226,11 +226,3 @@ save_panel(p1c, "fig1c", width = 7.0, height = 4.4)
 save_panel(p1d, "fig1d", width = 7.0, height = 5.2)
 save_panel(p1e, "fig1e", width = 6.0, height = 4.4)
 save_panel(p1f, "fig1f", width = 7.8, height = 4.4)
-
-fig1 <- (p1a + p1b + plot_layout(widths = c(2, 1))) /
-        (p1c + p1d) /
-        (p1e + p1f + plot_layout(widths = c(1, 1.3))) +
-        plot_annotation(tag_levels = "A") &
-        theme(plot.tag = element_text(size = 14, face = "bold"))
-
-save_figure(fig1, "figure1_schematic", width = 16, height = 14)

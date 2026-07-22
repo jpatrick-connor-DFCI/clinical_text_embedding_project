@@ -415,13 +415,3 @@ save_panel(p5b, "fig5b", width = 6.5, height = 6.0)
 save_panel(p5c, "fig5c", width = 9.0, height = 6.5)
 save_panel(p5d, "fig5d", width = 15.0, height = 5.0)
 save_panel(p5e, "fig5e", width = 11.0, height = 5.8)
-
-fig5 <- (p5a + p5b) /
-        p5c /
-        p5d /
-        p5e +
-        plot_layout(heights = c(1, 1, 0.85, 0.95)) +
-        plot_annotation(tag_levels = "A") &
-        theme(plot.tag = element_text(size = 14, face = "bold"))
-
-save_figure(fig5, "figure5_biomarkers", width = 15.5, height = 22.0)

@@ -105,11 +105,3 @@ save_panel(pS_icd2,      "figS_scheme_km_icd2", width = 5.6, height = 4.6)
 save_panel(pS_icd3,      "figS_scheme_km_icd3", width = 5.6, height = 4.6)
 save_panel(pS_phecodes2, "figS_scheme_km_phecodes2", width = 5.6, height = 4.6)
 save_panel(pS_phecodes3, "figS_scheme_km_phecodes3", width = 5.6, height = 4.6)
-
-figS_events <- (pS_mets2 | pS_mets3) /
-               (pS_icd2 | pS_icd3) /
-               (pS_phecodes2 | pS_phecodes3) +
-               plot_annotation(tag_levels = "A") &
-               theme(plot.tag = element_text(size = 14, face = "bold"))
-
-save_figure(figS_events, "figureS_scheme_event_km", width = 11.2, height = 13.8)

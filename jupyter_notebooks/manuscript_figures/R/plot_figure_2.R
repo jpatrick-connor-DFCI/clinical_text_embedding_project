@@ -428,9 +428,6 @@ e_panels <- build_fig2e()
 p2_stage <- e_panels$stage                 # F: survival by cancer stage
 p2_quart <- e_panels$quartile              # G: survival by text risk-score quartile
 
-# E/F/G: three KM curves side-by-side-by-side.
-risk_row <- p2d | p2_stage | p2_quart
-
 # Per-scheme Δ C-index barplots + top-1 event KM (C-index only, no metric suffix).
 scheme_topk <- load_figure_data("fig2_scheme_delta_topk.csv")
 scheme_km   <- load_figure_data("fig2_scheme_event_km.csv")
@@ -438,12 +435,10 @@ scheme_km   <- load_figure_data("fig2_scheme_event_km.csv")
 p2_bars_mets     <- build_scheme_delta_bars(scheme_topk, "mets")
 p2_bars_icd      <- build_scheme_delta_bars(scheme_topk, "ICD10")
 p2_bars_phecodes <- build_scheme_delta_bars(scheme_topk, "phecodes")
-bars_row <- p2_bars_mets | p2_bars_icd | p2_bars_phecodes
 
 p2_km_mets1     <- build_scheme_event_km(scheme_km, scheme_topk, "mets", 1)
 p2_km_icd1      <- build_scheme_event_km(scheme_km, scheme_topk, "ICD10", 1)
 p2_km_phecodes1 <- build_scheme_event_km(scheme_km, scheme_topk, "phecodes", 1)
-top_km_row <- p2_km_mets1 | p2_km_icd1 | p2_km_phecodes1
 
 .tag <- metric_tag(METRIC)
 save_panel(p2a, paste0("fig2a", .tag), width = 6.4, height = 5.0)
@@ -459,13 +454,3 @@ save_panel(p2_bars_phecodes, "fig2j", width = 5.6, height = 4.6)
 save_panel(p2_km_mets1,     "fig2k", width = 5.6, height = 4.6)
 save_panel(p2_km_icd1,      "fig2l", width = 5.6, height = 4.6)
 save_panel(p2_km_phecodes1, "fig2m", width = 5.6, height = 4.6)
-
-fig2 <- (p2a + p2b) /
-        (p2_wc + p2_wt + plot_layout(widths = c(1.25, 1.7))) /
-        risk_row /
-        bars_row /
-        top_km_row +
-        plot_annotation(tag_levels = "A") &
-        theme(plot.tag = element_text(size = 14, face = "bold"))
-
-save_figure(fig2, paste0("figure2_text_results", .tag), width = 16.5, height = 22.8)
