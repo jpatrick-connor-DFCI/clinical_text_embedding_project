@@ -1,6 +1,6 @@
 # Render Figure 5 (ICI biomarker discovery) in ggplot2 + patchwork.
 #
-# A propensity ROC curves + per-cancer AUC inset (text model), held-out CV note,
+# A propensity ROC curves (covariates-only vs covariates+embeddings),
 # B covariate-balance love plot (SMD before vs after IPTW),
 # C cohort-grouped biomarker robustness dot-matrix + definitions caption,
 # D 3-panel marker × ICI KM strip with carried-through interaction HR.
@@ -46,7 +46,7 @@ compute_roc <- function(y, score) {
 
 
 # ============================================================================
-# fig5a: ROC + per-cancer AUC inset
+# fig5a: propensity-score ROC curves
 # ============================================================================
 build_fig5a <- function() {
   ps <- load_figure_data("fig5_ps_predictions.csv")
@@ -82,50 +82,13 @@ build_fig5a <- function() {
                        breaks = legend_labels$model,
                        labels = legend_labels$label, name = NULL) +
     coord_cartesian(xlim = c(0, 1), ylim = c(0, 1.02)) +
-    annotate("text", x = 0.03, y = 0.1,
-             label = "AUC from held-out CV predictions",
-             hjust = 0, vjust = 0, size = 2.5, fontface = "italic", color = "#555555") +
     labs(x = "False Positive Rate", y = "True Positive Rate", title = ttl) +
     theme_manuscript() +
     theme(legend.position = c(0.32, 0.90),
           legend.justification = c(0, 1),
           legend.background = element_rect(fill = "white", color = NA))
 
-  # Per-cancer AUC inset (text model)
-  text_ps <- ps[ps$ps_model == "covariates_plus_embeddings" & !is.na(ps$cancer_type), ]
-  cancer_auc <- text_ps %>% group_by(cancer_type) %>%
-    summarise(auc = compute_roc(ground_truth, model_probs)$auc,
-              n = n(), .groups = "drop") %>%
-    filter(!is.na(auc), n >= 30) %>%
-    arrange(auc) %>% tail(6)
-  inset <- if (nrow(cancer_auc) > 0) {
-    cancer_auc <- cancer_auc %>%
-      mutate(cancer_type = factor(cancer_type, levels = cancer_type))
-    ggplot(cancer_auc, aes(auc, cancer_type, fill = cancer_type)) +
-      geom_col(color = "white", width = 0.7) +
-      geom_text(aes(label = sprintf("AUC=%.2f", auc), x = auc + 0.005),
-                hjust = 0, size = 2.4, fontface = "bold") +
-      scale_fill_manual(values = unname(grDevices::hcl.colors(nrow(cancer_auc), "Set 2")),
-                        guide = "none") +
-      coord_cartesian(xlim = c(max(0.5, min(cancer_auc$auc) - 0.08),
-                               min(1.0, max(cancer_auc$auc) + 0.14))) +
-      labs(x = "AUC", y = NULL,
-           title = "AUC by Cancer Type\n(Text model)") +
-      theme_manuscript(base_size = 8) +
-      theme(plot.title = element_text(size = 7.5, face = "bold"),
-            axis.text = element_text(size = 6.5),
-            axis.line.y = element_blank(), axis.ticks.y = element_blank(),
-            panel.grid.major.x = element_line(color = "grey90"))
-  } else NULL
-
-  if (!is.null(inset)) {
-    # Inset sits in the far lower-right corner of the main ROC panel, clear of
-    # the (now upper-left) legend.
-    cowplot::ggdraw(main) +
-      cowplot::draw_plot(inset, x = 0.52, y = 0.04, width = 0.46, height = 0.36)
-  } else {
-    main
-  }
+  main
 }
 
 

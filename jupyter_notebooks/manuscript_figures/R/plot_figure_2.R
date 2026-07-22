@@ -35,19 +35,27 @@ source(file.path(script_dir, "figure_utils.R"))
 # supplementary stage-stratified script (plot_figure_2_supp.R) can share them.
 
 
-# Human-readable label for a single event code. death_met events are either the
-# literal "death" or a metastatic-site name (see MET_SITES in
-# generate_embedding_prediction_datasets.py); everything else (ICD-10 codes,
-# phecodes) just gets underscore-cleanup + title-casing.
-event_description <- function(scheme, event) {
-  ifelse(scheme == "death_met" & event == "death", "Death",
-  ifelse(scheme == "death_met", paste("Mets:", stringr::str_to_title(event)),
-         stringr::str_trunc(stringr::str_to_title(gsub("_", " ", event)), 22)))
-}
-
 # ============================================================================
 # fig2a: text vs base scatter
 # ============================================================================
+# Legend/annotation groups: death_met is split into its own "Death" entry (the
+# single literal death event) and "Mets" (metastatic-site events), separate
+# from the death_met scheme's other rows so all four groups below get their
+# own top-N annotation and legend entry.
+FIG2A_GROUP_ORDER <- c("death", "mets", "icd3_post", "icd4_post", "phecode_post")
+FIG2A_GROUP_LABELS <- c(death = "Death", mets = "Mets",
+                        icd3_post = SCHEME_LABELS[["icd3_post"]],
+                        icd4_post = SCHEME_LABELS[["icd4_post"]],
+                        phecode_post = SCHEME_LABELS[["phecode_post"]])
+FIG2A_GROUP_COLORS <- c(death = SCHEME_COLORS[["death_met"]], mets = "#F1948A",
+                        icd3_post = SCHEME_COLORS[["icd3_post"]],
+                        icd4_post = SCHEME_COLORS[["icd4_post"]],
+                        phecode_post = SCHEME_COLORS[["phecode_post"]])
+FIG2A_GROUP_SHAPES <- c(death = 18, mets = 17,
+                        icd3_post = SCHEME_SHAPES[["icd3_post"]],
+                        icd4_post = SCHEME_SHAPES[["icd4_post"]],
+                        phecode_post = SCHEME_SHAPES[["phecode_post"]])
+
 build_fig2a <- function(metrics, metric = METRIC) {
   if (nrow(metrics) == 0) return(placeholder_panel("fig2_full_cohort_metrics.csv empty"))
   base_col <- paste0("base_", metric_suffix(metric))
@@ -56,25 +64,27 @@ build_fig2a <- function(metrics, metric = METRIC) {
     filter(!is.na(.data[[base_col]]), !is.na(.data[[text_col]])) %>%
     mutate(base_val = .data[[base_col]], text_val = .data[[text_col]],
            delta = text_val - base_val,
-           scheme_lbl = SCHEME_LABELS[as.character(scheme)])
+           plot_group = case_when(
+             scheme == "death_met" & event == "death" ~ "death",
+             scheme == "death_met"                    ~ "mets",
+             TRUE                                      ~ as.character(scheme)
+           ),
+           plot_group = factor(plot_group, levels = FIG2A_GROUP_ORDER))
   lo <- max(0.45, min(c(d$base_val, d$text_val)) - 0.02)
   hi <- min(1.00, max(c(d$base_val, d$text_val)) + 0.02)
-  top <- d %>% slice_max(delta, n = 5) %>%
-    mutate(event_lbl = event_description(scheme, event))
+  top <- d %>% group_by(plot_group) %>% slice_max(delta, n = 2) %>% ungroup()
   lbl <- metric_label(metric)
 
-  ggplot(d, aes(base_val, text_val, color = scheme, shape = scheme)) +
+  ggplot(d, aes(base_val, text_val, color = plot_group, shape = plot_group)) +
     geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "#666666") +
     geom_point(size = 1.8, alpha = 0.65) +
     ggrepel::geom_text_repel(data = top, aes(label = event_lbl),
                              size = 2.2, color = "#222222", min.segment.length = 0.1,
                              max.overlaps = 12) +
-    scale_color_manual(values = SCHEME_COLORS,
-                       labels = SCHEME_LABELS[names(SCHEME_COLORS)],
-                       name = NULL) +
-    scale_shape_manual(values = SCHEME_SHAPES,
-                       labels = SCHEME_LABELS[names(SCHEME_SHAPES)],
-                       name = NULL) +
+    scale_color_manual(values = FIG2A_GROUP_COLORS, labels = FIG2A_GROUP_LABELS,
+                       name = NULL, drop = FALSE) +
+    scale_shape_manual(values = FIG2A_GROUP_SHAPES, labels = FIG2A_GROUP_LABELS,
+                       name = NULL, drop = FALSE) +
     coord_fixed(xlim = c(lo, hi), ylim = c(lo, hi)) +
     labs(x = paste("Base Model", lbl), y = paste("Text Model", lbl),
          title = "Text vs. Base Model Performance") +
@@ -180,13 +190,18 @@ build_within_vs_pan <- function(csv, stratum_title, metric = METRIC) {
     theme_manuscript() +
     theme(legend.position = "top",
           plot.caption = element_text(size = 6.5, hjust = 1, face = "italic", color = "#666666"))
+  # Numeric labels sit horizontally at the top of each dashed reference line.
+  # Give a touch of headroom and stagger the two labels vertically so the pan
+  # and within values don't collide when the lines are close together.
+  p <- p + coord_cartesian(clip = "off") +
+    theme(plot.margin = margin(t = 18, r = 5.5, b = 5.5, l = 5.5))
   if (length(overall_pan) == 1 && is.finite(overall_pan)) {
     p <- p + geom_vline(xintercept = overall_pan, linetype = "dashed",
                         color = unname(MODEL_COLORS[["base"]]), linewidth = 0.5) +
       annotate("text", x = overall_pan, y = Inf,
                label = sprintf("Pan avg %s = %.3f", lbl, overall_pan),
                color = unname(MODEL_COLORS[["base"]]), size = 2.5,
-               fontface = "italic", angle = 90, hjust = 1.05, vjust = -0.4)
+               fontface = "italic", hjust = 0.5, vjust = -1.6)
   }
   if (length(overall_within) == 1 && is.finite(overall_within)) {
     p <- p + geom_vline(xintercept = overall_within, linetype = "dashed",
@@ -194,7 +209,7 @@ build_within_vs_pan <- function(csv, stratum_title, metric = METRIC) {
       annotate("text", x = overall_within, y = Inf,
                label = sprintf("Within avg %s = %.3f", lbl, overall_within),
                color = unname(MODEL_COLORS[["text"]]), size = 2.5,
-               fontface = "italic", angle = 90, hjust = 1.05, vjust = 1.4)
+               fontface = "italic", hjust = 0.5, vjust = -0.4)
   }
   p
 }
@@ -243,7 +258,8 @@ build_fig2d <- function() {
     labs(x = "Months from first treatment", y = "Overall survival",
          title = "Mortality by Risk-Score Tertile\n(text solid, base dashed)") +
     theme_manuscript() +
-    theme(legend.position = c(0.82, 0.78),
+    theme(legend.position = c(0.98, 0.98),
+          legend.justification = c(1, 1),
           legend.background = element_rect(fill = "white", color = NA),
           legend.spacing.y = unit(0.05, "in"))
 }
@@ -288,7 +304,8 @@ build_fig2e <- function(metric = METRIC) {
   lr_s <- logrank_p(d, "months", "death", "stage_group")
   lr_q <- logrank_p(d, "months", "death", "risk_quartile")
 
-  panel_km <- function(td, palette, lr_p, perf, title_text) {
+  panel_km <- function(td, palette, lr_p, perf, title_text,
+                       legend_pos = c(0.82, 0.80), legend_just = c(0.5, 0.5)) {
     ts2 <- td %>% mutate(stratum = factor(stratum, levels = names(palette)))
     td_ci <- step_ci_df(ts2, "stratum")
     ann <- if (is.na(perf)) sprintf("logrank p=%.1e", lr_p)
@@ -307,12 +324,14 @@ build_fig2e <- function(metric = METRIC) {
       labs(x = "Months from first treatment", y = "Overall survival",
            title = title_text) +
       theme_manuscript() +
-      theme(legend.position = c(0.82, 0.80),
+      theme(legend.position = legend_pos, legend.justification = legend_just,
             legend.background = element_rect(fill = "white", color = NA))
   }
 
   pL <- panel_km(ts, ord4,  lr_s, perf_s, "Survival by Cancer Stage")
-  pR <- panel_km(tq, ord4q, lr_q, perf_q, "Survival by Text Risk-Score Quartile")
+  # Fig 2G: legend pinned to the top-right corner of the panel.
+  pR <- panel_km(tq, ord4q, lr_q, perf_q, "Survival by Text Risk-Score Quartile",
+                 legend_pos = c(0.98, 0.98), legend_just = c(1, 1))
   # Return the two KM panels separately so they can be laid out beside the
   # risk-tertile panel (build_fig2d) as a single side-by-side-by-side row.
   list(stage = pL, quartile = pR)
@@ -357,13 +376,13 @@ risk_row <- p2d | p2_stage | p2_quart
 save_panel(p2a, paste0("fig2a", .tag), width = 6.4, height = 5.0)
 save_panel(p2b, paste0("fig2b", .tag), width = 6.0, height = 4.8)
 save_panel(p2_wc, paste0("fig2c", .tag), width = 7.0,  height = 4.6)
-save_panel(p2_wt, paste0("fig2d", .tag), width = 11.2, height = 4.6)
+save_panel(p2_wt, paste0("fig2d", .tag), width = 9.6, height = 4.6)
 save_panel(p2d,       paste0("fig2e", .tag), width = 5.6, height = 4.6)
 save_panel(p2_stage,  paste0("fig2f", .tag), width = 5.6, height = 4.6)
 save_panel(p2_quart,  paste0("fig2g", .tag), width = 5.6, height = 4.6)
 
 fig2 <- (p2a + p2b) /
-        (p2_wc + p2_wt + plot_layout(widths = c(1.25, 2))) /
+        (p2_wc + p2_wt + plot_layout(widths = c(1.25, 1.7))) /
         risk_row +
         plot_annotation(tag_levels = "A") &
         theme(plot.tag = element_text(size = 14, face = "bold"))

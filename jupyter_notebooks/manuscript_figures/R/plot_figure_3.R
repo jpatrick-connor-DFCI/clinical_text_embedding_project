@@ -63,7 +63,8 @@ build_fig3a <- function(betas) {
   counts <- cc %>%
     group_by(modality) %>%
     summarise(n = sum(sig, na.rm = TRUE), .groups = "drop") %>%
-    mutate(modality = factor(modality, levels = MODALITY_ORDER))
+    arrange(desc(n)) %>%
+    mutate(modality = factor(modality, levels = modality))
 
   ggplot(counts, aes(modality, n, fill = modality)) +
     geom_col(width = 0.6, color = "white") +

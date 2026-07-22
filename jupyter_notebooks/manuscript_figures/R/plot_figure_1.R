@@ -118,7 +118,7 @@ build_fig1b <- function() {
 
 
 # ============================================================================
-# fig1c: notes per patient by type (horizontal boxplot, raw scale)
+# fig1c: notes per patient by type (horizontal boxplot, log scale)
 # ============================================================================
 build_fig1c <- function() {
   d <- load_figure_data("fig1_notes_per_patient.csv")
@@ -131,10 +131,10 @@ build_fig1c <- function() {
 
   ggplot(d, aes(x = n_notes, y = note_type, fill = note_type)) +
     geom_boxplot(outlier.shape = NA, width = 0.55, color = "#333333", alpha = 0.7) +
-    scale_x_continuous(labels = scales::comma) +
+    scale_x_log10(labels = scales::comma) +
     scale_fill_manual(values = unname(grDevices::hcl.colors(length(ord), "Set 2")),
                       guide = "none") +
-    labs(x = "Notes per patient (among patients with ≥1 of type)",
+    labs(x = "Notes per patient (among patients with ≥1 of type, log scale)",
          y = NULL, title = "Notes per Patient by Type") +
     theme_manuscript() +
     theme(panel.grid.major.x = element_line(color = "grey90"))
@@ -147,12 +147,15 @@ build_fig1c <- function() {
 build_fig1d <- function() {
   d <- load_figure_data("fig1_cancer_type_counts.csv")
   if (nrow(d) == 0) return(placeholder_panel("fig1_cancer_type_counts.csv empty"))
-  d <- d %>% arrange(desc(n)) %>% head(10) %>%
-    mutate(category = gsub("_", " ", as.character(category)),
-           pct = 100 * n / sum(n))
+  # prep_figure_1.py already returns the top-10 types + a pooled "Other" row that
+  # sums to the full cohort, so the total below matches the cohort N in Fig 0.
   total <- sum(d$n)
-  d <- d %>% mutate(label = sprintf("%s (n=%s)", category, scales::comma(n)),
-                    label = factor(label, levels = label))
+  d <- d %>%
+    mutate(category = stringr::str_to_title(gsub("_", " ", as.character(category)))) %>%
+    arrange(desc(n)) %>%
+    mutate(pct = 100 * n / total,
+           label = sprintf("%s (n=%s)", category, scales::comma(n)),
+           label = factor(label, levels = label))
   pal <- grDevices::hcl.colors(nrow(d), "Set 3")
 
   ggplot(d, aes(x = "", y = n, fill = label)) +
@@ -222,11 +225,11 @@ save_panel(p1b, "fig1b", width = 5.4, height = 4.4)
 save_panel(p1c, "fig1c", width = 7.0, height = 4.4)
 save_panel(p1d, "fig1d", width = 7.0, height = 5.2)
 save_panel(p1e, "fig1e", width = 6.0, height = 4.4)
-save_panel(p1f, "fig1f", width = 9.0, height = 4.4)
+save_panel(p1f, "fig1f", width = 7.8, height = 4.4)
 
 fig1 <- (p1a + p1b + plot_layout(widths = c(2, 1))) /
         (p1c + p1d) /
-        (p1e + p1f + plot_layout(widths = c(1, 1.5))) +
+        (p1e + p1f + plot_layout(widths = c(1, 1.3))) +
         plot_annotation(tag_levels = "A") &
         theme(plot.tag = element_text(size = 14, face = "bold"))
 

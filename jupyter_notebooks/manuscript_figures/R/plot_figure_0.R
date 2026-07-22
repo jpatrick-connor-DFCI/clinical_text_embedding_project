@@ -37,10 +37,14 @@ CASCADE_FILL  <- c(full_cohort = "#5B8DB8", text = MODALITY_COLORS[["text"]],
 build_fig0a <- function() {
   d <- load_figure_data("fig0_data_availability.csv")
   if (nrow(d) == 0) return(placeholder_panel("fig0_data_availability.csv empty"))
+  # Drop the full-cohort bar: having text is itself the entry requirement, so the
+  # text row is the effective denominator for every downstream modality's %.
+  text_n <- d$n_patients[d$stage == "text"]
   d <- d %>%
+    filter(stage != "full_cohort") %>%
     arrange(n_patients) %>%
     mutate(stage = factor(stage, levels = stage),
-           pct = 100 * n_patients / n_total)
+           pct = 100 * n_patients / text_n)
 
   ggplot(d, aes(x = n_patients, y = stage, fill = as.character(stage))) +
     geom_col(width = 0.62, color = "white") +

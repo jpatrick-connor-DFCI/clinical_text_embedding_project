@@ -2,7 +2,8 @@
 
 Writes to FIGURE_DATA_DIR (defined in _figure_utils.py):
 - fig1_endpoint_counts.csv        scheme → n_endpoints
-- fig1_cancer_type_counts.csv     category, n
+- fig1_cancer_type_counts.csv     category, n   (top-10 raw cancer types + pooled "Other";
+                                  restricted to the analysis cohort so n sums to the cohort N)
 - fig1_stage_counts.csv           category, n
 - fig1_treatment_counts.csv       category, n
 - fig1_notes_per_patient.csv      DFCI_MRN, note_type, n_notes  (per patient x note type)
@@ -98,6 +99,29 @@ def _composition_counts(df: pd.DataFrame, cols: list[str], prefix: str, top_n: i
     return pd.DataFrame({"category": s.index.astype(str), "n": s.values.astype(int)})
 
 
+def _cancer_type_counts(cancer_type_df: pd.DataFrame, cohort_mrns: set[int], top_n: int) -> pd.DataFrame:
+    """Cancer-type composition of the cohort, from the raw CANCER_TYPE string column.
+
+    Uses the raw label (preserved by generate_all_non_text_covariates.py precisely so
+    the drop_first reference category isn't lost, unlike summing the one-hot
+    CANCER_TYPE_* columns) and restricts to the analysis cohort so the reported total
+    matches the cohort N shown elsewhere (Fig 0). Rows beyond top_n are pooled into
+    "Other" so the counts still sum to the full cohort.
+    """
+    sub = cancer_type_df[cancer_type_df["DFCI_MRN"].isin(cohort_mrns)]
+    if "CANCER_TYPE" not in sub.columns:
+        # Fallback: reconstruct from one-hot (loses the drop_first reference class).
+        type_cols = [c for c in sub.columns if c.startswith("CANCER_TYPE_")]
+        return _composition_counts(sub, type_cols, "CANCER_TYPE_", top_n)
+    vc = sub["CANCER_TYPE"].astype(str).value_counts()
+    top = vc.head(top_n)
+    rows = [{"category": cat, "n": int(cnt)} for cat, cnt in top.items()]
+    other = int(vc.iloc[top_n:].sum())
+    if other > 0:
+        rows.append({"category": "Other", "n": other})
+    return pd.DataFrame(rows, columns=["category", "n"])
+
+
 def _endpoint_counts() -> pd.DataFrame:
     rows = [
         {"scheme": scheme, "n_endpoints": len(list_trained_events(scheme))}
@@ -112,13 +136,12 @@ def main() -> None:
     treatment_df = pd.read_csv(os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv.gz"))
     notes_meta = pd.read_csv(os.path.join(NOTES_PATH, "full_VTE_embeddings_metadata.csv.gz"))
 
-    type_cols = [c for c in cancer_type_df.columns if c.startswith("CANCER_TYPE_")]
     tx_cols = [c for c in treatment_df.columns if c.startswith("PX_on_")]
     tx1 = treatment_df.loc[treatment_df["treatment_line"] == 1]
     cohort_mrns = set(emb_df["DFCI_MRN"])
 
     save_figure_data(_endpoint_counts(), "fig1_endpoint_counts.csv")
-    save_figure_data(_composition_counts(cancer_type_df, type_cols, "CANCER_TYPE_", 15),
+    save_figure_data(_cancer_type_counts(cancer_type_df, cohort_mrns, 10),
                      "fig1_cancer_type_counts.csv")
     save_figure_data(_stage_counts_from_pickle(cohort_mrns), "fig1_stage_counts.csv")
     save_figure_data(_composition_counts(tx1, tx_cols, "PX_on_", 15),

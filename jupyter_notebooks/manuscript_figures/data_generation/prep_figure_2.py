@@ -1,7 +1,11 @@
 """Pre-compute inputs for Figure 2 (text vs base full-cohort prediction).
 
 Writes to FIGURE_DATA_DIR:
-- fig2_full_cohort_metrics.csv      scheme, event, text_cindex, base_cindex, text_auc, base_auc
+- fig2_full_cohort_metrics.csv      scheme, event, event_lbl, text_cindex, base_cindex, text_auc,
+                                    base_auc  (event_lbl is a human-readable description: "Death"
+                                    for death_met/death, "Mets: <site>" for other death_met events,
+                                    the ICD-10 description for icd3_post/icd4_post codes via
+                                    embed_surv_utils.find_icd_code, else the raw code)
 - fig2_within_vs_pan_cancer.csv     stratum, auc_pan, auc_within, delta, cindex_pan, cindex_within,
                                     cindex_delta, n_heldout, is_overall
 - fig2_within_vs_pan_treatment.csv  stratum, auc_pan, auc_within, delta, cindex_pan, cindex_within,
@@ -27,6 +31,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from embed_surv_utils import find_icd_code
 from sksurv.metrics import concordance_index_censored, cumulative_dynamic_auc
 from sksurv.util import Surv
 
@@ -54,8 +59,25 @@ STAGE_ORDINAL = {"I": 1, "II": 2, "III": 3, "IV": 4}
 RISK_QUARTILE_LABELS = ["Q1", "Q2", "Q3", "Q4"]
 
 FULL_COHORT_METRIC_COLUMNS = [
-    "scheme", "event", "text_cindex", "base_cindex", "text_auc", "base_auc",
+    "scheme", "event", "event_lbl", "text_cindex", "base_cindex", "text_auc", "base_auc",
 ]
+# Metastatic-site codes get a custom "Mets: <site>" label instead of an ICD lookup.
+MET_SITES = {"brainM", "boneM", "adrenalM", "liverM", "lungM", "nodeM", "peritonealM"}
+
+
+def _event_label(scheme: str, event: str) -> str:
+    """Human-readable label for a single (scheme, event) — mirrors plot_figure_2.R's
+    prior R-side event_description(), but resolves real ICD-10 descriptions for
+    icd3_post/icd4_post codes via embed_surv_utils.find_icd_code (unavailable in R)."""
+    if scheme == "death_met" and event == "death":
+        return "Death"
+    if scheme == "death_met" and event in MET_SITES:
+        return f"Mets: {event.replace('M', '').title()}"
+    if scheme == "death_met":
+        return event.replace("_", " ").title()
+    if scheme in ("icd3_post", "icd4_post"):
+        return find_icd_code(event)
+    return event.replace("_", " ").title()[:22]
 WITHIN_VS_PAN_COLUMNS = [
     "stratum", "auc_pan", "auc_within", "delta",
     "cindex_pan", "cindex_within", "cindex_delta",
@@ -95,7 +117,7 @@ def _full_cohort_metrics() -> pd.DataFrame:
                 n_skipped += 1
                 continue
             rows.append({
-                "scheme": scheme, "event": ev,
+                "scheme": scheme, "event": ev, "event_lbl": _event_label(scheme, ev),
                 "text_cindex": text["mean_c_index"], "base_cindex": base["mean_c_index"],
                 "text_auc": text["mean_auc(t)"], "base_auc": base["mean_auc(t)"],
             })
