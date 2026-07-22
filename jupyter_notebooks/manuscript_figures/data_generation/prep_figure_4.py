@@ -33,6 +33,24 @@ import re
 import sys
 from pathlib import Path
 
+# Some cluster nodes advertise more CPUs than the precompiled OpenBLAS build
+# supports. Cap inherited/default thread counts before NumPy, lifelines, or
+# scikit-learn initializes a BLAS runtime; otherwise OpenBLAS can segfault while
+# allocating its thread metadata rather than raising a Python exception.
+_BLAS_THREAD_LIMIT = 8
+for _thread_var in (
+    "OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS", "BLIS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS",
+):
+    try:
+        _configured_threads = int(os.environ.get(_thread_var, _BLAS_THREAD_LIMIT))
+    except ValueError:
+        _configured_threads = _BLAS_THREAD_LIMIT + 1
+    if not 1 <= _configured_threads <= _BLAS_THREAD_LIMIT:
+        os.environ[_thread_var] = str(_BLAS_THREAD_LIMIT)
+    else:
+        os.environ.setdefault(_thread_var, str(_BLAS_THREAD_LIMIT))
+
 import numpy as np
 import pandas as pd
 from lifelines import KaplanMeierFitter
