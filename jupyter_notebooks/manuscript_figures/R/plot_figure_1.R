@@ -104,16 +104,17 @@ build_fig1b <- function() {
     arrange(scheme) %>%
     mutate(scheme_lbl = SCHEME_LABELS[as.character(scheme)],
            scheme_lbl = factor(scheme_lbl, levels = scheme_lbl))
-  ggplot(d, aes(x = n_endpoints, y = scheme_lbl, fill = as.character(scheme))) +
+  ggplot(d, aes(x = scheme_lbl, y = n_endpoints, fill = as.character(scheme))) +
     geom_col(width = 0.62, color = "white") +
     geom_text(aes(label = scales::comma(n_endpoints)),
-              hjust = -0.15, size = 3) +
+              vjust = -0.3, size = 3) +
     scale_fill_manual(values = SCHEME_COLORS, guide = "none") +
-    scale_x_continuous(expand = expansion(mult = c(0, 0.12))) +
-    labs(x = "Number of endpoints", y = NULL, title = "Outcome Endpoints") +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.12)),
+                       labels = scales::comma) +
+    labs(x = NULL, y = "Number of endpoints", title = "Outcome Endpoints") +
     theme_manuscript() +
-    theme(panel.grid.major.x = element_line(color = "grey90"),
-          axis.line.y = element_blank(), axis.ticks.y = element_blank())
+    theme(panel.grid.major.y = element_line(color = "grey90"),
+          axis.text.x = element_text(hjust = 0.5, size = 8))
 }
 
 
@@ -181,15 +182,14 @@ build_fig1e <- function() {
   d <- d %>%
     mutate(label = stage_label(category)) %>%
     arrange(n) %>% mutate(label = factor(label, levels = label))
-  ggplot(d, aes(x = n, y = label)) +
+  ggplot(d, aes(x = label, y = n)) +
     geom_col(fill = "#5B8DB8", color = "white", width = 0.65) +
-    geom_text(aes(label = scales::comma(n)), hjust = -0.15, size = 2.8) +
-    scale_x_continuous(expand = expansion(mult = c(0, 0.12)),
+    geom_text(aes(label = scales::comma(n)), vjust = -0.3, size = 2.8) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.12)),
                        labels = scales::comma) +
-    labs(x = "Patients", y = NULL, title = "Cancer Stage Breakdown") +
+    labs(x = NULL, y = "Patients", title = "Cancer Stage Breakdown") +
     theme_manuscript() +
-    theme(panel.grid.major.x = element_line(color = "grey90"),
-          axis.line.y = element_blank(), axis.ticks.y = element_blank())
+    theme(panel.grid.major.y = element_line(color = "grey90"))
 }
 
 
