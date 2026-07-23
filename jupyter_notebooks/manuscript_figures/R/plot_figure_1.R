@@ -149,10 +149,14 @@ build_fig1d <- function() {
   d <- load_figure_data("fig1_cancer_type_counts.csv")
   if (nrow(d) == 0) return(placeholder_panel("fig1_cancer_type_counts.csv empty"))
   # prep_figure_1.py already returns the top-10 types + a pooled "Other" row that
-  # sums to the full cohort, so the total below matches the cohort N in Fig 0.
-  total <- sum(d$n)
+  # sums to the full cohort. Group again after display-label normalization so a
+  # stale CSV containing both "OTHER" and "Other" still renders one pooled slice.
   d <- d %>%
     mutate(category = stringr::str_to_title(gsub("_", " ", as.character(category)))) %>%
+    group_by(category) %>%
+    summarise(n = sum(n), .groups = "drop")
+  total <- sum(d$n)
+  d <- d %>%
     arrange(desc(n)) %>%
     mutate(pct = 100 * n / total,
            label = sprintf("%s (n=%s)", category, scales::comma(n)),

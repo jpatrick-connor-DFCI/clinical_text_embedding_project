@@ -114,9 +114,16 @@ def _cancer_type_counts(cancer_type_df: pd.DataFrame, cohort_mrns: set[int], top
         type_cols = [c for c in sub.columns if c.startswith("CANCER_TYPE_")]
         return _composition_counts(sub, type_cols, "CANCER_TYPE_", top_n)
     vc = sub["CANCER_TYPE"].astype(str).value_counts()
-    top = vc.head(top_n)
+    # Upstream preprocessing already collapses cancer types with <500 patients
+    # into "OTHER". Exclude that bucket when choosing the top named types, then
+    # combine it with any additional types falling outside the displayed top_n.
+    # Otherwise the plot receives both "OTHER" and a newly pooled "Other" row,
+    # which render as two identically labelled pie slices.
+    is_other = vc.index.str.strip().str.upper() == "OTHER"
+    named = vc.loc[~is_other]
+    top = named.head(top_n)
     rows = [{"category": cat, "n": int(cnt)} for cat, cnt in top.items()]
-    other = int(vc.iloc[top_n:].sum())
+    other = int(vc.loc[is_other].sum() + named.iloc[top_n:].sum())
     if other > 0:
         rows.append({"category": "Other", "n": other})
     return pd.DataFrame(rows, columns=["category", "n"])
