@@ -128,6 +128,14 @@ def _load_icd10_to_phecode() -> dict[str, str]:
 PHECODE_DESCRIPTIONS = _load_phecode_descriptions()
 ICD10_TO_PHECODE = _load_icd10_to_phecode()
 
+# Hit/miss counts for the two code-description lookups, so a silent raw-code
+# fallback (missing CSV, package not installed, or a genuine normalization
+# mismatch) is visible in the run log instead of only showing up as an
+# unlabeled code in the figure. See _report_lookup_misses(), called at the
+# end of this script.
+_ICD_LOOKUP_STATS = {"hit": 0, "miss": 0, "misses": []}
+_PHECODE_LOOKUP_STATS = {"hit": 0, "miss": 0, "misses": []}
+
 
 def _event_label(scheme: str, event: str) -> str:
     """Human-readable label for a single (scheme, event) — mirrors plot_figure_2.R's
@@ -141,10 +149,41 @@ def _event_label(scheme: str, event: str) -> str:
     if scheme == "death_met":
         return event.replace("_", " ").title()
     if scheme in ("icd3_post", "icd4_post"):
-        return find_icd_code(event)
+        label = find_icd_code(event)
+        if label == event:
+            _ICD_LOOKUP_STATS["miss"] += 1
+            _ICD_LOOKUP_STATS["misses"].append(event)
+        else:
+            _ICD_LOOKUP_STATS["hit"] += 1
+        return label
     if scheme == "phecode_post":
-        return PHECODE_DESCRIPTIONS.get(event, event)
+        label = PHECODE_DESCRIPTIONS.get(event, event)
+        if label == event:
+            _PHECODE_LOOKUP_STATS["miss"] += 1
+            _PHECODE_LOOKUP_STATS["misses"].append(event)
+        else:
+            _PHECODE_LOOKUP_STATS["hit"] += 1
+        return label
     return event.replace("_", " ").title()[:22]
+
+
+def _report_lookup_misses() -> None:
+    """Print a summary of ICD/phecode description lookup failures. Call once,
+    after all _event_label() calls, so raw-code fallbacks (missing generator
+    CSV, embed_surv_utils' icd10 package not installed, or a genuine
+    normalization mismatch) are visible in the run log instead of only
+    showing up silently as unlabeled codes in the figure panels."""
+    for name, stats in (("ICD-10", _ICD_LOOKUP_STATS), ("phecode", _PHECODE_LOOKUP_STATS)):
+        total = stats["hit"] + stats["miss"]
+        if total == 0:
+            continue
+        if stats["miss"] == 0:
+            print(f"  [{name} labels] {stats['hit']}/{total} resolved")
+        else:
+            examples = ", ".join(stats["misses"][:10])
+            more = "" if stats["miss"] <= 10 else f" (+{stats['miss'] - 10} more)"
+            print(f"  [{name} labels] {stats['hit']}/{total} resolved, "
+                  f"{stats['miss']} fell back to raw code: {examples}{more}")
 
 
 # Category grouping for the Fig 2 per-scheme Δ C-index barplots + event KM panels: mets =
@@ -570,6 +609,7 @@ def main() -> None:
     surv_df = pd.read_csv(os.path.join(SURV_PATH, "death_met_surv_df.csv.gz"))
 
     full_cohort_metrics = _full_cohort_metrics()
+    _report_lookup_misses()
     save_figure_data(full_cohort_metrics, "fig2_full_cohort_metrics.csv")
     save_figure_data(_within_vs_pan("cancer"), "fig2_within_vs_pan_cancer.csv")
     save_figure_data(_within_vs_pan("treatment"), "fig2_within_vs_pan_treatment.csv")

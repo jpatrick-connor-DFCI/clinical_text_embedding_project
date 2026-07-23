@@ -78,50 +78,11 @@ build_fig2a <- function(metrics, metric = METRIC) {
            plot_group = factor(plot_group, levels = FIG2A_GROUP_ORDER))
   lo <- max(0.45, min(c(d$base_val, d$text_val)) - 0.02)
   hi <- min(1.00, max(c(d$base_val, d$text_val)) + 0.02)
-  # Top-2-by-delta per group, annotated in FIG2A_GROUP_ORDER (icd3/icd4 before
-  # phecodes) so an ICD-10 code and its mapped phecode for the same underlying
-  # condition (e.g. nutritional marasmus appearing as both) never both get
-  # annotated — once a phecode_id is used by an earlier group it's skipped for
-  # later groups. phecode_id is NA for rows with no known phecode mapping
-  # (death/mets, or an ICD prefix absent from the mapping), which are never deduped.
-  seen_phecodes <- character(0)
-  top <- d %>%
-    filter(plot_group %in% FIG2A_GROUP_ORDER) %>%
-    mutate(plot_group = factor(plot_group, levels = FIG2A_GROUP_ORDER)) %>%
-    arrange(plot_group, desc(delta))
-  top_rows <- list()
-  for (grp in FIG2A_GROUP_ORDER) {
-    sub <- top %>% filter(plot_group == grp)
-    picked <- 0L
-    for (i in seq_len(nrow(sub))) {
-      pid <- sub$phecode_id[i]
-      if (!is.na(pid) && pid %in% seen_phecodes) next
-      top_rows[[length(top_rows) + 1]] <- sub[i, ]
-      if (!is.na(pid)) seen_phecodes <- c(seen_phecodes, pid)
-      picked <- picked + 1L
-      if (picked == 2L) break
-    }
-  }
-  top <- if (length(top_rows)) bind_rows(top_rows) else top[0, ]
-  # Repel data covers every point (blank labels for non-annotated ones) so labels
-  # are pushed clear of all markers, not just the ones being annotated.
-  top_key <- paste(top$scheme, top$event)
-  repel_d <- d %>%
-    mutate(event_lbl = ifelse(paste(scheme, event) %in% top_key, event_lbl, ""))
   lbl <- metric_label(metric)
 
   ggplot(d, aes(base_val, text_val, color = plot_group, shape = plot_group)) +
     geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "#666666") +
     geom_point(size = 1.8, alpha = 0.65) +
-    ggrepel::geom_text_repel(
-      data = repel_d, aes(label = event_lbl),
-      size = 2.2, fontface = "bold", color = "#222222",
-      # Repel against every point, not just the labeled ones, so annotations
-      # never sit on top of a marker.
-      point.size = 1.8, point.padding = 0.4, box.padding = 0.6,
-      force = 3, force_pull = 0.5, min.segment.length = 0.1,
-      segment.color = "#888888", segment.size = 0.3,
-      max.overlaps = Inf, seed = 0) +
     scale_color_manual(values = FIG2A_GROUP_COLORS, labels = FIG2A_GROUP_LABELS,
                        name = NULL, drop = FALSE) +
     scale_shape_manual(values = FIG2A_GROUP_SHAPES, labels = FIG2A_GROUP_LABELS,
@@ -395,38 +356,49 @@ build_fig2e <- function(metric = METRIC) {
 
 
 # ============================================================================
-# Per-scheme Δ C-index barplots + top-event KM panels (mets / ICD10 / phecodes).
-# C-index only — these panels do not follow the MANUSCRIPT_METRIC switch; the
-# underlying fig2_scheme_delta_topk.csv / fig2_scheme_event_km.csv are always
-# ranked by delta C-index (text - base), largest positive delta only (a "top"
-# event is never a net-negative one; see prep_figure_2.py::_scheme_delta_topk).
+# Combined Δ C-index barplot (mets / ICD10 / phecodes events, grouped by code
+# type) + top-event KM panels. C-index only — this panel does not follow the
+# MANUSCRIPT_METRIC switch; the underlying fig2_scheme_delta_topk.csv /
+# fig2_scheme_event_km.csv are always ranked by delta C-index (text - base),
+# largest positive delta only (a "top" event is never a net-negative one; see
+# prep_figure_2.py::_scheme_delta_topk).
 # ============================================================================
 SCHEME_CATEGORY_TITLES <- c(mets = "Mets", ICD10 = "ICD10", phecodes = "Phecodes")
 
-build_scheme_delta_bars <- function(topk, category) {
-  d <- topk %>% filter(category == !!category) %>% arrange(delta)
-  if (nrow(d) == 0) return(placeholder_panel(sprintf("no positive-delta %s events", category)))
-  d <- d %>% mutate(event_lbl = factor(event_lbl, levels = unique(event_lbl)))
+build_scheme_delta_bars <- function(topk) {
+  d <- topk %>% filter(category %in% names(SCHEME_CATEGORY_TITLES)) %>%
+    arrange(category, delta)
+  if (nrow(d) == 0) return(placeholder_panel("no positive-delta events"))
+  # event_lbl is ordered (and disambiguated) within each category so identical
+  # labels across categories don't collide into one y-axis row, and each
+  # facet's bars come out sorted by its own delta.
+  d <- d %>%
+    mutate(category = factor(category, levels = names(SCHEME_CATEGORY_TITLES)),
+           row_key = factor(paste(category, event_lbl, sep = "|"),
+                            levels = paste(category, event_lbl, sep = "|")))
   d_long <- d %>%
-    select(event_lbl, text = text_cindex, base = base_cindex) %>%
+    select(category, row_key, event_lbl, text = text_cindex, base = base_cindex) %>%
     pivot_longer(c(text, base), names_to = "model", values_to = "cindex") %>%
     mutate(model = factor(model, levels = c("text", "base")))
   lo <- max(0, min(d_long$cindex, na.rm = TRUE) - 0.05)
 
-  ggplot(d_long, aes(cindex, event_lbl, fill = model)) +
+  ggplot(d_long, aes(cindex, row_key, fill = model)) +
     geom_col(position = position_dodge(width = 0.7), width = 0.6, color = "white") +
     geom_text(aes(label = sprintf("%.3f", cindex)),
               position = position_dodge(width = 0.7),
               hjust = -0.15, size = 2.5) +
+    scale_y_discrete(labels = setNames(as.character(d$event_lbl), d$row_key)) +
     scale_fill_manual(values = MODEL_COLORS, labels = c(text = "Text", base = "Base"), name = NULL) +
     scale_x_continuous(limits = c(lo, NA), oob = scales::squish,
                        expand = expansion(mult = c(0, 0.18))) +
     coord_cartesian(xlim = c(lo, NA)) +
-    labs(x = "C-index", y = NULL,
-         title = sprintf("Top %s Events by Δ C-index", SCHEME_CATEGORY_TITLES[[category]])) +
+    facet_grid(category ~ ., scales = "free_y", space = "free_y",
+              labeller = labeller(category = SCHEME_CATEGORY_TITLES)) +
+    labs(x = "C-index", y = NULL, title = "Top Events by Δ C-index, by Code Type") +
     theme_manuscript() +
     theme(panel.grid.major.x = element_line(color = "grey90"),
-          legend.position = "top")
+          legend.position = "top",
+          strip.text = element_text(face = "bold"))
 }
 
 build_scheme_event_km <- function(km_data, topk, category, rank_n) {
@@ -474,9 +446,7 @@ p2_quart <- e_panels$quartile              # G: survival by text risk-score quar
 scheme_topk <- load_figure_data("fig2_scheme_delta_topk.csv")
 scheme_km   <- load_figure_data("fig2_scheme_event_km.csv")
 
-p2_bars_mets     <- build_scheme_delta_bars(scheme_topk, "mets")
-p2_bars_icd      <- build_scheme_delta_bars(scheme_topk, "ICD10")
-p2_bars_phecodes <- build_scheme_delta_bars(scheme_topk, "phecodes")
+p2_bars <- build_scheme_delta_bars(scheme_topk)
 
 p2_km_mets1     <- build_scheme_event_km(scheme_km, scheme_topk, "mets", 1)
 p2_km_icd1      <- build_scheme_event_km(scheme_km, scheme_topk, "ICD10", 1)
@@ -490,9 +460,7 @@ save_panel(p2_wt, paste0("fig2d", .tag), group = "figure2", width = 9.6, height 
 save_panel(p2d,       paste0("fig2e", .tag), group = "figure2", width = 5.6, height = 4.6)
 save_panel(p2_stage,  paste0("fig2f", .tag), group = "figure2", width = 5.6, height = 4.6)
 save_panel(p2_quart,  paste0("fig2g", .tag), group = "figure2", width = 5.6, height = 4.6)
-save_panel(p2_bars_mets,     "fig2h", group = "figure2", width = 5.6, height = 4.6)
-save_panel(p2_bars_icd,      "fig2i", group = "figure2", width = 5.6, height = 4.6)
-save_panel(p2_bars_phecodes, "fig2j", group = "figure2", width = 5.6, height = 4.6)
+save_panel(p2_bars,         "fig2h", group = "figure2", width = 5.6, height = 8.4)
 save_panel(p2_km_mets1,     "fig2k", group = "figure2", width = 5.6, height = 4.6)
 save_panel(p2_km_icd1,      "fig2l", group = "figure2", width = 5.6, height = 4.6)
 save_panel(p2_km_phecodes1, "fig2m", group = "figure2", width = 5.6, height = 4.6)

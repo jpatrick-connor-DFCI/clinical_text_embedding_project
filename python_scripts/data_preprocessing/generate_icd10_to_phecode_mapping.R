@@ -36,6 +36,14 @@ normalize_phecode <- function(codes) {
   codes <- trimws(as.character(codes))
   codes <- gsub("[^0-9.]", "", codes)
   codes[codes == ""] <- NA_character_
+  # Trim trailing zeros after the decimal (e.g. "250.20" -> "250.2") to agree with
+  # generate_phecode_descriptions.R::normalize_phecode and Python's
+  # _normalize_phecode (generate_embedding_prediction_datasets.py), which both
+  # trim the same way when producing the phecode identifiers this mapping is
+  # joined against — without this, phecode_id lookups here silently miss.
+  has_dot <- grepl("\\.", codes)
+  codes[has_dot] <- sub("0+$", "", codes[has_dot])
+  codes[has_dot] <- sub("\\.$", "", codes[has_dot])
   codes
 }
 
