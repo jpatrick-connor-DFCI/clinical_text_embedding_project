@@ -39,6 +39,14 @@ normalize_phecode <- function(codes) {
   codes
 }
 
+# Some phecode description strings in the source tables carry invalid UTF-8
+# bytes (observed on phecode 995's description), which crashes data.table's
+# trimws()/sub() with "input string N is invalid UTF-8". Force-repair the
+# encoding (replacing any unrepresentable bytes) before any string op touches it.
+clean_utf8 <- function(x) {
+  enc2utf8(iconv(as.character(x), from = "UTF-8", to = "UTF-8", sub = "byte"))
+}
+
 find_col <- function(dt, candidates) {
   cols_lower <- tolower(names(dt))
   for (c in tolower(candidates)) {
@@ -64,7 +72,7 @@ v12_phe_col <- find_col(v12, c("phecode", "phecode_unrolled"))
 v12_desc_col <- find_col(v12, c("phecode_desc", "phecode_string", "phenotype", "description", "phecode_description"))
 v12_desc <- data.table(
   phecode     = normalize_phecode(v12[[v12_phe_col]]),
-  description = trimws(as.character(v12[[v12_desc_col]])),
+  description = trimws(clean_utf8(v12[[v12_desc_col]])),
   source      = "phecode_v1.2"
 )
 
@@ -72,7 +80,7 @@ px_phe_col <- find_col(px, c("phecode", "phecode_unrolled"))
 px_desc_col <- find_col(px, c("phecode_string", "phecode_desc", "phenotype", "description", "phecode_description"))
 px_desc <- data.table(
   phecode     = normalize_phecode(px[[px_phe_col]]),
-  description = trimws(as.character(px[[px_desc_col]])),
+  description = trimws(clean_utf8(px[[px_desc_col]])),
   source      = "phecodeX_v1.0"
 )
 
