@@ -411,7 +411,7 @@ build_scheme_delta_bars <- function(topk) {
           legend.position = "top",
           strip.text = element_text(face = "bold"),
           axis.text.x = element_text(angle = 0, hjust = 0.5, vjust = 1,
-                                     size = 6.5, lineheight = 0.9))
+                                     size = 8, lineheight = 0.9))
 }
 
 build_scheme_event_km <- function(km_data, topk, category, rank_n) {
