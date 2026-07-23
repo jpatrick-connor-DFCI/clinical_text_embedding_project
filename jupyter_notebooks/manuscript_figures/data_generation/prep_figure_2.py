@@ -1,7 +1,8 @@
 """Pre-compute inputs for Figure 2 (text vs base full-cohort prediction).
 
 Writes to FIGURE_DATA_DIR:
-- fig2_full_cohort_metrics.csv      scheme, event, event_lbl, phecode_id, text_cindex, base_cindex,
+- fig2_full_cohort_metrics.csv      scheme, event, event_lbl, phecode_id, phecode_ids,
+                                    top_hit_eligible, text_cindex, base_cindex,
                                     text_auc, base_auc  (event_lbl is a human-readable description:
                                     "Death" for death_met/death, "Mets: <site>" for other death_met
                                     events, the cohort diagnosis name for icd3_post/icd4_post codes
@@ -13,8 +14,9 @@ Writes to FIGURE_DATA_DIR:
                                     a representative mapped phecode (via
                                     code_data/icd10_to_phecode_mapping.csv) for
                                     icd3_post/icd4_post, else NA. Deduplication uses the complete
-                                    set of mapped phecodes, not only this display column, so duplicate
-                                    conditions are not annotated under two schemes.)
+                                    set of mapped phecodes serialized in phecode_ids, not only the
+                                    representative display column, so duplicate conditions are not
+                                    annotated under two schemes.)
 - fig2_within_vs_pan_cancer.csv     stratum, auc_pan, auc_within, delta, cindex_pan, cindex_within,
                                     cindex_delta, n_heldout, is_overall
 - fig2_within_vs_pan_treatment.csv  stratum, auc_pan, auc_within, delta, cindex_pan, cindex_within,
@@ -34,10 +36,12 @@ Writes to FIGURE_DATA_DIR:
                                     {mets, ICD10, phecodes} — mets = death_met minus the literal
                                     "death" event, ICD10 = icd3_post + icd4_post pooled,
                                     phecodes = phecode_post. Categories with fewer than 3
-                                    positive-delta events yield fewer rows. Cross-scheme dedup: an
-                                    ICD10 event and a phecode event mapping to the same phecode_id
-                                    never both appear — ICD10 is ranked first, so the phecode is
-                                    skipped in favor of its next-best-delta phecode event.)
+                                    eligible positive-delta events yield fewer rows. Social-
+                                    determinant outcomes mapping exclusively to ICD-10-CM Z55-Z65
+                                    remain in the full metrics/scatter but are ineligible for top-hit
+                                    selection. Cross-scheme dedup: an ICD10 event and a phecode event
+                                    with any shared mapping never both appear — ICD10 is ranked first,
+                                    so the phecode is skipped for its next-best-delta event.)
 - fig2_scheme_event_km.csv          category, scheme, event, event_lbl, DFCI_MRN, text_risk_score,
                                     base_risk_score, event_flag, tt, text_tertile, base_tertile
                                     (held-out risk scores + survival for the events selected in
@@ -95,8 +99,8 @@ STAGE_ORDINAL = {"I": 1, "II": 2, "III": 3, "IV": 4}
 RISK_QUARTILE_LABELS = ["Q1", "Q2", "Q3", "Q4"]
 
 FULL_COHORT_METRIC_COLUMNS = [
-    "scheme", "event", "event_lbl", "phecode_id",
-    "text_cindex", "base_cindex", "text_auc", "base_auc",
+    "scheme", "event", "event_lbl", "phecode_id", "phecode_ids",
+    "top_hit_eligible", "text_cindex", "base_cindex", "text_auc", "base_auc",
 ]
 # Metastatic-site codes get a custom "Mets: <site>" label instead of an ICD lookup.
 MET_SITES = {"brainM", "boneM", "adrenalM", "liverM", "lungM", "nodeM", "peritonealM"}
@@ -199,7 +203,11 @@ def _load_phecode_descriptions() -> dict[str, str]:
     return out
 
 
-def _load_icd10_to_phecode() -> tuple[dict[str, frozenset[str]], dict[str, str]]:
+def _load_icd10_to_phecode() -> tuple[
+    dict[str, frozenset[str]],
+    dict[str, str],
+    dict[str, frozenset[str]],
+]:
     """Load ICD-prefix mappings and phecode labels inferred from mapped ICD names.
 
     The second result supplies the primary figure label for a phecode directly
@@ -209,7 +217,7 @@ def _load_icd10_to_phecode() -> tuple[dict[str, frozenset[str]], dict[str, str]]
     path = os.path.join(CODE_PATH, "icd10_to_phecode_mapping.csv")
     if not os.path.exists(path):
         print(f"  [icd->phecode map] {path} not found — cross-scheme event dedup disabled")
-        return {}, {}
+        return {}, {}, {}
     df = pd.read_csv(path, dtype=str)
     icd_col, phecode_col = _lookup_columns(df, "icd10_code", "phecode")
     # icd3_post/icd4_post events are level-3/4 ICD prefixes, not full codes; the mapping
@@ -217,11 +225,13 @@ def _load_icd10_to_phecode() -> tuple[dict[str, frozenset[str]], dict[str, str]]
     # code sharing each event prefix.
     out: dict[str, set[str]] = {}
     phecode_cohort_descriptions: dict[str, str] = {}
+    phecode_to_icd10: dict[str, set[str]] = {}
     for raw_icd, raw_phecode in zip(df[icd_col], df[phecode_col]):
         icd_code = _normalize_icd10(raw_icd)
         phecode = _normalize_phecode(raw_phecode)
         if not icd_code or not phecode:
             continue
+        phecode_to_icd10.setdefault(phecode, set()).add(icd_code)
         icd_description = ICD_DESCRIPTIONS.get(icd_code)
         if icd_description:
             phecode_cohort_descriptions.setdefault(phecode, icd_description)
@@ -232,6 +242,7 @@ def _load_icd10_to_phecode() -> tuple[dict[str, frozenset[str]], dict[str, str]]
     return (
         {prefix: frozenset(phecodes) for prefix, phecodes in out.items()},
         phecode_cohort_descriptions,
+        {phecode: frozenset(codes) for phecode, codes in phecode_to_icd10.items()},
     )
 
 
@@ -239,6 +250,7 @@ ICD_DESCRIPTIONS: dict[str, str] = {}
 PHECODE_DESCRIPTIONS: dict[str, str] = {}
 ICD10_TO_PHECODES: dict[str, frozenset[str]] = {}
 PHECODE_COHORT_DESCRIPTIONS: dict[str, str] = {}
+PHECODE_TO_ICD10: dict[str, frozenset[str]] = {}
 
 
 def _initialize_code_lookups() -> None:
@@ -262,9 +274,14 @@ def _initialize_code_lookups() -> None:
     global PHECODE_DESCRIPTIONS
     global ICD10_TO_PHECODES
     global PHECODE_COHORT_DESCRIPTIONS
+    global PHECODE_TO_ICD10
     ICD_DESCRIPTIONS = _load_icd_descriptions()
     PHECODE_DESCRIPTIONS = _load_phecode_descriptions()
-    ICD10_TO_PHECODES, PHECODE_COHORT_DESCRIPTIONS = _load_icd10_to_phecode()
+    (
+        ICD10_TO_PHECODES,
+        PHECODE_COHORT_DESCRIPTIONS,
+        PHECODE_TO_ICD10,
+    ) = _load_icd10_to_phecode()
 
 # Hit/miss counts for the two code-description lookups, so a silent raw-code
 # fallback (missing CSV, package not installed, or a genuine normalization
@@ -387,6 +404,40 @@ def _event_phecodes(scheme: str, event: str) -> frozenset[str]:
     return frozenset()
 
 
+# Social determinants rather than medical diagnoses: education/literacy,
+# employment, environment, housing/economic and psychosocial circumstances.
+_SOCIAL_DETERMINANT_ICD_PREFIXES = frozenset(
+    f"Z{category}" for category in range(55, 66)
+)
+
+
+def _is_social_determinant_icd(code: str) -> bool:
+    normalized = _normalize_icd10(code)
+    return bool(
+        normalized
+        and len(normalized) >= 3
+        and normalized[:3] in _SOCIAL_DETERMINANT_ICD_PREFIXES
+    )
+
+
+def _top_hit_eligible(scheme: str, event: str) -> bool:
+    """Whether an event may be highlighted as an antineoplastic-therapy top hit.
+
+    This is intentionally a narrow, predeclared exclusion rather than a causal
+    claim: social-determinant Z55-Z65 outcomes remain plotted but are not eligible
+    for top-hit labels/bars. Unknown mappings are retained.
+    """
+    if scheme in ("icd3_post", "icd4_post"):
+        return not _is_social_determinant_icd(event)
+    if scheme == "phecode_post":
+        phecode = _normalize_phecode(event)
+        mapped_icds = PHECODE_TO_ICD10.get(phecode, frozenset())
+        return not mapped_icds or any(
+            not _is_social_determinant_icd(code) for code in mapped_icds
+        )
+    return True
+
+
 WITHIN_VS_PAN_COLUMNS = [
     "stratum", "auc_pan", "auc_within", "delta",
     "cindex_pan", "cindex_within", "cindex_delta",
@@ -428,6 +479,8 @@ def _full_cohort_metrics() -> pd.DataFrame:
             rows.append({
                 "scheme": scheme, "event": ev, "event_lbl": _event_label(scheme, ev),
                 "phecode_id": _event_phecode(scheme, ev),
+                "phecode_ids": ";".join(sorted(_event_phecodes(scheme, ev))),
+                "top_hit_eligible": _top_hit_eligible(scheme, ev),
                 "text_cindex": text["mean_c_index"], "base_cindex": base["mean_c_index"],
                 "text_auc": text["mean_auc(t)"], "base_auc": base["mean_auc(t)"],
             })
@@ -491,7 +544,8 @@ def _km_tertiles(surv_df: pd.DataFrame) -> pd.DataFrame:
 def _scheme_delta_topk(metrics: pd.DataFrame, k: int = TOPK_PER_CATEGORY) -> pd.DataFrame:
     """Top-k events per category (mets/ICD10/phecodes) by largest *positive* delta C-index
     (text - base). Events with delta <= 0 are excluded — a "top" event is never a
-    net-negative one. Categories with fewer than k positive-delta events yield fewer rows.
+    net-negative one. Social-determinant outcomes are not eligible for highlighting.
+    Categories with fewer than k eligible positive-delta events yield fewer rows.
 
     Cross-scheme dedup: ICD10 and phecodes can both surface an event for the same
     underlying condition (e.g. an ICD-10 code for nutritional marasmus and its mapped
@@ -511,6 +565,9 @@ def _scheme_delta_topk(metrics: pd.DataFrame, k: int = TOPK_PER_CATEGORY) -> pd.
     d["phecode_id"] = d["phecode_id"].where(d["phecode_id"].notna(), None)
     d["delta"] = d["text_cindex"] - d["base_cindex"]
     d = d.dropna(subset=["delta", "category"])
+    d = d[
+        [_top_hit_eligible(scheme, event) for scheme, event in zip(d["scheme"], d["event"])]
+    ]
     d = d[d["delta"] > 0]
     rows = []
     seen_phecodes: set[str] = set()

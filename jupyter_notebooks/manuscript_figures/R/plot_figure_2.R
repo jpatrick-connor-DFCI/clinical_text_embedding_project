@@ -81,13 +81,17 @@ build_fig2a <- function(metrics, metric = METRIC) {
   # Top-2-by-delta per group, annotated in FIG2A_GROUP_ORDER (icd3/icd4 before
   # phecodes) so an ICD-10 code and its mapped phecode for the same underlying
   # condition (e.g. nutritional marasmus appearing as both) never both get
-  # annotated — once a phecode_id is used by an earlier group it's skipped for
-  # later groups, moving on to that group's next-best-delta event instead.
-  # phecode_id is NA for rows with no known phecode mapping (death/mets, or an
-  # ICD prefix absent from the mapping), which are never deduped.
+  # annotated. phecode_ids contains every mapping reachable from an ICD prefix;
+  # once any of those IDs is used by an earlier group, the row is skipped for
+  # later groups in favor of that group's next-best-delta event.
+  # Support older prepared CSVs, although rerunning prep_figure_2.py is required
+  # to get complete one-to-many ICD mappings.
+  if (!"phecode_ids" %in% names(d)) d$phecode_ids <- d$phecode_id
+  if (!"top_hit_eligible" %in% names(d)) d$top_hit_eligible <- TRUE
   seen_phecodes <- character(0)
   top <- d %>%
-    filter(plot_group %in% FIG2A_GROUP_ORDER) %>%
+    filter(plot_group %in% FIG2A_GROUP_ORDER,
+           as.character(top_hit_eligible) %in% c("TRUE", "True", "true", "1")) %>%
     mutate(plot_group = factor(plot_group, levels = FIG2A_GROUP_ORDER)) %>%
     arrange(plot_group, desc(delta))
   top_rows <- list()
@@ -95,10 +99,15 @@ build_fig2a <- function(metrics, metric = METRIC) {
     sub <- top %>% filter(plot_group == grp)
     picked <- 0L
     for (i in seq_len(nrow(sub))) {
-      pid <- sub$phecode_id[i]
-      if (!is.na(pid) && pid %in% seen_phecodes) next
+      raw_pids <- as.character(sub$phecode_ids[i])
+      pids <- if (is.na(raw_pids) || !nzchar(raw_pids)) {
+        character(0)
+      } else {
+        strsplit(raw_pids, ";", fixed = TRUE)[[1]]
+      }
+      if (length(intersect(pids, seen_phecodes)) > 0L) next
       top_rows[[length(top_rows) + 1]] <- sub[i, ]
-      if (!is.na(pid)) seen_phecodes <- c(seen_phecodes, pid)
+      seen_phecodes <- union(seen_phecodes, pids)
       picked <- picked + 1L
       if (picked == 2L) break
     }
@@ -433,7 +442,10 @@ build_scheme_delta_bars <- function(topk) {
     geom_text(aes(label = sprintf("%.3f", cindex)),
               position = position_dodge(width = 0.7),
               vjust = -0.4, size = 2.5) +
-    scale_x_discrete(labels = setNames(as.character(d$event_lbl), d$row_key)) +
+    scale_x_discrete(
+      labels = setNames(stringr::str_wrap(as.character(d$event_lbl), width = 18), d$row_key),
+      guide = guide_axis(n.dodge = 2)
+    ) +
     scale_fill_manual(values = MODEL_COLORS, labels = c(text = "Text", base = "Base"), name = NULL) +
     scale_y_continuous(limits = c(lo, NA), oob = scales::squish,
                        expand = expansion(mult = c(0, 0.18))) +
@@ -445,7 +457,8 @@ build_scheme_delta_bars <- function(topk) {
     theme(panel.grid.major.y = element_line(color = "grey90"),
           legend.position = "top",
           strip.text = element_text(face = "bold"),
-          axis.text.x = element_text(angle = 45, hjust = 1, size = 6.5))
+          axis.text.x = element_text(angle = 0, hjust = 0.5, vjust = 1,
+                                     size = 6.5, lineheight = 0.9))
 }
 
 build_scheme_event_km <- function(km_data, topk, category, rank_n) {
