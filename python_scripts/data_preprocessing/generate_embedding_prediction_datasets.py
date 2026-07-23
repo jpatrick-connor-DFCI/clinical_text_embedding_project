@@ -78,9 +78,10 @@ def _normalize_phecode(code: str) -> Optional[str]:
 
     if '.' in code:
         left, right = code.split('.', 1)
+        left = left.lstrip('0') or '0'
         right = right.rstrip('0')
         return left if right == '' else f"{left}.{right}"
-    return code
+    return code.lstrip('0') or '0'
 
 
 def _resolve_column(df: pd.DataFrame, expected: str) -> str:

@@ -7,4 +7,6 @@ name = "embed_surv_utils"
 version = "0.1.0"
 description = "My custom helper functions"
 authors = [{ name="J. Patrick Connor", email="patrickconnor@g.harvard.edu" }]
-dependencies = []
+dependencies = [
+    "icd10-cm",
+]

@@ -1,7 +1,11 @@
 """Preprocessing utilities for the embed surv utils package."""
 
 import re
-import icd10
+
+try:
+    import icd10
+except ImportError:  # Keep non-ICD utilities importable in minimal environments.
+    icd10 = None
 import numpy as np
 import pandas as pd
 
@@ -54,8 +58,23 @@ def find_icd_code(code: str) -> str:
     Returns:
         str: Description of the ICD-10 code or the code itself.
     """
-    if icd10.exists(code):
-        return icd10.find(code).description
+    if icd10 is None or not isinstance(code, str):
+        return code
+
+    raw_code = code.strip().upper()
+    undotted = re.sub(r"[^A-Z0-9]", "", raw_code)
+    if not undotted:
+        return code
+
+    # Endpoint generation normally emits level-4 codes as E11.6, but older
+    # result directories contain undotted E116-style names.  icd10-cm expects
+    # the canonical dot after the three-character category.
+    canonical = (
+        f"{undotted[:3]}.{undotted[3:]}" if len(undotted) > 3 else undotted
+    )
+    for candidate in dict.fromkeys((canonical, raw_code)):
+        if icd10.exists(candidate):
+            return icd10.find(candidate).description
     return code
 
 def find_icd_block_description(code: str) -> str | None:
@@ -70,7 +89,7 @@ def find_icd_block_description(code: str) -> str | None:
     Returns:
         str | None: Block description or custom label. None if not found.
     """
-    if icd10.exists(code):
+    if icd10 is not None and icd10.exists(code):
         try:
             return icd10.find(code).block_description
         except Exception:

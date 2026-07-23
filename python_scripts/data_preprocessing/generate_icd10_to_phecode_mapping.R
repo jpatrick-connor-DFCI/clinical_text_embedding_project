@@ -36,6 +36,9 @@ normalize_phecode <- function(codes) {
   codes <- trimws(as.character(codes))
   codes <- gsub("[^0-9.]", "", codes)
   codes[codes == ""] <- NA_character_
+  # CSV type inference turns zero-padded phecodes such as "059" into "59".
+  # Use the same representation deliberately on both sides of every lookup.
+  codes <- sub("^0+(?=[0-9])", "", codes, perl = TRUE)
   # Trim trailing zeros after the decimal (e.g. "250.20" -> "250.2") to agree with
   # generate_phecode_descriptions.R::normalize_phecode and Python's
   # _normalize_phecode (generate_embedding_prediction_datasets.py), which both

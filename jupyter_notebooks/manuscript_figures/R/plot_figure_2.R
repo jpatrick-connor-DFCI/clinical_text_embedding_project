@@ -371,9 +371,11 @@ build_scheme_delta_bars <- function(topk) {
   if (nrow(d) == 0) return(placeholder_panel("no positive-delta events"))
   # event_lbl is ordered (and disambiguated) within each category so identical
   # labels across categories don't collide into one y-axis row, and each
-  # facet's bars come out sorted by its own delta.
+  # facet's bars come out sorted by its own delta. The "Mets: " prefix is
+  # dropped here (mets-only) since the facet strip already reads "Mets".
   d <- d %>%
     mutate(category = factor(category, levels = names(SCHEME_CATEGORY_TITLES)),
+           event_lbl = ifelse(category == "mets", sub("^Mets: ", "", event_lbl), event_lbl),
            row_key = factor(paste(category, event_lbl, sep = "|"),
                             levels = paste(category, event_lbl, sep = "|")))
   d_long <- d %>%
@@ -382,23 +384,24 @@ build_scheme_delta_bars <- function(topk) {
     mutate(model = factor(model, levels = c("text", "base")))
   lo <- max(0, min(d_long$cindex, na.rm = TRUE) - 0.05)
 
-  ggplot(d_long, aes(cindex, row_key, fill = model)) +
+  ggplot(d_long, aes(row_key, cindex, fill = model)) +
     geom_col(position = position_dodge(width = 0.7), width = 0.6, color = "white") +
     geom_text(aes(label = sprintf("%.3f", cindex)),
               position = position_dodge(width = 0.7),
-              hjust = -0.15, size = 2.5) +
-    scale_y_discrete(labels = setNames(as.character(d$event_lbl), d$row_key)) +
+              vjust = -0.4, size = 2.5) +
+    scale_x_discrete(labels = setNames(as.character(d$event_lbl), d$row_key)) +
     scale_fill_manual(values = MODEL_COLORS, labels = c(text = "Text", base = "Base"), name = NULL) +
-    scale_x_continuous(limits = c(lo, NA), oob = scales::squish,
+    scale_y_continuous(limits = c(lo, NA), oob = scales::squish,
                        expand = expansion(mult = c(0, 0.18))) +
-    coord_cartesian(xlim = c(lo, NA)) +
-    facet_grid(category ~ ., scales = "free_y", space = "free_y",
+    coord_cartesian(ylim = c(lo, NA)) +
+    facet_grid(. ~ category, scales = "free_x", space = "free_x",
               labeller = labeller(category = SCHEME_CATEGORY_TITLES)) +
-    labs(x = "C-index", y = NULL, title = "Top Events by Δ C-index, by Code Type") +
+    labs(x = NULL, y = "C-index", title = "Top Events by Δ C-index, by Code Type") +
     theme_manuscript() +
-    theme(panel.grid.major.x = element_line(color = "grey90"),
+    theme(panel.grid.major.y = element_line(color = "grey90"),
           legend.position = "top",
-          strip.text = element_text(face = "bold"))
+          strip.text = element_text(face = "bold"),
+          axis.text.x = element_text(angle = 45, hjust = 1, size = 6.5))
 }
 
 build_scheme_event_km <- function(km_data, topk, category, rank_n) {
@@ -460,7 +463,7 @@ save_panel(p2_wt, paste0("fig2d", .tag), group = "figure2", width = 9.6, height 
 save_panel(p2d,       paste0("fig2e", .tag), group = "figure2", width = 5.6, height = 4.6)
 save_panel(p2_stage,  paste0("fig2f", .tag), group = "figure2", width = 5.6, height = 4.6)
 save_panel(p2_quart,  paste0("fig2g", .tag), group = "figure2", width = 5.6, height = 4.6)
-save_panel(p2_bars,         "fig2h", group = "figure2", width = 5.6, height = 8.4)
+save_panel(p2_bars,         "fig2h", group = "figure2", width = 9.6, height = 5.2)
 save_panel(p2_km_mets1,     "fig2k", group = "figure2", width = 5.6, height = 4.6)
 save_panel(p2_km_icd1,      "fig2l", group = "figure2", width = 5.6, height = 4.6)
 save_panel(p2_km_phecodes1, "fig2m", group = "figure2", width = 5.6, height = 4.6)

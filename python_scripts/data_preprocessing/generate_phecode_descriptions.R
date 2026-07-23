@@ -1,9 +1,9 @@
 # Build a phecode -> human-readable description lookup from the R 'Phecode' package.
 #
-# Companion to generate_icd10_to_phecode_mapping.R (same source tables): pulls the
-# Phecode v1.2 and PhecodeX v1.0 mapping tables and extracts each phecode's
-# description/phenotype string, deduplicated to one row per phecode. v1.2 is
-# primary; PhecodeX fills in phecodes v1.2 doesn't have.
+# Companion to generate_icd10_to_phecode_mapping.R: pulls the dedicated Phecode
+# v1.2 and PhecodeX v1.0 definition tables and extracts each phecode's description,
+# deduplicated to one row per phecode. v1.2 is primary; PhecodeX fills in phecodes
+# v1.2 doesn't have. (The *_map tables do not contain description columns.)
 #
 # Prerequisites:
 #   devtools::install_github("vcastro/Phecode")
@@ -30,6 +30,9 @@ normalize_phecode <- function(codes) {
   codes <- trimws(as.character(codes))
   codes <- gsub("[^0-9.]", "", codes)
   codes[codes == ""] <- NA_character_
+  # CSV type inference turns zero-padded phecodes such as "059" into "59".
+  # Canonicalize them here so description keys match generated endpoint names.
+  codes <- sub("^0+(?=[0-9])", "", codes, perl = TRUE)
   has_dot <- grepl("\\.", codes)
   codes[has_dot] <- sub("0+$", "", codes[has_dot])
   codes[has_dot] <- sub("\\.$", "", codes[has_dot])
@@ -47,18 +50,18 @@ find_col <- function(dt, candidates) {
                paste(names(dt), collapse = ", ")))
 }
 
-# ── 1. Load mapping tables from R package ────────────────────────────────────
-cat("Loading Phecode v1.2 mapping …\n")
-v12 <- as.data.table(Phecode_map)
+# ── 1. Load definition tables from R package ─────────────────────────────────
+cat("Loading Phecode v1.2 definitions …\n")
+v12 <- as.data.table(Phecode_definitions)
 cat(sprintf("  v1.2: %d rows, columns = %s\n", nrow(v12), paste(names(v12), collapse = ", ")))
 
-cat("Loading PhecodeX mapping …\n")
-px <- as.data.table(PhecodeX_map)
+cat("Loading PhecodeX definitions …\n")
+px <- as.data.table(PhecodeX_definitions)
 cat(sprintf("  PhecodeX: %d rows, columns = %s\n", nrow(px), paste(names(px), collapse = ", ")))
 
 # ── 2. Extract (phecode, description) pairs from each table ────────────────
 v12_phe_col <- find_col(v12, c("phecode", "phecode_unrolled"))
-v12_desc_col <- find_col(v12, c("phecode_string", "phenotype", "description", "phecode_description"))
+v12_desc_col <- find_col(v12, c("phecode_desc", "phecode_string", "phenotype", "description", "phecode_description"))
 v12_desc <- data.table(
   phecode     = normalize_phecode(v12[[v12_phe_col]]),
   description = trimws(as.character(v12[[v12_desc_col]])),
@@ -66,7 +69,7 @@ v12_desc <- data.table(
 )
 
 px_phe_col <- find_col(px, c("phecode", "phecode_unrolled"))
-px_desc_col <- find_col(px, c("phecode_string", "phenotype", "description", "phecode_description"))
+px_desc_col <- find_col(px, c("phecode_string", "phecode_desc", "phenotype", "description", "phecode_description"))
 px_desc <- data.table(
   phecode     = normalize_phecode(px[[px_phe_col]]),
   description = trimws(as.character(px[[px_desc_col]])),
