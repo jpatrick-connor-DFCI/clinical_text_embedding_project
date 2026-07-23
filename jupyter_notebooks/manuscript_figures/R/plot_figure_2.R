@@ -224,6 +224,11 @@ build_within_vs_pan <- function(csv, stratum_title, metric = METRIC) {
   overall_pan    <- d$pan_val[is_ov]
   overall_within <- d$within_val[is_ov]
   d <- d[!is_ov, , drop = FALSE]
+  if (identical(csv, "fig2_within_vs_pan_cancer.csv")) {
+    d$stratum <- stringr::str_to_sentence(
+      stringr::str_replace_all(as.character(d$stratum), "_", " ")
+    )
+  }
   # Drop the collapsed catch-all stratum (rare cancer types pooled as OTHER); it is
   # not a clinically interpretable group and clutters the per-stratum comparison.
   d <- d[!toupper(as.character(d$stratum)) %in% c("OTHER"), , drop = FALSE]

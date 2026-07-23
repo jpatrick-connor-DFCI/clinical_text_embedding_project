@@ -59,7 +59,6 @@ build_fig3a <- function(betas) {
     filter(vapply(mods, function(s) all(MODALITY_ORDER %in% s), logical(1))) %>%
     select(scheme, event)
   cc <- betas %>% inner_join(present, by = c("scheme", "event"))
-  n_cc <- nrow(present)
   counts <- cc %>%
     group_by(modality) %>%
     summarise(n = sum(sig, na.rm = TRUE), .groups = "drop") %>%
@@ -74,10 +73,9 @@ build_fig3a <- function(betas) {
     scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
     labs(x = NULL,
          y = sprintf("# endpoints (joint Cox BH-FDR < %.2f)", FDR_ALPHA),
-         title = sprintf("Significant Endpoints per Modality\n(joint Cox, %d complete-case endpoints)",
-                         n_cc)) +
+         title = "Significant Endpoints per Modality") +
     theme_manuscript() +
-    theme(axis.text.x = element_text(angle = 20, hjust = 1),
+    theme(axis.text.x = element_text(angle = 0, hjust = 0.5),
           panel.grid.major.y = element_line(color = "grey90"))
 }
 
@@ -89,9 +87,6 @@ build_fig3b <- function() {
   d <- load_figure_data("fig3_risk_score_corr.csv")
   if (nrow(d) == 0 || !"modality" %in% names(d))
     return(placeholder_panel("fig3_risk_score_corr.csv empty"))
-  npat <- if ("n_patients" %in% names(d) && any(!is.na(d$n_patients))) {
-    as.integer(d$n_patients[!is.na(d$n_patients)][1])
-  } else NA_integer_
   mat <- d %>% select(any_of(c("modality", MODALITY_ORDER))) %>%
     tibble::column_to_rownames("modality") %>% as.matrix()
   mods <- intersect(MODALITY_ORDER, rownames(mat))
@@ -103,8 +98,7 @@ build_fig3b <- function() {
                          outline.color = "white") +
     scale_x_discrete(labels = MODALITY_DISPLAY) +
     scale_y_discrete(labels = MODALITY_DISPLAY) +
-    labs(title = paste0("Modality Risk-Score Correlation (death)",
-                        if (!is.na(npat)) sprintf("\n(n=%s)", scales::comma(npat)) else ""),
+    labs(title = "Modality Risk-Score Correlation",
          x = NULL, y = NULL, fill = "Pearson r") +
     theme_manuscript() +
     theme(axis.text.x = element_text(angle = 35, hjust = 1),
@@ -135,7 +129,6 @@ build_fig3c <- function(metric = METRIC) {
     mutate(modality = factor(modality, levels = MODALITY_ORDER)) %>%
     arrange(mean_rank) %>%
     mutate(modality = fct_reorder(modality, mean_rank, .desc = TRUE))
-  n_ev <- if ("n_events" %in% names(d)) as.integer(d$n_events[1]) else NA_integer_
 
   ranks_long <- load_figure_data(sprintf("fig3_modality_ranks_long_%s.csv", metric_suffix(metric)))
   fp <- friedman_p(ranks_long)
@@ -154,8 +147,7 @@ build_fig3c <- function(metric = METRIC) {
     scale_y_discrete(labels = MODALITY_DISPLAY) +
     coord_cartesian(xlim = c(0.5, length(MODALITY_ORDER) + 0.5)) +
     labs(x = sprintf("Average rank across endpoints (1 = best, ranked by %s)", lbl), y = NULL,
-         title = sprintf("Average Modality Rank\n(complete-case endpoints, n=%s)",
-                         ifelse(is.na(n_ev), "NA", scales::comma(n_ev))),
+         title = "Average Modality Rank",
          caption = sprintf("Friedman test across modalities: p=%s  %s",
                            ifelse(is.na(fp), "n/a", sprintf("%.1e", fp)), stars)) +
     theme_manuscript() +
@@ -215,7 +207,6 @@ build_fig3d <- function(betas) {
   mod_order <- ann %>% arrange(desc(mean_z)) %>% pull(modality) %>% as.character()
   plot_df <- plot_df %>% mutate(modality = factor(as.character(modality), levels = mod_order))
   ann      <- ann      %>% mutate(modality = factor(as.character(modality), levels = mod_order))
-  n_tot <- sum(trimmed$n_trim, na.rm = TRUE)
   means_str <- paste(sprintf("%s: %.2f", MODALITY_DISPLAY[as.character(ann$modality)], ann$mean_z),
                      collapse = "   ")
 
@@ -240,15 +231,13 @@ build_fig3d <- function(betas) {
     scale_color_manual(values = MODALITY_COLORS, guide = "none") +
     scale_x_discrete(labels = MODALITY_DISPLAY) +
     labs(x = NULL, y = "Joint Cox standardized coefficient (z = β/SE)",
-         title = sprintf("Joint Cox Model: Standardized Coefficient by Modality%s",
-                         if (n_tot > 0) sprintf("\n(%d extreme outliers trimmed, Tukey %.1f×IQR)",
-                                                 n_tot, IQR_WHISKER) else ""),
+         title = "Joint Cox Model: Standardized Coefficient by Modality",
          caption = paste0("Mean z by modality: ", means_str, "\n",
                           "z from L2-penalized fit; ±1.96 lines are descriptive, not an exact test.",
                           "  Stars: Wilcoxon vs z=0  (*<.05, **<.01, ***<.001, ****<1e-4).",
                           "  Diamond ± bar: mean ± SD.")) +
     theme_manuscript() +
-    theme(axis.text.x = element_text(angle = 20, hjust = 1),
+    theme(axis.text.x = element_text(angle = 0, hjust = 0.5),
           plot.caption = element_text(size = 6.5, hjust = 0,
                                       face = "italic", color = "#777777"),
           panel.grid.major.y = element_line(color = "grey90"))
