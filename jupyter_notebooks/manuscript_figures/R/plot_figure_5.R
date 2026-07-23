@@ -125,7 +125,7 @@ build_fig5b <- function() {
           legend.justification = c(1, 0),
           legend.background = element_rect(fill = "white", color = NA),
           panel.grid.major.x = element_line(color = "grey92"),
-          axis.text.y = element_text(size = 7))
+          axis.text.y = element_text(size = 9))
 }
 
 
@@ -205,12 +205,12 @@ build_fig5c <- function() {
          subtitle = subtitle_txt,
          caption = defn) +
     theme_manuscript() +
-    theme(plot.subtitle = element_text(size = 7, color = "#666666"),
-          plot.caption = element_text(size = 6.5, hjust = 0.5,
+    theme(plot.subtitle = element_text(size = 9, color = "#666666"),
+          plot.caption = element_text(size = MANUSCRIPT_CAPTION_SIZE, hjust = 0.5,
                                       color = "#555555"),
-          axis.text.x = element_text(size = 7),
-          axis.text.y = element_text(face = "bold", size = 8),
-          strip.text = element_text(face = "bold", size = 9),
+          axis.text.x = element_text(size = 9),
+          axis.text.y = element_text(face = "bold", size = 10),
+          strip.text = element_text(face = "bold", size = 11),
           panel.grid.major = element_line(color = "#EAEAEA"),
           legend.position = "bottom")
 }
@@ -274,11 +274,11 @@ build_fig5d <- function() {
       coord_cartesian(xlim = c(0, 60), ylim = c(0, 1.02)) +
       labs(x = "Months", y = NULL, title = title) +
       theme_manuscript() +
-      theme(plot.title = element_text(size = 9, face = "bold"),
+      theme(plot.title = element_text(size = 11, face = "bold"),
             legend.position = c(0.98, 0.95),
             legend.justification = c(1, 1),
             legend.background = element_rect(fill = "white", color = NA),
-            legend.text = element_text(size = 6.5))
+            legend.text = element_text(size = 8))
   }
 
   panels <- list()
@@ -307,7 +307,7 @@ build_fig5d <- function() {
     pgrid <- pgrid +
       plot_annotation(title = sprintf("Representative marker × ICI interactions   (%s)",
                                       spec_txt)) &
-      theme(plot.title = element_text(size = 10, face = "bold", hjust = 0.5))
+      theme(plot.title = element_text(size = 12, face = "bold", hjust = 0.5))
   }
   pgrid
 }
@@ -377,21 +377,21 @@ build_fig5e <- function() {
          title = "Synthesis · Prognostic vs Predictive Signal for Headline Markers") +
     theme_manuscript() +
     theme(legend.position = "top",
-          plot.title = element_text(size = 10, face = "bold"),
+          plot.title = element_text(size = 12, face = "bold"),
           panel.grid.major.y = element_line(color = "grey92"),
-          axis.title.x = element_text(size = 8),
-          axis.text.y = element_text(size = 8))
+          axis.title.x = element_text(size = 10),
+          axis.text.y = element_text(size = 10))
 
   strip <- ggplot(val_df, aes(x = 1, y = row_lbl, fill = validation_level)) +
     geom_tile(color = "white", linewidth = 0.6) +
     geom_text(aes(label = validation_level),
-              size = 2.4, color = ifelse(val_df$validation_level %in% c("Very Strong","Strong"),
+              size = 3.0, color = ifelse(val_df$validation_level %in% c("Very Strong","Strong"),
                                           "white", "#222222")) +
     scale_fill_manual(values = VAL_COLORS, name = NULL, drop = FALSE) +
     scale_x_continuous(expand = c(0, 0)) +
     labs(x = NULL, y = NULL, title = "Literature\nvalidation") +
     theme_void() +
-    theme(plot.title = element_text(size = 8, face = "bold", hjust = 0.5,
+    theme(plot.title = element_text(size = 10, face = "bold", hjust = 0.5,
                                     margin = margin(b = 4)),
           axis.text.y = element_blank(),
           legend.position = "none",

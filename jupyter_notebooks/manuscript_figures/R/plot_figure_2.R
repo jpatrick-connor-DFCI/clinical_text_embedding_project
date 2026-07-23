@@ -133,7 +133,8 @@ build_fig2b <- function(metrics, metric = METRIC) {
               inherit.aes = FALSE, shape = 23, size = 2.2,
               fill = "white", color = "#111111", stroke = 0.7) +
     geom_text(data = ann, aes(x = scheme, y = ymax, label = label),
-              inherit.aes = FALSE, vjust = 1, size = 2.5, color = "#222222") +
+              inherit.aes = FALSE, vjust = 1,
+              size = MANUSCRIPT_SMALL_TEXT_SIZE, color = "#222222") +
     scale_fill_manual(values = SCHEME_COLORS, guide = "none") +
     scale_color_manual(values = SCHEME_COLORS, guide = "none") +
     scale_x_discrete(labels = SCHEME_LABELS) +
@@ -142,7 +143,7 @@ build_fig2b <- function(metrics, metric = METRIC) {
          caption = paste("Stars: Wilcoxon signed-rank vs Δ=0  (*<.05, **<.01, ***<.001, ****<1e-4).",
                          "Diamond ± bar: mean ± SD.")) +
     theme_manuscript() +
-    theme(plot.caption = element_text(size = 6.5, hjust = 1,
+    theme(plot.caption = element_text(size = MANUSCRIPT_CAPTION_SIZE, hjust = 1,
                                       face = "italic", color = "#666666"),
           panel.grid.major.y = element_line(color = "grey90"))
 }
@@ -190,7 +191,7 @@ build_within_vs_pan <- function(csv, stratum_title, metric = METRIC) {
     geom_point(aes(y = stratum, x = pan_val,    color = "Pan"),    size = 2.6) +
     geom_point(aes(y = stratum, x = within_val, color = "Within"), size = 2.6) +
     geom_text(aes(y = stratum, x = pmax(pan_val, within_val), label = paste0("n=", n_heldout)),
-              hjust = -0.2, size = 2.5, color = "#666666") +
+              hjust = -0.2, size = MANUSCRIPT_SMALL_TEXT_SIZE, color = "#666666") +
     scale_color_manual(values = c(Pan    = unname(MODEL_COLORS[["base"]]),
                                   Within = unname(MODEL_COLORS[["text"]])), name = NULL) +
     scale_x_continuous(expand = expansion(mult = c(0.02, 0.13))) +
@@ -198,7 +199,8 @@ build_within_vs_pan <- function(csv, stratum_title, metric = METRIC) {
          caption = sprintf("Dashed lines: overall held-out %s (grey = pan, red = within)", lbl)) +
     theme_manuscript() +
     theme(legend.position = "top",
-          plot.caption = element_text(size = 6.5, hjust = 1, face = "italic", color = "#666666"))
+          plot.caption = element_text(size = MANUSCRIPT_CAPTION_SIZE, hjust = 1,
+                                      face = "italic", color = "#666666"))
   # Numeric labels sit horizontally at the top of each dashed reference line.
   # Give a touch of headroom and stagger the two labels vertically so the pan
   # and within values don't collide when the lines are close together.
@@ -209,7 +211,8 @@ build_within_vs_pan <- function(csv, stratum_title, metric = METRIC) {
                         color = unname(MODEL_COLORS[["base"]]), linewidth = 0.5) +
       annotate("text", x = overall_pan, y = Inf,
                label = sprintf("%s = %.3f", lbl, overall_pan),
-               color = unname(MODEL_COLORS[["base"]]), size = 2.5,
+               color = unname(MODEL_COLORS[["base"]]),
+               size = MANUSCRIPT_SMALL_TEXT_SIZE,
                fontface = "italic", hjust = 0.5, vjust = -1.6)
   }
   if (length(overall_within) == 1 && is.finite(overall_within)) {
@@ -217,7 +220,8 @@ build_within_vs_pan <- function(csv, stratum_title, metric = METRIC) {
                         color = unname(MODEL_COLORS[["text"]]), linewidth = 0.5) +
       annotate("text", x = overall_within, y = Inf,
                label = sprintf("%s = %.3f", lbl, overall_within),
-               color = unname(MODEL_COLORS[["text"]]), size = 2.5,
+               color = unname(MODEL_COLORS[["text"]]),
+               size = MANUSCRIPT_SMALL_TEXT_SIZE,
                fontface = "italic", hjust = 0.5, vjust = -0.4)
   }
   p
@@ -268,7 +272,8 @@ km_tertile_panel <- function(km, time_col, event_col, title) {
     coord_cartesian(xlim = c(0, 60), ylim = c(y_lo, y_hi)) +
     annotate("text", x = 1, y = ann_y,
              label = sprintf("text logrank p=%.1e\nbase logrank p=%.1e", lr_t, lr_b),
-             hjust = 0, vjust = 0, size = 2.6, fontface = "italic", color = "#444444") +
+             hjust = 0, vjust = 0, size = MANUSCRIPT_SMALL_TEXT_SIZE,
+             fontface = "italic", color = "#444444") +
     labs(x = "Months from first treatment", y = "Event-free survival", title = title) +
     theme_manuscript() +
     theme(legend.position = c(0.98, 0.98),
@@ -343,7 +348,7 @@ build_fig2e <- function(metric = METRIC) {
       scale_fill_manual(values = palette, guide = "none") +
       coord_cartesian(xlim = c(0, 60), ylim = c(0, 1.03)) +
       annotate("text", x = 1, y = 0.06, label = ann,
-               hjust = 0, vjust = 0, size = 2.6,
+               hjust = 0, vjust = 0, size = MANUSCRIPT_SMALL_TEXT_SIZE,
                fontface = "italic", color = "#444444") +
       labs(x = "Months from first treatment", y = "Event-free survival",
            title = title_text) +
@@ -395,7 +400,7 @@ build_scheme_delta_bars <- function(topk) {
     geom_col(position = position_dodge(width = 0.7), width = 0.6, color = "white") +
     geom_text(aes(label = sprintf("%.3f", cindex)),
               position = position_dodge(width = 0.7),
-              vjust = -0.4, size = 2.5) +
+              vjust = -0.4, size = MANUSCRIPT_SMALL_TEXT_SIZE) +
     scale_x_discrete(
       labels = setNames(stringr::str_wrap(as.character(d$event_lbl), width = 18), d$row_key)
     ) +
@@ -411,7 +416,7 @@ build_scheme_delta_bars <- function(topk) {
           legend.position = "top",
           strip.text = element_text(face = "bold"),
           axis.text.x = element_text(angle = 0, hjust = 0.5, vjust = 1,
-                                     size = 8, lineheight = 0.9))
+                                     size = 10, lineheight = 0.9))
 }
 
 build_scheme_event_km <- function(km_data, topk, category, rank_n) {

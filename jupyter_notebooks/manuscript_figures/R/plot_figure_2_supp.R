@@ -67,7 +67,8 @@ build_stage_panel <- function(df, perf_df, stage_values, stage_label, perf_group
     scale_fill_manual(values = RISK_QUARTILE_COLORS, guide = "none") +
     coord_cartesian(xlim = c(0, 60), ylim = c(0, 1.03)) +
     annotate("text", x = 1, y = 0.06, label = ann,
-             hjust = 0, vjust = 0, size = 2.6, fontface = "italic", color = "#444444") +
+             hjust = 0, vjust = 0, size = MANUSCRIPT_SMALL_TEXT_SIZE,
+             fontface = "italic", color = "#444444") +
     labs(x = "Months from first treatment", y = "Event-free survival", title = title_text) +
     theme_manuscript() +
     theme(legend.position = c(0.98, 0.97),

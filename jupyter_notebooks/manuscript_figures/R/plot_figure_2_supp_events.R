@@ -73,7 +73,8 @@ km_tertile_panel <- function(km, time_col, event_col, title) {
     coord_cartesian(xlim = c(0, 60), ylim = c(y_lo, y_hi)) +
     annotate("text", x = 1, y = ann_y,
              label = sprintf("text logrank p=%.1e\nbase logrank p=%.1e", lr_t, lr_b),
-             hjust = 0, vjust = 0, size = 2.6, fontface = "italic", color = "#444444") +
+             hjust = 0, vjust = 0, size = MANUSCRIPT_SMALL_TEXT_SIZE,
+             fontface = "italic", color = "#444444") +
     labs(x = "Months from first treatment", y = "Event-free survival", title = title) +
     theme_manuscript() +
     theme(legend.position = c(0.98, 0.98),

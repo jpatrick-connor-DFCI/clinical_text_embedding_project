@@ -49,7 +49,7 @@ build_fig0a <- function() {
   ggplot(d, aes(x = n_patients, y = stage, fill = as.character(stage))) +
     geom_col(width = 0.62, color = "white") +
     geom_text(aes(label = sprintf("%s (%.0f%%)", scales::comma(n_patients), pct)),
-              hjust = -0.1, size = 3) +
+              hjust = -0.1, size = MANUSCRIPT_TEXT_SIZE) +
     scale_fill_manual(values = CASCADE_FILL, guide = "none") +
     scale_y_discrete(labels = setNames(d$label, d$stage)) +
     scale_x_continuous(expand = expansion(mult = c(0, 0.18)), labels = scales::comma) +
@@ -58,7 +58,7 @@ build_fig0a <- function() {
     theme_manuscript() +
     theme(panel.grid.major.x = element_line(color = "grey90"),
           axis.line.y = element_blank(), axis.ticks.y = element_blank(),
-          plot.caption = element_text(size = 6.5, hjust = 1,
+          plot.caption = element_text(size = MANUSCRIPT_CAPTION_SIZE, hjust = 1,
                                       face = "italic", color = "#666666"))
 }
 

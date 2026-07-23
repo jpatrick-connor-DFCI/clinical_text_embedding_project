@@ -117,7 +117,7 @@ build_fig4a <- function() {
     theme_manuscript() +
     theme(panel.grid = element_blank(),
           axis.ticks.y = element_blank(),
-          axis.text.y = element_text(size = 7))
+          axis.text.y = element_text(size = 9))
 }
 
 
@@ -177,7 +177,8 @@ build_fig4b <- function() {
     coord_cartesian(xlim = c(LANDMARK, 120)) +
     annotate("text", x = LANDMARK + 2, y = 0.05,
              label = sprintf("Log-rank p=%.1e", lp),
-             hjust = 0, size = 2.7, fontface = "italic", color = "#444444") +
+             hjust = 0, size = MANUSCRIPT_SMALL_TEXT_SIZE,
+             fontface = "italic", color = "#444444") +
     labs(x = "Months from first treatment",
          y = sprintf(paste0("Overall Survival Probability\n",
                            "(conditional on survival to month %s)"), LANDMARK),
@@ -297,7 +298,7 @@ build_fig4c <- function() {
   ps <- lapply(characteristics, panel_for)
   wrap_plots(ps, nrow = 2, ncol = 2) +
     plot_annotation(title = "Disease-Severity Characteristics by Risk-Dynamics Group") &
-    theme(plot.title = element_text(size = 11, face = "bold", hjust = 0.5))
+    theme(plot.title = element_text(size = 13, face = "bold", hjust = 0.5))
 }
 
 
@@ -319,10 +320,12 @@ build_figS1a <- function() {
     annotate("point", x = best, y = best_val, color = "#E74C3C", size = 3) +
     annotate("text", x = N_SLOPE_GROUPS, y = max(d$silhouette) * 1.04,
              label = sprintf("chosen k=%d", N_SLOPE_GROUPS),
-             hjust = -0.05, size = 3, fontface = "italic", color = "#E74C3C") +
+             hjust = -0.05, size = MANUSCRIPT_TEXT_SIZE,
+             fontface = "italic", color = "#E74C3C") +
     annotate("text", x = best, y = best_val + 0.005,
              label = sprintf("best silhouette (k=%d)", best),
-             hjust = -0.05, size = 3, fontface = "italic", color = "#E74C3C") +
+             hjust = -0.05, size = MANUSCRIPT_TEXT_SIZE,
+             fontface = "italic", color = "#E74C3C") +
     labs(x = "Number of slope groups (k)", y = "Mean silhouette score",
          title = "Risk-Slope Group-Count Selection") +
     theme_manuscript() +

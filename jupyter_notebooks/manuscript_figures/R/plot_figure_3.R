@@ -67,7 +67,7 @@ build_fig3a <- function(betas) {
 
   ggplot(counts, aes(modality, n, fill = modality)) +
     geom_col(width = 0.6, color = "white") +
-    geom_text(aes(label = n), vjust = -0.3, size = 3) +
+    geom_text(aes(label = n), vjust = -0.3, size = MANUSCRIPT_TEXT_SIZE) +
     scale_fill_manual(values = MODALITY_COLORS, guide = "none") +
     scale_x_discrete(labels = MODALITY_DISPLAY) +
     scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
@@ -93,7 +93,7 @@ build_fig3b <- function() {
   mat <- mat[mods, mods, drop = FALSE]
   mat[!is.finite(mat)] <- NA_real_
 
-  ggcorrplot::ggcorrplot(mat, lab = TRUE, lab_size = 3,
+  ggcorrplot::ggcorrplot(mat, lab = TRUE, lab_size = MANUSCRIPT_TEXT_SIZE,
                          colors = c("#2E86C1", "#FFFFFF", "#E74C3C"),
                          outline.color = "white") +
     scale_x_discrete(labels = MODALITY_DISPLAY) +
@@ -142,7 +142,7 @@ build_fig3c <- function(metric = METRIC) {
                    height = 0.25, color = "#222222", linewidth = 0.5) +
     geom_text(aes(label = sprintf("%.2f", mean_rank),
                   x = mean_rank + sem_rank + 0.05),
-              hjust = 0, size = 2.7) +
+              hjust = 0, size = MANUSCRIPT_SMALL_TEXT_SIZE) +
     scale_fill_manual(values = MODALITY_COLORS, guide = "none") +
     scale_y_discrete(labels = MODALITY_DISPLAY) +
     coord_cartesian(xlim = c(0.5, length(MODALITY_ORDER) + 0.5)) +
@@ -152,7 +152,7 @@ build_fig3c <- function(metric = METRIC) {
                            ifelse(is.na(fp), "n/a", sprintf("%.1e", fp)), stars)) +
     theme_manuscript() +
     theme(panel.grid.major.x = element_line(color = "grey90"),
-          plot.caption = element_text(size = 6.5, hjust = 1,
+          plot.caption = element_text(size = MANUSCRIPT_CAPTION_SIZE, hjust = 1,
                                       face = "italic", color = "#666666"))
 }
 
@@ -226,7 +226,7 @@ build_fig3d <- function(betas) {
               fill = "white", color = "#111111", stroke = 0.7) +
     geom_text(data = ann, aes(modality, ymax * 1.04, label = stars),
               inherit.aes = FALSE,
-              size = 3.2, fontface = "bold", color = "#222222") +
+              size = MANUSCRIPT_TEXT_SIZE, fontface = "bold", color = "#222222") +
     scale_fill_manual(values = MODALITY_COLORS, guide = "none") +
     scale_color_manual(values = MODALITY_COLORS, guide = "none") +
     scale_x_discrete(labels = MODALITY_DISPLAY) +
@@ -238,7 +238,7 @@ build_fig3d <- function(betas) {
                           "  Diamond ± bar: mean ± SD.")) +
     theme_manuscript() +
     theme(axis.text.x = element_text(angle = 0, hjust = 0.5),
-          plot.caption = element_text(size = 6.5, hjust = 0,
+          plot.caption = element_text(size = MANUSCRIPT_CAPTION_SIZE, hjust = 0,
                                       face = "italic", color = "#777777"),
           panel.grid.major.y = element_line(color = "grey90"))
 }

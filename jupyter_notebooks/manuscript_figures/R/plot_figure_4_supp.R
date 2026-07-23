@@ -103,7 +103,8 @@ build_stage_dynamics_panel <- function(df, stage_values, stage_label, title_text
     scale_fill_manual(values = pal, guide = "none", drop = FALSE) +
     coord_cartesian(xlim = c(LANDMARK, 120), ylim = c(0, 1.03)) +
     annotate("text", x = 118, y = 1.0, label = ann,
-             hjust = 1, vjust = 1, size = 2.6, fontface = "italic", color = "#444444") +
+             hjust = 1, vjust = 1, size = MANUSCRIPT_SMALL_TEXT_SIZE,
+             fontface = "italic", color = "#444444") +
     labs(x = "Months from first treatment",
          y = sprintf("Overall survival (conditional on survival to month %s)", LANDMARK),
          title = title_text) +
@@ -155,7 +156,8 @@ build_crossed_dynamics_panel <- function(df, arms, title_text) {
     scale_fill_manual(values = pal, guide = "none", drop = FALSE) +
     coord_cartesian(xlim = c(LANDMARK, 120), ylim = c(0, 1.03)) +
     annotate("text", x = 118, y = 1.0, label = ann,
-             hjust = 1, vjust = 1, size = 2.6, fontface = "italic", color = "#444444") +
+             hjust = 1, vjust = 1, size = MANUSCRIPT_SMALL_TEXT_SIZE,
+             fontface = "italic", color = "#444444") +
     labs(x = "Months from first treatment",
          y = sprintf("Overall survival (conditional on survival to month %s)", LANDMARK),
          title = title_text) +

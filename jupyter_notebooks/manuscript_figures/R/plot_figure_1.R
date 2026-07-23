@@ -78,7 +78,7 @@ build_fig1a <- function() {
               fill = boxes$fill, color = "#3B3B3B", linewidth = 0.5) +
     geom_text(data = boxes,
               aes(x = x + w / 2, y = y + h / 2, label = label),
-              size = 3.4, fontface = "bold", lineheight = 0.95) +
+              size = 4.0, fontface = "bold", lineheight = 0.95) +
     geom_segment(data = arrows,
                  aes(x = x, y = y, xend = xend, yend = yend),
                  arrow = arrow(length = unit(0.12, "inches"), type = "closed"),
@@ -86,7 +86,7 @@ build_fig1a <- function() {
     geom_point(data = dots, aes(x = x, y = y, color = g),
                size = 1.3, alpha = 0.85, show.legend = FALSE) +
     annotate("text", x = 0.41, y = 0.36, label = "768-dim patient embeddings",
-             size = 2.8, fontface = "italic", color = "#444444") +
+             size = MANUSCRIPT_TEXT_SIZE, fontface = "italic", color = "#444444") +
     scale_color_manual(values = unname(MODALITY_COLORS)) +
     coord_cartesian(xlim = c(0, 1), ylim = c(0, 1), expand = FALSE) +
     theme_void()
@@ -107,14 +107,14 @@ build_fig1b <- function() {
   ggplot(d, aes(x = scheme_lbl, y = n_endpoints, fill = as.character(scheme))) +
     geom_col(width = 0.62, color = "white") +
     geom_text(aes(label = scales::comma(n_endpoints)),
-              vjust = -0.3, size = 3) +
+              vjust = -0.3, size = MANUSCRIPT_TEXT_SIZE) +
     scale_fill_manual(values = SCHEME_COLORS, guide = "none") +
     scale_y_continuous(expand = expansion(mult = c(0, 0.12)),
                        labels = scales::comma) +
     labs(x = NULL, y = "Number of endpoints", title = "Outcome Endpoints") +
     theme_manuscript() +
     theme(panel.grid.major.y = element_line(color = "grey90"),
-          axis.text.x = element_text(hjust = 0.5, size = 8))
+          axis.text.x = element_text(hjust = 0.5, size = 10))
 }
 
 
@@ -164,12 +164,12 @@ build_fig1d <- function() {
     coord_polar(theta = "y", start = pi / 2, direction = -1) +
     geom_text(aes(label = ifelse(pct >= 3, sprintf("%.1f%%", pct), "")),
               position = position_stack(vjust = 0.5),
-              size = 2.6, color = "white", fontface = "bold") +
+              size = MANUSCRIPT_SMALL_TEXT_SIZE, color = "white", fontface = "bold") +
     scale_fill_manual(values = pal, name = NULL) +
     labs(title = sprintf("Cohort Composition (N=%s)", scales::comma(total))) +
     theme_void() +
-    theme(plot.title = element_text(size = 11, face = "bold", hjust = 0.5),
-          legend.text = element_text(size = 7))
+    theme(plot.title = element_text(size = 13, face = "bold", hjust = 0.5),
+          legend.text = element_text(size = 9))
 }
 
 
@@ -184,7 +184,8 @@ build_fig1e <- function() {
     arrange(n) %>% mutate(label = factor(label, levels = label))
   ggplot(d, aes(x = label, y = n)) +
     geom_col(fill = "#5B8DB8", color = "white", width = 0.65) +
-    geom_text(aes(label = scales::comma(n)), vjust = -0.3, size = 2.8) +
+    geom_text(aes(label = scales::comma(n)), vjust = -0.3,
+              size = MANUSCRIPT_TEXT_SIZE) +
     scale_y_continuous(expand = expansion(mult = c(0, 0.12)),
                        labels = scales::comma) +
     labs(x = NULL, y = "Patients", title = "Cancer Stage Breakdown") +
@@ -210,7 +211,7 @@ build_fig1f <- function() {
     theme_manuscript() +
     theme(panel.grid.major.x = element_line(color = "grey90"),
           axis.line.y = element_blank(), axis.ticks.y = element_blank(),
-          axis.text.y = element_text(size = 7))
+          axis.text.y = element_text(size = 9))
 }
 
 

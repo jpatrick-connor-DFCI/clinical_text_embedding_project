@@ -101,7 +101,13 @@ COHORT_DEFS   <- c(
 # ----------------------------------------------------------------------------
 # Theme (ports apply_style())
 # ----------------------------------------------------------------------------
-theme_manuscript <- function(base_size = 10) {
+MANUSCRIPT_BASE_SIZE <- 12
+# geom_text()/annotate("text") sizes are in mm, unlike theme text sizes.
+MANUSCRIPT_TEXT_SIZE <- 3.6
+MANUSCRIPT_SMALL_TEXT_SIZE <- 3.2
+MANUSCRIPT_CAPTION_SIZE <- 8
+
+theme_manuscript <- function(base_size = MANUSCRIPT_BASE_SIZE) {
   theme_classic(base_size = base_size) +
     theme(
       plot.title       = element_text(size = base_size + 1, face = "bold"),
@@ -146,7 +152,7 @@ save_panel <- function(plot, name, group, width = 6.0, height = 4.8) {
 placeholder_panel <- function(msg) {
   ggplot() +
     annotate("text", x = 0.5, y = 0.5, label = msg, color = "#777777",
-             hjust = 0.5, vjust = 0.5, size = 3) +
+             hjust = 0.5, vjust = 0.5, size = MANUSCRIPT_TEXT_SIZE) +
     theme_void() +
     xlim(0, 1) + ylim(0, 1)
 }
