@@ -4,9 +4,11 @@
 # Companion to plot_figure_2_supp.R (which stratifies each stage by overall
 # risk-score quartile). Here each stage is stratified by the Fig 4 risk-DYNAMICS
 # group (Falling / Stable / Rising), so the panels show that trajectory dynamics
-# separate survival within stage-defined strata. Two panels:
+# separate survival within stage-defined strata. Three panels:
 #   A  Stage IV patients, by risk-dynamics group
 #   B  Stages I-II patients pooled, by risk-dynamics group
+#   C  Stage I-II Rising-Risk vs. Stage IV Falling-Risk (crossed comparison,
+#      contrasting "worsening early-stage" against "improving late-stage")
 #
 # Conditional on survival to the slope-window landmark (left-truncated entry),
 # matching main-figure panel 4b. The curves start at the trajectory-observation
@@ -112,6 +114,58 @@ build_stage_dynamics_panel <- function(df, stage_values, stage_label, title_text
 
 
 # ============================================================================
+# One KM panel: two crossed (stage-group, dynamics-cluster) strata, e.g.
+# Stage I-II/Rising vs. Stage IV/Falling. Each `arms` entry is
+# list(stage_values, cluster_id, label) — label is the legend/curve name, kept
+# distinct from cluster_label() since these strata mix stage and dynamics.
+# ============================================================================
+build_crossed_dynamics_panel <- function(df, arms, title_text) {
+  parts <- lapply(arms, function(a) {
+    df %>% filter(stage %in% a$stage_values, cluster_id == a$cluster_id) %>%
+      mutate(strat = a$label)
+  })
+  sub <- bind_rows(parts)
+  if (nrow(sub) == 0 || length(unique(sub$strat)) < length(arms)) {
+    return(placeholder_panel("one or both crossed strata have no patients"))
+  }
+
+  labels_in_order <- vapply(arms, function(a) a$label, character(1))
+  sub <- sub %>% mutate(strat = factor(strat, levels = labels_in_order))
+  pal <- setNames(vapply(arms, function(a) a$color, character(1)), labels_in_order)
+
+  fit <- survfit2(Surv(entry, months, death) ~ strat, data = sub)
+  td  <- tidy_km(fit) %>%
+    mutate(label = factor(stratum, levels = labels_in_order)) %>%
+    # Drop the synthetic time=0 curve-start row that predates the landmark
+    # left-truncation point (see plot_figure_4.R::build_fig4b for the rationale).
+    filter(time >= LANDMARK)
+  if (nrow(td) == 0) return(placeholder_panel(
+    paste0("no events after month ", LANDMARK)))
+
+  lr    <- logrank_p_lt(sub, "entry", "months", "death", "strat")
+  td_ci <- step_ci_df(td, "label")
+  ann   <- sprintf("n=%s\nlogrank p=%.1e", scales::comma(nrow(sub)), lr)
+
+  ggplot(td, aes(time, estimate, color = label)) +
+    { if (nrow(td_ci) > 0) geom_rect(data = td_ci,
+              aes(xmin = time, xmax = time_next, ymin = conf.low, ymax = conf.high, fill = label),
+              inherit.aes = FALSE, alpha = 0.15, color = NA) } +
+    geom_step(linewidth = 0.9) +
+    scale_color_manual(values = pal, name = NULL, drop = FALSE) +
+    scale_fill_manual(values = pal, guide = "none", drop = FALSE) +
+    coord_cartesian(xlim = c(LANDMARK, 120), ylim = c(0, 1.03)) +
+    annotate("text", x = 118, y = 1.0, label = ann,
+             hjust = 1, vjust = 1, size = 2.6, fontface = "italic", color = "#444444") +
+    labs(x = "Months from first treatment",
+         y = sprintf("Overall survival (conditional on survival to month %s)", LANDMARK),
+         title = title_text) +
+    theme_manuscript() +
+    theme(legend.position = c(0.02, 0.20), legend.justification = c(0, 0),
+          legend.background = element_rect(fill = "white", color = NA))
+}
+
+
+# ============================================================================
 # Compose supplementary figure
 # ============================================================================
 d <- load_figure_data("fig4_km_data.csv")
@@ -134,5 +188,20 @@ pS_iv <- build_stage_dynamics_panel(
 pS_i_ii <- build_stage_dynamics_panel(
   d, c("I", "II"), "Stages I-II", "Stages I-II: survival by risk-dynamics group")
 
+# Crossed comparison: early-stage patients whose model risk is worsening (Rising,
+# cluster 2) vs. late-stage patients whose model risk is improving (Falling,
+# cluster 0) — the two dynamics-defined groups that run counter to their stage's
+# expected trajectory.
+pS_crossed <- build_crossed_dynamics_panel(
+  d,
+  arms = list(
+    list(stage_values = c("I", "II"), cluster_id = 2L,
+         label = "Stage I-II, Rising Risk", color = GROUP_COLORS[3]),
+    list(stage_values = "IV",          cluster_id = 0L,
+         label = "Stage IV, Falling Risk", color = GROUP_COLORS[1])
+  ),
+  title_text = "Stage I-II Rising Risk vs. Stage IV Falling Risk")
+
 save_panel(pS_iv, "figS_stage4_by_dynamics", group = "figure4", width = 7.2, height = 6.0)
 save_panel(pS_i_ii, "figS_stage1_2_by_dynamics", group = "figure4", width = 7.2, height = 6.0)
+save_panel(pS_crossed, "figS_stage_dynamics_crossed", group = "figure4", width = 7.2, height = 6.0)

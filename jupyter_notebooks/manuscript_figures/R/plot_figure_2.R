@@ -5,7 +5,8 @@
 # E KM by risk-score tertile (text solid / base dashed),
 # F survival by cancer stage, G survival by text risk-score quartile.
 # E/F/G share a single side-by-side row of KM curves, each with 95% CI bands.
-# H/I/J: top-3-by-Δ-C-index event barplots for mets/ICD10/phecodes.
+# H/I/J: top-3-by-Δ-C-index event barplots for mets/ICD10/phecodes, shown as
+#   paired text-vs-base C-index bars per event (I has only 2 ICD10 events).
 # K/L/M: text-vs-base held-out-risk KM for each category's rank-1 event.
 # (Ranks 2-3 for each category are in the plot_figure_2_supp_events.R supplement.)
 #
@@ -77,7 +78,31 @@ build_fig2a <- function(metrics, metric = METRIC) {
            plot_group = factor(plot_group, levels = FIG2A_GROUP_ORDER))
   lo <- max(0.45, min(c(d$base_val, d$text_val)) - 0.02)
   hi <- min(1.00, max(c(d$base_val, d$text_val)) + 0.02)
-  top <- d %>% group_by(plot_group) %>% slice_max(delta, n = 2) %>% ungroup()
+  # Top-2-by-delta per group, annotated in FIG2A_GROUP_ORDER (icd3/icd4 before
+  # phecodes) so an ICD-10 code and its mapped phecode for the same underlying
+  # condition (e.g. nutritional marasmus appearing as both) never both get
+  # annotated — once a phecode_id is used by an earlier group it's skipped for
+  # later groups. phecode_id is NA for rows with no known phecode mapping
+  # (death/mets, or an ICD prefix absent from the mapping), which are never deduped.
+  seen_phecodes <- character(0)
+  top <- d %>%
+    filter(plot_group %in% FIG2A_GROUP_ORDER) %>%
+    mutate(plot_group = factor(plot_group, levels = FIG2A_GROUP_ORDER)) %>%
+    arrange(plot_group, desc(delta))
+  top_rows <- list()
+  for (grp in FIG2A_GROUP_ORDER) {
+    sub <- top %>% filter(plot_group == grp)
+    picked <- 0L
+    for (i in seq_len(nrow(sub))) {
+      pid <- sub$phecode_id[i]
+      if (!is.na(pid) && pid %in% seen_phecodes) next
+      top_rows[[length(top_rows) + 1]] <- sub[i, ]
+      if (!is.na(pid)) seen_phecodes <- c(seen_phecodes, pid)
+      picked <- picked + 1L
+      if (picked == 2L) break
+    }
+  }
+  top <- if (length(top_rows)) bind_rows(top_rows) else top[0, ]
   # Repel data covers every point (blank labels for non-annotated ones) so labels
   # are pushed clear of all markers, not just the ones being annotated.
   top_key <- paste(top$scheme, top$event)
@@ -256,6 +281,14 @@ km_tertile_panel <- function(km, time_col, event_col, title) {
 
   td_ci <- step_ci_df(td, c("stratum", "model"))
 
+  # Zoom the probability axis to the data's own range: events with low incidence
+  # keep survival near 1 throughout, so a fixed 0-1 axis wastes most of the panel.
+  # Floor a little below the lowest observed CI bound, with a 1.03 ceiling to
+  # match the padding used elsewhere in this figure.
+  y_lo <- max(0, min(td_ci$conf.low, na.rm = TRUE) - 0.03)
+  y_hi <- 1.03
+  ann_y <- y_lo + 0.06 * (y_hi - y_lo)
+
   ggplot(td, aes(x = time, y = estimate, color = stratum, linetype = model)) +
     geom_rect(data = td_ci,
               aes(xmin = time, xmax = time_next, ymin = conf.low, ymax = conf.high, fill = stratum),
@@ -264,11 +297,11 @@ km_tertile_panel <- function(km, time_col, event_col, title) {
     scale_color_manual(values = RISK_COLORS, name = NULL) +
     scale_fill_manual(values = RISK_COLORS, guide = "none") +
     scale_linetype_manual(values = c(text = "solid", base = "dashed"), guide = "none") +
-    coord_cartesian(xlim = c(0, 60), ylim = c(0, 1.03)) +
-    annotate("text", x = 1, y = 0.06,
+    coord_cartesian(xlim = c(0, 60), ylim = c(y_lo, y_hi)) +
+    annotate("text", x = 1, y = ann_y,
              label = sprintf("text logrank p=%.1e\nbase logrank p=%.1e", lr_t, lr_b),
              hjust = 0, vjust = 0, size = 2.6, fontface = "italic", color = "#444444") +
-    labs(x = "Months from first treatment", y = "Overall survival", title = title) +
+    labs(x = "Months from first treatment", y = "Event-free survival", title = title) +
     theme_manuscript() +
     theme(legend.position = c(0.98, 0.98),
           legend.justification = c(1, 1),
@@ -344,7 +377,7 @@ build_fig2e <- function(metric = METRIC) {
       annotate("text", x = 1, y = 0.06, label = ann,
                hjust = 0, vjust = 0, size = 2.6,
                fontface = "italic", color = "#444444") +
-      labs(x = "Months from first treatment", y = "Overall survival",
+      labs(x = "Months from first treatment", y = "Event-free survival",
            title = title_text) +
       theme_manuscript() +
       theme(legend.position = legend_pos, legend.justification = legend_just,
@@ -368,23 +401,32 @@ build_fig2e <- function(metric = METRIC) {
 # ranked by delta C-index (text - base), largest positive delta only (a "top"
 # event is never a net-negative one; see prep_figure_2.py::_scheme_delta_topk).
 # ============================================================================
-SCHEME_CATEGORY_SCHEME <- c(mets = "death_met", ICD10 = "icd3_post", phecodes = "phecode_post")
 SCHEME_CATEGORY_TITLES <- c(mets = "Mets", ICD10 = "ICD10", phecodes = "Phecodes")
 
 build_scheme_delta_bars <- function(topk, category) {
   d <- topk %>% filter(category == !!category) %>% arrange(delta)
   if (nrow(d) == 0) return(placeholder_panel(sprintf("no positive-delta %s events", category)))
   d <- d %>% mutate(event_lbl = factor(event_lbl, levels = unique(event_lbl)))
-  fill_color <- unname(SCHEME_COLORS[[SCHEME_CATEGORY_SCHEME[[category]]]])
+  d_long <- d %>%
+    select(event_lbl, text = text_cindex, base = base_cindex) %>%
+    pivot_longer(c(text, base), names_to = "model", values_to = "cindex") %>%
+    mutate(model = factor(model, levels = c("text", "base")))
+  lo <- max(0, min(d_long$cindex, na.rm = TRUE) - 0.05)
 
-  ggplot(d, aes(delta, event_lbl)) +
-    geom_col(width = 0.6, fill = fill_color, color = "white") +
-    geom_text(aes(label = sprintf("%.3f", delta)), hjust = -0.15, size = 2.8) +
-    scale_x_continuous(expand = expansion(mult = c(0, 0.18))) +
-    labs(x = "Δ C-index (Text − Base)", y = NULL,
+  ggplot(d_long, aes(cindex, event_lbl, fill = model)) +
+    geom_col(position = position_dodge(width = 0.7), width = 0.6, color = "white") +
+    geom_text(aes(label = sprintf("%.3f", cindex)),
+              position = position_dodge(width = 0.7),
+              hjust = -0.15, size = 2.5) +
+    scale_fill_manual(values = MODEL_COLORS, labels = c(text = "Text", base = "Base"), name = NULL) +
+    scale_x_continuous(limits = c(lo, NA), oob = scales::squish,
+                       expand = expansion(mult = c(0, 0.18))) +
+    coord_cartesian(xlim = c(lo, NA)) +
+    labs(x = "C-index", y = NULL,
          title = sprintf("Top %s Events by Δ C-index", SCHEME_CATEGORY_TITLES[[category]])) +
     theme_manuscript() +
-    theme(panel.grid.major.x = element_line(color = "grey90"))
+    theme(panel.grid.major.x = element_line(color = "grey90"),
+          legend.position = "top")
 }
 
 build_scheme_event_km <- function(km_data, topk, category, rank_n) {

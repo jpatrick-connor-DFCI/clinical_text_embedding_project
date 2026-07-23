@@ -56,6 +56,12 @@ km_tertile_panel <- function(km, time_col, event_col, title) {
 
   td_ci <- step_ci_df(td, c("stratum", "model"))
 
+  # Zoom the probability axis to the data's own range: events with low incidence
+  # keep survival near 1 throughout, so a fixed 0-1 axis wastes most of the panel.
+  y_lo <- max(0, min(td_ci$conf.low, na.rm = TRUE) - 0.03)
+  y_hi <- 1.03
+  ann_y <- y_lo + 0.06 * (y_hi - y_lo)
+
   ggplot(td, aes(x = time, y = estimate, color = stratum, linetype = model)) +
     geom_rect(data = td_ci,
               aes(xmin = time, xmax = time_next, ymin = conf.low, ymax = conf.high, fill = stratum),
@@ -64,11 +70,11 @@ km_tertile_panel <- function(km, time_col, event_col, title) {
     scale_color_manual(values = RISK_COLORS, name = NULL) +
     scale_fill_manual(values = RISK_COLORS, guide = "none") +
     scale_linetype_manual(values = c(text = "solid", base = "dashed"), guide = "none") +
-    coord_cartesian(xlim = c(0, 60), ylim = c(0, 1.03)) +
-    annotate("text", x = 1, y = 0.06,
+    coord_cartesian(xlim = c(0, 60), ylim = c(y_lo, y_hi)) +
+    annotate("text", x = 1, y = ann_y,
              label = sprintf("text logrank p=%.1e\nbase logrank p=%.1e", lr_t, lr_b),
              hjust = 0, vjust = 0, size = 2.6, fontface = "italic", color = "#444444") +
-    labs(x = "Months from first treatment", y = "Overall survival", title = title) +
+    labs(x = "Months from first treatment", y = "Event-free survival", title = title) +
     theme_manuscript() +
     theme(legend.position = c(0.98, 0.98),
           legend.justification = c(1, 1),
