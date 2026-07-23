@@ -10,9 +10,11 @@ Writes to FIGURE_DATA_DIR:
                                     code_data/phecode_descriptions.csv as fallback; raw code if both
                                     miss). phecode_id identifies each
                                     row's underlying condition — the event itself for phecode_post,
-                                    its mapped phecode (via code_data/icd10_to_phecode_mapping.csv)
-                                    for icd3_post/icd4_post, else NA — used to dedup annotations
-                                    when the same condition surfaces under two schemes.)
+                                    a representative mapped phecode (via
+                                    code_data/icd10_to_phecode_mapping.csv) for
+                                    icd3_post/icd4_post, else NA. Deduplication uses the complete
+                                    set of mapped phecodes, not only this display column, so duplicate
+                                    conditions are not annotated under two schemes.)
 - fig2_within_vs_pan_cancer.csv     stratum, auc_pan, auc_within, delta, cindex_pan, cindex_within,
                                     cindex_delta, n_heldout, is_overall
 - fig2_within_vs_pan_treatment.csv  stratum, auc_pan, auc_within, delta, cindex_pan, cindex_within,
@@ -197,7 +199,7 @@ def _load_phecode_descriptions() -> dict[str, str]:
     return out
 
 
-def _load_icd10_to_phecode() -> tuple[dict[str, str], dict[str, str]]:
+def _load_icd10_to_phecode() -> tuple[dict[str, frozenset[str]], dict[str, str]]:
     """Load ICD-prefix mappings and phecode labels inferred from mapped ICD names.
 
     The second result supplies the primary figure label for a phecode directly
@@ -211,9 +213,9 @@ def _load_icd10_to_phecode() -> tuple[dict[str, str], dict[str, str]]:
     df = pd.read_csv(path, dtype=str)
     icd_col, phecode_col = _lookup_columns(df, "icd10_code", "phecode")
     # icd3_post/icd4_post events are level-3/4 ICD prefixes, not full codes; the mapping
-    # file is keyed on full codes, so map each event to *any* phecode reachable from a
-    # mapped code sharing that prefix (first match wins — good enough for dedup).
-    out: dict[str, str] = {}
+    # file is keyed on full codes, so retain every phecode reachable from a mapped
+    # code sharing each event prefix.
+    out: dict[str, set[str]] = {}
     phecode_cohort_descriptions: dict[str, str] = {}
     for raw_icd, raw_phecode in zip(df[icd_col], df[phecode_col]):
         icd_code = _normalize_icd10(raw_icd)
@@ -226,13 +228,16 @@ def _load_icd10_to_phecode() -> tuple[dict[str, str], dict[str, str]]:
         for plen in (3, 4):
             prefix = icd_code[:plen]
             if len(prefix) == plen:
-                out.setdefault(prefix, phecode)
-    return out, phecode_cohort_descriptions
+                out.setdefault(prefix, set()).add(phecode)
+    return (
+        {prefix: frozenset(phecodes) for prefix, phecodes in out.items()},
+        phecode_cohort_descriptions,
+    )
 
 
 ICD_DESCRIPTIONS: dict[str, str] = {}
 PHECODE_DESCRIPTIONS: dict[str, str] = {}
-ICD10_TO_PHECODE: dict[str, str] = {}
+ICD10_TO_PHECODES: dict[str, frozenset[str]] = {}
 PHECODE_COHORT_DESCRIPTIONS: dict[str, str] = {}
 
 
@@ -255,11 +260,11 @@ def _initialize_code_lookups() -> None:
 
     global ICD_DESCRIPTIONS
     global PHECODE_DESCRIPTIONS
-    global ICD10_TO_PHECODE
+    global ICD10_TO_PHECODES
     global PHECODE_COHORT_DESCRIPTIONS
     ICD_DESCRIPTIONS = _load_icd_descriptions()
     PHECODE_DESCRIPTIONS = _load_phecode_descriptions()
-    ICD10_TO_PHECODE, PHECODE_COHORT_DESCRIPTIONS = _load_icd10_to_phecode()
+    ICD10_TO_PHECODES, PHECODE_COHORT_DESCRIPTIONS = _load_icd10_to_phecode()
 
 # Hit/miss counts for the two code-description lookups, so a silent raw-code
 # fallback (missing CSV, package not installed, or a genuine normalization
@@ -356,15 +361,30 @@ def _event_category(scheme: str, event: str) -> str | None:
 def _event_phecode(scheme: str, event: str) -> str | None:
     """The phecode identifying a row's underlying condition, used to detect the same
     condition surfacing under two schemes (e.g. an ICD-10 code for nutritional
-    marasmus and its mapped phecode): the event itself for phecode_post, or its
-    mapped phecode (via ICD10_TO_PHECODE) for icd3_post/icd4_post. None if no phecode
-    is known (e.g. death_met/mets, or an ICD prefix absent from the mapping)."""
+    marasmus and its mapped phecode): the event itself for phecode_post, or one
+    deterministic representative from ICD10_TO_PHECODES for icd3_post/icd4_post.
+    The complete set used for deduplication is returned by _event_phecodes()."""
     if scheme == "phecode_post":
         return _normalize_phecode(event)
     if scheme in ("icd3_post", "icd4_post"):
-        normalized_event = _normalize_icd10(event)
-        return ICD10_TO_PHECODE.get(normalized_event)
+        phecodes = _event_phecodes(scheme, event)
+        return min(phecodes) if phecodes else None
     return None
+
+
+def _event_phecodes(scheme: str, event: str) -> frozenset[str]:
+    """All phecodes reachable from an event, for cross-scheme deduplication.
+
+    An ICD-10 code can map to multiple phecodes. Keeping only one arbitrary
+    mapping allows the same condition to be selected again under phecode_post.
+    """
+    if scheme == "phecode_post":
+        phecode = _normalize_phecode(event)
+        return frozenset((phecode,)) if phecode else frozenset()
+    if scheme in ("icd3_post", "icd4_post"):
+        normalized_event = _normalize_icd10(event)
+        return ICD10_TO_PHECODES.get(normalized_event, frozenset())
+    return frozenset()
 
 
 WITHIN_VS_PAN_COLUMNS = [
@@ -498,12 +518,11 @@ def _scheme_delta_topk(metrics: pd.DataFrame, k: int = TOPK_PER_CATEGORY) -> pd.
         sub = d[d["category"] == category].sort_values("delta", ascending=False)
         selected = []
         for _, r in sub.iterrows():
-            pid = r["phecode_id"]
-            if pid is not None and pid in seen_phecodes:
+            event_phecodes = _event_phecodes(r["scheme"], r["event"])
+            if event_phecodes & seen_phecodes:
                 continue
             selected.append(r)
-            if pid is not None:
-                seen_phecodes.add(pid)
+            seen_phecodes.update(event_phecodes)
             if len(selected) == k:
                 break
         for rank, r in enumerate(selected, start=1):
