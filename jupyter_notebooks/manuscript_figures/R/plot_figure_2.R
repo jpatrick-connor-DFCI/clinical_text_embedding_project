@@ -472,7 +472,7 @@ p2_km_phecodes1 <- build_scheme_event_km(scheme_km, scheme_topk, "phecodes", 1)
 
 .tag <- metric_tag(METRIC)
 save_panel(p2a, paste0("fig2a", .tag), group = "figure2", width = 6.4, height = 5.0)
-save_panel(p2b, paste0("fig2b", .tag), group = "figure2", width = 6.0, height = 4.8)
+save_panel(p2b, paste0("fig2b", .tag), group = "figure2", width = 6.5, height = 4.8)
 save_panel(p2_wc, paste0("fig2c", .tag), group = "figure2", width = 7.0,  height = 4.6)
 save_panel(p2_wt, paste0("fig2d", .tag), group = "figure2", width = 9.6, height = 4.6)
 save_panel(p2d,       paste0("fig2e", .tag), group = "figure2", width = 5.6, height = 4.6)

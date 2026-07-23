@@ -226,7 +226,7 @@ p1a <- build_fig1a(); p1b <- build_fig1b(); p1c <- build_fig1c()
 p1d <- build_fig1d(); p1e <- build_fig1e(); p1f <- build_fig1f()
 
 save_panel(p1a, "fig1a", group = "figure1", width = 9.6, height = 5.4)
-save_panel(p1b, "fig1b", group = "figure1", width = 5.4, height = 4.4)
+save_panel(p1b, "fig1b", group = "figure1", width = 5.9, height = 4.4)
 save_panel(p1c, "fig1c", group = "figure1", width = 7.0, height = 4.4)
 save_panel(p1d, "fig1d", group = "figure1", width = 7.0, height = 5.2)
 save_panel(p1e, "fig1e", group = "figure1", width = 6.0, height = 4.4)
