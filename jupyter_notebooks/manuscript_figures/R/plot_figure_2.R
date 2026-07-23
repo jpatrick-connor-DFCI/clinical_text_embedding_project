@@ -78,11 +78,55 @@ build_fig2a <- function(metrics, metric = METRIC) {
            plot_group = factor(plot_group, levels = FIG2A_GROUP_ORDER))
   lo <- max(0.45, min(c(d$base_val, d$text_val)) - 0.02)
   hi <- min(1.00, max(c(d$base_val, d$text_val)) + 0.02)
+  # Top-2-by-delta per group, annotated in FIG2A_GROUP_ORDER (icd3/icd4 before
+  # phecodes) so an ICD-10 code and its mapped phecode for the same underlying
+  # condition (e.g. nutritional marasmus appearing as both) never both get
+  # annotated — once a phecode_id is used by an earlier group it's skipped for
+  # later groups, moving on to that group's next-best-delta event instead.
+  # phecode_id is NA for rows with no known phecode mapping (death/mets, or an
+  # ICD prefix absent from the mapping), which are never deduped.
+  seen_phecodes <- character(0)
+  top <- d %>%
+    filter(plot_group %in% FIG2A_GROUP_ORDER) %>%
+    mutate(plot_group = factor(plot_group, levels = FIG2A_GROUP_ORDER)) %>%
+    arrange(plot_group, desc(delta))
+  top_rows <- list()
+  for (grp in FIG2A_GROUP_ORDER) {
+    sub <- top %>% filter(plot_group == grp)
+    picked <- 0L
+    for (i in seq_len(nrow(sub))) {
+      pid <- sub$phecode_id[i]
+      if (!is.na(pid) && pid %in% seen_phecodes) next
+      top_rows[[length(top_rows) + 1]] <- sub[i, ]
+      if (!is.na(pid)) seen_phecodes <- c(seen_phecodes, pid)
+      picked <- picked + 1L
+      if (picked == 2L) break
+    }
+  }
+  top <- if (length(top_rows)) bind_rows(top_rows) else top[0, ]
+  # Repel data covers every point (blank labels for non-annotated ones) so labels
+  # are pushed clear of all markers, not just the ones being annotated.
+  top_key <- paste(top$scheme, top$event)
+  repel_d <- d %>%
+    mutate(event_lbl = ifelse(paste(scheme, event) %in% top_key, event_lbl, ""))
   lbl <- metric_label(metric)
 
   ggplot(d, aes(base_val, text_val, color = plot_group, shape = plot_group)) +
     geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "#666666") +
-    geom_point(size = 1.8, alpha = 0.65) +
+    geom_point(data = filter(d, as.character(plot_group) != "death"),
+               size = 1.8, alpha = 0.65) +
+    # Draw death in a separate final layer so no coincident event can cover it.
+    geom_point(data = filter(d, as.character(plot_group) == "death"),
+               size = 1.8, alpha = 0.65) +
+    ggrepel::geom_text_repel(
+      data = repel_d, aes(label = event_lbl),
+      size = 2.2, fontface = "bold", color = "#222222",
+      # Repel against every point, not just the labeled ones, so annotations
+      # never sit on top of a marker.
+      point.size = 1.8, point.padding = 0.4, box.padding = 0.6,
+      force = 3, force_pull = 0.5, min.segment.length = 0.1,
+      segment.color = "#888888", segment.size = 0.3,
+      max.overlaps = Inf, seed = 0) +
     scale_color_manual(values = FIG2A_GROUP_COLORS, labels = FIG2A_GROUP_LABELS,
                        name = NULL, drop = FALSE) +
     scale_shape_manual(values = FIG2A_GROUP_SHAPES, labels = FIG2A_GROUP_LABELS,
