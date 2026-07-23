@@ -448,8 +448,7 @@ build_scheme_delta_bars <- function(topk) {
               position = position_dodge(width = 0.7),
               vjust = -0.4, size = 2.5) +
     scale_x_discrete(
-      labels = setNames(stringr::str_wrap(as.character(d$event_lbl), width = 18), d$row_key),
-      guide = guide_axis(n.dodge = 2)
+      labels = setNames(stringr::str_wrap(as.character(d$event_lbl), width = 18), d$row_key)
     ) +
     scale_fill_manual(values = MODEL_COLORS, labels = c(text = "Text", base = "Base"), name = NULL) +
     scale_y_continuous(limits = c(lo, NA), oob = scales::squish,
