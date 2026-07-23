@@ -19,7 +19,7 @@
 
 suppressPackageStartupMessages({
   library(ggplot2); library(patchwork); library(dplyr); library(tidyr)
-  library(forcats); library(scales); library(ggrepel); library(stringr)
+  library(forcats); library(scales); library(stringr)
   library(survival); library(ggsurvfit)
 })
 
@@ -44,10 +44,9 @@ source(file.path(script_dir, "figure_utils.R"))
 # ============================================================================
 # fig2a: text vs base scatter
 # ============================================================================
-# Legend/annotation groups: death_met is split into its own "Death" entry (the
+# Legend groups: death_met is split into its own "Death" entry (the
 # single literal death event) and "Mets" (metastatic-site events), separate
-# from the death_met scheme's other rows so all four groups below get their
-# own top-N annotation and legend entry.
+# from the death_met scheme's other rows.
 FIG2A_GROUP_ORDER <- c("death", "mets", "icd3_post", "icd4_post", "phecode_post")
 FIG2A_GROUP_LABELS <- c(death = "Death", mets = "Mets",
                         icd3_post = SCHEME_LABELS[["icd3_post"]],
@@ -69,7 +68,6 @@ build_fig2a <- function(metrics, metric = METRIC) {
   d <- metrics %>%
     filter(!is.na(.data[[base_col]]), !is.na(.data[[text_col]])) %>%
     mutate(base_val = .data[[base_col]], text_val = .data[[text_col]],
-           delta = text_val - base_val,
            plot_group = case_when(
              scheme == "death_met" & event == "death" ~ "death",
              scheme == "death_met"                    ~ "mets",
@@ -78,46 +76,6 @@ build_fig2a <- function(metrics, metric = METRIC) {
            plot_group = factor(plot_group, levels = FIG2A_GROUP_ORDER))
   lo <- max(0.45, min(c(d$base_val, d$text_val)) - 0.02)
   hi <- min(1.00, max(c(d$base_val, d$text_val)) + 0.02)
-  # Top-2-by-delta per group, annotated in FIG2A_GROUP_ORDER (icd3/icd4 before
-  # phecodes) so an ICD-10 code and its mapped phecode for the same underlying
-  # condition (e.g. nutritional marasmus appearing as both) never both get
-  # annotated. phecode_ids contains every mapping reachable from an ICD prefix;
-  # once any of those IDs is used by an earlier group, the row is skipped for
-  # later groups in favor of that group's next-best-delta event.
-  # Support older prepared CSVs, although rerunning prep_figure_2.py is required
-  # to get complete one-to-many ICD mappings.
-  if (!"phecode_ids" %in% names(d)) d$phecode_ids <- d$phecode_id
-  if (!"top_hit_eligible" %in% names(d)) d$top_hit_eligible <- TRUE
-  seen_phecodes <- character(0)
-  top <- d %>%
-    filter(plot_group %in% FIG2A_GROUP_ORDER,
-           as.character(top_hit_eligible) %in% c("TRUE", "True", "true", "1")) %>%
-    mutate(plot_group = factor(plot_group, levels = FIG2A_GROUP_ORDER)) %>%
-    arrange(plot_group, desc(delta))
-  top_rows <- list()
-  for (grp in FIG2A_GROUP_ORDER) {
-    sub <- top %>% filter(plot_group == grp)
-    picked <- 0L
-    for (i in seq_len(nrow(sub))) {
-      raw_pids <- as.character(sub$phecode_ids[i])
-      pids <- if (is.na(raw_pids) || !nzchar(raw_pids)) {
-        character(0)
-      } else {
-        strsplit(raw_pids, ";", fixed = TRUE)[[1]]
-      }
-      if (length(intersect(pids, seen_phecodes)) > 0L) next
-      top_rows[[length(top_rows) + 1]] <- sub[i, ]
-      seen_phecodes <- union(seen_phecodes, pids)
-      picked <- picked + 1L
-      if (picked == 2L) break
-    }
-  }
-  top <- if (length(top_rows)) bind_rows(top_rows) else top[0, ]
-  # Repel data covers every point (blank labels for non-annotated ones) so labels
-  # are pushed clear of all markers, not just the ones being annotated.
-  top_key <- paste(top$scheme, top$event)
-  repel_d <- d %>%
-    mutate(event_lbl = ifelse(paste(scheme, event) %in% top_key, event_lbl, ""))
   lbl <- metric_label(metric)
 
   ggplot(d, aes(base_val, text_val, color = plot_group, shape = plot_group)) +
@@ -127,15 +85,6 @@ build_fig2a <- function(metrics, metric = METRIC) {
     # Draw death in a separate final layer so no coincident event can cover it.
     geom_point(data = filter(d, as.character(plot_group) == "death"),
                size = 1.8, alpha = 0.65) +
-    ggrepel::geom_text_repel(
-      data = repel_d, aes(label = event_lbl),
-      size = 2.2, fontface = "bold", color = "#222222",
-      # Repel against every point, not just the labeled ones, so annotations
-      # never sit on top of a marker.
-      point.size = 1.8, point.padding = 0.4, box.padding = 0.6,
-      force = 3, force_pull = 0.5, min.segment.length = 0.1,
-      segment.color = "#888888", segment.size = 0.3,
-      max.overlaps = Inf, seed = 0) +
     scale_color_manual(values = FIG2A_GROUP_COLORS, labels = FIG2A_GROUP_LABELS,
                        name = NULL, drop = FALSE) +
     scale_shape_manual(values = FIG2A_GROUP_SHAPES, labels = FIG2A_GROUP_LABELS,
@@ -414,14 +363,14 @@ build_fig2e <- function(metric = METRIC) {
 
 
 # ============================================================================
-# Combined Δ C-index barplot (mets / ICD10 / phecodes events, grouped by code
-# type) + top-event KM panels. C-index only — this panel does not follow the
+# Combined Δ C-index barplot (Mets / ICD10 events, grouped by code type) +
+# top-event KM panels. C-index only — this panel does not follow the
 # MANUSCRIPT_METRIC switch; the underlying fig2_scheme_delta_topk.csv /
 # fig2_scheme_event_km.csv are always ranked by delta C-index (text - base),
 # largest positive delta only (a "top" event is never a net-negative one; see
 # prep_figure_2.py::_scheme_delta_topk).
 # ============================================================================
-SCHEME_CATEGORY_TITLES <- c(mets = "Mets", ICD10 = "ICD10", phecodes = "Phecodes")
+SCHEME_CATEGORY_TITLES <- c(mets = "Mets", ICD10 = "ICD10")
 
 build_scheme_delta_bars <- function(topk) {
   d <- topk %>% filter(category %in% names(SCHEME_CATEGORY_TITLES)) %>%
