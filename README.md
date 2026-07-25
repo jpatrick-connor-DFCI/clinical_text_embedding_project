@@ -28,6 +28,7 @@ clinical_text_embedding_project/
 ├── bash_scripts/                 # SLURM submission and worker scripts
 │   └── slurm_manifests/          # Generated task TSV files
 ├── jupyter_notebooks/            # Top-level analysis notebooks (per-pipeline notebooks live alongside their scripts)
+│   ├── mortality_model_comparison/ # XGBoost-Cox vs elastic-net Cox vs RSF for mortality
 │   └── manuscript_figures/       # PUBLICATION TARGET: Python data-prep + R rendering for Figures 1–5 + S1
 ├── README.md                     # This file
 └── CODE_REVIEW.md                # Known issues / correctness review (read before trusting a result)
@@ -179,6 +180,14 @@ python python_scripts/model_training/run_full_cohort_risk_scores.py --scheme dea
 ## Pipeline 3: Mortality Trajectories & Model Evaluation
 
 Scripts under `python_scripts/mortality_trajectories/`. Covers mortality trajectory analysis and stratified model comparisons. Per-modality held-out risk scores are produced at training time by `run_feature_comp_task.py` (Pipeline 2), which writes them under `<scheme>/held_out_risk_scores/`; the manuscript second-stage joint Cox refit (for Figure 3 p-values) is done directly in `manuscript_figures/data_generation/prep_figure_3.py` with `lifelines`.
+
+The notebooks under
+[`jupyter_notebooks/mortality_model_comparison/`](jupyter_notebooks/mortality_model_comparison/)
+provide a focused full-cohort mortality benchmark of XGBoost-Cox, elastic-net Cox, and random
+survival forests. They perform a shared 80/20 split, training-only 5-fold hyperparameter selection,
+timed held-out test evaluation, and whole-cohort 5-fold cross-fitting to produce six baseline/text
+risk-score vectors. A third notebook re-runs the six-modality elastic-net Cox feature comparison
+and extends it to XGBoost-Cox and random survival forests for mortality.
 
 > **Note:** the standalone `feature_ICD10_level_3_risk_scores.py` (per-modality risk-score regeneration) and `feature_risk_score_coxph.py` (second-stage Cox) scripts were **removed** — both duplicated work now done at training time / in the figure-prep tier. Recover from git history if needed.
 
