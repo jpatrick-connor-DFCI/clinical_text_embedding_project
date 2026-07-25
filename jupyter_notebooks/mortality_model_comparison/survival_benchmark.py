@@ -29,6 +29,7 @@ from sksurv.metrics import (
     cumulative_dynamic_auc,
     integrated_brier_score,
 )
+from tqdm.auto import tqdm
 from xgboost import XGBRegressor
 
 
@@ -463,6 +464,7 @@ def tune_one_model(
     random_state: int = 1234,
     n_jobs: int = 1,
     preprocessing_params: dict[str, Any] | None = None,
+    show_progress: bool = True,
 ) -> tuple[dict[str, Any], pd.DataFrame]:
     """Select hyperparameters by mean 5-fold cumulative/dynamic AUC."""
     cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
@@ -470,46 +472,59 @@ def tune_one_model(
     rows: list[dict[str, Any]] = []
     preprocessing_params = preprocessing_params or {}
 
-    for candidate_index, params in enumerate(candidates):
-        fold_scores: list[float] = []
-        fold_seconds: list[float] = []
-        errors: list[str] = []
-        for fold, (train_idx, val_idx) in enumerate(folds):
-            started = time.perf_counter()
-            try:
-                fitted = fit_survival_model(
-                    kind,
-                    params,
-                    X[train_idx],
-                    y[train_idx],
-                    random_state=random_state + fold,
-                    n_jobs=n_jobs,
-                    need_survival_function=False,
-                    **preprocessing_params,
-                )
-                fold_scores.append(evaluate_mean_auc(fitted, X[val_idx], y[val_idx]))
-                errors.append("")
-            except Exception as exc:  # retain failures in the audit table
-                fold_scores.append(np.nan)
-                errors.append(f"{type(exc).__name__}: {exc}")
-            fold_seconds.append(time.perf_counter() - started)
+    with tqdm(
+        total=len(candidates) * len(folds),
+        desc=f"{kind} CV",
+        unit="fit",
+        leave=False,
+        disable=not show_progress,
+    ) as progress:
+        for candidate_index, params in enumerate(candidates):
+            progress.set_postfix(
+                candidate=f"{candidate_index + 1}/{len(candidates)}",
+                refresh=False,
+            )
+            fold_scores: list[float] = []
+            fold_seconds: list[float] = []
+            errors: list[str] = []
+            for fold, (train_idx, val_idx) in enumerate(folds):
+                started = time.perf_counter()
+                try:
+                    fitted = fit_survival_model(
+                        kind,
+                        params,
+                        X[train_idx],
+                        y[train_idx],
+                        random_state=random_state + fold,
+                        n_jobs=n_jobs,
+                        need_survival_function=False,
+                        **preprocessing_params,
+                    )
+                    fold_scores.append(evaluate_mean_auc(fitted, X[val_idx], y[val_idx]))
+                    errors.append("")
+                except Exception as exc:  # retain failures in the audit table
+                    fold_scores.append(np.nan)
+                    errors.append(f"{type(exc).__name__}: {exc}")
+                finally:
+                    fold_seconds.append(time.perf_counter() - started)
+                    progress.update()
 
-        rows.append(
-            {
-                "candidate_index": candidate_index,
-                "params_json": json.dumps(params, sort_keys=True),
-                "mean_cv_auc_t": float(np.nanmean(fold_scores))
-                if np.isfinite(fold_scores).any()
-                else np.nan,
-                "sd_cv_auc_t": float(np.nanstd(fold_scores, ddof=1))
-                if np.isfinite(fold_scores).sum() > 1
-                else np.nan,
-                "valid_folds": int(np.isfinite(fold_scores).sum()),
-                "fold_auc_t_json": json.dumps(fold_scores),
-                "fold_seconds_json": json.dumps(fold_seconds),
-                "errors_json": json.dumps(errors),
-            }
-        )
+            rows.append(
+                {
+                    "candidate_index": candidate_index,
+                    "params_json": json.dumps(params, sort_keys=True),
+                    "mean_cv_auc_t": float(np.nanmean(fold_scores))
+                    if np.isfinite(fold_scores).any()
+                    else np.nan,
+                    "sd_cv_auc_t": float(np.nanstd(fold_scores, ddof=1))
+                    if np.isfinite(fold_scores).sum() > 1
+                    else np.nan,
+                    "valid_folds": int(np.isfinite(fold_scores).sum()),
+                    "fold_auc_t_json": json.dumps(fold_scores),
+                    "fold_seconds_json": json.dumps(fold_seconds),
+                    "errors_json": json.dumps(errors),
+                }
+            )
 
     results = pd.DataFrame(rows).sort_values(
         ["mean_cv_auc_t", "candidate_index"], ascending=[False, True], na_position="last"
@@ -535,6 +550,7 @@ def run_train_test_benchmark(
     model_names: Iterable[str] = MODEL_NAMES,
     feature_set_names: Iterable[str] = FEATURE_SET_NAMES,
     preprocessing_by_feature: dict[str, dict[str, Any]] | None = None,
+    show_progress: bool = True,
 ) -> tuple[pd.DataFrame, dict[str, dict[str, Any]]]:
     """Tune, refit, evaluate, and persist the requested model/feature comparisons."""
     output_dir = Path(output_dir)
@@ -550,64 +566,101 @@ def run_train_test_benchmark(
     summaries: list[dict[str, Any]] = []
     best_params: dict[str, dict[str, Any]] = {}
     preprocessing_by_feature = preprocessing_by_feature or {}
-    for kind in model_names:
-        best_params[kind] = {}
-        for feature_name in feature_set_names:
-            cols = feature_sets[feature_name]
-            preprocessing_params = preprocessing_by_feature.get(feature_name, {})
-            X = cohort[cols].to_numpy(dtype=np.float32)
-            total_started = time.perf_counter()
-            tune_started = time.perf_counter()
-            best, cv_results = tune_one_model(
-                kind,
-                expand_grid(param_grids[kind]),
-                X[train_mask],
-                y[train_mask],
-                random_state=random_state,
-                n_jobs=n_jobs,
-                preprocessing_params=preprocessing_params,
-            )
-            tuning_seconds = time.perf_counter() - tune_started
-            cv_results.insert(0, "feature_set", feature_name)
-            cv_results.insert(0, "model", kind)
-            cv_results.to_csv(
-                output_dir / f"cv_results__{kind}__{feature_name}.csv", index=False
-            )
+    model_names = tuple(model_names)
+    feature_set_names = tuple(feature_set_names)
+    comparisons = [
+        (kind, feature_name)
+        for kind in model_names
+        for feature_name in feature_set_names
+    ]
+    progress = tqdm(
+        comparisons,
+        desc="Tune/refit/test",
+        unit="comparison",
+        disable=not show_progress,
+    )
+    for kind, feature_name in progress:
+        progress.set_postfix(
+            model=kind,
+            features=feature_name,
+            stage="tuning",
+            refresh=True,
+        )
+        if kind not in best_params:
+            best_params[kind] = {}
+        cols = feature_sets[feature_name]
+        preprocessing_params = preprocessing_by_feature.get(feature_name, {})
+        X = cohort[cols].to_numpy(dtype=np.float32)
+        total_started = time.perf_counter()
+        tune_started = time.perf_counter()
+        best, cv_results = tune_one_model(
+            kind,
+            expand_grid(param_grids[kind]),
+            X[train_mask],
+            y[train_mask],
+            random_state=random_state,
+            n_jobs=n_jobs,
+            preprocessing_params=preprocessing_params,
+            show_progress=show_progress,
+        )
+        tuning_seconds = time.perf_counter() - tune_started
+        cv_results.insert(0, "feature_set", feature_name)
+        cv_results.insert(0, "model", kind)
+        cv_results.to_csv(
+            output_dir / f"cv_results__{kind}__{feature_name}.csv", index=False
+        )
 
-            refit_started = time.perf_counter()
-            fitted = fit_survival_model(
-                kind,
-                best,
-                X[train_mask],
-                y[train_mask],
-                random_state=random_state,
-                n_jobs=n_jobs,
-                **preprocessing_params,
-            )
-            refit_seconds = time.perf_counter() - refit_started
-            eval_started = time.perf_counter()
-            metrics = evaluate_model(fitted, X[test_mask], y[test_mask])
-            evaluation_seconds = time.perf_counter() - eval_started
-            total_seconds = time.perf_counter() - total_started
-            best_params[kind][feature_name] = best
-            summaries.append(
-                {
-                    "model": kind,
-                    "feature_set": feature_name,
-                    "n_features": len(cols),
-                    "best_params_json": json.dumps(best, sort_keys=True),
-                    **metrics,
-                    "tuning_seconds": tuning_seconds,
-                    "refit_seconds": refit_seconds,
-                    "evaluation_seconds": evaluation_seconds,
-                    "total_seconds": total_seconds,
-                }
-            )
+        progress.set_postfix(
+            model=kind,
+            features=feature_name,
+            stage="refit",
+            refresh=True,
+        )
+        refit_started = time.perf_counter()
+        fitted = fit_survival_model(
+            kind,
+            best,
+            X[train_mask],
+            y[train_mask],
+            random_state=random_state,
+            n_jobs=n_jobs,
+            **preprocessing_params,
+        )
+        refit_seconds = time.perf_counter() - refit_started
+        progress.set_postfix(
+            model=kind,
+            features=feature_name,
+            stage="evaluation",
+            refresh=True,
+        )
+        eval_started = time.perf_counter()
+        metrics = evaluate_model(fitted, X[test_mask], y[test_mask])
+        evaluation_seconds = time.perf_counter() - eval_started
+        total_seconds = time.perf_counter() - total_started
+        best_params[kind][feature_name] = best
+        summaries.append(
+            {
+                "model": kind,
+                "feature_set": feature_name,
+                "n_features": len(cols),
+                "best_params_json": json.dumps(best, sort_keys=True),
+                **metrics,
+                "tuning_seconds": tuning_seconds,
+                "refit_seconds": refit_seconds,
+                "evaluation_seconds": evaluation_seconds,
+                "total_seconds": total_seconds,
+            }
+        )
+        # Checkpoint aggregate outputs after every completed comparison so
+        # earlier models remain available if a later model is interrupted.
+        pd.DataFrame(summaries).to_csv(
+            output_dir / "test_performance_and_timing.csv",
+            index=False,
+        )
+        with (output_dir / "best_hyperparameters.json").open("w") as handle:
+            json.dump(best_params, handle, indent=2, sort_keys=True)
 
     summary_df = pd.DataFrame(summaries)
-    summary_df.to_csv(output_dir / "test_performance_and_timing.csv", index=False)
-    with (output_dir / "best_hyperparameters.json").open("w") as handle:
-        json.dump(best_params, handle, indent=2, sort_keys=True)
     split_assignment.to_csv(output_dir / "train_test_split.csv", index=False)
     return summary_df, best_params
 
@@ -627,6 +680,7 @@ def generate_oof_risk_scores(
     model_names: Iterable[str] = MODEL_NAMES,
     feature_set_names: Iterable[str] = FEATURE_SET_NAMES,
     preprocessing_by_feature: dict[str, dict[str, Any]] | None = None,
+    show_progress: bool = True,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Generate 5-fold held-out risk scores for each requested comparison.
 
@@ -644,55 +698,78 @@ def generate_oof_risk_scores(
     fold_id = np.full(len(cohort), -1, dtype=int)
     timings: list[dict[str, Any]] = []
     preprocessing_by_feature = preprocessing_by_feature or {}
-    for kind in model_names:
-        for feature_name in feature_set_names:
-            column = f"{kind}__{feature_name}"
-            X = cohort[feature_sets[feature_name]].to_numpy(dtype=np.float32)
-            preprocessing_params = preprocessing_by_feature.get(feature_name, {})
-            oof = np.full(len(cohort), np.nan, dtype=float)
-            started_all = time.perf_counter()
-            for fold, (train_idx, val_idx) in enumerate(folds):
-                started = time.perf_counter()
-                fitted = fit_survival_model(
-                    kind,
-                    best_params[kind][feature_name],
-                    X[train_idx],
-                    y[train_idx],
-                    random_state=random_state + fold,
-                    n_jobs=n_jobs,
-                    need_survival_function=False,
-                    **preprocessing_params,
+    model_names = tuple(model_names)
+    feature_set_names = tuple(feature_set_names)
+    total_fits = len(model_names) * len(feature_set_names) * len(folds)
+    with tqdm(
+        total=total_fits,
+        desc="Generate OOF scores",
+        unit="fit",
+        disable=not show_progress,
+    ) as progress:
+        for kind in model_names:
+            for feature_name in feature_set_names:
+                progress.set_postfix(
+                    model=kind,
+                    features=feature_name,
+                    refresh=False,
                 )
-                raw = fitted.predict_risk(X[val_idx])
-                center = float(np.mean(fitted.train_risk))
-                scale = float(np.std(fitted.train_risk))
-                if not np.isfinite(scale) or scale <= 0:
-                    raise RuntimeError(f"{column} fold {fold} has constant training risks.")
-                oof[val_idx] = (raw - center) / scale
-                fold_id[val_idx] = fold
+                column = f"{kind}__{feature_name}"
+                X = cohort[feature_sets[feature_name]].to_numpy(dtype=np.float32)
+                preprocessing_params = preprocessing_by_feature.get(feature_name, {})
+                oof = np.full(len(cohort), np.nan, dtype=float)
+                started_all = time.perf_counter()
+                for fold, (train_idx, val_idx) in enumerate(folds):
+                    progress.set_postfix(
+                        model=kind,
+                        features=feature_name,
+                        fold=f"{fold + 1}/{len(folds)}",
+                        refresh=True,
+                    )
+                    started = time.perf_counter()
+                    fitted = fit_survival_model(
+                        kind,
+                        best_params[kind][feature_name],
+                        X[train_idx],
+                        y[train_idx],
+                        random_state=random_state + fold,
+                        n_jobs=n_jobs,
+                        need_survival_function=False,
+                        **preprocessing_params,
+                    )
+                    raw = fitted.predict_risk(X[val_idx])
+                    center = float(np.mean(fitted.train_risk))
+                    scale = float(np.std(fitted.train_risk))
+                    if not np.isfinite(scale) or scale <= 0:
+                        raise RuntimeError(
+                            f"{column} fold {fold} has constant training risks."
+                        )
+                    oof[val_idx] = (raw - center) / scale
+                    fold_id[val_idx] = fold
+                    timings.append(
+                        {
+                            "model": kind,
+                            "feature_set": feature_name,
+                            "fold": fold,
+                            "fit_predict_seconds": time.perf_counter() - started,
+                        }
+                    )
+                    progress.update()
+                if np.isnan(oof).any():
+                    raise RuntimeError(f"Incomplete OOF predictions for {column}.")
+                scores[column] = oof
                 timings.append(
                     {
                         "model": kind,
                         "feature_set": feature_name,
-                        "fold": fold,
-                        "fit_predict_seconds": time.perf_counter() - started,
+                        "fold": "all",
+                        "fit_predict_seconds": time.perf_counter() - started_all,
                     }
                 )
-            if np.isnan(oof).any():
-                raise RuntimeError(f"Incomplete OOF predictions for {column}.")
-            scores[column] = oof
-            timings.append(
-                {
-                    "model": kind,
-                    "feature_set": feature_name,
-                    "fold": "all",
-                    "fit_predict_seconds": time.perf_counter() - started_all,
-                }
-            )
-            scores[[id_col, event_col, time_col, column]].to_csv(
-                output_dir / f"oof_risk_scores__{kind}__{feature_name}.csv",
-                index=False,
-            )
+                scores[[id_col, event_col, time_col, column]].to_csv(
+                    output_dir / f"oof_risk_scores__{kind}__{feature_name}.csv",
+                    index=False,
+                )
 
     scores.insert(1, "oof_fold", fold_id)
     timing_df = pd.DataFrame(timings)

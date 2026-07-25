@@ -42,7 +42,7 @@ time interval are included in the output.
 ## Dependencies and execution
 
 The environment needs `numpy`, `pandas`, `scikit-learn`, `scikit-survival`,
-`xgboost`, `matplotlib`, and Jupyter. The notebooks reuse
+`xgboost`, `matplotlib`, `tqdm`, and Jupyter. The notebooks reuse
 `python_scripts/model_training/slurm_array_utils.py`, so the source files must
 be available at the data paths configured there.
 
@@ -66,4 +66,8 @@ Notebook 3 writes to:
 Set `N_JOBS` in the configuration cell to match the allocated CPUs. The grids
 contain 8 XGBoost, 12 elastic-net, and 6 RSF candidates per feature set. Edit
 `PARAM_GRIDS` in notebook 1 if a pilot run indicates a narrower or wider search
-is warranted.
+is warranted. Training, cross-validation, and OOF generation display progress
+bars by default; pass `show_progress=False` to the benchmark functions to
+disable them. The aggregate performance CSV and best-hyperparameters JSON are
+updated after every completed model/feature-set comparison, preserving earlier
+results if a later fit is interrupted.
