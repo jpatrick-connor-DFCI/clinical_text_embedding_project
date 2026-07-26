@@ -18,11 +18,11 @@ from typing import Any, Iterable
 
 import numpy as np
 import pandas as pd
+import torch
 from sklearn.decomposition import PCA
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.preprocessing import StandardScaler
-from sksurv.ensemble import RandomSurvivalForest
 from sksurv.linear_model import CoxnetSurvivalAnalysis
 from sksurv.metrics import (
     concordance_index_censored,
@@ -33,10 +33,10 @@ from tqdm.auto import tqdm
 from xgboost import XGBRegressor
 
 
-MODEL_NAMES = ("xgboost_cox", "elastic_net_cox", "rsf")
+MODEL_NAMES = ("xgboost_cox", "elastic_net_cox", "deep_surv")
 FEATURE_SET_NAMES = ("baseline", "baseline_text")
 
-# Compact grids: 8 XGBoost, 12 elastic-net, and 6 RSF candidates per feature set.
+# Compact grids: 8 XGBoost, 12 elastic-net, and 6 DeepSurv candidates per feature set.
 DEFAULT_PARAM_GRIDS: dict[str, dict[str, list[Any]]] = {
     "xgboost_cox": {
         "n_estimators": [250, 500],
@@ -47,10 +47,11 @@ DEFAULT_PARAM_GRIDS: dict[str, dict[str, list[Any]]] = {
         "alpha": [1e-4, 1e-3, 1e-2, 1e-1],
         "l1_ratio": [0.1, 0.5, 0.9],
     },
-    "rsf": {
-        "n_estimators": [300],
-        "max_features": ["sqrt", 0.25, 0.5],
-        "min_samples_leaf": [5, 20],
+    "deep_surv": {
+        "hidden_dims": [(128,), (256, 128)],
+        "dropout": [0.0, 0.2, 0.4],
+        "learning_rate": [1e-3],
+        "epochs": [100],
     },
 }
 
@@ -223,6 +224,74 @@ class ColumnStandardizer:
         return Xt
 
 
+class _DeepSurvNetwork(torch.nn.Module):
+    """Feed-forward network that estimates a Cox log-risk score."""
+
+    def __init__(
+        self,
+        n_features: int,
+        hidden_dims: Iterable[int],
+        dropout: float,
+    ) -> None:
+        super().__init__()
+        layers: list[torch.nn.Module] = []
+        width = n_features
+        for hidden_width in hidden_dims:
+            layers.extend(
+                [
+                    torch.nn.Linear(width, int(hidden_width)),
+                    torch.nn.ReLU(),
+                    torch.nn.Dropout(float(dropout)),
+                ]
+            )
+            width = int(hidden_width)
+        layers.append(torch.nn.Linear(width, 1))
+        self.layers = torch.nn.Sequential(*layers)
+
+    def forward(self, X: torch.Tensor) -> torch.Tensor:
+        return self.layers(X).squeeze(-1)
+
+
+def _cox_partial_likelihood_loss(
+    log_risk: torch.Tensor,
+    times: torch.Tensor,
+    events: torch.Tensor,
+) -> torch.Tensor:
+    """Negative Breslow partial log likelihood with tied-time risk sets."""
+    order = torch.argsort(times, descending=True, stable=True)
+    ordered_risk = log_risk[order]
+    ordered_times = times[order]
+    ordered_events = events[order]
+    log_risk_set = torch.logcumsumexp(ordered_risk, dim=0)
+
+    _, counts = torch.unique_consecutive(ordered_times, return_counts=True)
+    group_ends = torch.cumsum(counts, dim=0) - 1
+    tied_denominators = torch.repeat_interleave(log_risk_set[group_ends], counts)
+    event_terms = ordered_risk[ordered_events] - tied_denominators[ordered_events]
+    if event_terms.numel() == 0:
+        raise ValueError("DeepSurv training data contain no events.")
+    return -event_terms.mean()
+
+
+@dataclass
+class DeepSurvEstimator:
+    """Small sklearn-like prediction wrapper around a trained PyTorch network."""
+
+    network: _DeepSurvNetwork
+    device: torch.device
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        self.network.eval()
+        tensor = torch.as_tensor(
+            np.asarray(X, dtype=np.float32),
+            dtype=torch.float32,
+            device=self.device,
+        )
+        with torch.inference_mode():
+            prediction = self.network(tensor)
+        return prediction.detach().cpu().numpy()
+
+
 @dataclass
 class FittedSurvivalModel:
     kind: str
@@ -255,6 +324,17 @@ class FittedSurvivalModel:
                 0.0,
             )
             return np.exp(-np.outer(risk, base_hazard))
+
+        if self.kind == "deep_surv":
+            log_risk = np.asarray(self.estimator.predict(Xt), dtype=float)
+            hazard_ratio = np.exp(np.clip(log_risk, -50.0, 50.0))
+            idx = np.searchsorted(self.breslow_times, times, side="right") - 1
+            base_hazard = np.where(
+                idx >= 0,
+                self.breslow_cumhaz[np.maximum(idx, 0)],
+                0.0,
+            )
+            return np.exp(-np.outer(hazard_ratio, base_hazard))
 
         functions = self.estimator.predict_survival_function(Xt)
         return np.row_stack([fn(times) for fn in functions])
@@ -367,17 +447,70 @@ def fit_survival_model(
             kind, estimator, None, y, train_risk, bt, bh, input_preprocessor
         )
 
-    if kind == "rsf":
-        estimator = RandomSurvivalForest(
-            random_state=random_state,
-            n_jobs=n_jobs,
-            low_memory=not need_survival_function,
-            **params,
+    if kind == "deep_surv":
+        scaler = StandardScaler()
+        Xt = scaler.fit_transform(X).astype(np.float32, copy=False)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if device.type == "cpu":
+            torch.set_num_threads(max(1, int(n_jobs)))
+        torch.manual_seed(random_state)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(random_state)
+
+        estimator = DeepSurvEstimator(
+            network=_DeepSurvNetwork(
+                Xt.shape[1],
+                params["hidden_dims"],
+                float(params["dropout"]),
+            ).to(device),
+            device=device,
         )
-        estimator.fit(X, y)
-        train_risk = np.asarray(estimator.predict(X), dtype=float)
+        optimizer = torch.optim.Adam(
+            estimator.network.parameters(),
+            lr=float(params["learning_rate"]),
+            weight_decay=float(params.get("weight_decay", 0.0)),
+        )
+        X_tensor = torch.as_tensor(Xt, dtype=torch.float32, device=device)
+        time_tensor = torch.as_tensor(
+            np.asarray(y["time"], dtype=np.float32),
+            dtype=torch.float32,
+            device=device,
+        )
+        event_tensor = torch.as_tensor(
+            np.asarray(y["event"], dtype=bool),
+            dtype=torch.bool,
+            device=device,
+        )
+        estimator.network.train()
+        for _ in range(int(params["epochs"])):
+            optimizer.zero_grad(set_to_none=True)
+            loss = _cox_partial_likelihood_loss(
+                estimator.network(X_tensor),
+                time_tensor,
+                event_tensor,
+            )
+            if not torch.isfinite(loss):
+                raise RuntimeError("DeepSurv produced a non-finite training loss.")
+            loss.backward()
+            optimizer.step()
+
+        train_risk = np.asarray(estimator.predict(Xt), dtype=float)
+        bt, bh = (
+            _breslow_baseline(
+                y,
+                np.exp(np.clip(train_risk, -50.0, 50.0)),
+            )
+            if need_survival_function
+            else (None, None)
+        )
         return FittedSurvivalModel(
-            kind, estimator, None, y, train_risk,
+            kind,
+            estimator,
+            scaler,
+            y,
+            train_risk,
+            bt,
+            bh,
             input_preprocessor=input_preprocessor,
         )
 
@@ -535,6 +668,109 @@ def tune_one_model(
     return best, results.reset_index(drop=True)
 
 
+def _write_benchmark_checkpoint(
+    output_dir: Path,
+    summaries: list[dict[str, Any]],
+    best_params: dict[str, dict[str, Any]],
+) -> None:
+    """Atomically update the aggregate benchmark checkpoint files."""
+    summary_path = output_dir / "test_performance_and_timing.csv"
+    summary_tmp = output_dir / ".test_performance_and_timing.csv.tmp"
+    params_path = output_dir / "best_hyperparameters.json"
+    params_tmp = output_dir / ".best_hyperparameters.json.tmp"
+
+    pd.DataFrame(summaries).to_csv(summary_tmp, index=False)
+    with params_tmp.open("w") as handle:
+        json.dump(best_params, handle, indent=2, sort_keys=True)
+    summary_tmp.replace(summary_path)
+    params_tmp.replace(params_path)
+
+
+def _load_benchmark_checkpoint(
+    output_dir: Path,
+    comparisons: list[tuple[str, str]],
+) -> tuple[
+    list[dict[str, Any]],
+    dict[str, dict[str, Any]],
+    set[tuple[str, str]],
+]:
+    """Load completed model/feature pairs from aggregate checkpoint files."""
+    summary_path = output_dir / "test_performance_and_timing.csv"
+    params_path = output_dir / "best_hyperparameters.json"
+    if not summary_path.exists() or not params_path.exists():
+        return [], {}, set()
+
+    summary_df = pd.read_csv(summary_path)
+    required = {"model", "feature_set"}
+    if not required.issubset(summary_df.columns):
+        warnings.warn(
+            f"Ignoring malformed benchmark checkpoint: {summary_path}",
+            stacklevel=2,
+        )
+        return [], {}, set()
+    with params_path.open() as handle:
+        best_params = json.load(handle)
+
+    requested = set(comparisons)
+    # Retain only requested comparisons and the most recent duplicate. This
+    # removes results from model definitions that have since been replaced.
+    requested_rows = [
+        (model, feature_set) in requested
+        for model, feature_set in summary_df[["model", "feature_set"]].itertuples(
+            index=False,
+            name=None,
+        )
+    ]
+    summary_df = summary_df.loc[requested_rows]
+    summary_df = summary_df.drop_duplicates(
+        subset=["model", "feature_set"],
+        keep="last",
+    )
+    best_params = {
+        kind: {
+            feature_name: params
+            for feature_name, params in feature_params.items()
+            if (kind, feature_name) in requested
+        }
+        for kind, feature_params in best_params.items()
+        if isinstance(feature_params, dict)
+    }
+    best_params = {
+        kind: feature_params
+        for kind, feature_params in best_params.items()
+        if feature_params
+    }
+    summary_pairs = set(
+        summary_df[["model", "feature_set"]].itertuples(index=False, name=None)
+    )
+    parameter_pairs = {
+        (kind, feature_name)
+        for kind, feature_params in best_params.items()
+        if isinstance(feature_params, dict)
+        for feature_name in feature_params
+    }
+    completed = summary_pairs & parameter_pairs & requested
+
+    # A pair is resumable only when both aggregate files contain its result.
+    incomplete = requested - completed
+    if incomplete:
+        keep = [
+            (model, feature_set) not in incomplete
+            for model, feature_set in summary_df[["model", "feature_set"]].itertuples(
+                index=False,
+                name=None,
+            )
+        ]
+        summary_df = summary_df.loc[keep]
+        for kind, feature_name in incomplete:
+            if kind in best_params and isinstance(best_params[kind], dict):
+                best_params[kind].pop(feature_name, None)
+                if not best_params[kind]:
+                    best_params.pop(kind)
+
+    return summary_df.to_dict(orient="records"), best_params, completed
+
+
 def run_train_test_benchmark(
     cohort: pd.DataFrame,
     feature_sets: dict[str, list[str]],
@@ -551,8 +787,14 @@ def run_train_test_benchmark(
     feature_set_names: Iterable[str] = FEATURE_SET_NAMES,
     preprocessing_by_feature: dict[str, dict[str, Any]] | None = None,
     show_progress: bool = True,
+    resume: bool = True,
 ) -> tuple[pd.DataFrame, dict[str, dict[str, Any]]]:
-    """Tune, refit, evaluate, and persist the requested model/feature comparisons."""
+    """Tune, refit, evaluate, and persist model/feature comparisons.
+
+    When ``resume`` is true, comparisons present in both aggregate checkpoint
+    files are skipped. Use ``resume=False`` to intentionally rerun every
+    requested comparison.
+    """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     split_map = split_assignment.set_index(id_col)["split"]
@@ -563,8 +805,6 @@ def run_train_test_benchmark(
     test_mask = labels.eq("test").to_numpy()
     y = make_survival_array(cohort[event_col], cohort[time_col])
 
-    summaries: list[dict[str, Any]] = []
-    best_params: dict[str, dict[str, Any]] = {}
     preprocessing_by_feature = preprocessing_by_feature or {}
     model_names = tuple(model_names)
     feature_set_names = tuple(feature_set_names)
@@ -573,13 +813,24 @@ def run_train_test_benchmark(
         for kind in model_names
         for feature_name in feature_set_names
     ]
+    if resume:
+        summaries, best_params, completed = _load_benchmark_checkpoint(
+            output_dir,
+            comparisons,
+        )
+    else:
+        summaries, best_params, completed = [], {}, set()
+
+    remaining = [pair for pair in comparisons if pair not in completed]
+    split_assignment.to_csv(output_dir / "train_test_split.csv", index=False)
     progress = tqdm(
-        comparisons,
+        total=len(comparisons),
+        initial=len(completed),
         desc="Tune/refit/test",
         unit="comparison",
         disable=not show_progress,
     )
-    for kind, feature_name in progress:
+    for kind, feature_name in remaining:
         progress.set_postfix(
             model=kind,
             features=feature_name,
@@ -653,15 +904,11 @@ def run_train_test_benchmark(
         )
         # Checkpoint aggregate outputs after every completed comparison so
         # earlier models remain available if a later model is interrupted.
-        pd.DataFrame(summaries).to_csv(
-            output_dir / "test_performance_and_timing.csv",
-            index=False,
-        )
-        with (output_dir / "best_hyperparameters.json").open("w") as handle:
-            json.dump(best_params, handle, indent=2, sort_keys=True)
+        _write_benchmark_checkpoint(output_dir, summaries, best_params)
+        progress.update()
 
+    progress.close()
     summary_df = pd.DataFrame(summaries)
-    split_assignment.to_csv(output_dir / "train_test_split.csv", index=False)
     return summary_df, best_params
 
 

@@ -1,7 +1,7 @@
 # Mortality model comparison
 
-These notebooks compare XGBoost with a Cox loss, elastic-net Cox, and random
-survival forests (RSF) for the full-cohort `death_met/death` endpoint. Each
+These notebooks compare XGBoost with a Cox loss, elastic-net Cox, and DeepSurv
+for the full-cohort `death_met/death` endpoint. Each
 algorithm is fit with two feature sets:
 
 - `baseline`: gender, age at treatment start, and cancer-type indicators.
@@ -25,7 +25,7 @@ validation-fold score is centered and scaled using the scores from that fold's
 training patients only.
 
 `03_feature_comparison_all_models.ipynb` re-runs the existing elastic-net Cox
-modality comparison and extends it to XGBoost-Cox and RSF for mortality. It
+modality comparison and extends it to XGBoost-Cox and DeepSurv for mortality. It
 fits baseline plus one of six modalities (stage, treatment, labs, somatic, PRS,
 or text), selects hyperparameters within the shared 80% training cohort,
 reports test metrics and timing, and produces 18 whole-cohort held-out
@@ -42,7 +42,7 @@ time interval are included in the output.
 ## Dependencies and execution
 
 The environment needs `numpy`, `pandas`, `scikit-learn`, `scikit-survival`,
-`xgboost`, `matplotlib`, `tqdm`, and Jupyter. The notebooks reuse
+`xgboost`, `torch`, `matplotlib`, `tqdm`, and Jupyter. The notebooks reuse
 `python_scripts/model_training/slurm_array_utils.py`, so the source files must
 be available at the data paths configured there.
 
@@ -64,10 +64,13 @@ Notebook 3 writes to:
 ```
 
 Set `N_JOBS` in the configuration cell to match the allocated CPUs. The grids
-contain 8 XGBoost, 12 elastic-net, and 6 RSF candidates per feature set. Edit
+contain 8 XGBoost, 12 elastic-net, and 6 DeepSurv candidates per feature set. Edit
 `PARAM_GRIDS` in notebook 1 if a pilot run indicates a narrower or wider search
 is warranted. Training, cross-validation, and OOF generation display progress
 bars by default; pass `show_progress=False` to the benchmark functions to
 disable them. The aggregate performance CSV and best-hyperparameters JSON are
 updated after every completed model/feature-set comparison, preserving earlier
-results if a later fit is interrupted.
+results if a later fit is interrupted. Re-running a training cell resumes from
+those files and skips completed comparisons; pass `resume=False` to
+`run_train_test_benchmark` to force a complete rerun. Resume assumes the cohort,
+split, feature definitions, and hyperparameter grids have not changed.
