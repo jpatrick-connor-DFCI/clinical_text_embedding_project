@@ -1,0 +1,25 @@
+{
+  "MODALITY_ORDER": ["stage", "treatment", "somatic", "prs", "text"],
+  "MODALITY_COLORS": {
+    "stage": "#8C8C8C",
+    "treatment": "#E8B72E",
+    "somatic": "#60BD68",
+    "prs": "#B276B2",
+    "text": "#D62728"
+  },
+  "MODALITY_DISPLAY": {
+    "stage": "Stage",
+    "treatment": "Treatment",
+    "somatic": "Somatic",
+    "prs": "PRS",
+    "text": "Text"
+  },
+  "MODEL_COLORS": {
+    "text": "#D62728",
+    "base": "#4A4A4A"
+  },
+  "CLUSTER_COLORS": [
+    "#1F77B4", "#FF7F0E", "#2CA02C", "#D62728",
+    "#9467BD", "#8C564B", "#E377C2", "#7F7F7F"
+  ]
+}
