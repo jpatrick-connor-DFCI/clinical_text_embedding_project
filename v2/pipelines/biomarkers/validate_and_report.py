@@ -28,14 +28,14 @@ def _resolve_compiled_dir():
 
     preferred = DEFAULT_COMPILED_DIR
     legacy_inputs = [
-        os.path.join(LEGACY_COMPILED_DIR, 'all_findings_with_validation.csv.gz'),
-        os.path.join(LEGACY_COMPILED_DIR, 'track1_all_significant_hits.csv.gz'),
-        os.path.join(LEGACY_COMPILED_DIR, 'track2_all_significant_hits.csv.gz'),
+        os.path.join(LEGACY_COMPILED_DIR, 'all_findings_with_validation.csv'),
+        os.path.join(LEGACY_COMPILED_DIR, 'track1_all_significant_hits.csv'),
+        os.path.join(LEGACY_COMPILED_DIR, 'track2_all_significant_hits.csv'),
     ]
     preferred_inputs = [
-        os.path.join(preferred, 'all_findings_with_validation.csv.gz'),
-        os.path.join(preferred, 'track1_all_significant_hits.csv.gz'),
-        os.path.join(preferred, 'track2_all_significant_hits.csv.gz'),
+        os.path.join(preferred, 'all_findings_with_validation.csv'),
+        os.path.join(preferred, 'track1_all_significant_hits.csv'),
+        os.path.join(preferred, 'track2_all_significant_hits.csv'),
     ]
 
     if not any(os.path.exists(path) for path in preferred_inputs) and any(os.path.exists(path) for path in legacy_inputs):
@@ -44,7 +44,7 @@ def _resolve_compiled_dir():
 
 
 COMPILED_DIR = _resolve_compiled_dir()
-FINDINGS_CSV = os.path.join(COMPILED_DIR, 'all_findings_with_validation.csv.gz')
+FINDINGS_CSV = os.path.join(COMPILED_DIR, 'all_findings_with_validation.csv')
 REPORT_DOCX = os.path.join(COMPILED_DIR, 'ICI_Biomarker_Pipeline_Report.docx')
 
 

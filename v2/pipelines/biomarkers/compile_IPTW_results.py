@@ -108,8 +108,8 @@ def main() -> None:
     print(f"Track 1 (ICI-only): {len(t1)} significant hits")
     print(f"Track 2 (interaction): {len(t2)} significant hits")
 
-    t1.to_csv(os.path.join(OUTPUT_DIR, 'track1_all_significant_hits.csv.gz'), index=False)
-    t2.to_csv(os.path.join(OUTPUT_DIR, 'track2_all_significant_hits.csv.gz'), index=False)
+    t1.to_csv(os.path.join(OUTPUT_DIR, 'track1_all_significant_hits.csv'), index=False)
+    t2.to_csv(os.path.join(OUTPUT_DIR, 'track2_all_significant_hits.csv'), index=False)
 
     # ================================================
     # 2. Cohort patient counts by cancer type

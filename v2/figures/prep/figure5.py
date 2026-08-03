@@ -145,7 +145,7 @@ def _ps_predictions() -> pd.DataFrame:
 
 
 def _robust_hits() -> pd.DataFrame:
-    fp = os.path.join(COMPILED_DIR, "track2_all_significant_hits.csv.gz")
+    fp = os.path.join(COMPILED_DIR, "track2_all_significant_hits.csv")
     if not os.path.exists(fp):
         print(f"  missing {fp}")
         return pd.DataFrame(columns=ROBUST_COLUMNS)
@@ -208,7 +208,7 @@ def _robust_hits() -> pd.DataFrame:
 
 
 def _km_top_hit() -> tuple[pd.DataFrame, pd.DataFrame]:
-    t2_fp = os.path.join(COMPILED_DIR, "track2_all_significant_hits.csv.gz")
+    t2_fp = os.path.join(COMPILED_DIR, "track2_all_significant_hits.csv")
     if not os.path.exists(t2_fp):
         return pd.DataFrame(columns=KM_COLUMNS), pd.DataFrame(columns=TOP_HIT_META_COLUMNS)
     try:
@@ -417,8 +417,8 @@ def _track2_row(t2: pd.DataFrame, marker: str, cancer: str, cohort: str) -> dict
 
 
 def _forest_headline() -> pd.DataFrame:
-    t1_fp = os.path.join(COMPILED_DIR, "track1_all_significant_hits.csv.gz")
-    t2_fp = os.path.join(COMPILED_DIR, "track2_all_significant_hits.csv.gz")
+    t1_fp = os.path.join(COMPILED_DIR, "track1_all_significant_hits.csv")
+    t2_fp = os.path.join(COMPILED_DIR, "track2_all_significant_hits.csv")
     if not (os.path.exists(t1_fp) and os.path.exists(t2_fp)):
         print(f"  missing T1 or T2 compiled hits at {COMPILED_DIR}; forest empty")
         return pd.DataFrame(columns=FOREST_COLUMNS)
@@ -446,8 +446,8 @@ def _forest_headline() -> pd.DataFrame:
 
 
 def _km_examples() -> pd.DataFrame:
-    t1_fp = os.path.join(COMPILED_DIR, "track1_all_significant_hits.csv.gz")
-    t2_fp = os.path.join(COMPILED_DIR, "track2_all_significant_hits.csv.gz")
+    t1_fp = os.path.join(COMPILED_DIR, "track1_all_significant_hits.csv")
+    t2_fp = os.path.join(COMPILED_DIR, "track2_all_significant_hits.csv")
     if not os.path.exists(t2_fp):
         print(f"  missing {t2_fp}; cannot build KM examples")
         return pd.DataFrame(columns=KM_EXAMPLE_COLUMNS)

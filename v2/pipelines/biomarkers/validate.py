@@ -73,8 +73,8 @@ def validate_hit(marker, cancer_type, mutation_type):
 def bootstrap_findings_df(compiled_dir):
     """Rebuild all_findings_with_validation.csv from compiled Track 1/2 outputs."""
     track_specs = [
-        (1, 'track1_all_significant_hits.csv.gz'),
-        (2, 'track2_all_significant_hits.csv.gz'),
+        (1, 'track1_all_significant_hits.csv'),
+        (2, 'track2_all_significant_hits.csv'),
     ]
     frames = []
     missing = []
