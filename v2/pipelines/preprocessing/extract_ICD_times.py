@@ -2,7 +2,6 @@
 
 import os
 
-import pandas as pd
 import polars as pl
 
 from config import SURV_PATH
@@ -11,23 +10,23 @@ from pipelines.preprocessing import profile_sources as ps
 
 
 def main() -> None:
-    cohort_df = pd.read_parquet(os.path.join(SURV_PATH, "cohort_df.parquet"))
-    cohort_mrns = cohort_df["DFCI_MRN"].unique().tolist()
-    mrn_tstart_dict = dict(zip(cohort_df["DFCI_MRN"], cohort_df["first_treatment_date"]))
+    cohort_df = pl.read_parquet(os.path.join(SURV_PATH, "cohort_df.parquet"))
+    cohort_mrns = cohort_df.get_column("DFCI_MRN").unique().to_list()
 
     df_long = ps.load_and_explode_icd()
     df_long = df_long.filter(pl.col("DFCI_MRN").is_in(cohort_mrns))
 
     split_ehr_icd_subset = df_long.select(
         ["DFCI_MRN", "START_DT", "DIAGNOSIS_ICD10_CD", "DIAGNOSIS_ICD10_NM"]
-    ).to_pandas()
-
-    split_ehr_icd_subset["FIRST_TREATMENT_START_DT"] = split_ehr_icd_subset["DFCI_MRN"].map(mrn_tstart_dict)
-    split_ehr_icd_subset["START_DT"] = pd.to_datetime(split_ehr_icd_subset["START_DT"])
-    split_ehr_icd_subset["FIRST_TREATMENT_START_DT"] = pd.to_datetime(split_ehr_icd_subset["FIRST_TREATMENT_START_DT"])
-    split_ehr_icd_subset["TIME_TO_ICD"] = (
-        split_ehr_icd_subset["START_DT"] - split_ehr_icd_subset["FIRST_TREATMENT_START_DT"]
-    ).dt.days
+    ).join(
+        cohort_df.select(["DFCI_MRN", pl.col("first_treatment_date").alias("FIRST_TREATMENT_START_DT")]),
+        on="DFCI_MRN", how="left",
+    ).with_columns(
+        pl.col("START_DT").cast(pl.Datetime, strict=False),
+        pl.col("FIRST_TREATMENT_START_DT").cast(pl.Datetime, strict=False),
+    ).with_columns(
+        (pl.col("START_DT") - pl.col("FIRST_TREATMENT_START_DT")).dt.total_days().alias("TIME_TO_ICD")
+    )
 
     assert_schema(
         split_ehr_icd_subset,
@@ -43,7 +42,7 @@ def main() -> None:
         key_col=None,
     )
 
-    split_ehr_icd_subset.to_parquet(os.path.join(SURV_PATH, 'timestamped_icd_info.parquet'), index=False)
+    split_ehr_icd_subset.write_parquet(os.path.join(SURV_PATH, 'timestamped_icd_info.parquet'))
 
 
 if __name__ == "__main__":

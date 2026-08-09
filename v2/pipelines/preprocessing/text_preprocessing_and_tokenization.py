@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import pandas as pd
+import polars as pl
 import zstandard as zstd
 from tqdm.auto import tqdm
 
@@ -72,30 +72,34 @@ def ensure_output_dirs() -> None:
 
 def load_cohort_mrns() -> set[int]:
     """Load cohort MRNs into a set for fast membership checks."""
-    cohort_df = pd.read_parquet(os.path.join(SURV_PATH, "cohort_df.parquet"), columns=["DFCI_MRN"])
-    mrns = pd.to_numeric(cohort_df["DFCI_MRN"], errors="coerce").dropna().astype(np.int64)
-    return set(mrns.tolist())
+    cohort_df = pl.read_parquet(os.path.join(SURV_PATH, "cohort_df.parquet"), columns=["DFCI_MRN"])
+    return set(
+        cohort_df.select(pl.col("DFCI_MRN").cast(pl.Int64, strict=False))
+        .drop_nulls()
+        .get_column("DFCI_MRN")
+        .to_list()
+    )
 
 
-def load_note_source_df(note_type: str, note_type_label: str, cohort_mrns: set[int]) -> pd.DataFrame:
+def load_note_source_df(note_type: str, note_type_label: str, cohort_mrns: set[int]) -> pl.DataFrame:
     """Load one note-metadata parquet, filter to cohort MRNs, and normalize to
     COLUMNS_TO_SAVE. The compiled parquets are already RPT_ID-deduped across
     all four raw pulls, newest-wins, so no cross-snapshot dedup is needed here."""
     available_cols = [c for c in COL_METADATA if c != ps.MRN] + [ps.MRN, ps.RPT_TEXT]
-    note_df = ps.load_note_metadata(note_type).to_pandas()
+    note_df = ps.load_note_metadata(note_type)
     present_cols = [c for c in available_cols if c in note_df.columns]
-    note_df = note_df[present_cols]
-
-    note_df[ps.MRN] = pd.to_numeric(note_df[ps.MRN], errors="coerce")
-    note_df = note_df.loc[note_df[ps.MRN].isin(cohort_mrns)].copy()
+    note_df = note_df.select(present_cols).with_columns(
+        pl.col(ps.MRN).cast(pl.Int64, strict=False)
+    ).filter(pl.col(ps.MRN).is_in(cohort_mrns))
 
     for col in COL_METADATA:
         if col not in note_df.columns:
-            note_df[col] = np.nan
+            note_df = note_df.with_columns(pl.lit(None).alias(col))
 
-    note_df["NOTE_TYPE"] = note_type_label
-    note_df["CLINICAL_TEXT"] = note_df[ps.RPT_TEXT].fillna("").astype(str).map(clean_text).str.strip()
-    return note_df[COLUMNS_TO_SAVE]
+    return note_df.with_columns(
+        pl.lit(note_type_label).alias("NOTE_TYPE"),
+        pl.col(ps.RPT_TEXT).fill_null("").cast(pl.String).map_elements(clean_text, return_dtype=pl.String).str.strip_chars().alias("CLINICAL_TEXT"),
+    ).select(COLUMNS_TO_SAVE)
 
 
 def resolve_token_dtype(tokenizer: Any) -> np.dtype:
@@ -154,23 +158,21 @@ def write_npz_zst(path: Path, arrays: dict[str, np.ndarray]) -> None:
         handle.write(zstd.compress(buf.getvalue(), level=15))
 
 
-def save_tokenized_batch(batch_df: pd.DataFrame, tokenizer: Any, batch_idx: int) -> None:
+def save_tokenized_batch(batch_df: pl.DataFrame, tokenizer: Any, batch_idx: int) -> None:
     """Tokenize a text batch and save token arrays plus metadata."""
-    clinical_texts = batch_df["CLINICAL_TEXT"].fillna("").astype(str).tolist()
+    clinical_texts = batch_df.get_column("CLINICAL_TEXT").fill_null("").cast(pl.String).to_list()
     tokenized_dict = tokenize_texts(tokenizer, clinical_texts)
     write_npz_zst(
         BATCHED_TOKEN_FILES_PATH / f"clinical_notes_tokenized_batch_{batch_idx}_tokens{TOKEN_BATCH_SUFFIX}",
         tokenized_dict,
     )
 
-    metadata_df = batch_df.drop(columns=["CLINICAL_TEXT"])
-    metadata_df.to_parquet(
-        BATCHED_METADATA_PATH / f"clinical_notes_tokenized_batch_{batch_idx}_metadata.parquet", index=False
-    )
+    metadata_df = batch_df.drop("CLINICAL_TEXT")
+    metadata_df.write_parquet(BATCHED_METADATA_PATH / f"clinical_notes_tokenized_batch_{batch_idx}_metadata.parquet")
 
 
 def flush_batch(
-    batch_df: pd.DataFrame,
+    batch_df: pl.DataFrame,
     tokenizer: Any,
     batch_idx: int,
 ) -> None:
@@ -187,21 +189,21 @@ def main() -> None:
     cohort_mrns = load_cohort_mrns()
     tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_MODEL_NAME)
 
-    all_notes = pd.concat(
+    all_notes = pl.concat(
         [
             load_note_source_df(note_type, note_type_label, cohort_mrns)
             for note_type, note_type_label in NOTE_TYPE_SOURCES
         ],
-        ignore_index=True,
+        how="vertical_relaxed",
     )
 
     batch_count = 0
     kept_note_count = 0
 
-    for start_idx in tqdm(range(0, len(all_notes), BATCH_SIZE), desc="Tokenizing note batches"):
-        batch_df = all_notes.iloc[start_idx:start_idx + BATCH_SIZE].reset_index(drop=True)
+    for start_idx in tqdm(range(0, all_notes.height, BATCH_SIZE), desc="Tokenizing note batches"):
+        batch_df = all_notes.slice(start_idx, BATCH_SIZE)
         flush_batch(batch_df, tokenizer, batch_count)
-        kept_note_count += len(batch_df)
+        kept_note_count += batch_df.height
         batch_count += 1
 
     print(f"Saved {kept_note_count} cohort notes across {batch_count} batches.")

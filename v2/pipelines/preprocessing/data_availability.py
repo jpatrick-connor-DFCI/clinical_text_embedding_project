@@ -15,7 +15,7 @@ from __future__ import annotations
 import itertools
 import os
 
-import pandas as pd
+import polars as pl
 
 from config import FEATURE_PATH, NOTES_PATH
 from shared.stages import load_stage_map, normalize_stage
@@ -35,9 +35,8 @@ def _mrns_with_stage(cohort_mrns: set[int]) -> set[int]:
 
 
 def _mrns_with_treatment(cohort_mrns: set[int]) -> set[int]:
-    tx_df = pd.read_csv(os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv.gz"))
-    tx1 = tx_df.loc[tx_df["treatment_line"] == 1]
-    return set(tx1["DFCI_MRN"]) & cohort_mrns
+    tx_df = pl.read_csv(os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv.gz"))
+    return set(tx_df.filter(pl.col("treatment_line") == 1).get_column("DFCI_MRN")) & cohort_mrns
 
 
 def _mrns_with_raw_feature(filename: str, cohort_mrns: set[int]) -> set[int]:
@@ -45,8 +44,8 @@ def _mrns_with_raw_feature(filename: str, cohort_mrns: set[int]) -> set[int]:
     if not os.path.exists(fp):
         print(f"  missing {fp}")
         return set()
-    d = pd.read_csv(fp, usecols=["DFCI_MRN"])
-    return set(d["DFCI_MRN"]) & cohort_mrns
+    d = pl.read_csv(fp, columns=["DFCI_MRN"])
+    return set(d.get_column("DFCI_MRN")) & cohort_mrns
 
 
 def _mrns_with_text(cohort_mrns: set[int]) -> set[int]:
@@ -59,8 +58,8 @@ def _mrns_with_text(cohort_mrns: set[int]) -> set[int]:
     if not os.path.exists(metadata_fp):
         print(f"  missing {metadata_fp}")
         return set()
-    notes_meta = pd.read_parquet(metadata_fp, columns=["DFCI_MRN"])
-    return set(notes_meta["DFCI_MRN"]) & cohort_mrns
+    notes_meta = pl.read_parquet(metadata_fp, columns=["DFCI_MRN"])
+    return set(notes_meta.get_column("DFCI_MRN")) & cohort_mrns
 
 
 def modality_mrn_sets(cohort_mrns: set[int]) -> dict[str, set[int]]:
@@ -75,35 +74,28 @@ def modality_mrn_sets(cohort_mrns: set[int]) -> dict[str, set[int]]:
     }
 
 
-def availability_matrix(cohort_mrns: set[int], modality_sets: dict[str, set[int]]) -> pd.DataFrame:
+def availability_matrix(cohort_mrns: set[int], modality_sets: dict[str, set[int]]) -> pl.DataFrame:
     """DFCI_MRN x boolean-per-modality, one row per cohort patient."""
     mrns = sorted(cohort_mrns)
     data = {"DFCI_MRN": mrns}
     for modality in MODALITY_ORDER:
         mrn_set = modality_sets.get(modality, set())
         data[modality] = [mrn in mrn_set for mrn in mrns]
-    return pd.DataFrame(data)
+    return pl.DataFrame(data)
 
 
-def combination_counts(matrix: pd.DataFrame) -> pd.DataFrame:
+def combination_counts(matrix: pl.DataFrame) -> pl.DataFrame:
     """One row per *observed* boolean pattern across MODALITY_ORDER + n_patients.
     Emits only observed patterns, not all 2^len(MODALITY_ORDER)."""
     modalities = [m for m in MODALITY_ORDER if m in matrix.columns]
-    grouped = (
-        matrix.groupby(modalities, as_index=False)
-        .size()
-        .rename(columns={"size": "n_patients"})
-        .sort_values("n_patients", ascending=False)
-        .reset_index(drop=True)
-    )
-    return grouped[modalities + ["n_patients"]]
+    return matrix.group_by(modalities).len(name="n_patients").sort("n_patients", descending=True).select(modalities + ["n_patients"])
 
 
-def pairwise_overlap(modality_sets: dict[str, set[int]]) -> pd.DataFrame:
+def pairwise_overlap(modality_sets: dict[str, set[int]]) -> pl.DataFrame:
     """k x k intersection matrix (modality_a, modality_b, n_overlap)."""
     modalities = [m for m in MODALITY_ORDER if m in modality_sets]
     rows = []
     for mod_a, mod_b in itertools.product(modalities, modalities):
         n_overlap = len(modality_sets[mod_a] & modality_sets[mod_b])
         rows.append({"modality_a": mod_a, "modality_b": mod_b, "n_overlap": n_overlap})
-    return pd.DataFrame(rows, columns=["modality_a", "modality_b", "n_overlap"])
+    return pl.DataFrame(rows, schema=["modality_a", "modality_b", "n_overlap"])

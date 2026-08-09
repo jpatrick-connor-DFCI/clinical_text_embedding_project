@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import os
 
-import pandas as pd
+import polars as pl
 
 from config import FEATURE_PATH, SURV_PATH
 from pipelines.preprocessing.data_availability import (
@@ -30,13 +30,13 @@ from pipelines.preprocessing.data_availability import (
 
 
 def main() -> None:
-    cohort_df = pd.read_parquet(os.path.join(SURV_PATH, "cohort_df.parquet"), columns=["DFCI_MRN"])
-    cohort_mrns = set(cohort_df["DFCI_MRN"])
+    cohort_df = pl.read_parquet(os.path.join(SURV_PATH, "cohort_df.parquet"), columns=["DFCI_MRN"])
+    cohort_mrns = set(cohort_df.get_column("DFCI_MRN"))
 
     cancer_type_fp = os.path.join(FEATURE_PATH, "cancer_type_df.csv.gz")
     cancer_type_mrns: set[int] = set()
     if os.path.exists(cancer_type_fp):
-        cancer_type_mrns = set(pd.read_csv(cancer_type_fp, usecols=["DFCI_MRN"])["DFCI_MRN"])
+        cancer_type_mrns = set(pl.read_csv(cancer_type_fp, columns=["DFCI_MRN"]).get_column("DFCI_MRN"))
 
     modality_sets = modality_mrn_sets(cohort_mrns)
 
@@ -53,7 +53,7 @@ def main() -> None:
     marginals_rows.append({
         "modality": "all", "n_patients": len(all_thresholds), "n_total": len(cohort_mrns),
     })
-    marginals_df = pd.DataFrame(marginals_rows, columns=["modality", "n_patients", "n_total"])
+    marginals_df = pl.DataFrame(marginals_rows, schema=["modality", "n_patients", "n_total"])
 
     matrix = availability_matrix(cohort_mrns, modality_sets)
     combinations_df = combination_counts(matrix)
@@ -64,9 +64,9 @@ def main() -> None:
     pairwise_fp = os.path.join(SURV_PATH, "data_availability_pairwise.csv")
     summary_fp = os.path.join(SURV_PATH, "data_availability_summary.json")
 
-    marginals_df.to_csv(marginals_fp, index=False)
-    combinations_df.to_csv(combinations_fp, index=False)
-    pairwise_df.to_csv(pairwise_fp, index=False)
+    marginals_df.write_csv(marginals_fp)
+    combinations_df.write_csv(combinations_fp)
+    pairwise_df.write_csv(pairwise_fp)
 
     delta_mrns = cohort_mrns.symmetric_difference(cancer_type_mrns)
     summary = {
@@ -81,9 +81,9 @@ def main() -> None:
     with open(summary_fp, "w") as f:
         f.write(json.dumps(summary, indent=2))
 
-    print(f"[wrote] {marginals_fp} ({len(marginals_df)} rows)")
-    print(f"[wrote] {combinations_fp} ({len(combinations_df)} rows)")
-    print(f"[wrote] {pairwise_fp} ({len(pairwise_df)} rows)")
+    print(f"[wrote] {marginals_fp} ({marginals_df.height} rows)")
+    print(f"[wrote] {combinations_fp} ({combinations_df.height} rows)")
+    print(f"[wrote] {pairwise_fp} ({pairwise_df.height} rows)")
     print(f"[wrote] {summary_fp}")
     print(json.dumps(summary, indent=2))
 

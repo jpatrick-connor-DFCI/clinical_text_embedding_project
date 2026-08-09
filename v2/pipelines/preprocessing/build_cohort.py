@@ -224,7 +224,7 @@ def main() -> None:
     )
     attrition["sequencing_anchor"] = seq_attrition
 
-    cohort_pd = cohort_df.select(
+    cohort_out = cohort_df.select(
         [
             "DFCI_MRN",
             "first_treatment_date",
@@ -243,10 +243,10 @@ def main() -> None:
             "tt_death_sequencing",
             "eligible_sequencing",
         ]
-    ).to_pandas()
+    )
 
     assert_schema(
-        cohort_pd,
+        cohort_out,
         "cohort_df",
         required_cols=[
             "DFCI_MRN",
@@ -263,13 +263,13 @@ def main() -> None:
     )
 
     out_path = os.path.join(SURV_PATH, "cohort_df.parquet")
-    cohort_pd.to_parquet(out_path, index=False)
+    cohort_out.write_parquet(out_path)
 
     attrition_path = os.path.join(SURV_PATH, "cohort_attrition.json")
     with open(attrition_path, "w") as f:
         f.write(json.dumps(attrition, indent=2))
 
-    print(f"Saved cohort ({cohort_pd.shape[0]} patients) to {out_path}")
+    print(f"Saved cohort ({cohort_out.height} patients) to {out_path}")
     print(f"Saved attrition counts to {attrition_path}")
     print(json.dumps(attrition, indent=2))
 

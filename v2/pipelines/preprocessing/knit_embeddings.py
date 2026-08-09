@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
+import polars as pl
 import zstandard as zstd
 from tqdm.auto import tqdm
 
@@ -48,12 +48,13 @@ def discover_batch_indices(path: Path, pattern: re.Pattern[str]) -> set[int]:
     return batch_indices
 
 
-def load_batch_metadata(batch_idx: int) -> pd.DataFrame:
+def load_batch_metadata(batch_idx: int) -> pl.DataFrame:
     """Load one metadata batch from disk."""
-    metadata_df = pd.read_parquet(META_PATH / f"clinical_notes_tokenized_batch_{batch_idx}_metadata.parquet")
-    metadata_df["SUB_BATCH_FILE_ID"] = f"batch_{batch_idx}"
-    metadata_df["WITHIN_SUB_BATCH_INDEX"] = np.arange(len(metadata_df))
-    return metadata_df
+    metadata_df = pl.read_parquet(META_PATH / f"clinical_notes_tokenized_batch_{batch_idx}_metadata.parquet")
+    return metadata_df.with_columns(
+        pl.lit(f"batch_{batch_idx}").alias("SUB_BATCH_FILE_ID"),
+        pl.int_range(pl.len(), dtype=pl.Int64).alias("WITHIN_SUB_BATCH_INDEX"),
+    )
 
 
 def load_batch_embeddings(batch_idx: int) -> np.ndarray:
@@ -63,39 +64,32 @@ def load_batch_embeddings(batch_idx: int) -> np.ndarray:
     return np.load(io.BytesIO(raw))
 
 
-def parse_note_datetimes(metadata_df: pd.DataFrame) -> pd.Series:
+def parse_note_datetimes(metadata_df: pl.DataFrame) -> pl.Expr:
     """Parse note timestamps from EVENT_DATE, which is tz-aware UTC in the
     PROFILE_DATA notes parquets (the only tz-aware column in the ecosystem);
     convert to naive to match every other date column."""
-    return pd.to_datetime(metadata_df["EVENT_DATE"], errors="coerce", utc=True).dt.tz_localize(None)
+    return (
+        pl.col("EVENT_DATE")
+        .cast(pl.String)
+        .str.to_datetime(strict=False, time_zone="UTC")
+        .dt.replace_time_zone(None)
+    )
 
 
 def main() -> None:
     """Merge per-batch metadata and ModernBERT embeddings into full cohort files."""
     PROC_PATH.mkdir(parents=True, exist_ok=True)
 
-    cohort_df = pd.read_parquet(COHORT_FILE)
-    cohort_df["DFCI_MRN"] = pd.to_numeric(cohort_df["DFCI_MRN"], errors="coerce")
-    cohort_df["FIRST_TREATMENT_START_DT"] = pd.to_datetime(
-        cohort_df["first_treatment_date"],
-        errors="coerce",
+    cohort_df = pl.read_parquet(COHORT_FILE).with_columns(
+        pl.col("DFCI_MRN").cast(pl.Int64, strict=False),
+        pl.col("first_treatment_date").cast(pl.Datetime, strict=False).alias("FIRST_TREATMENT_START_DT"),
     )
-    mrn_tstart_dict = dict(
-        zip(
-            cohort_df["DFCI_MRN"].dropna().astype(np.int64),
-            cohort_df["FIRST_TREATMENT_START_DT"],
-        )
-    )
-
-    mrn_seqdate_dict: dict[int, pd.Timestamp] = {}
+    cohort_dates = ["DFCI_MRN", "FIRST_TREATMENT_START_DT"]
     if "sequencing_date" in cohort_df.columns:
-        cohort_df["SEQUENCING_DT"] = pd.to_datetime(cohort_df["sequencing_date"], errors="coerce")
-        mrn_seqdate_dict = dict(
-            zip(
-                cohort_df["DFCI_MRN"].dropna().astype(np.int64),
-                cohort_df["SEQUENCING_DT"],
-            )
+        cohort_df = cohort_df.with_columns(
+            pl.col("sequencing_date").cast(pl.Datetime, strict=False).alias("SEQUENCING_DT")
         )
+        cohort_dates.append("SEQUENCING_DT")
 
     metadata_batch_indices = discover_batch_indices(META_PATH, METADATA_FILE_RE)
     embedding_batch_indices = discover_batch_indices(EMBEDS_PATH, EMBED_FILE_RE)
@@ -130,42 +124,41 @@ def main() -> None:
         metadata_list.append(cur_metadata)
         embedding_array_list.append(cur_embeddings)
 
-    metadata_df = pd.concat(metadata_list, ignore_index=True)
+    metadata_df = pl.concat(metadata_list, how="vertical_relaxed")
     embeddings = np.concatenate(embedding_array_list, axis=0)
 
-    metadata_df["DFCI_MRN"] = pd.to_numeric(metadata_df["DFCI_MRN"], errors="coerce")
-    metadata_df["NOTE_DATETIME"] = parse_note_datetimes(metadata_df)
-    valid_note_mask = metadata_df["NOTE_DATETIME"].notna().to_numpy()
+    metadata_df = metadata_df.with_columns(
+        pl.col("DFCI_MRN").cast(pl.Int64, strict=False),
+        parse_note_datetimes(metadata_df).alias("NOTE_DATETIME"),
+    ).join(cohort_df.select(cohort_dates), on="DFCI_MRN", how="left")
+    valid_note_mask = metadata_df.get_column("NOTE_DATETIME").is_not_null().to_numpy()
     dropped_missing_note_dt = int((~valid_note_mask).sum())
 
     if dropped_missing_note_dt:
-        metadata_df = metadata_df.loc[valid_note_mask].reset_index(drop=True)
+        metadata_df = metadata_df.filter(pl.col("NOTE_DATETIME").is_not_null())
         embeddings = embeddings[valid_note_mask]
 
-    metadata_df["EMBEDDING_INDEX"] = np.arange(len(metadata_df))
-    metadata_df["FIRST_TREATMENT_START_DT"] = metadata_df["DFCI_MRN"].map(mrn_tstart_dict)
-    metadata_df["NOTE_TIME_REL_TREATMENT"] = (
-        metadata_df["NOTE_DATETIME"] - metadata_df["FIRST_TREATMENT_START_DT"]
-    ).dt.days
-    # Alias of the treatment-anchor column so pre-anchor-split callers keep working.
-    metadata_df["NOTE_TIME_REL_FIRST_TREATMENT_START"] = metadata_df["NOTE_TIME_REL_TREATMENT"]
-
-    metadata_df["SEQUENCING_DT"] = metadata_df["DFCI_MRN"].map(mrn_seqdate_dict)
-    metadata_df["NOTE_TIME_REL_SEQUENCING"] = (
-        metadata_df["NOTE_DATETIME"] - metadata_df["SEQUENCING_DT"]
-    ).dt.days
+    metadata_df = metadata_df.with_columns(
+        pl.int_range(pl.len(), dtype=pl.Int64).alias("EMBEDDING_INDEX"),
+        (pl.col("NOTE_DATETIME") - pl.col("FIRST_TREATMENT_START_DT")).dt.total_days().alias("NOTE_TIME_REL_TREATMENT"),
+        (pl.col("NOTE_DATETIME") - pl.col("FIRST_TREATMENT_START_DT")).dt.total_days().alias("NOTE_TIME_REL_FIRST_TREATMENT_START"),
+    )
+    if "SEQUENCING_DT" in metadata_df.columns:
+        metadata_df = metadata_df.with_columns(
+            (pl.col("NOTE_DATETIME") - pl.col("SEQUENCING_DT")).dt.total_days().alias("NOTE_TIME_REL_SEQUENCING")
+        )
 
     metadata_file = PROC_PATH / "full_clinical_notes_embeddings_metadata.parquet"
     embeds_file = PROC_PATH / "full_clinical_notes_embeddings_as_array.npy.zst"
 
-    metadata_df.to_parquet(metadata_file, index=False)
+    metadata_df.write_parquet(metadata_file)
     embeddings_bytes = io.BytesIO()
     np.save(embeddings_bytes, embeddings.astype(np.float16))
     with open(embeds_file, 'wb') as f:
         f.write(zstd.compress(embeddings_bytes.getvalue(), level=15))
 
-    missing_tstart = int(metadata_df["FIRST_TREATMENT_START_DT"].isna().sum())
-    missing_seqdate = int(metadata_df["SEQUENCING_DT"].isna().sum())
+    missing_tstart = metadata_df.get_column("FIRST_TREATMENT_START_DT").null_count()
+    missing_seqdate = metadata_df.get_column("SEQUENCING_DT").null_count() if "SEQUENCING_DT" in metadata_df.columns else 0
 
     print(f"Saved merged metadata to {metadata_file}")
     print(f"Saved merged embeddings to {embeds_file}")
