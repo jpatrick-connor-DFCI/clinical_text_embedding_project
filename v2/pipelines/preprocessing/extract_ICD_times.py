@@ -4,9 +4,14 @@ import os
 
 import polars as pl
 
-from config import SURV_PATH
-from data.schema import assert_schema
-from pipelines.preprocessing import profile_sources as ps
+try:
+    from config import SURV_PATH
+    from data.schema import assert_schema
+    from pipelines.preprocessing import profile_sources as ps
+except ModuleNotFoundError:
+    from v2.config import SURV_PATH
+    from v2.data.schema import assert_schema
+    from v2.pipelines.preprocessing import profile_sources as ps
 
 
 def main() -> None:

@@ -15,7 +15,10 @@ import os
 
 import polars as pl
 
-from config import CANCER_ANNOTATIONS_PATH, CLINICAL_NOTES_PATH, PROFILE_DATA_PATH
+try:
+    from config import CANCER_ANNOTATIONS_PATH, CLINICAL_NOTES_PATH, PROFILE_DATA_PATH
+except ModuleNotFoundError:
+    from v2.config import CANCER_ANNOTATIONS_PATH, CLINICAL_NOTES_PATH, PROFILE_DATA_PATH
 
 # --- Shared column-name constants ---
 MRN = "DFCI_MRN"

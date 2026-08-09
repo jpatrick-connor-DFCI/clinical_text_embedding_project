@@ -16,9 +16,12 @@ check, `is_stage_iv`, rather than folded into `normalize_stage`.
 import os
 import re
 
-import pandas as pd
+import polars as pl
 
-from config import FEATURE_PATH
+try:
+    from config import FEATURE_PATH
+except ModuleNotFoundError:
+    from v2.config import FEATURE_PATH
 
 STAGE_ORDER = ["I", "II", "III", "IV"]
 
@@ -31,7 +34,7 @@ def normalize_stage(raw) -> str | None:
     """Map a raw stage value to a major stage in {I, II, III, IV}, collapsing
     substages (IVA -> IV), arabic numerals (4 -> IV), and float repr (2.0 -> II).
     Returns None for missing / unknown / in-situ / unstageable values."""
-    if pd.isna(raw):
+    if raw is None:
         return None
     s = str(raw).upper().strip().replace("STAGE", "").strip()
     s = re.sub(r"\.0+$", "", s)
@@ -45,7 +48,7 @@ def normalize_stage(raw) -> str | None:
 def is_stage_iv(raw) -> bool:
     """True if raw normalizes to stage IV, using the more permissive token
     prep_figure_4 uses for its %-stage-IV metric (also matches e.g. "4.0A")."""
-    if pd.isna(raw):
+    if raw is None:
         return False
     s = str(raw).upper().strip().replace("STAGE", "").strip()
     return bool(_STAGE_IV_TOKEN.match(s))
@@ -58,8 +61,8 @@ def load_stage_map() -> dict[int, object] | None:
     replaces the previous pickle-based lookup and its one-hot fallback."""
     path = os.path.join(FEATURE_PATH, "cancer_stage_df.csv.gz")
     try:
-        stage_df = pd.read_csv(path, usecols=["DFCI_MRN", "CANCER_STAGE"])
+        stage_df = pl.read_csv(path, columns=["DFCI_MRN", "CANCER_STAGE"])
     except (FileNotFoundError, OSError, ValueError) as e:
         print(f"  cancer_stage_df.csv.gz unavailable ({type(e).__name__})")
         return None
-    return dict(zip(stage_df["DFCI_MRN"], stage_df["CANCER_STAGE"]))
+    return dict(zip(stage_df.get_column("DFCI_MRN"), stage_df.get_column("CANCER_STAGE")))
