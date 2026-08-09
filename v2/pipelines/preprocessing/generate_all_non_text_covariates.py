@@ -46,6 +46,7 @@ def build_cancer_type_df(cohort_df: pl.DataFrame) -> pl.DataFrame:
         cancer_type.group_by("CANCER_TYPE").len()
         .filter(pl.col("len") >= 500)
         .get_column("CANCER_TYPE")
+        .to_list()
     )
     cancer_type_df = cancer_type.with_columns(
         pl.when(pl.col("CANCER_TYPE").is_in(frequent_types))
@@ -59,7 +60,10 @@ def build_cancer_type_df(cohort_df: pl.DataFrame) -> pl.DataFrame:
     # Keeping the string label lets consumers recover the true type directly. The
     # column is named 'CANCER_TYPE' (no trailing underscore) so it is never picked
     # up by `startswith('CANCER_TYPE_')` feature-column filters.
-    return cancer_type_df.to_dummies(columns="CANCER_TYPE", drop_first=True)
+    cancer_type_dummies = cancer_type_df.select("CANCER_TYPE").to_dummies(
+        columns="CANCER_TYPE", drop_first=True
+    )
+    return cancer_type_df.hstack(cancer_type_dummies)
 
 
 def build_cancer_stage_df() -> pl.DataFrame:
@@ -82,7 +86,10 @@ def build_cancer_stage_df() -> pl.DataFrame:
     note_stage = note_stage.with_columns(
         pl.col(ps.STAGE).map_elements(normalize_stage, return_dtype=pl.String).alias("CANCER_STAGE")
     ).drop_nulls("CANCER_STAGE").select(["DFCI_MRN", "CANCER_STAGE"])
-    return note_stage.to_dummies(columns="CANCER_STAGE", drop_first=True)
+    stage_dummies = note_stage.select("CANCER_STAGE").to_dummies(
+        columns="CANCER_STAGE", drop_first=True
+    )
+    return note_stage.hstack(stage_dummies)
 
 
 def build_somatic_data_df(cohort_df: pl.DataFrame) -> pl.DataFrame:
@@ -128,10 +135,19 @@ def build_germline_data_df(cohort_df: pl.DataFrame) -> pl.DataFrame:
     PROFILE_2024_idmap.csv joined against the new cohort rather than
     px_metadata_min. PRS coverage is limited to MRNs in the 2024 idmap, so
     this modality covers fewer patients than the others."""
-    idmap = pl.read_csv(os.path.join(PROFILE_PATH, "PROFILE_2024_idmap.csv"), columns=["DFCI_MRN", "cbio_sample_id"])
+    idmap = pl.read_csv(
+        os.path.join(PROFILE_PATH, "PROFILE_2024_idmap.csv"),
+        columns=["DFCI_MRN", "cbio_sample_id"],
+    ).with_columns(
+        pl.col("DFCI_MRN").cast(pl.Int64, strict=False),
+        pl.col("cbio_sample_id").cast(pl.String),
+    )
     cohort_idmap = idmap.filter(pl.col("DFCI_MRN").is_in(cohort_df.get_column("DFCI_MRN")))
-    return pl.read_csv(PRS_MATRIX_FILE, separator="\t").rename({"IID": "cbio_sample_id"}).join(
-        cohort_idmap, on="cbio_sample_id", how="inner"
+    return (
+        pl.read_csv(PRS_MATRIX_FILE, separator="\t")
+        .rename({"IID": "cbio_sample_id"})
+        .with_columns(pl.col("cbio_sample_id").cast(pl.String))
+        .join(cohort_idmap, on="cbio_sample_id", how="inner")
     )
 
 
@@ -140,7 +156,7 @@ def build_treatment_by_line_df() -> pl.DataFrame:
     gives treatment_line (1-7) directly. Maps MED_NCI_PREFERRED_NM through
     MED_CLASSES_FILE to PX_on_* dummies. Drops the MED_LINES_FILE dependency
     and the cumcount() that silently overrode the source's own LINE column."""
-    med_classes = pl.read_csv(MED_CLASSES_FILE)
+    med_classes = pl.read_csv(MED_CLASSES_FILE).unique("MED_NAME", keep="last")
     long = ps.unpivot_medications_summary().rename({"SLOT": "treatment_line", "DRUG": "MED_NAME"})
     return (
         long.sort(["DFCI_MRN", "START_DT"])
@@ -158,19 +174,23 @@ def main() -> None:
 
     cancer_type_df = build_cancer_type_df(cohort_df)
     assert_schema(cancer_type_df, "cancer_type_df", required_cols=["DFCI_MRN", "CANCER_TYPE"], key_col="DFCI_MRN")
-    cancer_type_df.write_csv(os.path.join(FEATURE_PATH, 'cancer_type_df.csv.gz'))
+    cancer_type_df.write_csv(os.path.join(FEATURE_PATH, 'cancer_type_df.csv.gz'), compression="gzip")
 
     cancer_stage_df = build_cancer_stage_df()
     assert_schema(cancer_stage_df, "cancer_stage_df", required_cols=["DFCI_MRN", "CANCER_STAGE"], key_col="DFCI_MRN")
-    cancer_stage_df.write_csv(os.path.join(FEATURE_PATH, 'cancer_stage_df.csv.gz'))
+    cancer_stage_df.write_csv(os.path.join(FEATURE_PATH, 'cancer_stage_df.csv.gz'), compression="gzip")
 
     complete_somatic_data_df = build_somatic_data_df(cohort_df)
     assert_schema(complete_somatic_data_df, "complete_somatic_data_df", required_cols=["DFCI_MRN"], key_col="DFCI_MRN")
-    complete_somatic_data_df.write_csv(os.path.join(FEATURE_PATH, 'complete_somatic_data_df.csv.gz'))
+    complete_somatic_data_df.write_csv(
+        os.path.join(FEATURE_PATH, 'complete_somatic_data_df.csv.gz'), compression="gzip"
+    )
 
     complete_germline_data_df = build_germline_data_df(cohort_df)
     assert_schema(complete_germline_data_df, "complete_germline_data_df", required_cols=["DFCI_MRN"], key_col=None)
-    complete_germline_data_df.write_csv(os.path.join(FEATURE_PATH, 'complete_germline_data_df.csv.gz'))
+    complete_germline_data_df.write_csv(
+        os.path.join(FEATURE_PATH, 'complete_germline_data_df.csv.gz'), compression="gzip"
+    )
 
     categorical_treatment_data_by_line = build_treatment_by_line_df()
     assert_schema(
@@ -179,7 +199,9 @@ def main() -> None:
         required_cols=["DFCI_MRN", "treatment_line"],
         key_col=None,
     )
-    categorical_treatment_data_by_line.write_csv(os.path.join(FEATURE_PATH, 'categorical_treatment_data_by_line.csv.gz'))
+    categorical_treatment_data_by_line.write_csv(
+        os.path.join(FEATURE_PATH, 'categorical_treatment_data_by_line.csv.gz'), compression="gzip"
+    )
 
 
 if __name__ == "__main__":

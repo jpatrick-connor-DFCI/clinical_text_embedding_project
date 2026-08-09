@@ -58,8 +58,29 @@ def load_stage_map() -> dict[int, object] | None:
     replaces the previous pickle-based lookup and its one-hot fallback."""
     path = os.path.join(FEATURE_PATH, "cancer_stage_df.csv.gz")
     try:
-        stage_df = pl.read_csv(path, columns=["DFCI_MRN", "CANCER_STAGE"])
-    except (FileNotFoundError, OSError, ValueError) as e:
+        stage_df = pl.read_csv(path)
+    except (FileNotFoundError, OSError, ValueError, pl.exceptions.PolarsError) as e:
         print(f"  cancer_stage_df.csv.gz unavailable ({type(e).__name__})")
         return None
+
+    if "DFCI_MRN" not in stage_df.columns:
+        print("  cancer_stage_df.csv.gz unavailable (missing DFCI_MRN)")
+        return None
+
+    if "CANCER_STAGE" not in stage_df.columns:
+        dummy_cols = [column for column in stage_df.columns if column.startswith("CANCER_STAGE_")]
+        if not dummy_cols:
+            print("  cancer_stage_df.csv.gz unavailable (missing stage columns)")
+            return None
+        # Legacy files only contain drop-first one-hot columns. Their omitted
+        # reference category is stage I, represented by an all-zero row.
+        stage_exprs = [
+            pl.when(pl.col(column).cast(pl.Int8, strict=False).fill_null(0) == 1)
+            .then(pl.lit(column.removeprefix("CANCER_STAGE_")))
+            .otherwise(None)
+            for column in dummy_cols
+        ]
+        stage_df = stage_df.with_columns(
+            pl.coalesce(stage_exprs).fill_null("I").alias("CANCER_STAGE")
+        )
     return dict(zip(stage_df.get_column("DFCI_MRN"), stage_df.get_column("CANCER_STAGE")))

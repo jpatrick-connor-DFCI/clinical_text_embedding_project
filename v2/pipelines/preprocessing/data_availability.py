@@ -35,7 +35,11 @@ def _mrns_with_stage(cohort_mrns: set[int]) -> set[int]:
 
 
 def _mrns_with_treatment(cohort_mrns: set[int]) -> set[int]:
-    tx_df = pl.read_csv(os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv.gz"))
+    path = os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv.gz")
+    if not os.path.exists(path):
+        print(f"  missing {path}")
+        return set()
+    tx_df = pl.read_csv(path)
     return set(tx_df.filter(pl.col("treatment_line") == 1).get_column("DFCI_MRN")) & cohort_mrns
 
 
