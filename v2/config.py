@@ -37,15 +37,24 @@ PDF_OUT_DIR = os.path.join(FIGURE_OUT_DIR, "pdf/")
 
 # --- PROFILE clinical source data (read-only inputs owned by Gusev lab, not this project) ---
 PROFILE_PATH = "/data/gusev/PROFILE/CLINICAL/"
+# Still imported by pipelines/biomarkers/build_line_matched_cohort.py, and by
+# pipelines/trajectories/within_treatment_vs_pan_treatment_models.py and
+# within_vs_pan_cancer_models.py (out of scope for the PROFILE_DATA migration),
+# so these two are kept even though the migrated preprocessing pipeline no
+# longer reads them.
 INTAE_DATA_PATH = os.path.join(PROFILE_PATH, "robust_VTE_pred_project_2025_03_cohort/data/")
-DIAGNOSTICS_PATH = os.path.join(PROFILE_PATH, "OncDRS/ALL_2025_03/")
-STAGE_PATH = os.path.join(
-    PROFILE_PATH,
-    "OncDRS/DERIVED_FROM_CLINICAL_TEXTS_2024_03/derived_files/cancer_stage/",
-    "dfci_cancer_mrn_to_derived_cancer_stage.pkl",
+
+# --- PROFILE_DATA: multi-release-deduped parquets produced by PROFILE_data_processing ---
+PROFILE_DATA_PATH = os.environ.get(
+    "PROFILE_DATA_PATH",
+    "/data/gusev/USERS/jpconnor/data/PROFILE_DATA/",
 )
+CLINICAL_NOTES_PATH = os.path.join(PROFILE_DATA_PATH, "CLINICAL_NOTES/")
 
 # --- Third-party inputs, previously inlined mid-file at the point of use ---
+# MED_LINES_FILE: still imported by pipelines/biomarkers/build_line_matched_cohort.py
+# (out of scope for the PROFILE_DATA migration), so kept despite being unused
+# by the migrated preprocessing pipeline.
 MED_LINES_FILE = "/data/gusev/USERS/mjsaleh/profile_lines_of_rx/ALL_MEDICATION_LINES.csv"
 IO_START_FILE = "/data/gusev/USERS/mjsaleh/IO_START.csv"
 TREATMENT_FILE = "/data/gusev/USERS/mjsaleh/profile_lines_of_rx/profile_rxlines.csv"

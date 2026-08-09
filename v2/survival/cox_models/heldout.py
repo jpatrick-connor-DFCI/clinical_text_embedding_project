@@ -139,7 +139,7 @@ def get_heldout_risk_scores_CoxPH(
             return test_idx, np.asarray(preds, dtype=np.float64)
 
         with parallel_ctx:
-            outs = joblib.Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=1, batch_size=1)(
+            outs = joblib.Parallel(n_jobs=n_jobs, verbose=verbose)(
                 joblib.delayed(fit_predict_fold_no_pca)(tr, te) for tr, te in splits
             )
 
@@ -246,7 +246,7 @@ def get_heldout_risk_scores_CoxPH(
             return test_idx, np.asarray(preds, dtype=np.float64)
 
         with parallel_ctx:
-            outs = joblib.Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=1, batch_size=1)(
+            outs = joblib.Parallel(n_jobs=n_jobs, verbose=verbose)(
                 joblib.delayed(fit_predict_fold_memmap)(m) for m in fold_meta
             )
 

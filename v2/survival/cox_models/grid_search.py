@@ -175,8 +175,12 @@ def _run_grid_no_pca(
         start = time.time()
         error_flag = False
 
-        X_tr = np.array(X_train_val[tr], dtype=np.float32, copy=True)
-        X_va = np.array(X_train_val[va], dtype=np.float32, copy=True)
+        # Fancy indexing already copies, and X_train_val is float32 (built at grid_search.py:99),
+        # so the previous np.array(..., copy=True) was a redundant second copy (Phase-A A4).
+        # np.asarray is a no-op here since dtype already matches (unlike np.array, which
+        # defaults to copy=True regardless).
+        X_tr = np.asarray(X_train_val[tr], dtype=np.float32)
+        X_va = np.asarray(X_train_val[va], dtype=np.float32)
         y_tr = y_train_val[tr]
         y_va = y_train_val[va]
 

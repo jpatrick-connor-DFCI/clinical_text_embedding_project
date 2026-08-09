@@ -24,23 +24,15 @@ SCHEME_FOR_EMBED = "icd3_post"  # widest cohort
 ENDPOINT_COUNT_COLUMNS = ["scheme", "n_endpoints"]
 
 
-# Raw, complete stage labels — `cancer_stage_df.csv.gz` is produced with
-# pd.get_dummies(drop_first=True) (generate_all_non_text_covariates.py:39) which
-# silently drops Stage I from the one-hot. Read the pickle directly (via
-# load_stage_map()) to recover it. Same pattern as prep_figure_2._major_stage_labels().
+# Raw, complete stage labels — cancer_stage_df.csv.gz now carries the raw
+# CANCER_STAGE string column directly (see generate_all_non_text_covariates.py),
+# read here via load_stage_map(). Same pattern as prep_figure_2._major_stage_labels().
 def _stage_counts_from_pickle(cohort_mrns: set[int]) -> pd.DataFrame:
     """Major-stage breakdown (I/II/III/IV) for the analysis cohort."""
     mrn_to_stage = load_stage_map()
     if mrn_to_stage is None:
-        print("  falling back to one-hot CSV")
-        oh = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_stage_df.csv.gz"))
-        oh = oh[oh["DFCI_MRN"].isin(cohort_mrns)]
-        stage_cols = [c for c in oh.columns if c.startswith("CANCER_STAGE_")]
-        present = [normalize_stage(c.replace("CANCER_STAGE_", "")) for c in stage_cols]
-        reference = next((s for s in STAGE_ORDER if s not in present), None)
-        active = oh[stage_cols].to_numpy()
-        labels = [reference if row.max() <= 0 else present[int(row.argmax())]
-                  for row in active]
+        print("  cancer_stage_df.csv.gz unavailable, no stage data")
+        labels = []
     else:
         labels = [normalize_stage(v) for k, v in mrn_to_stage.items() if k in cohort_mrns]
     s = pd.Series([x for x in labels if x in STAGE_ORDER]).value_counts()
@@ -78,10 +70,6 @@ def _cancer_type_counts(cancer_type_df: pd.DataFrame, cohort_mrns: set[int], top
     "Other" so the counts still sum to the full cohort.
     """
     sub = cancer_type_df[cancer_type_df["DFCI_MRN"].isin(cohort_mrns)]
-    if "CANCER_TYPE" not in sub.columns:
-        # Fallback: reconstruct from one-hot (loses the drop_first reference class).
-        type_cols = [c for c in sub.columns if c.startswith("CANCER_TYPE_")]
-        return _composition_counts(sub, type_cols, "CANCER_TYPE_", top_n)
     vc = sub["CANCER_TYPE"].astype(str).value_counts()
     # Upstream preprocessing already collapses cancer types with <500 patients
     # into "OTHER". Exclude that bucket when choosing the top named types, then

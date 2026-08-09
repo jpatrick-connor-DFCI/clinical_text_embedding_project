@@ -13,7 +13,7 @@ import pandas as pd
 import torch
 from tqdm.auto import tqdm
 
-from config import DATA_PATH as _DATA_PATH_STR, INTAE_DATA_PATH
+from config import DATA_PATH as _DATA_PATH_STR, SURV_PATH
 
 # Paths and constants
 # This step typically runs back on the main cluster after batch embeddings have
@@ -23,10 +23,10 @@ BATCHED_DATA_PATH = Path(os.environ.get("BATCHED_DATA_PATH", str(DATA_PATH / "ba
 META_PATH = Path(os.environ.get("META_PATH", str(BATCHED_DATA_PATH / "batched_tokens" / "metadata")))
 EMBEDS_PATH = Path(os.environ.get("EMBEDS_PATH", str(BATCHED_DATA_PATH / "embeddings")))
 PROC_PATH = Path(os.environ.get("PROC_PATH", str(BATCHED_DATA_PATH / "processed_datasets")))
-SURVIVAL_FILE = Path(
+COHORT_FILE = Path(
     os.environ.get(
-        "SURVIVAL_FILE",
-        str(Path(INTAE_DATA_PATH) / "follow_up_vte_df_cohort.csv"),
+        "COHORT_FILE",
+        str(Path(SURV_PATH) / "cohort_df.parquet"),
     )
 )
 
@@ -61,26 +61,26 @@ def load_batch_metadata(batch_idx: int) -> pd.DataFrame:
 
 
 def parse_note_datetimes(metadata_df: pd.DataFrame) -> pd.Series:
-    """Parse note timestamps robustly across historical raw-note snapshots."""
-    event_dt = pd.to_datetime(metadata_df["EVENT_DATE"], errors="coerce", utc=True).dt.tz_localize(None)
-    rpt_dt = pd.to_datetime(metadata_df["RPT_DATE"], errors="coerce", utc=True).dt.tz_localize(None)
-    return event_dt.fillna(rpt_dt)
+    """Parse note timestamps from EVENT_DATE, which is tz-aware UTC in the
+    PROFILE_DATA notes parquets (the only tz-aware column in the ecosystem);
+    convert to naive to match every other date column."""
+    return pd.to_datetime(metadata_df["EVENT_DATE"], errors="coerce", utc=True).dt.tz_localize(None)
 
 
 def main() -> None:
-    """Merge per-batch metadata and Longformer embeddings into full cohort files."""
+    """Merge per-batch metadata and ModernBERT embeddings into full cohort files."""
     PROC_PATH.mkdir(parents=True, exist_ok=True)
 
-    survival_df = pd.read_csv(SURVIVAL_FILE)
-    survival_df["DFCI_MRN"] = pd.to_numeric(survival_df["DFCI_MRN"], errors="coerce")
-    survival_df["FIRST_TREATMENT_START_DT"] = pd.to_datetime(
-        survival_df["first_treatment_date"],
+    cohort_df = pd.read_parquet(COHORT_FILE)
+    cohort_df["DFCI_MRN"] = pd.to_numeric(cohort_df["DFCI_MRN"], errors="coerce")
+    cohort_df["FIRST_TREATMENT_START_DT"] = pd.to_datetime(
+        cohort_df["first_treatment_date"],
         errors="coerce",
     )
     mrn_tstart_dict = dict(
         zip(
-            survival_df["DFCI_MRN"].dropna().astype(np.int64),
-            survival_df["FIRST_TREATMENT_START_DT"],
+            cohort_df["DFCI_MRN"].dropna().astype(np.int64),
+            cohort_df["FIRST_TREATMENT_START_DT"],
         )
     )
 

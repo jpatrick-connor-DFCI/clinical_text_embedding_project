@@ -32,6 +32,9 @@ def _write_skip_report(scheme: str, event: str, run_type: str, reason: str) -> N
         f.write(json.dumps(entry) + "\n")
 
 
+ALL_MODALITIES = ["stage", "treatment", "labs", "somatic", "prs", "text"]
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run one feature-comparison modality for one endpoint event.")
     parser.add_argument("--scheme", required=True, choices=sorted(SCHEMES.keys()))
@@ -39,7 +42,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--modality",
         required=True,
-        choices=["stage", "treatment", "labs", "somatic", "prs", "text"],
+        choices=["stage", "treatment", "labs", "somatic", "prs", "text", "all"],
     )
     parser.add_argument("--n-jobs", type=int, default=None)
     parser.add_argument("--max-iter", type=int, default=1000)
@@ -48,47 +51,51 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
-    args = _parse_args()
-    os.environ["JOBLIB_DEFAULT_WORKER_TIMEOUT"] = "600"
+def _run_one_modality(
+    args: argparse.Namespace,
+    modality: str,
+    full_prediction_df: pd.DataFrame,
+    type_cols_base: list[str],
+    modality_cfg: dict,
+) -> None:
+    """Run grid search + held-out risk scores for one modality.
 
-    full_prediction_df, type_cols, _, modality_cfg, _ = load_feature_modalities_df(args.scheme, modality=args.modality)
-    events = get_events_from_df(full_prediction_df)
-    if args.event not in events:
-        raise ValueError(
-            f"Event '{args.event}' not found for scheme '{args.scheme}'. "
-            f"Found {len(events)} events."
-        )
-    if args.modality not in modality_cfg:
-        raise ValueError(f"Unsupported modality '{args.modality}'.")
+    Extracted from the original single-modality ``main()`` body verbatim (Phase-A A2): the
+    per-modality try/except lives in the caller so one modality failing does not stop the rest
+    when looping under ``--modality all``. All skip/overwrite logic and ``[time]``/``[done]``/
+    ``[skip]`` print formats are unchanged.
+    """
+    if modality not in modality_cfg:
+        raise ValueError(f"Unsupported modality '{modality}'.")
 
     out_dir = os.path.join(get_output_dir(args.scheme, "feature_comps"), args.event)
     os.makedirs(out_dir, exist_ok=True)
-    test_fp = os.path.join(out_dir, f"{args.modality}_test.csv")
-    val_fp = os.path.join(out_dir, f"{args.modality}_val.csv")
+    test_fp = os.path.join(out_dir, f"{modality}_test.csv")
+    val_fp = os.path.join(out_dir, f"{modality}_val.csv")
     risk_dir = os.path.join(get_output_dir(args.scheme, "feature_comps"), "..", "held_out_risk_scores", args.event)
     risk_dir = os.path.normpath(risk_dir)
-    risk_fp = os.path.join(risk_dir, f"{args.modality}_risk_scores.csv")
+    risk_fp = os.path.join(risk_dir, f"{modality}_risk_scores.csv")
     grid_done = os.path.exists(test_fp) and os.path.exists(val_fp)
     risk_done = os.path.exists(risk_fp)
     if (not args.overwrite) and grid_done and risk_done:
-        print(f"[skip] Existing outputs found for {args.scheme}:{args.event}:{args.modality}")
+        print(f"[skip] Existing outputs found for {args.scheme}:{args.event}:{modality}")
         return
 
     event_pred_df = filter_event_rows(full_prediction_df, args.event)
     if event_pred_df.empty:
         reason = f"No rows with tt_{args.event} > 0"
-        print(f"[skip-data] {args.scheme}:{args.event}:{args.modality} — {reason}")
-        _write_skip_report(args.scheme, args.event, f"feature_comps_{args.modality}", reason)
+        print(f"[skip-data] {args.scheme}:{args.event}:{modality} — {reason}")
+        _write_skip_report(args.scheme, args.event, f"feature_comps_{modality}", reason)
         return
 
     base_vars = ["GENDER", "AGE_AT_TREATMENTSTART"]
-    cfg = modality_cfg[args.modality]
+    type_cols = type_cols_base
+    cfg = modality_cfg[modality]
     all_feature_cols = base_vars + type_cols + cfg["continuous_vars"] + cfg["penalized_cols"]
     # deduplicate while preserving order
     seen = set()
     all_feature_cols = [c for c in all_feature_cols if not (c in seen or seen.add(c))]
-    label = f"{args.scheme}:{args.event}:{args.modality}"
+    label = f"{args.scheme}:{args.event}:{modality}"
     try:
         event_pred_df, dropped_cols = validate_cox_inputs(
             event_pred_df, args.event, f"tt_{args.event}", all_feature_cols, label=label,
@@ -96,7 +103,7 @@ def main() -> None:
     except ValueError as e:
         reason = str(e)
         print(f"[skip-data] {label} — {reason}")
-        _write_skip_report(args.scheme, args.event, f"feature_comps_{args.modality}", reason)
+        _write_skip_report(args.scheme, args.event, f"feature_comps_{modality}", reason)
         return
     type_cols = [c for c in type_cols if c not in dropped_cols]
     cfg["continuous_vars"] = [c for c in cfg["continuous_vars"] if c not in dropped_cols]
@@ -160,10 +167,32 @@ def main() -> None:
         alpha=best_alpha,
         n_jobs=n_jobs,
         backend=args.backend,
-    ).rename(columns={"risk_score": f"{args.modality}_risk_score"})
+    ).rename(columns={"risk_score": f"{modality}_risk_score"})
     risk_scores.to_csv(risk_fp, index=False)
     print(f"[time] {label} held-out risk: {(time.time() - t1) / 60:.1f}m ({len(risk_scores)} patients)")
-    print(f"[done] {args.scheme}:{args.event}:{args.modality} -> {out_dir}")
+    print(f"[done] {args.scheme}:{args.event}:{modality} -> {out_dir}")
+
+
+def main() -> None:
+    args = _parse_args()
+    os.environ["JOBLIB_DEFAULT_WORKER_TIMEOUT"] = "600"
+
+    full_prediction_df, type_cols, _, modality_cfg, _ = load_feature_modalities_df(args.scheme, modality=args.modality)
+    events = get_events_from_df(full_prediction_df)
+    if args.event not in events:
+        raise ValueError(
+            f"Event '{args.event}' not found for scheme '{args.scheme}'. "
+            f"Found {len(events)} events."
+        )
+
+    if args.modality == "all":
+        for modality in ALL_MODALITIES:
+            try:
+                _run_one_modality(args, modality, full_prediction_df, type_cols, modality_cfg)
+            except Exception as e:
+                print(f"[error] {args.scheme}:{args.event}:{modality} failed: {e}")
+    else:
+        _run_one_modality(args, args.modality, full_prediction_df, type_cols, modality_cfg)
 
 
 if __name__ == "__main__":

@@ -78,8 +78,30 @@ class RunCheckpoint:
 
     # ---- manifest ------------------------------------------------------------
     def _flush_manifest(self):
+        """Rewrite the whole manifest CSV from the in-memory dict.
+
+        Only used to (re)initialize the file — on a fresh/stale-fingerprint start (writes just
+        the header, self._manifest is empty at that point) or if a caller ever needs a full
+        resync. Per-record writes go through ``_append_manifest_row`` instead (Phase-A A9).
+        """
         df = pd.DataFrame(list(self._manifest.values()), columns=MANIFEST_COLS)
         df.to_csv(self.manifest_path, index=False)
+
+    def _append_manifest_row(self, row):
+        """Append a single record to the manifest CSV without rewriting the whole file.
+
+        Phase-A A9: the previous implementation called _flush_manifest() (rewrite of the full
+        CSV) on every _record() call, which is O(n^2) total writes over a run on a shared
+        filesystem. Each key is recorded at most once per checkpoint's lifetime (status() is
+        checked before any save/skip call, so a 'done' or 'skipped' key is never re-recorded),
+        so a plain append cannot create a duplicate-key row needing dedup on the next resume.
+        The header is written once, by _flush_manifest(), when the manifest file is first
+        created (fresh start or stale-fingerprint reset); every _record() thereafter appends.
+        """
+        write_header = not os.path.exists(self.manifest_path)
+        pd.DataFrame([row], columns=MANIFEST_COLS).to_csv(
+            self.manifest_path, mode='a', header=write_header, index=False,
+        )
 
     def _record(self, key, status, reason=None, meta=None):
         meta = meta or {}
@@ -91,7 +113,7 @@ class RunCheckpoint:
             row['delta_c'] = row['c_within'] - row['c_pan']
         row['ts'] = datetime.now().isoformat(timespec='seconds')
         self._manifest[key] = row
-        self._flush_manifest()
+        self._append_manifest_row(row)
 
     def status(self, key):
         """Return 'done' | 'skipped' | None for a stratum key."""

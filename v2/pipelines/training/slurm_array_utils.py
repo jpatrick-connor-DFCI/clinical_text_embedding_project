@@ -1,5 +1,6 @@
 """Slurm Array Utils script for model training workflows."""
 
+import functools
 import os
 from typing import Any
 
@@ -13,12 +14,19 @@ DEFAULT_ALPHAS = np.logspace(-5, 0, 25).tolist()
 DEFAULT_L1_RATIOS = [0.5, 1.0]
 
 
+@functools.cache
 def _get_common_feature_mrns() -> set:
     """Return the intersection of patient MRNs across all feature files.
 
     Used by load_feature_modalities_df to enforce a cohort-agnostic comparison:
     every modality model trains on the same set of patients regardless of which
     features are actually used.
+
+    Cached in-process (Phase-A A3): this reads 5 gzipped CSVs and the result is a constant
+    for the lifetime of the process, so repeated calls (e.g. one per modality when A2's
+    ``--modality all`` loop or a single-process multi-modality run calls it more than once)
+    reuse the same computed set instead of re-reading from disk. Callers must not mutate the
+    returned set in place — it is the cached object itself, not a copy.
     """
     somatic_mrns = set(pd.read_csv(os.path.join(FEATURE_PATH, "complete_somatic_data_df.csv.gz"), usecols=["DFCI_MRN"])["DFCI_MRN"])
     prs_mrns = set(pd.read_csv(os.path.join(FEATURE_PATH, "complete_germline_data_df.csv.gz"), usecols=["DFCI_MRN"])["DFCI_MRN"])
@@ -79,16 +87,26 @@ def load_feature_modalities_df(
 ) -> tuple[pd.DataFrame, list[str], list[str], dict[str, Any], dict[str, list[str]]]:
     """Load feature data for the given scheme.
 
-    When *modality* is specified only that modality's CSV is read and merged,
-    avoiding unnecessary I/O for large files (e.g. PRS) in single-modality jobs.
-    When *modality* is None all modalities are loaded (original behaviour).
+    When *modality* is one of the six modality names, only that modality's CSV is read and
+    merged, avoiding unnecessary I/O for large files (e.g. PRS) in single-modality jobs.
+    When *modality* is None all modalities are loaded but the common-cohort intersection
+    (below) is skipped (original behaviour).
+    When *modality* is the literal string "all", all six modalities are loaded AND the
+    common-cohort intersection is applied — i.e. the union of every single-modality run's
+    I/O and row-filtering, so the returned frame is exactly equivalent to loading each
+    modality separately (same rows, same per-modality column values) and can be looped
+    in-process over all six `modality_cfg` entries.
     """
     emb_df = load_embedding_prediction_df(scheme)
     cancer_type_df = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_type_df.csv.gz"))
     type_cols = [col for col in cancer_type_df.columns if col.startswith("CANCER_TYPE_")]
     embed_cols = [col for col in emb_df.columns if ("EMBEDDING" in col or "2015" in col)]
 
-    _to_load = {modality} if modality else {"stage", "treatment", "labs", "somatic", "prs", "text"}
+    _to_load = (
+        {modality}
+        if modality and modality != "all"
+        else {"stage", "treatment", "labs", "somatic", "prs", "text"}
+    )
 
     # Load only what is needed
     mrn_stage_df = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_stage_df.csv.gz")) if "stage" in _to_load else None
@@ -103,8 +121,10 @@ def load_feature_modalities_df(
     treatment_cols = [col for col in treatment_df.columns if col.startswith("PX_on_")] if treatment_df is not None else []
     labs_cols = [col for col in labs_df.columns if col != "DFCI_MRN"] if labs_df is not None else []
 
-    # For single-modality runs, restrict to the intersection of all feature files
-    # so all modality models train on the same cohort (cohort-agnostic comparison).
+    # For single-modality runs (and "all", which must match them exactly), restrict to the
+    # intersection of all feature files so all modality models train on the same cohort
+    # (cohort-agnostic comparison). Only bare modality=None (used elsewhere for the original,
+    # cohort-unrestricted behaviour) skips this.
     if modality is not None:
         common_mrns = _get_common_feature_mrns()
         emb_df = emb_df[emb_df["DFCI_MRN"].isin(common_mrns)].copy()

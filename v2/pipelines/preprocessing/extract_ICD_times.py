@@ -1,58 +1,47 @@
 """Unpack multi-slot ICD-10 diagnoses into long format and time them relative to first treatment."""
 
 import os
-from datetime import datetime
 
 import pandas as pd
+import polars as pl
 
-from config import DIAGNOSTICS_PATH, INTAE_DATA_PATH, SURV_PATH
+from config import SURV_PATH
+from data.schema import assert_schema
+from pipelines.preprocessing import profile_sources as ps
 
 
 def main() -> None:
-    ehr_icds = pd.read_csv(os.path.join(DIAGNOSTICS_PATH, 'EHR_DIAGNOSIS.csv'))
-    vte_data = pd.read_csv(os.path.join(INTAE_DATA_PATH, 'follow_up_vte_df_cohort.csv'))
+    cohort_df = pd.read_parquet(os.path.join(SURV_PATH, "cohort_df.parquet"))
+    cohort_mrns = cohort_df["DFCI_MRN"].unique().tolist()
+    mrn_tstart_dict = dict(zip(cohort_df["DFCI_MRN"], cohort_df["first_treatment_date"]))
 
-    vte_data_sub = vte_data[['DFCI_MRN', 'AGE_AT_FIRST_TREAT', 'BIOLOGICAL_SEX', 'first_treatment_date', 'death_date',
-                             'last_contact_date', 'tt_death', 'death', 'tt_vte', 'vte']]
+    df_long = ps.load_and_explode_icd()
+    df_long = df_long.filter(pl.col("DFCI_MRN").is_in(cohort_mrns))
 
-    mrn_tstart_df = vte_data_sub[['DFCI_MRN', 'first_treatment_date']].drop_duplicates()
-    mrn_tstart_dict = dict(zip(mrn_tstart_df['DFCI_MRN'], mrn_tstart_df['first_treatment_date'].apply(lambda x : datetime.strptime(x, '%Y-%m-%d'))))
+    split_ehr_icd_subset = df_long.select(
+        ["DFCI_MRN", "START_DT", "DIAGNOSIS_ICD10_CD", "DIAGNOSIS_ICD10_NM"]
+    ).to_pandas()
 
-    vte_mrns = vte_data_sub['DFCI_MRN'].unique()
+    split_ehr_icd_subset["FIRST_TREATMENT_START_DT"] = split_ehr_icd_subset["DFCI_MRN"].map(mrn_tstart_dict)
+    split_ehr_icd_subset["START_DT"] = pd.to_datetime(split_ehr_icd_subset["START_DT"])
+    split_ehr_icd_subset["FIRST_TREATMENT_START_DT"] = pd.to_datetime(split_ehr_icd_subset["FIRST_TREATMENT_START_DT"])
+    split_ehr_icd_subset["TIME_TO_ICD"] = (
+        split_ehr_icd_subset["START_DT"] - split_ehr_icd_subset["FIRST_TREATMENT_START_DT"]
+    ).dt.days
 
-    # extract icds for the mrns in question
-    ehr_icd_subset = ehr_icds.loc[ehr_icds['DFCI_MRN'].isin(vte_mrns)][['DFCI_MRN', 'START_DT', 'DIAGNOSIS_ICD10_LIST', 'DIAGNOSIS_ICD10_CD',
-                                                                        'DIAGNOSIS_ICD10_NM', 'DIAGNOSIS_ICD10_CD2', 'DIAGNOSIS_ICD10_NM2',
-                                                                        'DIAGNOSIS_ICD10_CD3', 'DIAGNOSIS_ICD10_NM3', 'DIAGNOSIS_CONVERTED_ICD10_IND']]
-
-    # remove entries with no defined start date and with no defined codes
-    ehr_icd_subset = ehr_icd_subset.loc[(~ehr_icd_subset['START_DT'].isna()) &
-                                        (~ehr_icd_subset['DIAGNOSIS_ICD10_LIST'].isna())]
-
-    # unpack multiple codes instances
-    single_diagnoses = ehr_icd_subset.loc[(ehr_icd_subset['DIAGNOSIS_ICD10_CD2'].isna()) &
-                                          (ehr_icd_subset['DIAGNOSIS_ICD10_CD3'].isna())]
-
-    double_diagnoses = ehr_icd_subset.loc[(~ehr_icd_subset['DIAGNOSIS_ICD10_CD2'].isna()) &
-                                          (ehr_icd_subset['DIAGNOSIS_ICD10_CD3'].isna())]
-
-    triple_diagnoses = ehr_icd_subset.loc[(~ehr_icd_subset['DIAGNOSIS_ICD10_CD2'].isna()) &
-                                          (~ehr_icd_subset['DIAGNOSIS_ICD10_CD3'].isna())]
-
-    single_diag_set1 = single_diagnoses[['DFCI_MRN', 'START_DT', 'DIAGNOSIS_ICD10_CD', 'DIAGNOSIS_ICD10_NM']]
-
-    double_diag_set1 = double_diagnoses[['DFCI_MRN', 'START_DT', 'DIAGNOSIS_ICD10_CD', 'DIAGNOSIS_ICD10_NM']]
-    double_diag_set2 = double_diagnoses[['DFCI_MRN', 'START_DT', 'DIAGNOSIS_ICD10_CD2', 'DIAGNOSIS_ICD10_NM2']].rename(columns={'DIAGNOSIS_ICD10_CD2' : 'DIAGNOSIS_ICD10_CD', 'DIAGNOSIS_ICD10_NM2' : 'DIAGNOSIS_ICD10_NM'})
-
-    triple_diag_set1 = triple_diagnoses[['DFCI_MRN', 'START_DT', 'DIAGNOSIS_ICD10_CD', 'DIAGNOSIS_ICD10_NM']]
-    triple_diag_set2 = triple_diagnoses[['DFCI_MRN', 'START_DT', 'DIAGNOSIS_ICD10_CD2', 'DIAGNOSIS_ICD10_NM2']].rename(columns={'DIAGNOSIS_ICD10_CD2' : 'DIAGNOSIS_ICD10_CD', 'DIAGNOSIS_ICD10_NM2' : 'DIAGNOSIS_ICD10_NM'})
-    triple_diag_set3 = triple_diagnoses[['DFCI_MRN', 'START_DT', 'DIAGNOSIS_ICD10_CD3', 'DIAGNOSIS_ICD10_NM3']].rename(columns={'DIAGNOSIS_ICD10_CD3' : 'DIAGNOSIS_ICD10_CD', 'DIAGNOSIS_ICD10_NM3' : 'DIAGNOSIS_ICD10_NM'})
-
-    split_ehr_icd_subset = pd.concat([single_diag_set1, double_diag_set1, double_diag_set2, triple_diag_set1, triple_diag_set2, triple_diag_set3])
-
-    # add in treatment start date
-    split_ehr_icd_subset['FIRST_TREATMENT_START_DT'] = split_ehr_icd_subset['DFCI_MRN'].map(mrn_tstart_dict)
-    split_ehr_icd_subset['TIME_TO_ICD'] = (split_ehr_icd_subset['START_DT'].apply(lambda x : datetime.strptime(x, '%Y-%m-%d %H:%M:%S')) - split_ehr_icd_subset['FIRST_TREATMENT_START_DT']).apply(lambda x : x.days)
+    assert_schema(
+        split_ehr_icd_subset,
+        "timestamped_icd_info",
+        required_cols=[
+            "DFCI_MRN",
+            "START_DT",
+            "DIAGNOSIS_ICD10_CD",
+            "DIAGNOSIS_ICD10_NM",
+            "FIRST_TREATMENT_START_DT",
+            "TIME_TO_ICD",
+        ],
+        key_col=None,
+    )
 
     split_ehr_icd_subset.to_csv(os.path.join(SURV_PATH, 'timestamped_icd_info.csv.gz'), index=False)
 

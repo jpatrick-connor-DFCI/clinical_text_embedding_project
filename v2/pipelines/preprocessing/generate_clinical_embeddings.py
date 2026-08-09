@@ -1,4 +1,4 @@
-"""Generate Clinical-Longformer note embeddings from tokenized note batches."""
+"""Generate mean-pooled Clinical ModernBERT note embeddings from tokenized note batches."""
 
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ TOKEN_FILE_PATTERNS = (
     (0, re.compile(r"VTE_notes_tokenized_batch_(\d+)_tokens\.npz$")),
     (1, re.compile(r"VTE_notes_tokenized_batch_(\d+)_tokens\.json$")),
 )
-MODEL_NAME = "yikuan8/Clinical-Longformer"
+MODEL_NAME = "Simonlee711/Clinical_ModernBERT"
 DATALOADER_BATCH_SIZE = 64
 
 
@@ -149,7 +149,7 @@ def build_collate_fn(pad_token_id: int):
 
 
 def main() -> None:
-    """Generate pooled CLS embeddings for all token batches."""
+    """Generate attention-masked mean-pooled embeddings for all token batches."""
     from transformers import AutoModel
 
     EMBED_PATH.mkdir(parents=True, exist_ok=True)
@@ -188,7 +188,12 @@ def main() -> None:
             masks = masks.to(device, non_blocking=pin_memory)
 
             with torch.inference_mode():
-                preds = embedding_model(input_ids=tokens, attention_mask=masks).pooler_output.cpu()
+                # ModernBERT has no pooler head, so .pooler_output is unavailable.
+                # Use attention-masked mean pooling over last_hidden_state; the
+                # clamp guards against all-padding rows.
+                out = embedding_model(input_ids=tokens, attention_mask=masks).last_hidden_state
+                mask = masks.unsqueeze(-1).to(out.dtype)
+                preds = ((out * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1e-9)).cpu()
 
             predictions[indices] = preds
 

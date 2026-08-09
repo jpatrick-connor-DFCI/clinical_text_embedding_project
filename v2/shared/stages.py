@@ -13,12 +13,12 @@ like "4.0A" that `normalize_stage` rejects (the trailing `\\.0+$` strip only
 fires when the decimal is at the very end of the string). Kept as a distinct
 check, `is_stage_iv`, rather than folded into `normalize_stage`.
 """
-import pickle
+import os
 import re
 
 import pandas as pd
 
-from config import STAGE_PATH
+from config import FEATURE_PATH
 
 STAGE_ORDER = ["I", "II", "III", "IV"]
 
@@ -52,11 +52,14 @@ def is_stage_iv(raw) -> bool:
 
 
 def load_stage_map() -> dict[int, object] | None:
-    """Raw DFCI_MRN -> stage value from the derived-stage pickle, or None if
-    unreadable (callers fall back to the one-hot cancer_stage_df.csv.gz)."""
+    """Raw DFCI_MRN -> stage value from cancer_stage_df.csv.gz's raw CANCER_STAGE
+    string column, or None if unreadable. cancer_stage_df.csv.gz now always
+    carries this raw column (see generate_all_non_text_covariates.py), so this
+    replaces the previous pickle-based lookup and its one-hot fallback."""
+    path = os.path.join(FEATURE_PATH, "cancer_stage_df.csv.gz")
     try:
-        with open(STAGE_PATH, "rb") as f:
-            return pickle.load(f)
-    except (FileNotFoundError, OSError, pickle.UnpicklingError) as e:
-        print(f"  stage pickle unavailable ({type(e).__name__})")
+        stage_df = pd.read_csv(path, usecols=["DFCI_MRN", "CANCER_STAGE"])
+    except (FileNotFoundError, OSError, ValueError) as e:
+        print(f"  cancer_stage_df.csv.gz unavailable ({type(e).__name__})")
         return None
+    return dict(zip(stage_df["DFCI_MRN"], stage_df["CANCER_STAGE"]))

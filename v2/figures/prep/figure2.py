@@ -62,7 +62,7 @@ import pandas as pd
 from sksurv.metrics import concordance_index_censored, cumulative_dynamic_auc
 from sksurv.util import Surv
 
-from config import CODE_PATH, FEATURE_PATH, RESULTS_PATH, SURV_PATH
+from config import CODE_PATH, RESULTS_PATH, SURV_PATH
 from figures.io import save_figure_data
 from pipelines.training.slurm_array_utils import filter_event_rows
 from schemes import full_cohort_event_dir, full_cohort_risk_dir, list_trained_events, load_embedding_prediction_df
@@ -612,33 +612,16 @@ def _scheme_event_km(topk: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
-# Raw, complete stage labels (avoids the drop_first ambiguity in
-# cancer_stage_df.csv.gz). Mirrors generate_all_non_text_covariates.py:17.
+# Raw, complete stage labels from cancer_stage_df.csv.gz's raw CANCER_STAGE
+# column. Mirrors generate_all_non_text_covariates.py:17.
 def _major_stage_labels() -> pd.DataFrame:
-    """DFCI_MRN -> stage_group (I/II/III/IV) from the raw derived-stage pickle.
-
-    Falls back to reconstructing from the one-hot cancer_stage_df.csv.gz when the
-    pickle is unreadable (all-zero rows = the drop_first reference stage)."""
+    """DFCI_MRN -> stage_group (I/II/III/IV) from the raw derived-stage column."""
     mrn_to_stage = load_stage_map()
-    if mrn_to_stage is not None:
-        df = pd.DataFrame({"DFCI_MRN": list(mrn_to_stage.keys()),
-                           "stage_group": [normalize_stage(v) for v in mrn_to_stage.values()]})
-    else:
-        print("  reconstructing from one-hot CSV")
-        oh = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_stage_df.csv.gz"))
-        stage_cols = [c for c in oh.columns if c.startswith("CANCER_STAGE_")]
-        present = [normalize_stage(c.replace("CANCER_STAGE_", "")) for c in stage_cols]
-        # drop_first reference = the single major stage absent from the columns
-        reference = next((s for s in STAGE_ORDER if s not in present), None)
-        active = oh[stage_cols].to_numpy()
-        labels = []
-        for i in range(len(oh)):
-            row = active[i]
-            if row.max() <= 0:
-                labels.append(reference)
-            else:
-                labels.append(present[int(row.argmax())])
-        df = pd.DataFrame({"DFCI_MRN": oh["DFCI_MRN"], "stage_group": labels})
+    if mrn_to_stage is None:
+        print("  cancer_stage_df.csv.gz unavailable, no stage data")
+        return pd.DataFrame(columns=["DFCI_MRN", "stage_group"])
+    df = pd.DataFrame({"DFCI_MRN": list(mrn_to_stage.keys()),
+                       "stage_group": [normalize_stage(v) for v in mrn_to_stage.values()]})
 
     df = df.dropna(subset=["stage_group"])
     df = df[df["stage_group"].isin(STAGE_ORDER)].drop_duplicates(subset=["DFCI_MRN"])

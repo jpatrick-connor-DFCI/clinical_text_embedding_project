@@ -10,7 +10,7 @@ clinical_and_genomic_features/ (FEATURE_PATH) — the same files
 generate_all_non_text_covariates.py writes — rather than any downstream,
 event-specific held-out risk-score files:
 - cohort/cancer type: cancer_type_df.csv.gz     (also the Fig 1 cohort source)
-- stage:              cancer_stage pickle, falling back to cancer_stage_df.csv.gz
+- stage:              cancer_stage_df.csv.gz (raw CANCER_STAGE column)
 - treatment:          categorical_treatment_data_by_line.csv.gz
 - somatic:            complete_somatic_data_df.csv.gz
 - prs:                complete_germline_data_df.csv.gz
@@ -38,14 +38,8 @@ DATA_AVAILABILITY_COLUMNS = ["stage", "label", "n_patients", "n_total"]
 def _mrns_with_stage(cohort_mrns: set[int]) -> set[int]:
     mrn_to_stage = load_stage_map()
     if mrn_to_stage is None:
-        print("  falling back to one-hot CSV")
-        oh = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_stage_df.csv.gz"))
-        oh = oh[oh["DFCI_MRN"].isin(cohort_mrns)]
-        stage_cols = [c for c in oh.columns if c.startswith("CANCER_STAGE_")]
-        # One-hot rows are "has a stage" as soon as *any* stage indicator or the
-        # (drop_first) reference class applies — every row in this table has a
-        # resolvable stage by construction, so presence in `oh` is sufficient.
-        return set(oh["DFCI_MRN"]) if stage_cols else set()
+        print("  cancer_stage_df.csv.gz unavailable, no stage data")
+        return set()
     mrns = {mrn for mrn, v in mrn_to_stage.items()
             if mrn in cohort_mrns and normalize_stage(v) is not None}
     return mrns

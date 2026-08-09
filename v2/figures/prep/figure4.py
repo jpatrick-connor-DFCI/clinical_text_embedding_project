@@ -79,7 +79,8 @@ SILHOUETTE_K_RANGE = range(2, 9)
 
 
 def _major_stage_map() -> dict[int, str] | None:
-    """MRN -> major stage (I-IV) from the raw stage pickle. None on read failure."""
+    """MRN -> major stage (I-IV) from cancer_stage_df.csv.gz's raw CANCER_STAGE
+    column. None on read failure."""
     mrn_to_stage = load_stage_map()
     if mrn_to_stage is None:
         print("  slope-by-stage will be empty")

@@ -10,6 +10,14 @@
 #SBATCH --output=v2/slurm/array_feature_comp/output/%A_%a.out
 #SBATCH --error=v2/slurm/array_feature_comp/error/%A_%a.err
 
+# Resource sizing is per-modality-class (see launch_feature_comp.sh), which submits this script
+# twice with different --cpus-per-task/--mem overrides on the sbatch CLI (these win over the
+# #SBATCH defaults above) plus MODALITY_CLASS set accordingly:
+#   MODALITY_CLASS=big   -> text, prs                       (--cpus-per-task=5 --mem=8G)
+#   MODALITY_CLASS=small -> stage, treatment, labs, somatic  (--cpus-per-task=1 --mem=4G)
+#   MODALITY_CLASS=all (default) -> all six modalities, unchanged legacy behavior.
+MODALITY_CLASS=${MODALITY_CLASS:-all}
+
 PROJECT_ROOT=${PROJECT_ROOT:-/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project}
 V2_ROOT="$PROJECT_ROOT/v2"
 MANIFEST=${MANIFEST:-$V2_ROOT/slurm/slurm_manifests/feature_comp_tasks.tsv}
@@ -108,21 +116,47 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
         ;;
     esac
   else
-    MODALITIES=(stage treatment labs somatic prs text)
+    case "$MODALITY_CLASS" in
+      big)   MODALITIES=(prs text) ;;
+      small) MODALITIES=(stage treatment labs somatic) ;;
+      all)   MODALITIES=(stage treatment labs somatic prs text) ;;
+      *)
+        echo "Unsupported MODALITY_CLASS: $MODALITY_CLASS (expected big|small|all)"
+        exit 1
+        ;;
+    esac
   fi
 
   echo "Running row ${LINE_NUM}: scheme=${SCHEME}, event=${EVENT}, modalities=${MODALITIES[*]}"
-  for MODALITY in "${MODALITIES[@]}"; do
+
+  # A2: when the full six-modality set is requested for this row (no per-row MANIFEST_MODALITY
+  # override, MODALITY_CLASS=all), run one process that loads the base frame once and loops all
+  # six modalities in-process (per-modality try/except lives inside run_feature_comp_task.py, so
+  # one modality failing does not stop the rest). Otherwise (a single manifest-pinned modality,
+  # or a big/small resource class) invoke run_feature_comp_task.py once per modality as before.
+  if [[ -z "${MANIFEST_MODALITY:-}" && "$MODALITY_CLASS" == "all" ]]; then
     python -m pipelines.training.run_feature_comp_task \
       --scheme "$SCHEME" \
       --event "$EVENT" \
-      --modality "$MODALITY" \
+      --modality all \
       --n-jobs "${SLURM_CPUS_PER_TASK:-1}" \
       --max-iter "${COXNET_MAX_ITER:-5000}" \
       --backend "${COXNET_BACKEND:-threading}" \
       ${OVERWRITE_FLAG[@]+"${OVERWRITE_FLAG[@]}"} \
-      || echo "[error] row ${LINE_NUM} failed: scheme=${SCHEME}, event=${EVENT}, modality=${MODALITY}"
-  done
+      || echo "[error] row ${LINE_NUM} failed: scheme=${SCHEME}, event=${EVENT}, modality=all"
+  else
+    for MODALITY in "${MODALITIES[@]}"; do
+      python -m pipelines.training.run_feature_comp_task \
+        --scheme "$SCHEME" \
+        --event "$EVENT" \
+        --modality "$MODALITY" \
+        --n-jobs "${SLURM_CPUS_PER_TASK:-1}" \
+        --max-iter "${COXNET_MAX_ITER:-5000}" \
+        --backend "${COXNET_BACKEND:-threading}" \
+        ${OVERWRITE_FLAG[@]+"${OVERWRITE_FLAG[@]}"} \
+        || echo "[error] row ${LINE_NUM} failed: scheme=${SCHEME}, event=${EVENT}, modality=${MODALITY}"
+    done
+  fi
 done
 
 conda deactivate
