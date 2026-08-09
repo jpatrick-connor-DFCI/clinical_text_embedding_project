@@ -7,6 +7,13 @@ externally-owned project, so it is not expected to match the old VTE cohort
 (it is larger and drops the vte/tt_vte endpoint, which has no PROFILE_DATA
 source).
 
+Carries both time-zero anchors (see anchors.py): `treatment`
+(first_treatment_date, the original/default) and `sequencing` (earliest
+genomic-specimen date, the OS-anchor-sensitivity arm from
+V2_PIPELINE_PLAN.md). Every treatment-anchor column name and value is
+unchanged from before this anchor split — only new sequencing-anchor columns
+are additive.
+
 Writes:
   - SURV_PATH/cohort_df.parquet
   - SURV_PATH/cohort_attrition.json
@@ -40,11 +47,30 @@ def _first_treatment_dates() -> pl.DataFrame:
     return first_per_patient
 
 
-def _pre_index_note_mrns(cohort_mrns: pl.Series, first_treatment_df: pl.DataFrame) -> set:
-    """MRNs with >= 1 clinical note strictly before their first_treatment_date,
+def _sequencing_dates() -> pl.DataFrame:
+    """Per-MRN earliest genomic-specimen date: min(SAMPLE_COLLECTION_DT,
+    TEST_ORDER_DT, REPORT_DT), taking the earliest specimen per MRN. This is
+    a time origin for the sequencing anchor, not the treatment-proximate
+    sample `build_somatic_data_df` selects — it must NOT inherit that
+    function's `days_from_sequencing_to_first_treatment >= 0` filter."""
+    genomic_spec = ps.load_genomic_specimen(exclude_rapidheme=True)
+    genomic_spec = genomic_spec.with_columns(
+        pl.min_horizontal([ps.SAMPLE_COLLECTION_DT, ps.TEST_ORDER_DT, ps.REPORT_DT]).alias("sequencing_date")
+    ).drop_nulls(subset=["sequencing_date"])
+
+    earliest_per_patient = (
+        genomic_spec.sort(["DFCI_MRN", "sequencing_date"])
+        .group_by("DFCI_MRN", maintain_order=True)
+        .agg(pl.col("sequencing_date").first())
+    )
+    return earliest_per_patient
+
+
+def _pre_index_note_mrns(cohort_mrns: pl.Series, anchor_dates_df: pl.DataFrame, date_col: str) -> set:
+    """MRNs with >= 1 clinical note strictly before their anchor date,
     across the three note-metadata parquets. EVENT_DATE is tz-aware UTC (the
     only tz-aware column in PROFILE_DATA) and must be localized to naive
-    before comparing against the (naive) first_treatment_date."""
+    before comparing against the (naive) anchor date."""
     mrns_with_note: set = set()
     for note_type in ("PROGRESS_NOTES", "PATHOLOGY_NOTES", "IMAGING_NOTES"):
         meta = ps.load_note_metadata(note_type, columns=[ps.MRN, ps.EVENT_DATE])
@@ -59,8 +85,8 @@ def _pre_index_note_mrns(cohort_mrns: pl.Series, first_treatment_df: pl.DataFram
                 .dt.date()
                 .alias("_EVENT_DATE_NAIVE")
             )
-            .join(first_treatment_df.select(["DFCI_MRN", "first_treatment_date"]), on="DFCI_MRN", how="inner")
-            .filter(pl.col("_EVENT_DATE_NAIVE") < pl.col("first_treatment_date"))
+            .join(anchor_dates_df.select(["DFCI_MRN", date_col]), on="DFCI_MRN", how="inner")
+            .filter(pl.col("_EVENT_DATE_NAIVE") < pl.col(date_col))
         )
         mrns_with_note.update(meta["DFCI_MRN"].unique().to_list())
     return mrns_with_note
@@ -92,7 +118,9 @@ def main() -> None:
 
     treatment_mrns = first_treatment_df["DFCI_MRN"]
 
-    mrns_with_pre_index_note = _pre_index_note_mrns(treatment_mrns, first_treatment_df)
+    mrns_with_pre_index_note = _pre_index_note_mrns(
+        treatment_mrns, first_treatment_df, "first_treatment_date"
+    )
     attrition["patients_with_pre_index_note"] = len(mrns_with_pre_index_note)
 
     cohort_df = first_treatment_df.filter(pl.col("DFCI_MRN").is_in(list(mrns_with_pre_index_note)))
@@ -145,6 +173,57 @@ def main() -> None:
 
     attrition["final_cohort_size"] = cohort_df.height
 
+    # tt_death / AGE_AT_TREATMENTSTART are kept as-is (aliases of the
+    # treatment-anchor values) so nothing downstream breaks.
+    cohort_df = cohort_df.with_columns(
+        pl.col("tt_death").alias("tt_death_treatment"),
+        (
+            pl.col("first_treatment_date").is_not_null()
+            & pl.col("DFCI_MRN").is_in(list(mrns_with_pre_index_note))
+            & (pl.col("tt_death") > 0)
+            & (pl.col("death_date").is_null() | (pl.col("first_treatment_date") <= pl.col("death_date")))
+        ).alias("eligible_treatment"),
+    )
+
+    # === Sequencing anchor ===
+    seq_attrition: dict[str, int] = {}
+    sequencing_df = _sequencing_dates()
+    seq_attrition["patients_with_sequencing_date"] = sequencing_df.height
+
+    cohort_df = cohort_df.join(sequencing_df, on="DFCI_MRN", how="left")
+
+    mrns_with_seq_date = set(sequencing_df["DFCI_MRN"].to_list())
+    mrns_with_pre_seq_note = _pre_index_note_mrns(
+        pl.Series(sorted(mrns_with_seq_date)), sequencing_df, "sequencing_date"
+    )
+    seq_attrition["patients_with_pre_sequencing_note"] = len(mrns_with_pre_seq_note)
+
+    cohort_df = cohort_df.with_columns(
+        (
+            (pl.col("sequencing_date") - pl.col(ps.BIRTH_DT)).dt.total_days() / 365.2425
+        ).alias("AGE_AT_SEQUENCING"),
+        pl.coalesce(["death_date", "last_contact_date"]).alias("_follow_up_end_date_seq"),
+    )
+    cohort_df = cohort_df.with_columns(
+        (pl.col("_follow_up_end_date_seq") - pl.col("sequencing_date")).dt.total_days().alias("tt_death_sequencing"),
+    ).drop("_follow_up_end_date_seq")
+
+    cohort_df = cohort_df.with_columns(
+        (
+            pl.col("sequencing_date").is_not_null()
+            & pl.col("DFCI_MRN").is_in(list(mrns_with_pre_seq_note))
+            & (pl.col("tt_death_sequencing") > 0)
+            & (pl.col("death_date").is_null() | (pl.col("sequencing_date") <= pl.col("death_date")))
+        ).alias("eligible_sequencing"),
+    )
+
+    seq_attrition["eligible_sequencing_count"] = int(cohort_df["eligible_sequencing"].sum())
+    seq_attrition["eligible_treatment_count"] = int(cohort_df["eligible_treatment"].sum())
+    seq_attrition["eligible_both_anchors_count"] = int(
+        (cohort_df["eligible_treatment"] & cohort_df["eligible_sequencing"]).sum()
+    )
+    attrition["sequencing_anchor"] = seq_attrition
+
     cohort_pd = cohort_df.select(
         [
             "DFCI_MRN",
@@ -157,6 +236,12 @@ def main() -> None:
             "last_contact_date",
             "death",
             "tt_death",
+            "tt_death_treatment",
+            "eligible_treatment",
+            "sequencing_date",
+            "AGE_AT_SEQUENCING",
+            "tt_death_sequencing",
+            "eligible_sequencing",
         ]
     ).to_pandas()
 

@@ -15,7 +15,7 @@ import os
 
 import polars as pl
 
-from config import CLINICAL_NOTES_PATH, PROFILE_DATA_PATH
+from config import CANCER_ANNOTATIONS_PATH, CLINICAL_NOTES_PATH, PROFILE_DATA_PATH
 
 # --- Shared column-name constants ---
 MRN = "DFCI_MRN"
@@ -55,6 +55,10 @@ TEST_ORDER_DT = "TEST_ORDER_DT"
 REPORT_DT = "REPORT_DT"
 SOMATIC_GROUP_KEY = [MRN, SAMPLE_ACCESSION_NBR, TEST_TYPE]
 RAPIDHEME_TEST_TYPE = "RAPIDHEME_CLINICAL"
+
+# CANCER_ANNOTATIONS (compiled by PROFILE_data_processing/derive_cancer_annotations.ipynb)
+CANCER_GROUP = "CANCER_GROUP"
+STAGE = "STAGE"
 
 # CLINICAL_NOTES metadata (shared across PROGRESS/PATHOLOGY/IMAGING)
 RPT_ID = "RPT_ID"
@@ -107,17 +111,29 @@ def load_genomic_specimen(exclude_rapidheme: bool = True) -> pl.DataFrame:
     return lf.collect(engine="streaming")
 
 
+def _cancer_annotations_path(filename: str) -> str:
+    return os.path.join(CANCER_ANNOTATIONS_PATH, filename)
+
+
+def load_cancer_type() -> pl.DataFrame:
+    """CANCER_TYPE.parquet: one row per DFCI_MRN, CANCER_GROUP genomics-first
+    with ICD fallback (see PROFILE_data_processing/CANCER_ANNOTATIONS_PLAN.md)."""
+    return pl.read_parquet(_cancer_annotations_path("CANCER_TYPE.parquet"))
+
+
+def load_cancer_stage(registry: bool = False) -> pl.DataFrame:
+    """CANCER_STAGE.parquet (note-regex derived) by default, or
+    CANCER_STAGE_REGISTRY.parquet (CAREG BEST_AJCC_STAGE_CD derived) if
+    registry=True. Both are one row per DFCI_MRN with a STAGE column in
+    {0, 1, 2, 3, 4}; the two sources are never coalesced upstream."""
+    filename = "CANCER_STAGE_REGISTRY.parquet" if registry else "CANCER_STAGE.parquet"
+    return pl.read_parquet(_cancer_annotations_path(filename))
+
+
 def load_somatic_wide() -> pl.DataFrame:
     """SOMATIC_WIDE_BY_SAMPLE.parquet: one row per (MRN, SAMPLE_ACCESSION_NBR, TEST_TYPE),
     already emitting *_SNV/_AMP/_DEL/_SV/_FUSION indicator columns."""
     return pl.read_parquet(_path("SOMATIC_WIDE_BY_SAMPLE.parquet"))
-
-
-def load_labs(columns: list[str] | None = None) -> pl.DataFrame:
-    """LABS.parquet. Absent from the 2026_03 release, so coverage ends 2025_03."""
-    if columns is None:
-        return pl.read_parquet(_path("LABS.parquet"))
-    return pl.read_parquet(_path("LABS.parquet"), columns=columns)
 
 
 def load_medication_after_death_qc() -> pl.DataFrame:

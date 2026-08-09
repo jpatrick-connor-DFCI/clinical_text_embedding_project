@@ -9,6 +9,7 @@ import os
 
 import pandas as pd
 
+from anchors import DEFAULT_ANCHOR, anchor_suffix, ensure_anchor
 from config import SURV_PATH
 
 SCHEMES: dict[str, dict[str, str]] = {
@@ -38,43 +39,59 @@ def ensure_scheme(scheme: str) -> str:
     return scheme
 
 
-def embedding_file(scheme: str) -> str:
-    return SCHEMES[ensure_scheme(scheme)]["embedding_file"]
+def embedding_file(scheme: str, anchor: str = DEFAULT_ANCHOR) -> str:
+    """Embedding-prediction filename for `scheme`. Non-default anchors insert
+    `anchor_suffix()` before the extension, e.g.
+    `death_met_embedding_prediction_df__sequencing.parquet`; `treatment`
+    reproduces the current filename exactly."""
+    base = SCHEMES[ensure_scheme(scheme)]["embedding_file"]
+    suffix = anchor_suffix(ensure_anchor(anchor))
+    if not suffix:
+        return base
+    stem, ext = os.path.splitext(base)
+    return f"{stem}{suffix}{ext}"
 
 
-def scheme_results_dir(scheme: str) -> str:
-    return os.path.join(SURV_PATH, "results", SCHEMES[ensure_scheme(scheme)]["results_dir"])
+def scheme_results_dir(scheme: str, anchor: str = DEFAULT_ANCHOR) -> str:
+    """Results directory for `scheme`. Non-default anchors nest under
+    `<scheme_results_dir>/anchor_<anchor>/`, leaving the `treatment` path
+    byte-identical to before anchors existed."""
+    base = os.path.join(SURV_PATH, "results", SCHEMES[ensure_scheme(scheme)]["results_dir"])
+    ensure_anchor(anchor)
+    if anchor == DEFAULT_ANCHOR:
+        return base
+    return os.path.join(base, f"anchor_{anchor}")
 
 
-def get_output_dir(scheme: str, run_type: str) -> str:
+def get_output_dir(scheme: str, run_type: str, anchor: str = DEFAULT_ANCHOR) -> str:
     """Result subdirectory for a training run, created if missing."""
     valid_run_types = {"full_cohort", "feature_comps", "full_cohort_risk_scores"}
     if run_type not in valid_run_types:
         raise ValueError(f"run_type must be one of {sorted(valid_run_types)}")
-    out = os.path.join(scheme_results_dir(scheme), run_type)
+    out = os.path.join(scheme_results_dir(scheme, anchor), run_type)
     os.makedirs(out, exist_ok=True)
     return out
 
 
-def full_cohort_event_dir(scheme: str, event: str) -> str:
-    return os.path.join(scheme_results_dir(scheme), "full_cohort", event)
+def full_cohort_event_dir(scheme: str, event: str, anchor: str = DEFAULT_ANCHOR) -> str:
+    return os.path.join(scheme_results_dir(scheme, anchor), "full_cohort", event)
 
 
-def full_cohort_risk_dir(scheme: str, event: str) -> str:
-    return os.path.join(scheme_results_dir(scheme), "full_cohort_risk_scores", event)
+def full_cohort_risk_dir(scheme: str, event: str, anchor: str = DEFAULT_ANCHOR) -> str:
+    return os.path.join(scheme_results_dir(scheme, anchor), "full_cohort_risk_scores", event)
 
 
-def feature_held_out_dir(scheme: str, event: str) -> str:
-    return os.path.join(scheme_results_dir(scheme), "held_out_risk_scores", event)
+def feature_held_out_dir(scheme: str, event: str, anchor: str = DEFAULT_ANCHOR) -> str:
+    return os.path.join(scheme_results_dir(scheme, anchor), "held_out_risk_scores", event)
 
 
-def load_embedding_prediction_df(scheme: str) -> pd.DataFrame:
-    return pd.read_parquet(os.path.join(SURV_PATH, embedding_file(scheme)))
+def load_embedding_prediction_df(scheme: str, anchor: str = DEFAULT_ANCHOR) -> pd.DataFrame:
+    return pd.read_parquet(os.path.join(SURV_PATH, embedding_file(scheme, anchor)))
 
 
-def list_trained_events(scheme: str) -> list[str]:
+def list_trained_events(scheme: str, anchor: str = DEFAULT_ANCHOR) -> list[str]:
     """Events under <scheme>/full_cohort/ that have both text and base test files."""
-    train_root = os.path.join(scheme_results_dir(scheme), "full_cohort")
+    train_root = os.path.join(scheme_results_dir(scheme, anchor), "full_cohort")
     if not os.path.isdir(train_root):
         return []
     out = []

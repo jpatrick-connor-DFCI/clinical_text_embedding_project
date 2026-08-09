@@ -5,9 +5,10 @@ filenames and column contracts (CANCER_TYPE_*, CANCER_STAGE_*, *_AMP/_DEL/
 _SNV/_SV/_FUSION, PGS*, PX_on_*) so `pipelines/training/slurm_array_utils.py`
 needs zero changes to keep selecting features by name pattern.
 
-Cancer type and stage are TODO placeholders derived from GENOMIC_SPECIMEN/
-CAREG until a compiled version is available; the column contracts are fixed
-now so that swap will be a loader change only.
+Cancer type and stage come from PROFILE_data_processing's compiled
+CANCER_ANNOTATIONS parquets (CANCER_TYPE.parquet, CANCER_STAGE.parquet,
+note-regex derived), not the GENOMIC_SPECIMEN/CAREG placeholders used
+previously.
 """
 
 import os
@@ -26,34 +27,20 @@ def _load_cohort_df() -> pd.DataFrame:
 
 
 def build_cancer_type_df(cohort_df: pd.DataFrame) -> pd.DataFrame:
-    """CANCER_TYPE from GENOMIC_SPECIMEN.CANCER_TYPE (patient-level, from the
-    selected sample), falling back to a CAREG.SITE_CD site grouping for
-    non-sequenced patients. # TODO: replace with compiled cancer type."""
+    """CANCER_TYPE from the compiled CANCER_TYPE.parquet's CANCER_GROUP column
+    (genomics-first, ICD-fallback; see PROFILE_data_processing/
+    CANCER_ANNOTATIONS_PLAN.md), restricted to the cohort and renamed to the
+    existing CANCER_TYPE column contract."""
     cohort_mrns = cohort_df["DFCI_MRN"].unique().tolist()
 
-    genomic_spec = ps.load_genomic_specimen()
-    genomic_spec = genomic_spec.filter(pl.col(ps.MRN).is_in(cohort_mrns))
-    # One CANCER_TYPE per patient: take the first non-null value per MRN.
-    genomic_type = (
-        genomic_spec.select([ps.MRN, ps.CANCER_TYPE])
+    cancer_type = (
+        ps.load_cancer_type()
+        .select([ps.MRN, pl.col(ps.CANCER_GROUP).alias("CANCER_TYPE")])
+        .filter(pl.col(ps.MRN).is_in(cohort_mrns))
         .drop_nulls()
-        .group_by(ps.MRN)
-        .agg(pl.col(ps.CANCER_TYPE).first())
     )
 
-    careg = ps.load_careg(columns=[ps.MRN, ps.SITE_CD])
-    careg_type = (
-        careg.filter(pl.col(ps.MRN).is_in(cohort_mrns))
-        .select([ps.MRN, pl.col(ps.SITE_CD).alias(ps.CANCER_TYPE)])
-        .drop_nulls()
-        .group_by(ps.MRN)
-        .agg(pl.col(ps.CANCER_TYPE).first())
-    )
-
-    covered_mrns = set(genomic_type[ps.MRN].to_list())
-    fallback = careg_type.filter(~pl.col(ps.MRN).is_in(list(covered_mrns)))
-
-    cancer_type_df = pl.concat([genomic_type, fallback], how="vertical").to_pandas()
+    cancer_type_df = cancer_type.to_pandas()
 
     cancer_type_counts = cancer_type_df['CANCER_TYPE'].value_counts()
     types_to_keep = cancer_type_counts[cancer_type_counts >= 500].index.tolist()
@@ -73,27 +60,26 @@ def build_cancer_type_df(cohort_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_cancer_stage_df() -> pd.DataFrame:
-    """CANCER_STAGE from CAREG.BEST_AJCC_STAGE_CD, dropping the '88'/'99'
-    sentinels, one row per patient by earliest DIAGNOSIS_DT, normalized via
-    shared.stages.normalize_stage(). Also emits the raw CANCER_STAGE string
-    column so figure prep no longer needs a drop_first reconstruction
-    fallback, and load_stage_map() can read this file directly.
-    # TODO: replace with compiled cancer stage."""
-    careg = ps.load_careg(columns=[ps.MRN, ps.DIAGNOSIS_DT, ps.BEST_AJCC_STAGE_CD])
-    careg = careg.filter(
-        (~pl.col(ps.BEST_AJCC_STAGE_CD).is_in(list(ps.STAGE_SENTINELS)))
-        & pl.col(ps.BEST_AJCC_STAGE_CD).is_not_null()
-    )
-    earliest_stage = (
-        careg.sort([ps.MRN, ps.DIAGNOSIS_DT])
-        .group_by(ps.MRN, maintain_order=True)
-        .agg(pl.col(ps.BEST_AJCC_STAGE_CD).first())
+    """CANCER_STAGE from the compiled CANCER_STAGE.parquet's STAGE column
+    (note-regex derived, earliest note observation per patient; see
+    PROFILE_data_processing/CANCER_ANNOTATIONS_PLAN.md), normalized via
+    shared.stages.normalize_stage() to collapse to I/II/III/IV (in-situ
+    stage 0 normalizes to None and is dropped, matching the prior sentinel
+    handling). Also emits the raw CANCER_STAGE string column so figure prep no
+    longer needs a drop_first reconstruction fallback, and load_stage_map()
+    can read this file directly. Note-regex derived rather than registry
+    derived (CANCER_STAGE_REGISTRY.parquet) to match the two independent
+    sources' intended default; registry stage remains available via
+    ps.load_cancer_stage(registry=True) if needed."""
+    note_stage = (
+        ps.load_cancer_stage(registry=False)
+        .select([ps.MRN, ps.STAGE])
+        .rename({ps.MRN: "DFCI_MRN"})
         .to_pandas()
     )
 
-    earliest_stage["CANCER_STAGE"] = earliest_stage[ps.BEST_AJCC_STAGE_CD].map(normalize_stage)
-    earliest_stage = earliest_stage.dropna(subset=["CANCER_STAGE"])
-    earliest_stage = earliest_stage.rename(columns={ps.MRN: "DFCI_MRN"})[["DFCI_MRN", "CANCER_STAGE"]]
+    note_stage["CANCER_STAGE"] = note_stage[ps.STAGE].map(normalize_stage)
+    earliest_stage = note_stage.dropna(subset=["CANCER_STAGE"])[["DFCI_MRN", "CANCER_STAGE"]]
 
     _raw_cancer_stage = earliest_stage["CANCER_STAGE"].copy()
     cancer_stage_df = pd.get_dummies(earliest_stage, columns=["CANCER_STAGE"], drop_first=True)
@@ -178,56 +164,6 @@ def build_treatment_by_line_df() -> pd.DataFrame:
     return treatment_df
 
 
-def build_mean_lab_vals_df(cohort_df: pd.DataFrame) -> pd.DataFrame:
-    """LABS.parquet: top-40 TEST_TYPE_DESCR, the 9999999.00 sentinel drop,
-    mean/std, and the _missing indicator block. The _missing suffix is
-    load-bearing: run_feature_comp_task.py treats a column as imputable only
-    if a sibling {col}_missing exists. LABS is absent from the 2026_03
-    release, so lab coverage ends with 2025_03 data."""
-    cohort_mrns = cohort_df["DFCI_MRN"].unique().tolist()
-    labs_df = ps.load_labs(
-        columns=[ps.MRN, "SPECIMEN_COLLECT_DT", "TEST_TYPE_DESCR", "NUMERIC_RESULT"]
-    ).to_pandas()
-    labs_df = labs_df.loc[labs_df["DFCI_MRN"].isin(cohort_mrns)]
-
-    test_count_df = labs_df['TEST_TYPE_DESCR'].value_counts().reset_index()
-    test_count_df['rank_index'] = range(len(test_count_df))
-    tests_to_include = test_count_df.loc[test_count_df['rank_index'] < 40]
-
-    lab_subset_df = (
-        labs_df.merge(tests_to_include['TEST_TYPE_DESCR'], on=['TEST_TYPE_DESCR'], how='inner')
-        .merge(cohort_df[['DFCI_MRN', 'first_treatment_date']], on='DFCI_MRN')
-    )
-    lab_subset_df = lab_subset_df.loc[lab_subset_df['NUMERIC_RESULT'] != 9999999.00].dropna()
-
-    lab_subset_df['LAB_TIME_REL_FIRST_TREATMENT_START'] = (
-        pd.to_datetime(lab_subset_df['SPECIMEN_COLLECT_DT']) - pd.to_datetime(lab_subset_df['first_treatment_date'])
-    ).dt.days
-
-    mean_lab_df = (
-        lab_subset_df.loc[lab_subset_df['LAB_TIME_REL_FIRST_TREATMENT_START'] < 0]
-        .groupby(['DFCI_MRN', 'TEST_TYPE_DESCR'])['NUMERIC_RESULT']
-        .agg(['mean', 'std'])
-        .reset_index()
-        .pivot(index='DFCI_MRN', columns='TEST_TYPE_DESCR')
-    )
-
-    mean_lab_df.columns = [f'{lab}_{stat}' for lab, stat in mean_lab_df.columns]
-    mean_lab_df = mean_lab_df.reset_index()
-
-    X = mean_lab_df.drop(columns=['DFCI_MRN']).astype('float32')
-
-    # Save raw (unimputed) lab values alongside missingness indicators.
-    # Mean imputation is deferred to per-fold preprocessing in cox_models.py
-    # to avoid leaking test-set statistics into the imputed training features.
-    final_mean_lab_df = pd.concat(
-        [X, X.isna().astype('int8').add_suffix('_missing')],
-        axis=1
-    )
-    final_mean_lab_df.insert(0, 'DFCI_MRN', mean_lab_df['DFCI_MRN'])
-    return final_mean_lab_df
-
-
 def main() -> None:
     os.makedirs(FEATURE_PATH, exist_ok=True)
 
@@ -259,10 +195,6 @@ def main() -> None:
     categorical_treatment_data_by_line.to_csv(
         os.path.join(FEATURE_PATH, 'categorical_treatment_data_by_line.csv.gz'), index=False
     )
-
-    mean_lab_vals_df = build_mean_lab_vals_df(cohort_df)
-    assert_schema(mean_lab_vals_df, "mean_lab_vals_pre_first_treatment", required_cols=["DFCI_MRN"], key_col="DFCI_MRN")
-    mean_lab_vals_df.to_csv(os.path.join(FEATURE_PATH, 'mean_lab_vals_pre_first_treatment.csv.gz'), index=False)
 
 
 if __name__ == "__main__":

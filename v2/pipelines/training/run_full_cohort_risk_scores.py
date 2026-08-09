@@ -11,6 +11,7 @@ import json
 import os
 import time
 
+from anchors import ANCHORS, DEFAULT_ANCHOR, age_col
 from config import SURV_PATH
 from schemes import SCHEMES, get_output_dir
 from survival import get_heldout_risk_scores_CoxPH
@@ -40,6 +41,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--scheme", required=True, choices=sorted(SCHEMES.keys()))
     parser.add_argument("--event", required=True)
+    parser.add_argument("--anchor", default=DEFAULT_ANCHOR, choices=sorted(ANCHORS.keys()))
     parser.add_argument("--n-jobs", type=int, default=None)
     parser.add_argument("--max-iter", type=int, default=1000)
     parser.add_argument("--overwrite", action="store_true")
@@ -54,7 +56,7 @@ def main() -> None:
     run_type = "full_cohort_risk_scores"
 
     # Output dir for risk scores
-    risk_out_dir = os.path.join(get_output_dir(args.scheme, run_type), args.event)
+    risk_out_dir = os.path.join(get_output_dir(args.scheme, run_type, args.anchor), args.event)
     os.makedirs(risk_out_dir, exist_ok=True)
     text_risk_fp = os.path.join(risk_out_dir, "text_risk_scores.csv")
     base_risk_fp = os.path.join(risk_out_dir, "base_risk_scores.csv")
@@ -65,7 +67,7 @@ def main() -> None:
         return
 
     # Training outputs we depend on
-    train_dir = os.path.join(get_output_dir(args.scheme, "full_cohort"), args.event)
+    train_dir = os.path.join(get_output_dir(args.scheme, "full_cohort", args.anchor), args.event)
     text_val_fp = os.path.join(train_dir, "text_val.csv")
     if run_text and not os.path.exists(text_val_fp):
         reason = f"Missing training CV output {text_val_fp}; run run_full_cohort_event.py first"
@@ -74,7 +76,7 @@ def main() -> None:
         return
 
     # Build cohort identically to training
-    full_prediction_df, type_cols, embed_cols, events = build_full_prediction_df(args.scheme)
+    full_prediction_df, type_cols, embed_cols, events = build_full_prediction_df(args.scheme, args.anchor)
     if args.event not in events:
         raise ValueError(
             f"Event '{args.event}' not found for scheme '{args.scheme}'. "
@@ -88,7 +90,8 @@ def main() -> None:
         _write_skip_report(args.scheme, args.event, run_type, reason)
         return
 
-    base_vars = ["GENDER", "AGE_AT_TREATMENTSTART"]
+    anchor_age_col = age_col(args.anchor)
+    base_vars = ["GENDER", anchor_age_col]
     all_feature_cols = base_vars + type_cols + embed_cols
     label = f"{args.scheme}:{args.event}"
     try:
@@ -116,7 +119,7 @@ def main() -> None:
         text_scores = get_heldout_risk_scores_CoxPH(
             event_pred_df,
             base_vars + type_cols,
-            ["AGE_AT_TREATMENTSTART"] + embed_cols,
+            [anchor_age_col] + embed_cols,
             embed_cols,
             event_col=args.event,
             tstop_col=f"tt_{args.event}",
@@ -137,7 +140,7 @@ def main() -> None:
         base_scores = get_heldout_risk_scores_CoxPH(
             event_pred_df,
             base_vars + type_cols,
-            ["AGE_AT_TREATMENTSTART"],
+            [anchor_age_col],
             [],
             event_col=args.event,
             tstop_col=f"tt_{args.event}",

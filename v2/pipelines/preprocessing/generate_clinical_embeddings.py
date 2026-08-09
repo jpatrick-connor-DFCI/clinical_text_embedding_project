@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import json
+import io
 import os
 import re
 import time
@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import zstandard as zstd
 from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 
@@ -46,82 +47,38 @@ GCP_ROOT = Path(os.environ.get("CLINICAL_EMBED_GCP_ROOT", "/home/patrickconnor/g
 TOKEN_PATH = Path(os.environ.get("TOKEN_PATH", str(GCP_ROOT / "tokens")))
 EMBED_PATH = Path(os.environ.get("EMBED_PATH", str(GCP_ROOT / "embeddings")))
 
-TOKEN_FILE_PATTERNS = (
-    (0, re.compile(r"VTE_notes_tokenized_batch_(\d+)_tokens\.npz$")),
-    (1, re.compile(r"VTE_notes_tokenized_batch_(\d+)_tokens\.json$")),
-)
+TOKEN_FILE_PATTERN = re.compile(r"clinical_notes_tokenized_batch_(\d+)_tokens\.npy\.zst$")
 MODEL_NAME = "Simonlee711/Clinical_ModernBERT"
 DATALOADER_BATCH_SIZE = 64
 
 
 def discover_token_files(token_path: Path) -> dict[int, Path]:
-    """Discover token batch files, preferring the newer binary format."""
-    token_files: dict[int, tuple[int, Path]] = {}
+    """Discover token batch files."""
+    token_files: dict[int, Path] = {}
 
     for file_path in token_path.iterdir():
         if not file_path.is_file():
             continue
 
-        for priority, pattern in TOKEN_FILE_PATTERNS:
-            match = pattern.fullmatch(file_path.name)
-            if not match:
-                continue
-
-            batch_idx = int(match.group(1))
-            existing = token_files.get(batch_idx)
-            if existing is None or priority < existing[0]:
-                token_files[batch_idx] = (priority, file_path)
-            break
+        match = TOKEN_FILE_PATTERN.fullmatch(file_path.name)
+        if match:
+            token_files[int(match.group(1))] = file_path
 
     if not token_files:
         raise FileNotFoundError(f"No token batch files found in {token_path}")
 
-    return {batch_idx: file_path for batch_idx, (_, file_path) in sorted(token_files.items())}
-
-
-def pack_token_sequences(token_sequences: list[list[int]], token_dtype: np.dtype | type[np.integer]) -> dict[str, np.ndarray]:
-    """Pack variable-length token sequences into flattened arrays."""
-    seq_lengths = np.fromiter((len(seq) for seq in token_sequences), dtype=np.int32, count=len(token_sequences))
-    row_splits = np.empty(len(token_sequences) + 1, dtype=np.int64)
-    row_splits[0] = 0
-    row_splits[1:] = np.cumsum(seq_lengths, dtype=np.int64)
-
-    if row_splits[-1] == 0:
-        input_ids_flat = np.empty(0, dtype=token_dtype)
-    else:
-        input_ids_flat = np.concatenate([np.asarray(seq, dtype=token_dtype) for seq in token_sequences])
-
-    return {"input_ids_flat": input_ids_flat, "row_splits": row_splits}
-
-
-def load_legacy_json_batch(batch_path: Path) -> dict[str, np.ndarray]:
-    """Load an older padded JSON token batch and convert it to ragged storage."""
-    with open(batch_path) as handle:
-        token_batch = json.load(handle)
-
-    token_sequences = []
-    for input_ids, attention_mask in zip(token_batch["input_ids"], token_batch["attention_mask"], strict=True):
-        seq_len = int(np.sum(attention_mask))
-        token_sequences.append(input_ids[:seq_len])
-
-    max_token_id = max((max(seq) for seq in token_sequences if seq), default=0)
-    token_dtype = np.uint16 if max_token_id <= np.iinfo(np.uint16).max else np.int32
-    return pack_token_sequences(token_sequences, token_dtype)
+    return dict(sorted(token_files.items()))
 
 
 def load_token_batch(batch_path: Path) -> dict[str, np.ndarray]:
-    """Load one token batch from disk in either the new or legacy format."""
-    if batch_path.suffix == ".npz":
-        with np.load(batch_path, allow_pickle=False) as token_batch:
-            return {
-                "input_ids_flat": token_batch["input_ids_flat"],
-                "row_splits": token_batch["row_splits"],
-            }
-
-    if batch_path.suffix == ".json":
-        return load_legacy_json_batch(batch_path)
-
-    raise ValueError(f"Unsupported token batch format: {batch_path}")
+    """Load one zstd-compressed npz token batch from disk."""
+    with open(batch_path, "rb") as handle:
+        raw = zstd.decompress(handle.read())
+    with np.load(io.BytesIO(raw), allow_pickle=False) as token_batch:
+        return {
+            "input_ids_flat": token_batch["input_ids_flat"],
+            "row_splits": token_batch["row_splits"],
+        }
 
 
 def build_collate_fn(pad_token_id: int):
@@ -197,7 +154,10 @@ def main() -> None:
 
             predictions[indices] = preds
 
-        torch.save(predictions, EMBED_PATH / f"VTE_notes_embeddings_batch_{batch_idx}.pt")
+        embeddings_bytes = io.BytesIO()
+        np.save(embeddings_bytes, predictions.numpy().astype(np.float16))
+        with open(EMBED_PATH / f"clinical_notes_embeddings_batch_{batch_idx}.npy.zst", "wb") as handle:
+            handle.write(zstd.compress(embeddings_bytes.getvalue(), level=15))
 
         elapsed = (time.time() - start_time) / 60
         print(f"Batch {batch_idx} completed in {elapsed:.2f} minutes.")

@@ -16,7 +16,13 @@ event-specific held-out risk-score files:
 - prs:                complete_germline_data_df.csv.gz
 
 Writes to FIGURE_DATA_DIR:
-- fig0_data_availability.csv      stage, label, n_patients, n_total  (in cascade order)
+- fig0_data_availability.csv           stage, label, n_patients, n_total  (in cascade order)
+- fig0_availability_combinations.csv   one row per observed modality-availability pattern
+
+Modality set-membership logic (text/stage/treatment/somatic/prs MRN sets) now
+lives in `pipelines.preprocessing.data_availability`, imported here rather
+than reimplemented, so this figure and `report_data_availability.py` can
+never disagree.
 """
 
 from __future__ import annotations
@@ -25,77 +31,56 @@ import os
 
 import pandas as pd
 
-from config import FEATURE_PATH, SURV_PATH
+from config import FEATURE_PATH
 from figures.io import save_figure_data
-from schemes import embedding_file
-from shared.stages import load_stage_map, normalize_stage
-
-SCHEME_FOR_EMBED = "icd3_post"  # widest post-text-merge cohort (mirrors prep_figure_1.py)
+from pipelines.preprocessing.data_availability import (
+    MODALITY_ORDER,
+    availability_matrix,
+    combination_counts,
+    modality_mrn_sets,
+)
 
 DATA_AVAILABILITY_COLUMNS = ["stage", "label", "n_patients", "n_total"]
 
-
-def _mrns_with_stage(cohort_mrns: set[int]) -> set[int]:
-    mrn_to_stage = load_stage_map()
-    if mrn_to_stage is None:
-        print("  cancer_stage_df.csv.gz unavailable, no stage data")
-        return set()
-    mrns = {mrn for mrn, v in mrn_to_stage.items()
-            if mrn in cohort_mrns and normalize_stage(v) is not None}
-    return mrns
+_MODALITY_LABELS = {
+    "text": "With Text",
+    "stage": "With Stage",
+    "treatment": "With Treatment",
+    "somatic": "With Somatic",
+    "prs": "With PRS",
+}
 
 
-def _mrns_with_treatment(cohort_mrns: set[int]) -> set[int]:
-    tx_df = pd.read_csv(os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv.gz"))
-    tx1 = tx_df.loc[tx_df["treatment_line"] == 1]
-    return set(tx1["DFCI_MRN"]) & cohort_mrns
-
-
-def _mrns_with_raw_feature(filename: str, cohort_mrns: set[int]) -> set[int]:
-    fp = os.path.join(FEATURE_PATH, filename)
-    if not os.path.exists(fp):
-        print(f"  missing {fp}")
-        return set()
-    d = pd.read_csv(fp, usecols=["DFCI_MRN"])
-    return set(d["DFCI_MRN"]) & cohort_mrns
-
-
-def _data_availability() -> pd.DataFrame:
+def _data_availability() -> tuple[pd.DataFrame, pd.DataFrame]:
     # Full cohort + cancer type, same source used as the Fig 1 cohort denominator.
     cancer_type_df = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_type_df.csv.gz"),
                                  usecols=["DFCI_MRN"])
     cohort_mrns = set(cancer_type_df["DFCI_MRN"])
     n_total = len(cohort_mrns)
 
-    emb_df = pd.read_parquet(os.path.join(SURV_PATH, embedding_file(SCHEME_FOR_EMBED)),
-                             columns=["DFCI_MRN"])
-    text_mrns = set(emb_df["DFCI_MRN"]) & cohort_mrns
-    stage_mrns = _mrns_with_stage(cohort_mrns)
-    treatment_mrns = _mrns_with_treatment(cohort_mrns)
-    somatic_mrns = _mrns_with_raw_feature("complete_somatic_data_df.csv.gz", cohort_mrns)
-    prs_mrns = _mrns_with_raw_feature("complete_germline_data_df.csv.gz", cohort_mrns)
+    modality_sets = modality_mrn_sets(cohort_mrns)
+    all_thresholds = set.intersection(*modality_sets.values()) if modality_sets else set()
 
-    all_thresholds = (text_mrns & stage_mrns & treatment_mrns
-                      & somatic_mrns & prs_mrns)
+    rows = [("full_cohort", "Full Cohort", cohort_mrns)]
+    rows += [(m, _MODALITY_LABELS[m], modality_sets[m]) for m in MODALITY_ORDER]
+    rows.append(("all", "Passes All Thresholds", all_thresholds))
 
-    rows = [
-        ("full_cohort", "Full Cohort",              cohort_mrns),
-        ("text",       "With Text",                text_mrns),
-        ("stage",      "With Stage",                stage_mrns),
-        ("treatment",  "With Treatment",            treatment_mrns),
-        ("somatic",    "With Somatic",              somatic_mrns),
-        ("prs",        "With PRS",                  prs_mrns),
-        ("all",        "Passes All Thresholds",     all_thresholds),
-    ]
-    return pd.DataFrame(
+    cascade_df = pd.DataFrame(
         [{"stage": s, "label": lbl, "n_patients": len(mrns), "n_total": n_total}
          for s, lbl, mrns in rows],
         columns=DATA_AVAILABILITY_COLUMNS,
     )
 
+    matrix = availability_matrix(cohort_mrns, modality_sets)
+    combinations_df = combination_counts(matrix)
+
+    return cascade_df, combinations_df
+
 
 def main() -> None:
-    save_figure_data(_data_availability(), "fig0_data_availability.csv")
+    cascade_df, combinations_df = _data_availability()
+    save_figure_data(cascade_df, "fig0_data_availability.csv")
+    save_figure_data(combinations_df, "fig0_availability_combinations.csv")
 
 
 if __name__ == "__main__":

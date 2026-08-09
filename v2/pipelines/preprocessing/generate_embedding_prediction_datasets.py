@@ -1,5 +1,15 @@
-"""Generate Embedding Prediction Datasets script for data preprocessing workflows."""
+"""Generate Embedding Prediction Datasets script for data preprocessing workflows.
 
+Supports `--anchor {treatment,sequencing}` (see anchors.py). The sequencing
+arm re-anchors and excludes (shift `tt`, drop patients not eligible at the
+new t=0) rather than expressing delayed entry, which sksurv's
+CoxnetSurvivalAnalysis cannot represent — see V2_PIPELINE_PLAN.md. Endpoint
+times are re-derived from the anchor date (not the pre-baked, treatment-anchor
+`TIME_TO_ICD`/`TIME_TO_MET` columns) so no feature or event is observed
+relative to the wrong t=0.
+"""
+
+import argparse
 import io
 import os
 import re
@@ -10,6 +20,7 @@ import pandas as pd
 import zstandard as zstd
 from tqdm import tqdm
 
+from anchors import DEFAULT_ANCHOR, anchor_suffix, date_col, ensure_anchor, note_time_col
 from config import CODE_PATH, NOTES_PATH, PROCESSED_DATA_PATH, SURV_PATH
 from survival import generate_survival_embedding_df, map_time_to_event
 
@@ -17,14 +28,23 @@ from survival import generate_survival_embedding_df, map_time_to_event
 BASE_INPUT_COLS = [
     'DFCI_MRN',
     'AGE_AT_TREATMENTSTART',
+    'AGE_AT_SEQUENCING',
     'GENDER',
     'first_treatment_date',
+    'sequencing_date',
     'death_date',
     'last_contact_date',
     'tt_death',
+    'tt_death_treatment',
+    'tt_death_sequencing',
     'death',
+    'eligible_treatment',
+    'eligible_sequencing',
 ]
-BASE_OUTPUT_COLS = ['DFCI_MRN', 'first_treatment_date', 'last_contact_date', 'AGE_AT_TREATMENTSTART', 'GENDER']
+BASE_OUTPUT_COLS = [
+    'DFCI_MRN', 'first_treatment_date', 'sequencing_date', 'last_contact_date',
+    'AGE_AT_TREATMENTSTART', 'AGE_AT_SEQUENCING', 'GENDER',
+]
 CORE_EVENT_COLS = ['death', 'tt_death']
 NOTE_TYPES = ['Clinician', 'Imaging', 'Pathology']
 MET_SITES = ['brain', 'bone', 'adrenal', 'liver', 'lung', 'node', 'peritoneal']
@@ -80,6 +100,17 @@ def _resolve_column(df: pd.DataFrame, expected: str) -> str:
     if expected not in col_map:
         raise ValueError(f"Expected column '{expected}' not found. Available columns: {list(df.columns)}")
     return col_map[expected]
+
+
+def _suffixed(filename: str, anchor: str) -> str:
+    """Insert `anchor_suffix()` before the extension; `treatment` reproduces
+    `filename` exactly, e.g. 'death_met_embedding_prediction_df.parquet' ->
+    'death_met_embedding_prediction_df__sequencing.parquet'."""
+    suffix = anchor_suffix(anchor)
+    if not suffix:
+        return filename
+    stem, ext = os.path.splitext(filename)
+    return f"{stem}{suffix}{ext}"
 
 
 def _dedupe_in_order(values: list[str]) -> list[str]:
@@ -146,13 +177,39 @@ def _filter_endpoint_events_by_min_post_baseline_count(
     return kept_events
 
 
-def _load_shared_inputs() -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray, pd.DataFrame]:
+def _load_shared_inputs(anchor: str = DEFAULT_ANCHOR) -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray, pd.DataFrame]:
+    """Load and anchor-restrict shared inputs. `base_cohort_df` is filtered to
+    `eligible_<anchor>` rows (drops patients not at risk at the chosen t=0 —
+    the "exclude" half of "re-anchor and exclude") and gets a `tt_death`
+    column aliased from `tt_death_<anchor>` so downstream code, which is
+    anchor-agnostic, keeps working unmodified. ICD event times
+    (`split_ehr_icd_subset['TIME_TO_ICD']`) are re-derived here from the raw
+    `START_DT` relative to the anchor's date column rather than trusting the
+    treatment-anchor-locked value baked in by extract_ICD_times.py."""
+    ensure_anchor(anchor)
     base_cohort_df = pd.read_parquet(os.path.join(SURV_PATH, 'cohort_df.parquet'))[BASE_INPUT_COLS].copy()
+
+    eligible_col = f'eligible_{anchor}'
+    base_cohort_df = base_cohort_df.loc[base_cohort_df[eligible_col]].reset_index(drop=True)
+    base_cohort_df['tt_death'] = base_cohort_df[f'tt_death_{anchor}']
+
+    anchor_date_col = date_col(anchor)
+    mrn_anchor_dict = dict(
+        zip(base_cohort_df['DFCI_MRN'], pd.to_datetime(base_cohort_df[anchor_date_col], errors='coerce'))
+    )
+
     split_ehr_icd_subset = pd.read_parquet(os.path.join(SURV_PATH, 'timestamped_icd_info.parquet'))
-    with open(os.path.join(NOTES_PATH, 'full_VTE_embeddings_as_array.npy.zst'), 'rb') as f:
+    split_ehr_icd_subset = split_ehr_icd_subset.loc[
+        split_ehr_icd_subset['DFCI_MRN'].isin(set(base_cohort_df['DFCI_MRN']))
+    ].copy()
+    icd_start_dt = pd.to_datetime(split_ehr_icd_subset['START_DT'], errors='coerce')
+    icd_anchor_dt = split_ehr_icd_subset['DFCI_MRN'].map(mrn_anchor_dict)
+    split_ehr_icd_subset['TIME_TO_ICD'] = (icd_start_dt - icd_anchor_dt).dt.days
+
+    with open(os.path.join(NOTES_PATH, 'full_clinical_notes_embeddings_as_array.npy.zst'), 'rb') as f:
         embeddings_data = np.load(io.BytesIO(zstd.decompress(f.read())))
     embeddings_data = embeddings_data.astype(np.float32)
-    notes_meta = pd.read_parquet(os.path.join(NOTES_PATH, 'full_VTE_embeddings_metadata.parquet'))
+    notes_meta = pd.read_parquet(os.path.join(NOTES_PATH, 'full_clinical_notes_embeddings_metadata.parquet'))
     return base_cohort_df, split_ehr_icd_subset, embeddings_data, notes_meta
 
 
@@ -217,7 +274,7 @@ def _map_events_to_columns(
     return pd.DataFrame(mapped_cols, index=cohort_df.index)
 
 
-def _add_metastatic_events(cohort_df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+def _add_metastatic_events(cohort_df: pd.DataFrame, anchor: str = DEFAULT_ANCHOR) -> tuple[pd.DataFrame, list[str]]:
     dfs_to_concat = [
         pd.read_csv(os.path.join(PROCESSED_DATA_PATH, f'clinical_to_{site}_met.csv'))
         .loc[lambda df: df['event'] == 1, ['dfci_mrn', 'date', 'type']]
@@ -226,11 +283,12 @@ def _add_metastatic_events(cohort_df: pd.DataFrame) -> tuple[pd.DataFrame, list[
     met_date_df = pd.concat(dfs_to_concat, ignore_index=True)
     met_date_df.rename(columns={'dfci_mrn': 'DFCI_MRN', 'date': 'MET_DATE', 'type': 'MET_LOCATION'}, inplace=True)
 
+    anchor_date_col = date_col(anchor)
     met_date_df = met_date_df.loc[met_date_df['DFCI_MRN'].isin(cohort_df['DFCI_MRN'])].copy()
-    mrn_tstart_dict = dict(zip(cohort_df['DFCI_MRN'], pd.to_datetime(cohort_df['first_treatment_date'], errors='coerce')))
-    met_date_df['first_treatment_date'] = met_date_df['DFCI_MRN'].map(mrn_tstart_dict)
+    mrn_anchor_dict = dict(zip(cohort_df['DFCI_MRN'], pd.to_datetime(cohort_df[anchor_date_col], errors='coerce')))
+    met_date_df[anchor_date_col] = met_date_df['DFCI_MRN'].map(mrn_anchor_dict)
     met_date_df['MET_DATE'] = pd.to_datetime(met_date_df['MET_DATE'].astype(str).str.split(' ').str[0], errors='coerce')
-    met_date_df['TIME_TO_MET'] = (met_date_df['MET_DATE'] - met_date_df['first_treatment_date']).dt.days
+    met_date_df['TIME_TO_MET'] = (met_date_df['MET_DATE'] - met_date_df[anchor_date_col]).dt.days
     met_date_df = met_date_df.dropna(subset=['TIME_TO_MET'])
 
     met_events_added = []
@@ -283,9 +341,10 @@ def _write_death_met_outputs(
     surv_filename: str = 'death_met_surv_df.parquet',
     embedding_filename: str = 'death_met_embedding_prediction_df.parquet',
     min_events: int = 100,
+    anchor: str = DEFAULT_ANCHOR,
 ) -> None:
     cohort_df = base_cohort_df.copy()
-    cohort_df, met_events_added = _add_metastatic_events(cohort_df)
+    cohort_df, met_events_added = _add_metastatic_events(cohort_df, anchor=anchor)
 
     met_events_added = _filter_endpoint_events_by_min_post_baseline_count(
         cohort_df, met_events_added, min_events=min_events
@@ -306,8 +365,16 @@ def _write_death_met_outputs(
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--anchor", choices=["treatment", "sequencing"], default=DEFAULT_ANCHOR,
+        help="Time-zero anchor (see anchors.py). Default: treatment.",
+    )
+    args = parser.parse_args()
+    anchor = ensure_anchor(args.anchor)
+
     # Shared input loading (once)
-    base_cohort_df, split_ehr_icd_subset, embeddings_data, notes_meta = _load_shared_inputs()
+    base_cohort_df, split_ehr_icd_subset, embeddings_data, notes_meta = _load_shared_inputs(anchor=anchor)
 
     # Pool embeddings once; merge into each endpoint-specific survival table below.
     pooled_embedding_df = generate_survival_embedding_df(
@@ -315,7 +382,7 @@ def main() -> None:
         survival_df=None,
         embedding_array=embeddings_data,
         note_types=NOTE_TYPES,
-        note_timing_col='NOTE_TIME_REL_FIRST_TREATMENT_START',
+        note_timing_col=note_time_col(anchor),
         continuous_window=False,
         pool_fx={key: 'time_decay_mean' for key in NOTE_TYPES},
         decay_param=0.01,
@@ -327,6 +394,9 @@ def main() -> None:
     _write_death_met_outputs(
         base_cohort_df=base_cohort_df,
         pooled_embedding_df=pooled_embedding_df,
+        surv_filename=_suffixed('death_met_surv_df.parquet', anchor),
+        embedding_filename=_suffixed('death_met_embedding_prediction_df.parquet', anchor),
+        anchor=anchor,
     )
 
     # =========================
@@ -374,8 +444,8 @@ def main() -> None:
     _write_outputs(
         cohort_df=cohort_df,
         endpoint_events=kept,
-        surv_filename='level_3_ICD_post_surv_df.parquet',
-        embedding_filename='level_3_ICD_post_embedding_prediction_df.parquet',
+        surv_filename=_suffixed('level_3_ICD_post_surv_df.parquet', anchor),
+        embedding_filename=_suffixed('level_3_ICD_post_embedding_prediction_df.parquet', anchor),
         pooled_embedding_df=pooled_embedding_df,
     )
 
@@ -413,8 +483,8 @@ def main() -> None:
     _write_outputs(
         cohort_df=cohort_df,
         endpoint_events=kept,
-        surv_filename='level_4_ICD_post_surv_df.parquet',
-        embedding_filename='level_4_ICD_post_embedding_prediction_df.parquet',
+        surv_filename=_suffixed('level_4_ICD_post_surv_df.parquet', anchor),
+        embedding_filename=_suffixed('level_4_ICD_post_embedding_prediction_df.parquet', anchor),
         pooled_embedding_df=pooled_embedding_df,
     )
 
@@ -466,8 +536,8 @@ def main() -> None:
     _write_outputs(
         cohort_df=cohort_df,
         endpoint_events=kept,
-        surv_filename='phecode_post_surv_df.parquet',
-        embedding_filename='phecode_post_embedding_prediction_df.parquet',
+        surv_filename=_suffixed('phecode_post_surv_df.parquet', anchor),
+        embedding_filename=_suffixed('phecode_post_embedding_prediction_df.parquet', anchor),
         pooled_embedding_df=pooled_embedding_df,
     )
 

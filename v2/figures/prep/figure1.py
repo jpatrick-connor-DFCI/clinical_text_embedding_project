@@ -98,7 +98,7 @@ def main() -> None:
     emb_df = pd.read_parquet(os.path.join(SURV_PATH, embedding_file(SCHEME_FOR_EMBED)))
     cancer_type_df = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_type_df.csv.gz"))
     treatment_df = pd.read_csv(os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv.gz"))
-    notes_meta = pd.read_parquet(os.path.join(NOTES_PATH, "full_VTE_embeddings_metadata.parquet"))
+    notes_meta = pd.read_parquet(os.path.join(NOTES_PATH, "full_clinical_notes_embeddings_metadata.parquet"))
 
     tx_cols = [c for c in treatment_df.columns if c.startswith("PX_on_")]
     tx1 = treatment_df.loc[treatment_df["treatment_line"] == 1]

@@ -1,6 +1,7 @@
 """Within Vs Pan Cancer Models script for model evaluation workflows."""
 
 # === Imports ===
+import hashlib
 import os
 import time
 import warnings
@@ -12,7 +13,7 @@ from sksurv.metrics import concordance_index_censored, cumulative_dynamic_auc
 from sksurv.util import Surv
 from tqdm import tqdm
 
-from config import INTAE_DATA_PATH, RESULTS_PATH
+from config import FEATURE_PATH, RESULTS_PATH
 from schemes import load_embedding_prediction_df
 from survival import RunCheckpoint, get_heldout_risk_scores_CoxPH, run_grid_CoxPH_parallel
 
@@ -35,9 +36,9 @@ def main() -> None:
 
     # === Load datasets ===
     cancer_type_df = pd.read_csv(
-        os.path.join(INTAE_DATA_PATH, 'first_treatments_dfci_w_inferred_cancers.csv'),
-        usecols=['DFCI_MRN', 'med_genomics_merged_cancer_group']
-    ).rename(columns={'med_genomics_merged_cancer_group': 'CANCER_TYPE'})
+        os.path.join(FEATURE_PATH, 'cancer_type_df.csv.gz'),
+        usecols=['DFCI_MRN', 'CANCER_TYPE'],
+    )
 
     time_decayed_events_df = load_embedding_prediction_df("icd3_post")
 
@@ -135,40 +136,18 @@ def main() -> None:
     }
     ckpt = RunCheckpoint(os.path.join(train_outdir, 'checkpoints'), fingerprint, resume=RESUME)
 
-    # === Train Pan-Cancer Model ===
     alphas_to_test = np.logspace(-5, 0, 25)
     l1_ratios = [0.5, 1.0]
 
-    if ckpt.pan_done():
-        trained_pan_cancer, pan_held = ckpt.load_pan()
-    else:
-        _, embed_val_results, pan_cancer_model = run_grid_CoxPH_parallel(
-            train_df, base_vars + type_cols, continuous_vars, embed_cols,
-            l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}', max_iter=3000
-        )
-        pan_cancer_l1, pan_cancer_alpha = embed_val_results.sort_values(
-            by='mean_auc(t)', ascending=False).iloc[0][['l1_ratio', 'alpha']]
+    # No single full-cohort pan model is fit here: every pan comparator is a size-matched
+    # per-stratum fit (see _fit_matched_pan below), so the pan arm never simply benefits from
+    # more training data than the within arm it's compared against.
 
-        trained_pan_cancer = (
-            get_heldout_risk_scores_CoxPH(train_df, base_vars + type_cols, continuous_vars, embed_cols,
-                                          event_col=event, tstop_col=f'tt_{event}', penalized=True, max_iter=3000,
-                                          l1_ratio=pan_cancer_l1, alpha=pan_cancer_alpha, backend="threading")
-            .rename(columns={'risk_score': 'pan_cancer_risk_score'})
-        )
-        # Held-out pan predictions, computed once on the full held set (covers every stratum) so the
-        # within loop and resume never need the fitted pan model back.
-        pan_held = pd.DataFrame({
-            'DFCI_MRN': held_df['DFCI_MRN'].values,
-            'pan_cancer_risk_score': pan_cancer_model.predict(held_df[base_vars + type_cols + embed_cols]),
-        })
-        ckpt.save_pan(trained_pan_cancer, pan_held,
-                      meta={'n_train': int(len(train_df)), 'n_held': int(len(held_df)),
-                            'l1': float(pan_cancer_l1), 'alpha': float(pan_cancer_alpha)})
-
-    def _provisional_cindex(held_within_df):
-        """Reference-free per-stratum held-out C-index (pan vs within) for the progress manifest."""
+    def _provisional_cindex(held_within_df, matched_pan_held_df):
+        """Reference-free per-stratum held-out C-index (size-matched pan vs within) for the
+        progress manifest."""
         m = (held_within_df
-             .merge(pan_held, on='DFCI_MRN')
+             .merge(matched_pan_held_df, on=['DFCI_MRN', 'STRATUM'])
              .merge(full_df[['DFCI_MRN', f'tt_{event}', event]], on='DFCI_MRN'))
         cols = ['within_cancer_risk_score', 'pan_cancer_risk_score', f'tt_{event}', event]
         m[cols] = m[cols].replace([np.inf, -np.inf], np.nan)
@@ -184,19 +163,61 @@ def main() -> None:
             return None, None, len(m)
         return float(cp), float(cw), len(m)
 
+    def _fit_matched_pan(cancer_type, mask_col, n_match, seed):
+        """Fit a pan model on a random subsample of train_df, excluding this stratum's own
+        patients and sized to match the within-stratum train N, so the pan-vs-within comparison
+        isn't confounded by the pan arm simply having more training data. Checkpointed under a
+        distinct per-stratum key via RunCheckpoint.save_stratum/load_stratum (RunCheckpoint's
+        pan-specific save_pan/load_pan/pan_done slot is unused here — there is no single
+        full-cohort pan model to cache)."""
+        pan_pool = train_df.loc[~train_df[mask_col].astype(bool)]
+        n_match = min(n_match, len(pan_pool))
+        matched_pan_train = pan_pool.sample(n=n_match, random_state=seed)
+
+        _, matched_val, matched_model = run_grid_CoxPH_parallel(
+            matched_pan_train, base_vars + type_cols, continuous_vars, embed_cols,
+            l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}', max_iter=3000
+        )
+        if matched_model is None:
+            return None, None, None
+
+        matched_l1, matched_alpha = matched_val.sort_values(
+            by='mean_auc(t)', ascending=False).iloc[0][['l1_ratio', 'alpha']]
+        trained_matched_pan = (
+            get_heldout_risk_scores_CoxPH(
+                matched_pan_train, base_vars + type_cols, continuous_vars, embed_cols,
+                event_col=event, tstop_col=f'tt_{event}', penalized=True, max_iter=3000,
+                l1_ratio=matched_l1, alpha=matched_alpha, backend="threading")
+            .rename(columns={'risk_score': 'pan_cancer_risk_score'})
+        )
+        trained_matched_pan['STRATUM'] = cancer_type
+        matched_pan_held = pd.DataFrame({
+            'DFCI_MRN': held_df['DFCI_MRN'].values,
+            'pan_cancer_risk_score': matched_model.predict(held_df[base_vars + type_cols + embed_cols]),
+            'STRATUM': cancer_type,
+        })
+        return trained_matched_pan, matched_pan_held, (float(matched_l1), float(matched_alpha))
+
     # === Train + score within-cancer models (single resumable pass) ===
     # Each stratum's train OOF scores AND held-out predictions are written to disk as it completes,
-    # so a crashed/interrupted run reloads finished strata instead of refitting them.
+    # so a crashed/interrupted run reloads finished strata instead of refitting them. A size-matched
+    # pan model (same train N as the stratum, stratum's own patients excluded) is fit alongside each
+    # within model so the held-out comparison isn't confounded by unequal training-set sizes.
     train_score_frames, held_score_frames = [], []
+    matched_pan_train_frames, matched_pan_held_frames = [], []
 
     for cancer_type in tqdm([c.replace('CANCER_TYPE_', '') for c in type_cols], mininterval=30):
         mask_col = f'CANCER_TYPE_{cancer_type}'
+        matched_pan_key = f'{cancer_type}__matched_pan__'
 
         st = ckpt.status(cancer_type)
         if st == 'done':
             _tr, _hd = ckpt.load_stratum(cancer_type)
             train_score_frames.append(_tr)
             held_score_frames.append(_hd)
+            _mp_tr, _mp_hd = ckpt.load_stratum(matched_pan_key)
+            matched_pan_train_frames.append(_mp_tr)
+            matched_pan_held_frames.append(_mp_hd)
             continue
         if st == 'skipped':
             continue
@@ -223,28 +244,55 @@ def main() -> None:
             event_col=event, tstop_col=f'tt_{event}', penalized=True, max_iter=3000,
             l1_ratio=best_l1, alpha=best_alpha, backend="threading"
         ).rename(columns={'risk_score': 'within_cancer_risk_score'})
+        trained_sub['STRATUM'] = cancer_type
 
         # Held-out predictions for this stratum, taken now while the model is in memory.
         sub_held = held_df.loc[held_df[mask_col].astype(bool)]
         held_sub = pd.DataFrame({
             'DFCI_MRN': sub_held['DFCI_MRN'].values,
             'within_cancer_risk_score': cur_model.predict(sub_held[base_vars + embed_cols]),
+            'STRATUM': cancer_type,
         })
 
-        c_pan, c_within, n_held = _provisional_cindex(held_sub)
+        # Size-matched pan comparator: same train N as this stratum, stratum's own patients
+        # excluded. Seeded off the base seed + stratum name so it's reproducible per-stratum.
+        # Tagged with the same STRATUM so downstream merges key on (DFCI_MRN, STRATUM) — a
+        # patient can appear in more than one stratum's matched-pan pool (only their own
+        # stratum is excluded), so DFCI_MRN alone is not unique across matched_pan_*_all.
+        matched_seed = 1234 + int(hashlib.md5(cancer_type.encode('utf-8')).hexdigest()[:8], 16) % 10_000
+        trained_matched_pan, matched_pan_held, matched_hp = _fit_matched_pan(
+            cancer_type, mask_col, n_match=len(sub_df), seed=matched_seed
+        )
+        if trained_matched_pan is None:
+            ckpt.mark_skipped(cancer_type, 'matched_pan_no_converge', meta={'n_train': int(len(sub_df))})
+            continue
+
+        c_pan, c_within, n_held = _provisional_cindex(held_sub, matched_pan_held)
         ckpt.save_stratum(cancer_type, trained_sub, held_sub,
                           meta={'n_train': int(len(sub_df)), 'n_held': int(n_held),
                                 'l1': float(best_l1), 'alpha': float(best_alpha),
                                 'c_pan': c_pan, 'c_within': c_within,
                                 'elapsed_s': round(time.time() - _t0, 1)})
+        ckpt.save_stratum(matched_pan_key, trained_matched_pan, matched_pan_held,
+                          meta={'n_train': int(len(sub_df)), 'n_held': int(len(held_df)),
+                                'l1': matched_hp[0], 'alpha': matched_hp[1]})
         train_score_frames.append(trained_sub)
         held_score_frames.append(held_sub)
+        matched_pan_train_frames.append(trained_matched_pan)
+        matched_pan_held_frames.append(matched_pan_held)
 
     trained_within = pd.concat(train_score_frames, ignore_index=True)
     within_held_all = pd.concat(held_score_frames, ignore_index=True)
+    # Size-matched pan scores, one row per (stratum, patient) — a patient can appear in more
+    # than one stratum's matched-pan pool (only their own stratum is excluded from that pool),
+    # so these are merged against the within frames on (DFCI_MRN, STRATUM), not DFCI_MRN alone.
+    matched_pan_train_all = pd.concat(matched_pan_train_frames, ignore_index=True)
+    matched_pan_held_all = pd.concat(matched_pan_held_frames, ignore_index=True)
 
     # === Evaluate on Training Set ===
-    complete_train = trained_within.merge(trained_pan_cancer, on='DFCI_MRN').merge(
+    complete_train = trained_within.merge(
+        matched_pan_train_all[['DFCI_MRN', 'STRATUM', 'pan_cancer_risk_score']], on=['DFCI_MRN', 'STRATUM']
+    ).merge(
         full_df[['DFCI_MRN', 'CANCER_TYPE', f'tt_{event}', event]], on='DFCI_MRN'
     )
 
@@ -269,8 +317,10 @@ def main() -> None:
 
     print(f"\nTrain set: Pan-cancer C-index = {c_pan_train:.3f}, Within-cancer C-index = {c_within_train:.3f}")
 
-    # === Held-out Evaluation (assemble per-stratum within scores + pan held scores) ===
-    held_scores = within_held_all.merge(pan_held, on='DFCI_MRN').merge(
+    # === Held-out Evaluation (assemble per-stratum within scores + size-matched pan scores) ===
+    held_scores = within_held_all.merge(
+        matched_pan_held_all[['DFCI_MRN', 'STRATUM', 'pan_cancer_risk_score']], on=['DFCI_MRN', 'STRATUM']
+    ).merge(
         full_df[['DFCI_MRN', 'CANCER_TYPE', f'tt_{event}', event]],
         on='DFCI_MRN', how='left'
     )

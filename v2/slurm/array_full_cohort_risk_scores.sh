@@ -1,18 +1,23 @@
 #!/bin/bash
 
-#SBATCH --job-name=coxnet_full_event
+#SBATCH --job-name=coxnet_full_risk
 #SBATCH --partition=normal
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=8G
 #SBATCH --time=24:00:00
 #SBATCH --array=0-0%1
-#SBATCH --output=v2/slurm/array_full_cohort_run/output/%A_%a.out
-#SBATCH --error=v2/slurm/array_full_cohort_run/error/%A_%a.err
+#SBATCH --output=v2/slurm/array_full_cohort_risk_scores/output/%A_%a.out
+#SBATCH --error=v2/slurm/array_full_cohort_risk_scores/error/%A_%a.err
+
+# Requires run_full_cohort_event.py (array_full_cohort_run.sh) to have already produced
+# text_val.csv for each row — this script picks best hyperparameters from that CV grid and
+# generates held-out risk scores (run_full_cohort_risk_scores.py). Same manifest format as
+# array_full_cohort_run.sh (scheme<TAB>event), so full_cohort_tasks.tsv is reused by default.
 
 # ANCHOR selects the time-zero anchor (see v2/anchors.py): "treatment" (default) or
-# "sequencing". Forwarded to run_full_cohort_event.py as --anchor; non-default anchors
-# nest results under <scheme_results_dir>/anchor_<anchor>/ (schemes.py scheme_results_dir).
+# "sequencing". Forwarded to run_full_cohort_risk_scores.py as --anchor; non-default anchors
+# read/write under <scheme_results_dir>/anchor_<anchor>/ (schemes.py scheme_results_dir).
 ANCHOR=${ANCHOR:-treatment}
 
 PROJECT_ROOT=${PROJECT_ROOT:-/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project}
@@ -46,7 +51,7 @@ export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 
-mkdir -p slurm/array_full_cohort_run/output slurm/array_full_cohort_run/error
+mkdir -p slurm/array_full_cohort_risk_scores/output slurm/array_full_cohort_risk_scores/error
 
 OVERWRITE_FLAG=()
 if [[ "${OVERWRITE:-0}" == "1" ]]; then
@@ -100,15 +105,16 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
       exit 1
       ;;
   esac
+
   if [[ "$ANCHOR" == "treatment" ]]; then
     ANCHOR_SUBDIR="$SCHEME_RESULTS_DIR"
   else
     ANCHOR_SUBDIR="$SCHEME_RESULTS_DIR/anchor_$ANCHOR"
   fi
-  mkdir -p "$RESULTS_ROOT/$ANCHOR_SUBDIR/full_cohort/$EVENT"
+  mkdir -p "$RESULTS_ROOT/$ANCHOR_SUBDIR/full_cohort_risk_scores/$EVENT"
 
   echo "Running row ${LINE_NUM}: scheme=${SCHEME}, event=${EVENT}, anchor=${ANCHOR}"
-  python -m pipelines.training.run_full_cohort_event \
+  python -m pipelines.training.run_full_cohort_risk_scores \
     --scheme "$SCHEME" \
     --event "$EVENT" \
     --anchor "$ANCHOR" \

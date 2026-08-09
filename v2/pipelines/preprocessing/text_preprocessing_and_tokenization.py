@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import json
+import io
 import os
 import re
 from pathlib import Path
@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import zstandard as zstd
 from tqdm.auto import tqdm
 
 from config import DATA_PATH as _DATA_PATH_STR, SURV_PATH
@@ -45,7 +46,7 @@ BATCHED_METADATA_PATH = BATCHED_TOKEN_PATH / "metadata"
 BATCH_SIZE = 50_000
 TOKENIZER_BATCH_SIZE = 2_048
 TOKENIZER_MODEL_NAME = "Simonlee711/Clinical_ModernBERT"
-TOKEN_BATCH_SUFFIX = ".npz"
+TOKEN_BATCH_SUFFIX = ".npy.zst"
 
 
 def clean_text(text: str) -> str:
@@ -142,18 +143,30 @@ def tokenize_texts(tokenizer: Any, clinical_texts: list[str]) -> dict[str, np.nd
     return pack_token_sequences(token_sequences, token_dtype)
 
 
+def write_npz_zst(path: Path, arrays: dict[str, np.ndarray]) -> None:
+    """Write named arrays as an uncompressed .npz payload, then zstd-compress the
+    whole thing. Keeps np.load-compatible internal structure (unzip with
+    zstandard, then np.load(io.BytesIO(...))) while getting zstd's better ratio
+    than npz's per-member deflate."""
+    buf = io.BytesIO()
+    np.savez(buf, **arrays)
+    with open(path, "wb") as handle:
+        handle.write(zstd.compress(buf.getvalue(), level=15))
+
+
 def save_tokenized_batch(batch_df: pd.DataFrame, tokenizer: Any, batch_idx: int) -> None:
     """Tokenize a text batch and save token arrays plus metadata."""
     clinical_texts = batch_df["CLINICAL_TEXT"].fillna("").astype(str).tolist()
     tokenized_dict = tokenize_texts(tokenizer, clinical_texts)
-    np.savez_compressed(
-        BATCHED_TOKEN_FILES_PATH / f"VTE_notes_tokenized_batch_{batch_idx}_tokens{TOKEN_BATCH_SUFFIX}",
-        **tokenized_dict,
+    write_npz_zst(
+        BATCHED_TOKEN_FILES_PATH / f"clinical_notes_tokenized_batch_{batch_idx}_tokens{TOKEN_BATCH_SUFFIX}",
+        tokenized_dict,
     )
 
-    metadata_dict = batch_df.drop(columns=["CLINICAL_TEXT"]).to_dict(orient="list")
-    with open(BATCHED_METADATA_PATH / f"VTE_notes_tokenized_batch_{batch_idx}_metadata.json", "w") as handle:
-        json.dump(metadata_dict, handle)
+    metadata_df = batch_df.drop(columns=["CLINICAL_TEXT"])
+    metadata_df.to_parquet(
+        BATCHED_METADATA_PATH / f"clinical_notes_tokenized_batch_{batch_idx}_metadata.parquet", index=False
+    )
 
 
 def flush_batch(

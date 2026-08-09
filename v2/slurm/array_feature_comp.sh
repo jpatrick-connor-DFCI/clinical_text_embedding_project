@@ -13,10 +13,15 @@
 # Resource sizing is per-modality-class (see launch_feature_comp.sh), which submits this script
 # twice with different --cpus-per-task/--mem overrides on the sbatch CLI (these win over the
 # #SBATCH defaults above) plus MODALITY_CLASS set accordingly:
-#   MODALITY_CLASS=big   -> text, prs                       (--cpus-per-task=5 --mem=8G)
-#   MODALITY_CLASS=small -> stage, treatment, labs, somatic  (--cpus-per-task=1 --mem=4G)
-#   MODALITY_CLASS=all (default) -> all six modalities, unchanged legacy behavior.
+#   MODALITY_CLASS=big   -> text, prs                (--cpus-per-task=5 --mem=8G)
+#   MODALITY_CLASS=small -> stage, treatment, somatic  (--cpus-per-task=1 --mem=4G)
+#   MODALITY_CLASS=all (default) -> all five modalities, unchanged legacy behavior.
 MODALITY_CLASS=${MODALITY_CLASS:-all}
+
+# ANCHOR selects the time-zero anchor (see v2/anchors.py): "treatment" (default) or
+# "sequencing". Forwarded to run_feature_comp_task.py as --anchor; non-default anchors
+# nest results under <scheme_results_dir>/anchor_<anchor>/ (schemes.py scheme_results_dir).
+ANCHOR=${ANCHOR:-treatment}
 
 PROJECT_ROOT=${PROJECT_ROOT:-/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project}
 V2_ROOT="$PROJECT_ROOT/v2"
@@ -103,11 +108,16 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
       exit 1
       ;;
   esac
-  mkdir -p "$RESULTS_ROOT/$SCHEME_RESULTS_DIR/feature_comps/$EVENT"
+  if [[ "$ANCHOR" == "treatment" ]]; then
+    ANCHOR_SUBDIR="$SCHEME_RESULTS_DIR"
+  else
+    ANCHOR_SUBDIR="$SCHEME_RESULTS_DIR/anchor_$ANCHOR"
+  fi
+  mkdir -p "$RESULTS_ROOT/$ANCHOR_SUBDIR/feature_comps/$EVENT"
 
   if [[ -n "${MANIFEST_MODALITY:-}" ]]; then
     case "$MANIFEST_MODALITY" in
-      stage|treatment|labs|somatic|prs|text)
+      stage|treatment|somatic|prs|text)
         MODALITIES=("$MANIFEST_MODALITY")
         ;;
       *)
@@ -118,8 +128,8 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
   else
     case "$MODALITY_CLASS" in
       big)   MODALITIES=(prs text) ;;
-      small) MODALITIES=(stage treatment labs somatic) ;;
-      all)   MODALITIES=(stage treatment labs somatic prs text) ;;
+      small) MODALITIES=(stage treatment somatic) ;;
+      all)   MODALITIES=(stage treatment somatic prs text) ;;
       *)
         echo "Unsupported MODALITY_CLASS: $MODALITY_CLASS (expected big|small|all)"
         exit 1
@@ -127,7 +137,7 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
     esac
   fi
 
-  echo "Running row ${LINE_NUM}: scheme=${SCHEME}, event=${EVENT}, modalities=${MODALITIES[*]}"
+  echo "Running row ${LINE_NUM}: scheme=${SCHEME}, event=${EVENT}, modalities=${MODALITIES[*]}, anchor=${ANCHOR}"
 
   # A2: when the full six-modality set is requested for this row (no per-row MANIFEST_MODALITY
   # override, MODALITY_CLASS=all), run one process that loads the base frame once and loops all
@@ -139,6 +149,7 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
       --scheme "$SCHEME" \
       --event "$EVENT" \
       --modality all \
+      --anchor "$ANCHOR" \
       --n-jobs "${SLURM_CPUS_PER_TASK:-1}" \
       --max-iter "${COXNET_MAX_ITER:-5000}" \
       --backend "${COXNET_BACKEND:-threading}" \
@@ -150,6 +161,7 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
         --scheme "$SCHEME" \
         --event "$EVENT" \
         --modality "$MODALITY" \
+        --anchor "$ANCHOR" \
         --n-jobs "${SLURM_CPUS_PER_TASK:-1}" \
         --max-iter "${COXNET_MAX_ITER:-5000}" \
         --backend "${COXNET_BACKEND:-threading}" \

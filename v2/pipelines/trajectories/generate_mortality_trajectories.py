@@ -20,8 +20,8 @@ def main() -> None:
     os.makedirs(trajectory_path, exist_ok=True)
 
     # Load datasets
-    notes_meta = pd.read_parquet(NOTES_PATH + 'full_VTE_embeddings_metadata.parquet')
-    with open(NOTES_PATH + 'full_VTE_embeddings_as_array.npy.zst', 'rb') as f:
+    notes_meta = pd.read_parquet(NOTES_PATH + 'full_clinical_notes_embeddings_metadata.parquet')
+    with open(NOTES_PATH + 'full_clinical_notes_embeddings_as_array.npy.zst', 'rb') as f:
         embeddings_data = np.load(io.BytesIO(zstd.decompress(f.read())))
     embeddings_data = embeddings_data.astype(np.float32)
     events_data = pd.read_parquet(SURV_PATH + 'death_met_surv_df.parquet')

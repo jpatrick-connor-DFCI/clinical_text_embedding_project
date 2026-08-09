@@ -5,6 +5,7 @@ import json
 import os
 import time
 
+from anchors import ANCHORS, DEFAULT_ANCHOR, age_col
 from config import SURV_PATH
 from schemes import SCHEMES, get_output_dir
 from survival import run_base_CoxPH, run_grid_CoxPH_parallel
@@ -33,6 +34,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run one full-cohort model for a single endpoint event.")
     parser.add_argument("--scheme", required=True, choices=sorted(SCHEMES.keys()))
     parser.add_argument("--event", required=True)
+    parser.add_argument("--anchor", default=DEFAULT_ANCHOR, choices=sorted(ANCHORS.keys()))
     parser.add_argument("--n-jobs", type=int, default=None)
     parser.add_argument("--max-iter", type=int, default=1000)
     parser.add_argument("--overwrite", action="store_true")
@@ -44,14 +46,14 @@ def main() -> None:
     args = _parse_args()
     os.environ["JOBLIB_DEFAULT_WORKER_TIMEOUT"] = "600"
 
-    full_prediction_df, type_cols, embed_cols, events = build_full_prediction_df(args.scheme)
+    full_prediction_df, type_cols, embed_cols, events = build_full_prediction_df(args.scheme, args.anchor)
     if args.event not in events:
         raise ValueError(
             f"Event '{args.event}' not found for scheme '{args.scheme}'. "
             f"Found {len(events)} events."
         )
 
-    out_dir = os.path.join(get_output_dir(args.scheme, "full_cohort"), args.event)
+    out_dir = os.path.join(get_output_dir(args.scheme, "full_cohort", args.anchor), args.event)
     os.makedirs(out_dir, exist_ok=True)
 
     text_test_fp = os.path.join(out_dir, "text_test.csv")
@@ -71,7 +73,8 @@ def main() -> None:
         _write_skip_report(args.scheme, args.event, "full_cohort", reason)
         return
 
-    base_vars = ["GENDER", "AGE_AT_TREATMENTSTART"]
+    anchor_age_col = age_col(args.anchor)
+    base_vars = ["GENDER", anchor_age_col]
     all_feature_cols = base_vars + type_cols + embed_cols
     label = f"{args.scheme}:{args.event}"
     try:
@@ -98,7 +101,7 @@ def main() -> None:
         text_test, text_val, _ = run_grid_CoxPH_parallel(
             event_pred_df,
             base_vars + type_cols,
-            ["AGE_AT_TREATMENTSTART"] + embed_cols,
+            [anchor_age_col] + embed_cols,
             embed_cols,
             DEFAULT_L1_RATIOS,
             DEFAULT_ALPHAS,
@@ -119,7 +122,7 @@ def main() -> None:
         base_results = run_base_CoxPH(
             event_pred_df,
             base_vars + type_cols,
-            ["AGE_AT_TREATMENTSTART"],
+            [anchor_age_col],
             event_col=args.event,
             tstop_col=f"tt_{args.event}",
             max_iter=args.max_iter,

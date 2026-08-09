@@ -50,6 +50,7 @@ PROFILE_DATA_PATH = os.environ.get(
     "/data/gusev/USERS/jpconnor/data/PROFILE_DATA/",
 )
 CLINICAL_NOTES_PATH = os.path.join(PROFILE_DATA_PATH, "CLINICAL_NOTES/")
+CANCER_ANNOTATIONS_PATH = os.path.join(PROFILE_DATA_PATH, "CANCER_ANNOTATIONS/")
 
 # --- Third-party inputs, previously inlined mid-file at the point of use ---
 # MED_LINES_FILE: still imported by pipelines/biomarkers/build_line_matched_cohort.py

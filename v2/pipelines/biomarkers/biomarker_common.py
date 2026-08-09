@@ -15,8 +15,8 @@ from config import DATA_PATH, NOTES_PATH, SURV_PATH
 
 
 def load_note_embeddings():
-    notes_meta = pd.read_parquet(os.path.join(NOTES_PATH, 'full_VTE_embeddings_metadata.parquet'))
-    with open(os.path.join(NOTES_PATH, 'full_VTE_embeddings_as_array.npy.zst'), 'rb') as f:
+    notes_meta = pd.read_parquet(os.path.join(NOTES_PATH, 'full_clinical_notes_embeddings_metadata.parquet'))
+    with open(os.path.join(NOTES_PATH, 'full_clinical_notes_embeddings_as_array.npy.zst'), 'rb') as f:
         embeddings_data = np.load(io.BytesIO(zstd.decompress(f.read())))
     embeddings_data = embeddings_data.astype(np.float32)
     return notes_meta, embeddings_data

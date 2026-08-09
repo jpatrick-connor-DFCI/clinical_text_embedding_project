@@ -4,6 +4,7 @@ import argparse
 import os
 from pathlib import Path
 
+from anchors import ANCHORS, DEFAULT_ANCHOR, anchor_suffix
 from schemes import SCHEMES, get_output_dir, load_embedding_prediction_df
 from pipelines.training.slurm_array_utils import (
     MIN_EVENTS_FOR_CV,
@@ -12,7 +13,7 @@ from pipelines.training.slurm_array_utils import (
     get_events_from_df,
 )
 
-MODALITIES = ["stage", "treatment", "labs", "somatic", "prs", "text"]
+MODALITIES = ["stage", "treatment", "somatic", "prs", "text"]
 FULL_COHORT_FILES = ["text_test.csv", "text_val.csv", "base_test.csv", "base_val.csv"]
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[2] / "slurm" / "slurm_manifests"
 
@@ -27,17 +28,17 @@ def _event_has_enough_cases(pred_df, event: str, min_events: int = MIN_EVENTS_FO
     return n_events >= min_events and n_non_events >= MIN_NON_EVENTS_FOR_CV
 
 
-def _full_cohort_complete(scheme: str, event: str) -> bool:
+def _full_cohort_complete(scheme: str, event: str, anchor: str) -> bool:
     """Check if all 4 full-cohort result CSVs exist for a scheme/event."""
-    out_dir = os.path.join(get_output_dir(scheme, "full_cohort"), event)
+    out_dir = os.path.join(get_output_dir(scheme, "full_cohort", anchor), event)
     return all(os.path.exists(os.path.join(out_dir, f)) for f in FULL_COHORT_FILES)
 
 
-def _feature_comp_complete(scheme: str, event: str) -> bool:
+def _feature_comp_complete(scheme: str, event: str, anchor: str) -> bool:
     """Check if all modality result CSVs and held-out risk scores exist for a scheme/event."""
-    out_dir = os.path.join(get_output_dir(scheme, "feature_comps"), event)
+    out_dir = os.path.join(get_output_dir(scheme, "feature_comps", anchor), event)
     risk_dir = os.path.normpath(os.path.join(
-        get_output_dir(scheme, "feature_comps"), "..", "held_out_risk_scores", event
+        get_output_dir(scheme, "feature_comps", anchor), "..", "held_out_risk_scores", event
     ))
     grid_done = all(
         os.path.exists(os.path.join(out_dir, f"{mod}_{split}.csv"))
@@ -71,6 +72,10 @@ def _parse_args() -> argparse.Namespace:
         help="Exclude tasks whose result CSVs already exist in the data path.",
     )
     parser.add_argument(
+        "--anchor", default=DEFAULT_ANCHOR, choices=sorted(ANCHORS.keys()),
+        help="Time-zero anchor (see anchors.py). Default: treatment.",
+    )
+    parser.add_argument(
         "--min-events",
         type=int,
         default=None,
@@ -99,23 +104,24 @@ def main() -> None:
     too_few_events = 0
 
     for scheme in args.schemes:
-        pred_df = load_embedding_prediction_df(scheme)
+        pred_df = load_embedding_prediction_df(scheme, args.anchor)
         events = get_events_from_df(pred_df)
         for event in events:
             if args.min_events is not None and not _event_has_enough_cases(pred_df, event, args.min_events):
                 too_few_events += 1
                 continue
-            if args.skip_completed and _full_cohort_complete(scheme, event):
+            if args.skip_completed and _full_cohort_complete(scheme, event, args.anchor):
                 full_skipped += 1
             else:
                 full_rows.append(f"{scheme}\t{event}")
-            if args.skip_completed and _feature_comp_complete(scheme, event):
+            if args.skip_completed and _feature_comp_complete(scheme, event, args.anchor):
                 feature_skipped += 1
             else:
                 feature_rows.append(f"{scheme}\t{event}")
 
-    full_fp = os.path.join(args.output_dir, "full_cohort_tasks.tsv")
-    feature_fp = os.path.join(args.output_dir, "feature_comp_tasks.tsv")
+    suffix = anchor_suffix(args.anchor)
+    full_fp = os.path.join(args.output_dir, f"full_cohort_tasks{suffix}.tsv")
+    feature_fp = os.path.join(args.output_dir, f"feature_comp_tasks{suffix}.tsv")
 
     _write_lines(full_fp, full_rows)
     _write_lines(feature_fp, feature_rows)

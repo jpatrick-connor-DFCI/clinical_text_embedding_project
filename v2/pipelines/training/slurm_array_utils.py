@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from anchors import DEFAULT_ANCHOR, age_col
 from config import FEATURE_PATH
 from schemes import load_embedding_prediction_df
 
@@ -31,12 +32,11 @@ def _get_common_feature_mrns() -> set:
     somatic_mrns = set(pd.read_csv(os.path.join(FEATURE_PATH, "complete_somatic_data_df.csv.gz"), usecols=["DFCI_MRN"])["DFCI_MRN"])
     prs_mrns = set(pd.read_csv(os.path.join(FEATURE_PATH, "complete_germline_data_df.csv.gz"), usecols=["DFCI_MRN"])["DFCI_MRN"])
     stage_mrns = set(pd.read_csv(os.path.join(FEATURE_PATH, "cancer_stage_df.csv.gz"), usecols=["DFCI_MRN"])["DFCI_MRN"])
-    labs_mrns = set(pd.read_csv(os.path.join(FEATURE_PATH, "mean_lab_vals_pre_first_treatment.csv.gz"), usecols=["DFCI_MRN"])["DFCI_MRN"])
     treatment_mrns = set(
         pd.read_csv(os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv.gz"), usecols=["DFCI_MRN", "treatment_line"])
         .query("treatment_line == 1")["DFCI_MRN"]
     )
-    common = somatic_mrns & prs_mrns & stage_mrns & labs_mrns & treatment_mrns
+    common = somatic_mrns & prs_mrns & stage_mrns & treatment_mrns
     print(f"  Common feature cohort: {len(common)} patients (intersection of all modality files)")
     return common
 
@@ -57,8 +57,10 @@ def get_events_from_df(df: pd.DataFrame) -> list[str]:
     return [col[3:] for col in df.columns if col.startswith("tt_")]
 
 
-def build_full_prediction_df(scheme: str) -> tuple[pd.DataFrame, list[str], list[str], list[str]]:
-    emb_df = load_embedding_prediction_df(scheme)
+def build_full_prediction_df(
+    scheme: str, anchor: str = DEFAULT_ANCHOR
+) -> tuple[pd.DataFrame, list[str], list[str], list[str]]:
+    emb_df = load_embedding_prediction_df(scheme, anchor)
     cancer_type_df, type_cols = load_cancer_type_df()
     full_prediction_df = emb_df.merge(cancer_type_df[["DFCI_MRN"] + type_cols], on="DFCI_MRN")
     embed_cols = [col for col in full_prediction_df.columns if ("EMBEDDING" in col or "2015" in col)]
@@ -84,6 +86,7 @@ def filter_event_rows(full_prediction_df: pd.DataFrame, event: str) -> pd.DataFr
 def load_feature_modalities_df(
     scheme: str,
     modality: str | None = None,
+    anchor: str = DEFAULT_ANCHOR,
 ) -> tuple[pd.DataFrame, list[str], list[str], dict[str, Any], dict[str, list[str]]]:
     """Load feature data for the given scheme.
 
@@ -97,7 +100,7 @@ def load_feature_modalities_df(
     modality separately (same rows, same per-modality column values) and can be looped
     in-process over all six `modality_cfg` entries.
     """
-    emb_df = load_embedding_prediction_df(scheme)
+    emb_df = load_embedding_prediction_df(scheme, anchor)
     cancer_type_df = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_type_df.csv.gz"))
     type_cols = [col for col in cancer_type_df.columns if col.startswith("CANCER_TYPE_")]
     embed_cols = [col for col in emb_df.columns if ("EMBEDDING" in col or "2015" in col)]
@@ -105,7 +108,7 @@ def load_feature_modalities_df(
     _to_load = (
         {modality}
         if modality and modality != "all"
-        else {"stage", "treatment", "labs", "somatic", "prs", "text"}
+        else {"stage", "treatment", "somatic", "prs", "text"}
     )
 
     # Load only what is needed
@@ -113,13 +116,11 @@ def load_feature_modalities_df(
     somatic_df = pd.read_csv(os.path.join(FEATURE_PATH, "complete_somatic_data_df.csv.gz")) if "somatic" in _to_load else None
     prs_df = pd.read_csv(os.path.join(FEATURE_PATH, "complete_germline_data_df.csv.gz")) if "prs" in _to_load else None
     treatment_df = pd.read_csv(os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv.gz")) if "treatment" in _to_load else None
-    labs_df = pd.read_csv(os.path.join(FEATURE_PATH, "mean_lab_vals_pre_first_treatment.csv.gz")) if "labs" in _to_load else None
 
     stage_cols = [col for col in mrn_stage_df.columns if col.startswith("CANCER_STAGE_")] if mrn_stage_df is not None else []
     somatic_cols = [col for col in somatic_df.columns if col.endswith(('_AMP', '_DEL', '_SNV', '_SV', '_FUSION'))] if somatic_df is not None else []
     prs_cols = [col for col in prs_df.columns if "PGS" in col] if prs_df is not None else []
     treatment_cols = [col for col in treatment_df.columns if col.startswith("PX_on_")] if treatment_df is not None else []
-    labs_cols = [col for col in labs_df.columns if col != "DFCI_MRN"] if labs_df is not None else []
 
     # For single-modality runs (and "all", which must match them exactly), restrict to the
     # intersection of all feature files so all modality models train on the same cohort
@@ -143,37 +144,31 @@ def load_feature_modalities_df(
         )
     if mrn_stage_df is not None:
         full_prediction_df = full_prediction_df.merge(mrn_stage_df[["DFCI_MRN"] + stage_cols], on="DFCI_MRN")
-    if labs_df is not None:
-        full_prediction_df = full_prediction_df.merge(labs_df[["DFCI_MRN"] + labs_cols], on="DFCI_MRN")
 
+    anchor_age_col = age_col(anchor)
     modality_cfg: dict[str, dict[str, Any]] = {
         "stage": {
-            "continuous_vars": ["AGE_AT_TREATMENTSTART"],
+            "continuous_vars": [anchor_age_col],
             "penalized_cols": stage_cols,
             "pca_config": None,
         },
         "treatment": {
-            "continuous_vars": ["AGE_AT_TREATMENTSTART"],
+            "continuous_vars": [anchor_age_col],
             "penalized_cols": treatment_cols,
             "pca_config": None,
         },
-        "labs": {
-            "continuous_vars": ["AGE_AT_TREATMENTSTART"] + labs_cols,
-            "penalized_cols": labs_cols,
-            "pca_config": None,
-        },
         "somatic": {
-            "continuous_vars": ["AGE_AT_TREATMENTSTART"],
+            "continuous_vars": [anchor_age_col],
             "penalized_cols": somatic_cols,
             "pca_config": None,
         },
         "prs": {
-            "continuous_vars": ["AGE_AT_TREATMENTSTART"],
+            "continuous_vars": [anchor_age_col],
             "penalized_cols": prs_cols,
             "pca_config": {"PGS": (prs_cols, 1500)},
         },
         "text": {
-            "continuous_vars": ["AGE_AT_TREATMENTSTART"] + embed_cols,
+            "continuous_vars": [anchor_age_col] + embed_cols,
             "penalized_cols": embed_cols,
             "pca_config": None,
         },

@@ -7,6 +7,7 @@ import time
 
 import pandas as pd
 
+from anchors import ANCHORS, DEFAULT_ANCHOR, age_col
 from config import SURV_PATH
 from schemes import SCHEMES, get_output_dir
 from survival import get_heldout_risk_scores_CoxPH, run_grid_CoxPH_parallel
@@ -32,7 +33,7 @@ def _write_skip_report(scheme: str, event: str, run_type: str, reason: str) -> N
         f.write(json.dumps(entry) + "\n")
 
 
-ALL_MODALITIES = ["stage", "treatment", "labs", "somatic", "prs", "text"]
+ALL_MODALITIES = ["stage", "treatment", "somatic", "prs", "text"]
 
 
 def _parse_args() -> argparse.Namespace:
@@ -42,8 +43,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--modality",
         required=True,
-        choices=["stage", "treatment", "labs", "somatic", "prs", "text", "all"],
+        choices=["stage", "treatment", "somatic", "prs", "text", "all"],
     )
+    parser.add_argument("--anchor", default=DEFAULT_ANCHOR, choices=sorted(ANCHORS.keys()))
     parser.add_argument("--n-jobs", type=int, default=None)
     parser.add_argument("--max-iter", type=int, default=1000)
     parser.add_argument("--overwrite", action="store_true")
@@ -68,11 +70,11 @@ def _run_one_modality(
     if modality not in modality_cfg:
         raise ValueError(f"Unsupported modality '{modality}'.")
 
-    out_dir = os.path.join(get_output_dir(args.scheme, "feature_comps"), args.event)
+    out_dir = os.path.join(get_output_dir(args.scheme, "feature_comps", args.anchor), args.event)
     os.makedirs(out_dir, exist_ok=True)
     test_fp = os.path.join(out_dir, f"{modality}_test.csv")
     val_fp = os.path.join(out_dir, f"{modality}_val.csv")
-    risk_dir = os.path.join(get_output_dir(args.scheme, "feature_comps"), "..", "held_out_risk_scores", args.event)
+    risk_dir = os.path.join(get_output_dir(args.scheme, "feature_comps", args.anchor), "..", "held_out_risk_scores", args.event)
     risk_dir = os.path.normpath(risk_dir)
     risk_fp = os.path.join(risk_dir, f"{modality}_risk_scores.csv")
     grid_done = os.path.exists(test_fp) and os.path.exists(val_fp)
@@ -88,7 +90,7 @@ def _run_one_modality(
         _write_skip_report(args.scheme, args.event, f"feature_comps_{modality}", reason)
         return
 
-    base_vars = ["GENDER", "AGE_AT_TREATMENTSTART"]
+    base_vars = ["GENDER", age_col(args.anchor)]
     type_cols = type_cols_base
     cfg = modality_cfg[modality]
     all_feature_cols = base_vars + type_cols + cfg["continuous_vars"] + cfg["penalized_cols"]
@@ -177,7 +179,9 @@ def main() -> None:
     args = _parse_args()
     os.environ["JOBLIB_DEFAULT_WORKER_TIMEOUT"] = "600"
 
-    full_prediction_df, type_cols, _, modality_cfg, _ = load_feature_modalities_df(args.scheme, modality=args.modality)
+    full_prediction_df, type_cols, _, modality_cfg, _ = load_feature_modalities_df(
+        args.scheme, modality=args.modality, anchor=args.anchor
+    )
     events = get_events_from_df(full_prediction_df)
     if args.event not in events:
         raise ValueError(

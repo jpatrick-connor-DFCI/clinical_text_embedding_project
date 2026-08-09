@@ -1,16 +1,16 @@
 #!/bin/bash
-# Launch wrapper for array_full_cohort_run.sh.
+# Launch wrapper for array_full_cohort_risk_scores.sh.
 #
 # Reads the manifest, computes the required array size, and submits the job.
-# Any environment variables accepted by array_full_cohort_run.sh can be
+# Any environment variables accepted by array_full_cohort_risk_scores.sh can be
 # forwarded here (PROJECT_ROOT, MANIFEST, ROWS_PER_TASK, OVERWRITE,
 # COXNET_MAX_ITER, COXNET_BACKEND, ANCHOR).
 #
 # Usage:
-#   bash launch_full_cohort.sh
-#   OVERWRITE=1 bash launch_full_cohort.sh
-#   ROWS_PER_TASK=5 bash launch_full_cohort.sh
-#   ANCHOR=sequencing MANIFEST=.../full_cohort_tasks__sequencing.tsv bash launch_full_cohort.sh
+#   bash launch_full_cohort_risk_scores.sh
+#   OVERWRITE=1 bash launch_full_cohort_risk_scores.sh
+#   ROWS_PER_TASK=5 bash launch_full_cohort_risk_scores.sh
+#   ANCHOR=sequencing bash launch_full_cohort_risk_scores.sh
 
 set -euo pipefail
 
@@ -42,4 +42,4 @@ echo "Array tasks:   $N_TASKS  (--array=0-${MAX_TASK})"
 sbatch \
     --array="0-${MAX_TASK}" \
     --export=ALL,PROJECT_ROOT="$PROJECT_ROOT",MANIFEST="$MANIFEST",ROWS_PER_TASK="$ROWS_PER_TASK",ANCHOR="$ANCHOR" \
-    "$PROJECT_ROOT/v2/slurm/array_full_cohort_run.sh"
+    "$PROJECT_ROOT/v2/slurm/array_full_cohort_risk_scores.sh"
