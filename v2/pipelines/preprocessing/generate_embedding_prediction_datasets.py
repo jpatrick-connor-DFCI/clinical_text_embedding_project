@@ -1,12 +1,13 @@
 """Generate Embedding Prediction Datasets script for data preprocessing workflows."""
 
-import gzip
+import io
 import os
 import re
 from typing import Optional
 
 import numpy as np
 import pandas as pd
+import zstandard as zstd
 from tqdm import tqdm
 
 from config import CODE_PATH, NOTES_PATH, PROCESSED_DATA_PATH, SURV_PATH
@@ -147,10 +148,11 @@ def _filter_endpoint_events_by_min_post_baseline_count(
 
 def _load_shared_inputs() -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray, pd.DataFrame]:
     base_cohort_df = pd.read_parquet(os.path.join(SURV_PATH, 'cohort_df.parquet'))[BASE_INPUT_COLS].copy()
-    split_ehr_icd_subset = pd.read_csv(os.path.join(SURV_PATH, 'timestamped_icd_info.csv.gz'))
-    with gzip.open(os.path.join(NOTES_PATH, 'full_VTE_embeddings_as_array.npy.gz'), 'rb') as f:
-        embeddings_data = np.load(f)
-    notes_meta = pd.read_csv(os.path.join(NOTES_PATH, 'full_VTE_embeddings_metadata.csv.gz'))
+    split_ehr_icd_subset = pd.read_parquet(os.path.join(SURV_PATH, 'timestamped_icd_info.parquet'))
+    with open(os.path.join(NOTES_PATH, 'full_VTE_embeddings_as_array.npy.zst'), 'rb') as f:
+        embeddings_data = np.load(io.BytesIO(zstd.decompress(f.read())))
+    embeddings_data = embeddings_data.astype(np.float32)
+    notes_meta = pd.read_parquet(os.path.join(NOTES_PATH, 'full_VTE_embeddings_metadata.parquet'))
     return base_cohort_df, split_ehr_icd_subset, embeddings_data, notes_meta
 
 
@@ -267,19 +269,19 @@ def _write_outputs(
     # Always include core survival events (death, vte) so downstream scripts can use them
     core_cols = [c for c in CORE_EVENT_COLS if c in cohort_df.columns]
     events_data_sub = cohort_df[BASE_OUTPUT_COLS + core_cols + event_cols + tt_event_cols]
-    events_data_sub.to_csv(os.path.join(SURV_PATH, surv_filename + '.gz'), index=False)
+    events_data_sub.to_parquet(os.path.join(SURV_PATH, surv_filename), index=False)
 
     monthly_data = events_data_sub.merge(pooled_embedding_df, on='DFCI_MRN', how='left')
     embedding_cols = [col for col in pooled_embedding_df.columns if col != 'DFCI_MRN']
     monthly_data = monthly_data.dropna(subset=embedding_cols)
-    monthly_data.to_csv(os.path.join(SURV_PATH, embedding_filename + '.gz'), index=False)
+    monthly_data.to_parquet(os.path.join(SURV_PATH, embedding_filename), index=False)
 
 
 def _write_death_met_outputs(
     base_cohort_df: pd.DataFrame,
     pooled_embedding_df: pd.DataFrame,
-    surv_filename: str = 'death_met_surv_df.csv',
-    embedding_filename: str = 'death_met_embedding_prediction_df.csv',
+    surv_filename: str = 'death_met_surv_df.parquet',
+    embedding_filename: str = 'death_met_embedding_prediction_df.parquet',
     min_events: int = 100,
 ) -> None:
     cohort_df = base_cohort_df.copy()
@@ -295,12 +297,12 @@ def _write_death_met_outputs(
 
     core_cols = [c for c in CORE_EVENT_COLS if c in cohort_df.columns and c not in event_cols and c not in tt_event_cols]
     events_data_sub = cohort_df[BASE_OUTPUT_COLS + core_cols + event_cols + tt_event_cols]
-    events_data_sub.to_csv(os.path.join(SURV_PATH, surv_filename + '.gz'), index=False)
+    events_data_sub.to_parquet(os.path.join(SURV_PATH, surv_filename), index=False)
 
     monthly_data = events_data_sub.merge(pooled_embedding_df, on='DFCI_MRN', how='left')
     embedding_cols = [col for col in pooled_embedding_df.columns if col != 'DFCI_MRN']
     monthly_data = monthly_data.dropna(subset=embedding_cols)
-    monthly_data.to_csv(os.path.join(SURV_PATH, embedding_filename + '.gz'), index=False)
+    monthly_data.to_parquet(os.path.join(SURV_PATH, embedding_filename), index=False)
 
 
 def main() -> None:
@@ -372,8 +374,8 @@ def main() -> None:
     _write_outputs(
         cohort_df=cohort_df,
         endpoint_events=kept,
-        surv_filename='level_3_ICD_post_surv_df.csv',
-        embedding_filename='level_3_ICD_post_embedding_prediction_df.csv',
+        surv_filename='level_3_ICD_post_surv_df.parquet',
+        embedding_filename='level_3_ICD_post_embedding_prediction_df.parquet',
         pooled_embedding_df=pooled_embedding_df,
     )
 
@@ -411,8 +413,8 @@ def main() -> None:
     _write_outputs(
         cohort_df=cohort_df,
         endpoint_events=kept,
-        surv_filename='level_4_ICD_post_surv_df.csv',
-        embedding_filename='level_4_ICD_post_embedding_prediction_df.csv',
+        surv_filename='level_4_ICD_post_surv_df.parquet',
+        embedding_filename='level_4_ICD_post_embedding_prediction_df.parquet',
         pooled_embedding_df=pooled_embedding_df,
     )
 
@@ -464,8 +466,8 @@ def main() -> None:
     _write_outputs(
         cohort_df=cohort_df,
         endpoint_events=kept,
-        surv_filename='phecode_post_surv_df.csv',
-        embedding_filename='phecode_post_embedding_prediction_df.csv',
+        surv_filename='phecode_post_surv_df.parquet',
+        embedding_filename='phecode_post_embedding_prediction_df.parquet',
         pooled_embedding_df=pooled_embedding_df,
     )
 

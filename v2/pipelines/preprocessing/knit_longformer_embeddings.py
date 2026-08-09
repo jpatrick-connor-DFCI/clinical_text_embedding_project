@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import gzip
+import io
 import json
 import os
 import re
@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+import zstandard as zstd
 from tqdm.auto import tqdm
 
 from config import DATA_PATH as _DATA_PATH_STR, SURV_PATH
@@ -138,12 +139,14 @@ def main() -> None:
         metadata_df["NOTE_DATETIME"] - metadata_df["FIRST_TREATMENT_START_DT"]
     ).dt.days
 
-    metadata_file = PROC_PATH / "full_VTE_embeddings_metadata.csv.gz"
-    embeds_file = PROC_PATH / "full_VTE_embeddings_as_array.npy.gz"
+    metadata_file = PROC_PATH / "full_VTE_embeddings_metadata.parquet"
+    embeds_file = PROC_PATH / "full_VTE_embeddings_as_array.npy.zst"
 
-    metadata_df.to_csv(metadata_file, index=False)
-    with gzip.open(embeds_file, 'wb') as f:
-        np.save(f, embeddings)
+    metadata_df.to_parquet(metadata_file, index=False)
+    embeddings_bytes = io.BytesIO()
+    np.save(embeddings_bytes, embeddings.astype(np.float16))
+    with open(embeds_file, 'wb') as f:
+        f.write(zstd.compress(embeddings_bytes.getvalue()))
 
     missing_tstart = int(metadata_df["FIRST_TREATMENT_START_DT"].isna().sum())
 

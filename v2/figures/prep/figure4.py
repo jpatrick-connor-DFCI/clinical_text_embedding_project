@@ -271,7 +271,7 @@ def _heatmap_downsample(traj_sub: pd.DataFrame, months_to_keep: list[str],
 def _km_data(traj_sub: pd.DataFrame) -> pd.DataFrame:
     if traj_sub.empty:
         return pd.DataFrame(columns=KM_COLUMNS)
-    surv_df = pd.read_csv(os.path.join(SURV_PATH, "death_met_surv_df.csv.gz"))
+    surv_df = pd.read_parquet(os.path.join(SURV_PATH, "death_met_surv_df.parquet"))
     out = (traj_sub[["DFCI_MRN", "cluster"]]
            .merge(surv_df[["DFCI_MRN", "death", "tt_death"]], on="DFCI_MRN", how="inner")
            .dropna())
@@ -302,7 +302,7 @@ def _cluster_severity(traj_sub: pd.DataFrame, treatment_df: pd.DataFrame) -> pd.
     """
     if traj_sub.empty:
         return pd.DataFrame(columns=SEVERITY_COLUMNS)
-    surv_df = pd.read_csv(os.path.join(SURV_PATH, "death_met_surv_df.csv.gz"))
+    surv_df = pd.read_parquet(os.path.join(SURV_PATH, "death_met_surv_df.parquet"))
     met_cols = [c for c in MET_EVENTS if c in surv_df.columns]
     keep_cols = ["DFCI_MRN", "death", "tt_death"] + met_cols
     traj_cols = ["DFCI_MRN", "cluster"] + (["slope"] if "slope" in traj_sub.columns else [])

@@ -13,19 +13,19 @@ from config import SURV_PATH
 
 SCHEMES: dict[str, dict[str, str]] = {
     "icd3_post": {
-        "embedding_file": "level_3_ICD_post_embedding_prediction_df.csv.gz",
+        "embedding_file": "level_3_ICD_post_embedding_prediction_df.parquet",
         "results_dir": "level_3_ICD_post_results",
     },
     "icd4_post": {
-        "embedding_file": "level_4_ICD_post_embedding_prediction_df.csv.gz",
+        "embedding_file": "level_4_ICD_post_embedding_prediction_df.parquet",
         "results_dir": "level_4_ICD_post_results",
     },
     "phecode_post": {
-        "embedding_file": "phecode_post_embedding_prediction_df.csv.gz",
+        "embedding_file": "phecode_post_embedding_prediction_df.parquet",
         "results_dir": "phecode_post_results",
     },
     "death_met": {
-        "embedding_file": "death_met_embedding_prediction_df.csv.gz",
+        "embedding_file": "death_met_embedding_prediction_df.parquet",
         "results_dir": "death_met_results",
     },
 }
@@ -69,7 +69,7 @@ def feature_held_out_dir(scheme: str, event: str) -> str:
 
 
 def load_embedding_prediction_df(scheme: str) -> pd.DataFrame:
-    return pd.read_csv(os.path.join(SURV_PATH, embedding_file(scheme)))
+    return pd.read_parquet(os.path.join(SURV_PATH, embedding_file(scheme)))
 
 
 def list_trained_events(scheme: str) -> list[str]:

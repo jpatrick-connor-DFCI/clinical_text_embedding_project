@@ -83,7 +83,7 @@ def main() -> None:
     os.makedirs(MATCHED_COHORT_PATH, exist_ok=True)
 
     # === Load data ===
-    surv_df = pd.read_csv(os.path.join(SURV_PATH, 'death_met_surv_df.csv.gz'))
+    surv_df = pd.read_parquet(os.path.join(SURV_PATH, 'death_met_surv_df.parquet'))
     surv_df['first_treatment_date'] = pd.to_datetime(surv_df['first_treatment_date'])
     cohort_mrns = set(surv_df['DFCI_MRN'].unique())
 

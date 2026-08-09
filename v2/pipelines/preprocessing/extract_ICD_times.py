@@ -43,7 +43,7 @@ def main() -> None:
         key_col=None,
     )
 
-    split_ehr_icd_subset.to_csv(os.path.join(SURV_PATH, 'timestamped_icd_info.csv.gz'), index=False)
+    split_ehr_icd_subset.to_parquet(os.path.join(SURV_PATH, 'timestamped_icd_info.parquet'), index=False)
 
 
 if __name__ == "__main__":

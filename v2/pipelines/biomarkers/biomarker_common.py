@@ -4,29 +4,31 @@ Provides standardized data loading functions for note embeddings, survival
 cohort, and confounders (demographics, cancer type, panel version).
 """
 
-import gzip
+import io
 import os
 
 import numpy as np
 import pandas as pd
+import zstandard as zstd
 
 from config import DATA_PATH, NOTES_PATH, SURV_PATH
 
 
 def load_note_embeddings():
-    notes_meta = pd.read_csv(os.path.join(NOTES_PATH, 'full_VTE_embeddings_metadata.csv.gz'))
-    with gzip.open(os.path.join(NOTES_PATH, 'full_VTE_embeddings_as_array.npy.gz'), 'rb') as f:
-        embeddings_data = np.load(f)
+    notes_meta = pd.read_parquet(os.path.join(NOTES_PATH, 'full_VTE_embeddings_metadata.parquet'))
+    with open(os.path.join(NOTES_PATH, 'full_VTE_embeddings_as_array.npy.zst'), 'rb') as f:
+        embeddings_data = np.load(io.BytesIO(zstd.decompress(f.read())))
+    embeddings_data = embeddings_data.astype(np.float32)
     return notes_meta, embeddings_data
 
 
-def load_survival_cohort(cohort_file='death_met_surv_df.csv'):
-    return pd.read_csv(os.path.join(SURV_PATH, cohort_file + '.gz'))
+def load_survival_cohort(cohort_file='death_met_surv_df.parquet'):
+    return pd.read_parquet(os.path.join(SURV_PATH, cohort_file))
 
 
 def load_confounders():
     """Load demographic, cancer type, and panel version data for propensity modeling."""
-    tt_death_df = pd.read_csv(os.path.join(SURV_PATH, 'death_met_surv_df.csv.gz'))
+    tt_death_df = pd.read_parquet(os.path.join(SURV_PATH, 'death_met_surv_df.parquet'))
     demographics = tt_death_df[['DFCI_MRN', 'GENDER', 'AGE_AT_TREATMENTSTART']].copy()
 
     cancer_type_df = pd.read_csv(

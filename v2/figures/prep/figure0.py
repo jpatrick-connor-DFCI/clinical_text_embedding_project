@@ -67,8 +67,8 @@ def _data_availability() -> pd.DataFrame:
     cohort_mrns = set(cancer_type_df["DFCI_MRN"])
     n_total = len(cohort_mrns)
 
-    emb_df = pd.read_csv(os.path.join(SURV_PATH, embedding_file(SCHEME_FOR_EMBED)),
-                         usecols=["DFCI_MRN"])
+    emb_df = pd.read_parquet(os.path.join(SURV_PATH, embedding_file(SCHEME_FOR_EMBED)),
+                             columns=["DFCI_MRN"])
     text_mrns = set(emb_df["DFCI_MRN"]) & cohort_mrns
     stage_mrns = _mrns_with_stage(cohort_mrns)
     treatment_mrns = _mrns_with_treatment(cohort_mrns)

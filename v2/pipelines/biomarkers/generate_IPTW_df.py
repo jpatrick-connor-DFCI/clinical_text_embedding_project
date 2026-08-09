@@ -28,7 +28,7 @@ def main() -> None:
     os.makedirs(BIOMARKER_PATH, exist_ok=True)
 
     # === Load shared data (only needs to happen once) ===
-    tt_death_df = pd.read_csv(os.path.join(SURV_PATH, 'death_met_surv_df.csv.gz'))
+    tt_death_df = pd.read_parquet(os.path.join(SURV_PATH, 'death_met_surv_df.parquet'))
     tt_death_df['first_treatment_date'] = pd.to_datetime(tt_death_df['first_treatment_date'])
     tt_death_df = tt_death_df[['DFCI_MRN', 'first_treatment_date', 'tt_death', 'death',
                                 'GENDER', 'AGE_AT_TREATMENTSTART']].copy()

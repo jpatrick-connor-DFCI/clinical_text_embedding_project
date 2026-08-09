@@ -138,33 +138,26 @@ def _load_icd_descriptions() -> dict[str, str]:
     making it the primary authority for exactly the codes in these figures. This
     also covers newer codes such as R05.1 that older third-party catalogs miss.
     """
-    path = os.path.join(SURV_PATH, "timestamped_icd_info.csv.gz")
+    path = os.path.join(SURV_PATH, "timestamped_icd_info.parquet")
     if not os.path.exists(path):
         print(f"  [ICD labels] {path} not found — package lookup only")
         return {}
 
     out: dict[str, str] = {}
-    wanted = {"diagnosis_icd10_cd", "diagnosis_icd10_nm"}
     try:
-        chunks = pd.read_csv(
-            path,
-            dtype=str,
-            usecols=lambda col: str(col).strip().lower() in wanted,
-            chunksize=250_000,
+        icd_df = pd.read_parquet(path)
+        code_col, description_col = _lookup_columns(
+            icd_df, "DIAGNOSIS_ICD10_CD", "DIAGNOSIS_ICD10_NM"
         )
-        for chunk in chunks:
-            code_col, description_col = _lookup_columns(
-                chunk, "DIAGNOSIS_ICD10_CD", "DIAGNOSIS_ICD10_NM"
+        for raw_code, raw_description in zip(
+            icd_df[code_col], icd_df[description_col]
+        ):
+            code = _normalize_icd10(raw_code)
+            description = (
+                "" if pd.isna(raw_description) else str(raw_description).strip()
             )
-            for raw_code, raw_description in zip(
-                chunk[code_col], chunk[description_col]
-            ):
-                code = _normalize_icd10(raw_code)
-                description = (
-                    "" if pd.isna(raw_description) else str(raw_description).strip()
-                )
-                if code and description:
-                    out.setdefault(code, description)
+            if code and description:
+                out.setdefault(code, description)
     except (OSError, ValueError) as exc:
         print(f"  [ICD labels] could not read {path}: {exc} — package lookup only")
         return {}
@@ -481,7 +474,7 @@ def _merge_risk_with_surv(
     """Merge a scheme's per-event held-out text/base risk scores with survival labels.
 
     `surv_df` must already carry the `event`/`tt_{event}` columns for `scheme` (for
-    death_met that's death_met_surv_df.csv.gz; for other schemes, the scheme's
+    death_met that's death_met_surv_df.parquet; for other schemes, the scheme's
     embedding_prediction_df via load_embedding_prediction_df)."""
     rd = full_cohort_risk_dir(scheme, event)
     tp = os.path.join(rd, "text_risk_scores.csv")
@@ -774,7 +767,7 @@ def _within_vs_pan(kind: str) -> pd.DataFrame:
 
 def main() -> None:
     _initialize_code_lookups()
-    surv_df = pd.read_csv(os.path.join(SURV_PATH, "death_met_surv_df.csv.gz"))
+    surv_df = pd.read_parquet(os.path.join(SURV_PATH, "death_met_surv_df.parquet"))
 
     full_cohort_metrics = _full_cohort_metrics()
     _report_lookup_misses()

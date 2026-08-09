@@ -1,10 +1,11 @@
 """Generate Mortality Trajectories script for model evaluation workflows."""
 
-import gzip
+import io
 import os
 
 import numpy as np
 import pandas as pd
+import zstandard as zstd
 from tqdm import tqdm
 
 from config import FEATURE_PATH, NOTES_PATH, SURV_PATH
@@ -19,10 +20,11 @@ def main() -> None:
     os.makedirs(trajectory_path, exist_ok=True)
 
     # Load datasets
-    notes_meta = pd.read_csv(NOTES_PATH + 'full_VTE_embeddings_metadata.csv.gz')
-    with gzip.open(NOTES_PATH + 'full_VTE_embeddings_as_array.npy.gz', 'rb') as f:
-        embeddings_data = np.load(f)
-    events_data = pd.read_csv(SURV_PATH + 'death_met_surv_df.csv.gz')
+    notes_meta = pd.read_parquet(NOTES_PATH + 'full_VTE_embeddings_metadata.parquet')
+    with open(NOTES_PATH + 'full_VTE_embeddings_as_array.npy.zst', 'rb') as f:
+        embeddings_data = np.load(io.BytesIO(zstd.decompress(f.read())))
+    embeddings_data = embeddings_data.astype(np.float32)
+    events_data = pd.read_parquet(SURV_PATH + 'death_met_surv_df.parquet')
     cancer_type_df = pd.read_csv(os.path.join(FEATURE_PATH, 'cancer_type_df.csv.gz'))
 
     event = 'death'

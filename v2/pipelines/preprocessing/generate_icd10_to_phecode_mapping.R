@@ -17,6 +17,7 @@
 
 library(Phecode)
 library(data.table)
+library(arrow)
 
 # ── paths ────────────────────────────────────────────────────────────────────
 source("R/config.R")
@@ -50,8 +51,8 @@ normalize_phecode <- function(codes) {
 
 # ── 1. Load unique ICD-10 codes from dataset ────────────────────────────────
 cat("Loading ICD data …\n")
-icd_file <- file.path(SURV_PATH, "timestamped_icd_info.csv.gz")
-icd_dt <- fread(icd_file, select = "DIAGNOSIS_ICD10_CD")
+icd_file <- file.path(SURV_PATH, "timestamped_icd_info.parquet")
+icd_dt <- as.data.table(read_parquet(icd_file, col_select = "DIAGNOSIS_ICD10_CD"))
 raw_codes <- unique(na.omit(icd_dt$DIAGNOSIS_ICD10_CD))
 cat(sprintf("  %d unique raw ICD-10 codes in dataset\n", length(raw_codes)))
 

@@ -141,8 +141,9 @@ def main() -> None:
 
             demo_cols = ['GENDER', 'AGE_AT_TREATMENTSTART']
             if 'GENDER' not in pred_with_covars.columns or 'AGE_AT_TREATMENTSTART' not in pred_with_covars.columns:
-                surv_demo = pd.read_csv(os.path.join(SURV_PATH, 'death_met_surv_df.csv.gz'),
-                                        usecols=['DFCI_MRN', 'GENDER', 'AGE_AT_TREATMENTSTART'])
+                surv_demo = pd.read_parquet(
+                    os.path.join(SURV_PATH, 'death_met_surv_df.parquet'),
+                    columns=['DFCI_MRN', 'GENDER', 'AGE_AT_TREATMENTSTART'])
                 pred_with_covars = pred_with_covars.merge(surv_demo, on='DFCI_MRN', how='left')
 
             covar_cols = (demo_cols + cancer_type_feature_cols + line_feature_cols)
