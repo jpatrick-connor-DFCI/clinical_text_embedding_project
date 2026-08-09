@@ -129,20 +129,34 @@ def pack_token_sequences(token_sequences: list[list[int]], token_dtype: np.dtype
     }
 
 
-def tokenize_texts(tokenizer: Any, clinical_texts: list[str]) -> dict[str, np.ndarray]:
+def tokenize_texts(
+    tokenizer: Any,
+    clinical_texts: list[str],
+    *,
+    batch_idx: int | None = None,
+) -> dict[str, np.ndarray]:
     """Tokenize notes into ragged sequences to minimize disk and transfer overhead."""
     token_sequences: list[list[int]] = []
     token_dtype = resolve_token_dtype(tokenizer)
 
-    for start_idx in range(0, len(clinical_texts), TOKENIZER_BATCH_SIZE):
-        text_chunk = clinical_texts[start_idx:start_idx + TOKENIZER_BATCH_SIZE]
-        tokenized_chunk = tokenizer(
-            text_chunk,
-            padding=False,
-            truncation=True,
-            return_attention_mask=False,
-        )
-        token_sequences.extend(tokenized_chunk["input_ids"])
+    description = "Tokenizer chunks" if batch_idx is None else f"Tokenizing batch {batch_idx}"
+    with tqdm(
+        total=len(clinical_texts),
+        desc=description,
+        unit="notes",
+        position=1,
+        leave=False,
+    ) as progress:
+        for start_idx in range(0, len(clinical_texts), TOKENIZER_BATCH_SIZE):
+            text_chunk = clinical_texts[start_idx:start_idx + TOKENIZER_BATCH_SIZE]
+            tokenized_chunk = tokenizer(
+                text_chunk,
+                padding=False,
+                truncation=True,
+                return_attention_mask=False,
+            )
+            token_sequences.extend(tokenized_chunk["input_ids"])
+            progress.update(len(text_chunk))
 
     return pack_token_sequences(token_sequences, token_dtype)
 
@@ -161,7 +175,7 @@ def write_npz_zst(path: Path, arrays: dict[str, np.ndarray]) -> None:
 def save_tokenized_batch(batch_df: pl.DataFrame, tokenizer: Any, batch_idx: int) -> None:
     """Tokenize a text batch and save token arrays plus metadata."""
     clinical_texts = batch_df.get_column("CLINICAL_TEXT").fill_null("").cast(pl.String).to_list()
-    tokenized_dict = tokenize_texts(tokenizer, clinical_texts)
+    tokenized_dict = tokenize_texts(tokenizer, clinical_texts, batch_idx=batch_idx)
     write_npz_zst(
         BATCHED_TOKEN_FILES_PATH / f"clinical_notes_tokenized_batch_{batch_idx}_tokens{TOKEN_BATCH_SUFFIX}",
         tokenized_dict,
@@ -189,18 +203,24 @@ def main() -> None:
     cohort_mrns = load_cohort_mrns()
     tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_MODEL_NAME)
 
-    all_notes = pl.concat(
-        [
-            load_note_source_df(note_type, note_type_label, cohort_mrns)
-            for note_type, note_type_label in NOTE_TYPE_SOURCES
-        ],
-        how="vertical_relaxed",
-    )
+    note_frames = []
+    for note_type, note_type_label in tqdm(
+        NOTE_TYPE_SOURCES,
+        desc="Loading and cleaning note sources",
+        unit="source",
+    ):
+        note_frames.append(load_note_source_df(note_type, note_type_label, cohort_mrns))
+    all_notes = pl.concat(note_frames, how="vertical_relaxed")
 
     batch_count = 0
     kept_note_count = 0
 
-    for start_idx in tqdm(range(0, all_notes.height, BATCH_SIZE), desc="Tokenizing note batches"):
+    for start_idx in tqdm(
+        range(0, all_notes.height, BATCH_SIZE),
+        desc="Tokenizing note batches",
+        unit="batch",
+        position=0,
+    ):
         batch_df = all_notes.slice(start_idx, BATCH_SIZE)
         flush_batch(batch_df, tokenizer, batch_count)
         kept_note_count += batch_df.height

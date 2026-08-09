@@ -123,8 +123,12 @@ def build_somatic_data_df(cohort_df: pl.DataFrame) -> pl.DataFrame:
     somatic_wide = ps.load_somatic_wide()
     complete_somatic = selected_sample.join(somatic_wide, on=ps.SOMATIC_GROUP_KEY, how="inner")
 
-    metadata_cols = [c for c in selected_sample.columns]
-    feature_cols = [c for c in somatic_wide.columns if c not in ps.SOMATIC_GROUP_KEY]
+    metadata_cols = selected_sample.columns
+    # SOMATIC_WIDE_BY_SAMPLE also carries specimen metadata such as
+    # SAMPLE_COLLECTION_DT. Keep the selected specimen's metadata once and
+    # append only genuinely new somatic feature columns.
+    metadata_col_set = set(metadata_cols)
+    feature_cols = [column for column in somatic_wide.columns if column not in metadata_col_set]
 
     complete_somatic = complete_somatic.select(metadata_cols + feature_cols)
     return complete_somatic
