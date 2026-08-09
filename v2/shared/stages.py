@@ -18,10 +18,7 @@ import re
 
 import polars as pl
 
-try:
-    from config import FEATURE_PATH
-except ModuleNotFoundError:
-    from v2.config import FEATURE_PATH
+from config import FEATURE_PATH
 
 STAGE_ORDER = ["I", "II", "III", "IV"]
 

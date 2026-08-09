@@ -15,16 +15,13 @@ import os
 
 import polars as pl
 
+from config import FEATURE_PATH, MED_CLASSES_FILE, PRS_MATRIX_FILE, PROFILE_PATH, SURV_PATH
 try:
-    from config import FEATURE_PATH, MED_CLASSES_FILE, PRS_MATRIX_FILE, PROFILE_PATH, SURV_PATH
     from data.schema import assert_schema
-    from pipelines.preprocessing import profile_sources as ps
-    from shared.stages import normalize_stage
 except ModuleNotFoundError:
-    from v2.config import FEATURE_PATH, MED_CLASSES_FILE, PRS_MATRIX_FILE, PROFILE_PATH, SURV_PATH
-    from v2.data.schema import assert_schema
-    from v2.pipelines.preprocessing import profile_sources as ps
-    from v2.shared.stages import normalize_stage
+    from pipelines.preprocessing.schema import assert_schema
+from pipelines.preprocessing import profile_sources as ps
+from shared.stages import normalize_stage
 
 
 def _load_cohort_df() -> pl.DataFrame:

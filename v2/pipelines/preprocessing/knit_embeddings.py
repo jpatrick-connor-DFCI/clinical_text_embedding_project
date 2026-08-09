@@ -12,10 +12,7 @@ import polars as pl
 import zstandard as zstd
 from tqdm.auto import tqdm
 
-try:
-    from config import DATA_PATH as _DATA_PATH_STR, SURV_PATH
-except ModuleNotFoundError:
-    from v2.config import DATA_PATH as _DATA_PATH_STR, SURV_PATH
+from config import DATA_PATH as _DATA_PATH_STR, SURV_PATH
 
 # Paths and constants
 # This step typically runs back on the main cluster after batch embeddings have

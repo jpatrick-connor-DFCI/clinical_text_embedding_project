@@ -13,12 +13,8 @@ import polars as pl
 import zstandard as zstd
 from tqdm.auto import tqdm
 
-try:
-    from config import DATA_PATH as _DATA_PATH_STR, SURV_PATH
-    from pipelines.preprocessing import profile_sources as ps
-except ModuleNotFoundError:
-    from v2.config import DATA_PATH as _DATA_PATH_STR, SURV_PATH
-    from v2.pipelines.preprocessing import profile_sources as ps
+from config import DATA_PATH as _DATA_PATH_STR, SURV_PATH
+from pipelines.preprocessing import profile_sources as ps
 
 # Paths and constants
 DATA_PATH = Path(_DATA_PATH_STR)

@@ -17,12 +17,8 @@ import os
 
 import polars as pl
 
-try:
-    from config import FEATURE_PATH, NOTES_PATH
-    from shared.stages import load_stage_map, normalize_stage
-except ModuleNotFoundError:
-    from v2.config import FEATURE_PATH, NOTES_PATH
-    from v2.shared.stages import load_stage_map, normalize_stage
+from config import FEATURE_PATH, NOTES_PATH
+from shared.stages import load_stage_map, normalize_stage
 
 MODALITY_ORDER = ["text", "stage", "treatment", "somatic", "prs"]
 

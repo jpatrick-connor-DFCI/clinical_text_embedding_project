@@ -19,24 +19,14 @@ import os
 
 import polars as pl
 
-try:
-    from config import FEATURE_PATH, SURV_PATH
-    from pipelines.preprocessing.data_availability import (
-        MODALITY_ORDER,
-        availability_matrix,
-        combination_counts,
-        modality_mrn_sets,
-        pairwise_overlap,
-    )
-except ModuleNotFoundError:
-    from v2.config import FEATURE_PATH, SURV_PATH
-    from v2.pipelines.preprocessing.data_availability import (
+from config import FEATURE_PATH, SURV_PATH
+from pipelines.preprocessing.data_availability import (
     MODALITY_ORDER,
     availability_matrix,
     combination_counts,
     modality_mrn_sets,
     pairwise_overlap,
-    )
+)
 
 
 def main() -> None:

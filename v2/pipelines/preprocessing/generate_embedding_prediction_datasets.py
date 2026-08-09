@@ -20,14 +20,9 @@ import pandas as pd
 import zstandard as zstd
 from tqdm import tqdm
 
-try:
-    from anchors import DEFAULT_ANCHOR, anchor_suffix, date_col, ensure_anchor, note_time_col
-    from config import CODE_PATH, NOTES_PATH, PROCESSED_DATA_PATH, SURV_PATH
-    from survival import generate_survival_embedding_df, map_time_to_event
-except ModuleNotFoundError:
-    from v2.anchors import DEFAULT_ANCHOR, anchor_suffix, date_col, ensure_anchor, note_time_col
-    from v2.config import CODE_PATH, NOTES_PATH, PROCESSED_DATA_PATH, SURV_PATH
-    from v2.survival import generate_survival_embedding_df, map_time_to_event
+from anchors import DEFAULT_ANCHOR, anchor_suffix, date_col, ensure_anchor, note_time_col
+from config import CODE_PATH, NOTES_PATH, PROCESSED_DATA_PATH, SURV_PATH
+from survival import generate_survival_embedding_df, map_time_to_event
 
 # Shared columns/config
 BASE_INPUT_COLS = [
