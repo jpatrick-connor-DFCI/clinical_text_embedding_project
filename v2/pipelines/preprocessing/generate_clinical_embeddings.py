@@ -40,12 +40,15 @@ class TokenBatchDataset(Dataset):
         return idx, self.input_ids_flat[start_idx:end_idx]
 
 
-# Paths and constants
-# This step typically runs on GCP after token batches are copied over from the
-# preprocessing cluster.
-GCP_ROOT = Path(os.environ.get("CLINICAL_EMBED_GCP_ROOT", "/home/patrickconnor/generate_clinical_embeddings"))
-TOKEN_PATH = Path(os.environ.get("TOKEN_PATH", str(GCP_ROOT / "tokens")))
-EMBED_PATH = Path(os.environ.get("EMBED_PATH", str(GCP_ROOT / "embeddings")))
+# Paths and constants. The batched_tokens directory is copied to the GPU machine
+# separately and is expected to contain its original tokens/ and metadata/
+# subdirectories. The generated embeddings/ directory is its sibling under data/.
+DATA_ROOT = Path(os.environ.get("CLINICAL_EMBED_DATA_ROOT", "/home/patrickconnor/data"))
+BATCHED_TOKENS_PATH = Path(
+    os.environ.get("BATCHED_TOKENS_PATH", str(DATA_ROOT / "batched_tokens"))
+)
+TOKEN_PATH = Path(os.environ.get("TOKEN_PATH", str(BATCHED_TOKENS_PATH / "tokens")))
+EMBED_PATH = Path(os.environ.get("EMBED_PATH", str(DATA_ROOT / "embeddings")))
 
 TOKEN_FILE_PATTERN = re.compile(r"clinical_notes_tokenized_batch_(\d+)_tokens\.npy\.zst$")
 MODEL_NAME = "Simonlee711/Clinical_ModernBERT"
