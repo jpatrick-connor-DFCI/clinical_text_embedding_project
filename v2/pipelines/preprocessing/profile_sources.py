@@ -157,7 +157,9 @@ def load_note_metadata(note_type: str, columns: list[str] | None = None) -> pl.D
     path = _note_metadata_path(note_type)
     if columns is None:
         return pl.read_parquet(path)
-    return pl.read_parquet(path, columns=columns)
+    available_columns = set(pl.scan_parquet(path).collect_schema().names())
+    selected_columns = [column for column in columns if column in available_columns]
+    return pl.scan_parquet(path).select(selected_columns).collect(engine="streaming")
 
 
 def unpivot_medications_summary() -> pl.DataFrame:

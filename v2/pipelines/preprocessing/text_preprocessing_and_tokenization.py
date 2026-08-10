@@ -86,7 +86,7 @@ def load_note_source_df(note_type: str, note_type_label: str, cohort_mrns: set[i
     COLUMNS_TO_SAVE. The compiled parquets are already RPT_ID-deduped across
     all four raw pulls, newest-wins, so no cross-snapshot dedup is needed here."""
     available_cols = [c for c in COL_METADATA if c != ps.MRN] + [ps.MRN, ps.RPT_TEXT]
-    note_df = ps.load_note_metadata(note_type)
+    note_df = ps.load_note_metadata(note_type, columns=available_cols)
     present_cols = [c for c in available_cols if c in note_df.columns]
     note_df = note_df.select(present_cols).with_columns(
         pl.col(ps.MRN).cast(pl.Int64, strict=False)
@@ -98,7 +98,13 @@ def load_note_source_df(note_type: str, note_type_label: str, cohort_mrns: set[i
 
     return note_df.with_columns(
         pl.lit(note_type_label).alias("NOTE_TYPE"),
-        pl.col(ps.RPT_TEXT).fill_null("").cast(pl.String).map_elements(clean_text, return_dtype=pl.String).str.strip_chars().alias("CLINICAL_TEXT"),
+        pl.col(ps.RPT_TEXT)
+        .fill_null("")
+        .cast(pl.String)
+        .str.replace_all(r"\s\s+", " ")
+        .str.replace_all(r"[^A-Za-z0-9 .,?!()/]+", " ")
+        .str.strip_chars()
+        .alias("CLINICAL_TEXT"),
     ).select(COLUMNS_TO_SAVE)
 
 
@@ -144,7 +150,7 @@ def tokenize_texts(
         total=len(clinical_texts),
         desc=description,
         unit="notes",
-        position=1,
+        position=2,
         leave=False,
     ) as progress:
         for start_idx in range(0, len(clinical_texts), TOKENIZER_BATCH_SIZE):
@@ -203,28 +209,33 @@ def main() -> None:
     cohort_mrns = load_cohort_mrns()
     tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_MODEL_NAME)
 
-    note_frames = []
-    for note_type, note_type_label in tqdm(
-        NOTE_TYPE_SOURCES,
-        desc="Loading and cleaning note sources",
-        unit="source",
-    ):
-        note_frames.append(load_note_source_df(note_type, note_type_label, cohort_mrns))
-    all_notes = pl.concat(note_frames, how="vertical_relaxed")
-
     batch_count = 0
     kept_note_count = 0
 
-    for start_idx in tqdm(
-        range(0, all_notes.height, BATCH_SIZE),
-        desc="Tokenizing note batches",
-        unit="batch",
+    source_progress = tqdm(
+        NOTE_TYPE_SOURCES,
+        desc="Loading and cleaning note sources",
+        unit="source",
         position=0,
-    ):
-        batch_df = all_notes.slice(start_idx, BATCH_SIZE)
-        flush_batch(batch_df, tokenizer, batch_count)
-        kept_note_count += batch_df.height
-        batch_count += 1
+    )
+    for note_type, note_type_label in source_progress:
+        source_progress.set_postfix_str(note_type_label)
+        tqdm.write(f"Loading and cleaning {note_type_label} notes...")
+        source_notes = load_note_source_df(note_type, note_type_label, cohort_mrns)
+        tqdm.write(f"{note_type_label}: {source_notes.height:,} cohort notes")
+
+        batch_starts = range(0, source_notes.height, BATCH_SIZE)
+        for start_idx in tqdm(
+            batch_starts,
+            desc=f"{note_type_label} batches",
+            unit="batch",
+            position=1,
+            leave=False,
+        ):
+            batch_df = source_notes.slice(start_idx, BATCH_SIZE)
+            flush_batch(batch_df, tokenizer, batch_count)
+            kept_note_count += batch_df.height
+            batch_count += 1
 
     print(f"Saved {kept_note_count} cohort notes across {batch_count} batches.")
 
