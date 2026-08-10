@@ -23,6 +23,17 @@ def _get_common_feature_mrns() -> set:
     every modality model trains on the same set of patients regardless of which
     features are actually used.
 
+    met_burden_df.csv.gz (the `metburden` modality) is intentionally excluded
+    from this intersection. It is zero-filled to every cohort patient (see
+    build_met_burden_df in generate_all_non_text_covariates.py), so its MRN
+    set is always a superset of every other file's and adding it here would
+    be a guaranteed no-op read on the happy path. The one way it could change
+    the result is if the file were stale relative to cohort_df.parquet, in
+    which case including it would silently shrink the cohort for every other
+    modality too — the worst failure mode. Leaving it out means a stale
+    met_burden_df degrades only the metburden modality (see the left-join +
+    fillna(0) in load_feature_modalities_df below).
+
     Cached in-process (Phase-A A3): this reads 5 gzipped CSVs and the result is a constant
     for the lifetime of the process, so repeated calls (e.g. one per modality when A2's
     ``--modality all`` loop or a single-process multi-modality run calls it more than once)
@@ -90,16 +101,27 @@ def load_feature_modalities_df(
 ) -> tuple[pd.DataFrame, list[str], list[str], dict[str, Any], dict[str, list[str]]]:
     """Load feature data for the given scheme.
 
-    When *modality* is one of the six modality names, only that modality's CSV is read and
+    When *modality* is one of the seven modality names, only that modality's CSV is read and
     merged, avoiding unnecessary I/O for large files (e.g. PRS) in single-modality jobs.
     When *modality* is None all modalities are loaded but the common-cohort intersection
     (below) is skipped (original behaviour).
-    When *modality* is the literal string "all", all six modalities are loaded AND the
+    When *modality* is the literal string "all", all seven modalities are loaded AND the
     common-cohort intersection is applied — i.e. the union of every single-modality run's
     I/O and row-filtering, so the returned frame is exactly equivalent to loading each
     modality separately (same rows, same per-modality column values) and can be looped
-    in-process over all six `modality_cfg` entries.
+    in-process over all seven `modality_cfg` entries.
+
+    `metburden` only supports the treatment anchor today — see the ANCHOR
+    LIMITATION note on build_met_burden_df in generate_all_non_text_covariates.py.
     """
+    if anchor != "treatment" and modality in ("metburden", "all"):
+        raise ValueError(
+            f"modality '{modality}' includes metburden, which is only valid under the "
+            f"treatment anchor (got anchor='{anchor}'). met_burden_df.csv.gz is not "
+            "anchor-suffixed and would silently leak sequencing-to-treatment-interval "
+            "information under a non-treatment anchor."
+        )
+
     emb_df = load_embedding_prediction_df(scheme, anchor)
     cancer_type_df = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_type_df.csv.gz"))
     type_cols = [col for col in cancer_type_df.columns if col.startswith("CANCER_TYPE_")]
@@ -108,7 +130,7 @@ def load_feature_modalities_df(
     _to_load = (
         {modality}
         if modality and modality != "all"
-        else {"stage", "treatment", "somatic", "prs", "text"}
+        else {"stage", "treatment", "somatic", "prs", "text", "metburden"}
     )
 
     # Load only what is needed
@@ -116,11 +138,13 @@ def load_feature_modalities_df(
     somatic_df = pd.read_csv(os.path.join(FEATURE_PATH, "complete_somatic_data_df.csv.gz")) if "somatic" in _to_load else None
     prs_df = pd.read_csv(os.path.join(FEATURE_PATH, "complete_germline_data_df.csv.gz")) if "prs" in _to_load else None
     treatment_df = pd.read_csv(os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv.gz")) if "treatment" in _to_load else None
+    met_burden_df = pd.read_csv(os.path.join(FEATURE_PATH, "met_burden_df.csv.gz")) if "metburden" in _to_load else None
 
     stage_cols = [col for col in mrn_stage_df.columns if col.startswith("CANCER_STAGE_")] if mrn_stage_df is not None else []
     somatic_cols = [col for col in somatic_df.columns if col.endswith(('_AMP', '_DEL', '_SNV', '_SV', '_FUSION'))] if somatic_df is not None else []
     prs_cols = [col for col in prs_df.columns if "PGS" in col] if prs_df is not None else []
     treatment_cols = [col for col in treatment_df.columns if col.startswith("PX_on_")] if treatment_df is not None else []
+    met_site_cols = [col for col in met_burden_df.columns if col.startswith("MET_SITE_")] if met_burden_df is not None else []
 
     # For single-modality runs (and "all", which must match them exactly), restrict to the
     # intersection of all feature files so all modality models train on the same cohort
@@ -144,6 +168,18 @@ def load_feature_modalities_df(
         )
     if mrn_stage_df is not None:
         full_prediction_df = full_prediction_df.merge(mrn_stage_df[["DFCI_MRN"] + stage_cols], on="DFCI_MRN")
+    if met_burden_df is not None:
+        # left join + fillna(0), unlike the inner joins above: met_burden_df is
+        # zero-filled to the full cohort by construction, so a missing MRN here
+        # means a stale feature file, not a patient who lacks metastatic burden
+        # data. An inner join would silently shrink the cohort for this modality
+        # alone on a stale file; left join + fillna(0) degrades gracefully and
+        # matches the file's intended zero-fill semantics.
+        met_cols = ["N_MET_SITES"] + met_site_cols
+        full_prediction_df = full_prediction_df.merge(
+            met_burden_df[["DFCI_MRN"] + met_cols], on="DFCI_MRN", how="left"
+        )
+        full_prediction_df[met_cols] = full_prediction_df[met_cols].fillna(0)
 
     anchor_age_col = age_col(anchor)
     modality_cfg: dict[str, dict[str, Any]] = {
@@ -170,6 +206,20 @@ def load_feature_modalities_df(
         "text": {
             "continuous_vars": [anchor_age_col] + embed_cols,
             "penalized_cols": embed_cols,
+            "pca_config": None,
+        },
+        "metburden": {
+            # N_MET_SITES unpenalized (robust aggregate signal); the eight
+            # MET_SITE_* site indicators penalized (sparse, site-pattern signal).
+            # N_MET_SITES is an exact sum of the indicators, so under the
+            # elastic net (l1_ratio in {0.5, 1.0}) individual indicator
+            # coefficients read as "deviation from the additive-count effect",
+            # not standalone site effects. See build_met_burden_df's docstring
+            # for the LEAKAGE WARNING re: the *M outcome events — the
+            # concordant site indicator is dropped per-event in
+            # run_feature_comp_task.py, not here (this cfg is shared across events).
+            "continuous_vars": [anchor_age_col, "N_MET_SITES"],
+            "penalized_cols": met_site_cols,
             "pca_config": None,
         },
     }

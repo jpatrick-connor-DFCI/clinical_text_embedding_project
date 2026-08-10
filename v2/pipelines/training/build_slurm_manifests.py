@@ -13,7 +13,7 @@ from pipelines.training.slurm_array_utils import (
     get_events_from_df,
 )
 
-MODALITIES = ["stage", "treatment", "somatic", "prs", "text"]
+MODALITIES = ["stage", "treatment", "somatic", "prs", "text", "metburden"]
 FULL_COHORT_FILES = ["text_test.csv", "text_val.csv", "base_test.csv", "base_val.csv"]
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[2] / "slurm" / "slurm_manifests"
 

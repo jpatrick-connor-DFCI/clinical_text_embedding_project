@@ -20,7 +20,7 @@ import polars as pl
 from config import FEATURE_PATH, NOTES_PATH
 from shared.stages import load_stage_map, normalize_stage
 
-MODALITY_ORDER = ["text", "stage", "treatment", "somatic", "prs"]
+MODALITY_ORDER = ["text", "stage", "treatment", "somatic", "prs", "metburden"]
 
 
 def _mrns_with_stage(cohort_mrns: set[int]) -> set[int]:
@@ -68,13 +68,18 @@ def _mrns_with_text(cohort_mrns: set[int]) -> set[int]:
 
 def modality_mrn_sets(cohort_mrns: set[int]) -> dict[str, set[int]]:
     """MRN set per modality, restricted to `cohort_mrns`. Keys match
-    MODALITY_ORDER: text, stage, treatment, somatic, prs."""
+    MODALITY_ORDER: text, stage, treatment, somatic, prs, metburden.
+
+    metburden is zero-filled to every cohort patient (see build_met_burden_df),
+    so it is expected to read ~100% here - that is not a bug, and does not
+    move the "all thresholds" intersection row."""
     return {
         "text": _mrns_with_text(cohort_mrns),
         "stage": _mrns_with_stage(cohort_mrns),
         "treatment": _mrns_with_treatment(cohort_mrns),
         "somatic": _mrns_with_raw_feature("complete_somatic_data_df.csv.gz", cohort_mrns),
         "prs": _mrns_with_raw_feature("complete_germline_data_df.csv.gz", cohort_mrns),
+        "metburden": _mrns_with_raw_feature("met_burden_df.csv.gz", cohort_mrns),
     }
 
 

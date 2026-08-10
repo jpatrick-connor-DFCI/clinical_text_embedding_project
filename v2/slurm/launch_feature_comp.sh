@@ -9,12 +9,13 @@
 # Resource sizing (Phase-A A0): by default (MODALITY_CLASS=split) this submits TWO array jobs
 # against the same manifest, sized per modality class, each running its modalities one process
 # per modality (as before) —
-#   "big"   (text, prs)              : --cpus-per-task=5 --mem=8G
-#   "small" (stage, treatment, somatic) : --cpus-per-task=1 --mem=4G
+#   "big"   (text, prs)                             : --cpus-per-task=5 --mem=8G
+#   "small" (stage, treatment, somatic, metburden)    : --cpus-per-task=1 --mem=4G
 # because run_feature_comp_task.py already forces n_jobs=1 for the small modalities
 # (< 50 penalized columns), so they were previously requesting 6 CPUs and using 1.
+# metburden has 9 feature columns, well within the "small" sizing.
 # Set MODALITY_CLASS=all to submit a single unsplit job instead (legacy 6 CPU / 8G sizing),
-# which uses the collapsed --modality all in-process loop over all five modalities (A2).
+# which uses the collapsed --modality all in-process loop over all six modalities (A2).
 #
 # Usage:
 #   bash launch_feature_comp.sh

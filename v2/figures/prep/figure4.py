@@ -312,6 +312,11 @@ def _cluster_severity(traj_sub: pd.DataFrame, treatment_df: pd.DataFrame) -> pd.
     if "slope" not in merged.columns:
         merged["slope"] = np.nan
     if met_cols:
+        # NOTE: this is a *post-index* outcome-derived count (any MET_EVENTS ever
+        # observed, from death_met_surv_df), unrelated to the pre-index covariate
+        # N_MET_SITES built by generate_all_non_text_covariates.build_met_burden_df
+        # and used in the metburden modality. Different anatomy source, different
+        # time window, different column casing — do not conflate the two.
         merged["n_met_sites"] = merged[met_cols].fillna(0).clip(upper=1).sum(axis=1)
     else:
         merged["n_met_sites"] = np.nan

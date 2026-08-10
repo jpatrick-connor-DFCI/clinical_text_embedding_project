@@ -22,6 +22,7 @@ from tqdm import tqdm
 
 from anchors import DEFAULT_ANCHOR, anchor_suffix, date_col, ensure_anchor, note_time_col
 from config import CODE_PATH, NOTES_PATH, PROCESSED_DATA_PATH, SURV_PATH
+from shared.icd10 import normalize_icd10_undotted, to_icd10_level_3, to_icd10_level_4
 from survival import generate_survival_embedding_df, map_time_to_event
 
 # Shared columns/config
@@ -50,29 +51,11 @@ NOTE_TYPES = ['Clinician', 'Imaging', 'Pathology']
 MET_SITES = ['brain', 'bone', 'adrenal', 'liver', 'lung', 'node', 'peritoneal']
 
 
-def _normalize_icd10_undotted(code: str) -> Optional[str]:
-    if pd.isna(code):
-        return None
-    code = str(code).strip().upper()
-    code = re.sub(r"[^A-Z0-9.]", "", code)
-    code = code.replace(".", "")
-    return code if code else None
-
-
-def _to_icd10_level_3(code: str) -> Optional[str]:
-    code = _normalize_icd10_undotted(code)
-    if code is None or len(code) < 3:
-        return None
-    return code[:3]
-
-
-def _to_icd10_level_4(code: str) -> Optional[str]:
-    code = _normalize_icd10_undotted(code)
-    if code is None or len(code) < 3:
-        return None
-    if len(code) == 3:
-        return code
-    return f"{code[:3]}.{code[3]}"
+# Promoted to shared/icd10.py so pipelines.preprocessing.generate_all_non_text_covariates
+# can reuse them without importing this heavier, later-stage module.
+_normalize_icd10_undotted = normalize_icd10_undotted
+_to_icd10_level_3 = to_icd10_level_3
+_to_icd10_level_4 = to_icd10_level_4
 
 
 def _normalize_phecode(code: str) -> Optional[str]:
@@ -124,6 +107,10 @@ def _dedupe_in_order(values: list[str]) -> list[str]:
 
 
 # ICD-10 chapter exclusions: external causes (V-Y), pregnancy (O), neoplasms (C, D00-D49)
+# C77-C79 (secondary/metastatic neoplasms) are excluded here as ICD endpoint
+# codes, but are deliberately consumed elsewhere: see build_met_burden_df in
+# generate_all_non_text_covariates.py, which reads timestamped_icd_info.parquet
+# directly and never passes through _is_excluded_icd10.
 _ICD10_EXCLUDED_PREFIXES = {'V', 'W', 'X', 'Y', 'O', 'C'}
 
 

@@ -13,9 +13,9 @@
 # Resource sizing is per-modality-class (see launch_feature_comp.sh), which submits this script
 # twice with different --cpus-per-task/--mem overrides on the sbatch CLI (these win over the
 # #SBATCH defaults above) plus MODALITY_CLASS set accordingly:
-#   MODALITY_CLASS=big   -> text, prs                (--cpus-per-task=5 --mem=8G)
-#   MODALITY_CLASS=small -> stage, treatment, somatic  (--cpus-per-task=1 --mem=4G)
-#   MODALITY_CLASS=all (default) -> all five modalities, unchanged legacy behavior.
+#   MODALITY_CLASS=big   -> text, prs                            (--cpus-per-task=5 --mem=8G)
+#   MODALITY_CLASS=small -> stage, treatment, somatic, metburden  (--cpus-per-task=1 --mem=4G)
+#   MODALITY_CLASS=all (default) -> all six modalities, unchanged legacy behavior.
 MODALITY_CLASS=${MODALITY_CLASS:-all}
 
 # ANCHOR selects the time-zero anchor (see v2/anchors.py): "treatment" (default) or
@@ -117,7 +117,7 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
 
   if [[ -n "${MANIFEST_MODALITY:-}" ]]; then
     case "$MANIFEST_MODALITY" in
-      stage|treatment|somatic|prs|text)
+      stage|treatment|somatic|prs|text|metburden)
         MODALITIES=("$MANIFEST_MODALITY")
         ;;
       *)
@@ -128,8 +128,8 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
   else
     case "$MODALITY_CLASS" in
       big)   MODALITIES=(prs text) ;;
-      small) MODALITIES=(stage treatment somatic) ;;
-      all)   MODALITIES=(stage treatment somatic prs text) ;;
+      small) MODALITIES=(stage treatment somatic metburden) ;;
+      all)   MODALITIES=(stage treatment somatic prs text metburden) ;;
       *)
         echo "Unsupported MODALITY_CLASS: $MODALITY_CLASS (expected big|small|all)"
         exit 1

@@ -1,9 +1,11 @@
 """Build non-text clinical, genomic, and treatment covariates for the v2 cohort.
 
-Split into one function per feature file. All five keep their existing
-filenames and column contracts (CANCER_TYPE_*, CANCER_STAGE_*, *_AMP/_DEL/
-_SNV/_SV/_FUSION, PGS*, PX_on_*) so `pipelines/training/slurm_array_utils.py`
-needs zero changes to keep selecting features by name pattern.
+Split into one function per feature file. Six files total; five keep their
+original filenames and column contracts (CANCER_TYPE_*, CANCER_STAGE_*,
+*_AMP/_DEL/_SNV/_SV/_FUSION, PGS*, PX_on_*). The sixth, met_burden_df.csv.gz
+(build_met_burden_df), is new and requires matching registration in
+`pipelines/training/slurm_array_utils.py` and friends - see that module's
+`metburden` entries.
 
 Cancer type and stage come from PROFILE_data_processing's compiled
 CANCER_ANNOTATIONS parquets (CANCER_TYPE.parquet, CANCER_STAGE.parquet,
@@ -15,12 +17,14 @@ import os
 
 import polars as pl
 
+from anchors import DEFAULT_ANCHOR, date_col
 from config import FEATURE_PATH, MED_CLASSES_FILE, PRS_MATRIX_FILE, PROFILE_PATH, SURV_PATH
 try:
     from data.schema import assert_schema
 except ModuleNotFoundError:
     from pipelines.preprocessing.schema import assert_schema
 from pipelines.preprocessing import profile_sources as ps
+from shared.icd10 import MET_SITE_GROUPS, met_site_group
 from shared.stages import normalize_stage
 
 
@@ -171,6 +175,84 @@ def build_treatment_by_line_df() -> pl.DataFrame:
     )
 
 
+def build_met_burden_df(cohort_df: pl.DataFrame, anchor: str = DEFAULT_ANCHOR) -> pl.DataFrame:
+    """Count of distinct pre-index metastatic organ groups (C77-C79 ICD-10
+    codes, see shared.icd10.met_site_group), plus a per-group 0/1 indicator.
+
+    Pre-index = START_DT <= the active anchor's date, recomputed here rather
+    than trusting the on-disk TIME_TO_ICD (which is locked to the treatment
+    anchor regardless of `anchor`; see extract_ICD_times.py and the same
+    recompute in generate_embedding_prediction_datasets.py). Zero-filled to
+    every cohort patient, so this file has 100% cohort coverage by
+    construction - see the "do not add to _get_common_feature_mrns" note in
+    slurm_array_utils.py.
+
+    LEAKAGE WARNING: MET_SITE_{site} describes the same anatomy as the
+    death_met scheme's `{site}M` outcome events, observed through a
+    different instrument (ICD coding vs. the external clinical_to_{site}_met
+    extraction). Training code must drop the concordant site indicator per
+    event - see the per-event exclusion in run_feature_comp_task.py.
+
+    ANCHOR LIMITATION: only the treatment anchor is validated. Under the
+    sequencing anchor, treatment-anchored met burden would include the
+    sequencing-to-treatment interval (sequencing generally precedes
+    treatment; see build_somatic_data_df's
+    days_from_sequencing_to_first_treatment >= 0 filter), which leaks
+    post-anchor information. `main()` only calls this with the default
+    anchor; a sequencing arm needs a routed, anchor-suffixed output file
+    (see anchors.anchor_suffix / _suffixed in
+    generate_embedding_prediction_datasets.py), not just passing anchor
+    through as-is.
+    """
+    cohort_mrns = cohort_df.get_column("DFCI_MRN").unique().to_list()
+    anchor_date_col = date_col(anchor)
+
+    icd_long = pl.read_parquet(
+        os.path.join(SURV_PATH, "timestamped_icd_info.parquet"),
+        columns=["DFCI_MRN", "START_DT", "DIAGNOSIS_ICD10_CD"],
+    ).filter(pl.col("DFCI_MRN").is_in(cohort_mrns))
+
+    icd_long = icd_long.join(
+        cohort_df.select(["DFCI_MRN", anchor_date_col]),
+        on="DFCI_MRN", how="left",
+    ).with_columns(
+        pl.col("START_DT").cast(pl.Datetime, strict=False),
+        pl.col(anchor_date_col).cast(pl.Datetime, strict=False),
+    ).with_columns(
+        (pl.col("START_DT") - pl.col(anchor_date_col)).dt.total_days().alias("days_to_icd")
+    ).filter(pl.col("days_to_icd").is_not_null() & (pl.col("days_to_icd") <= 0))
+
+    site_df = icd_long.with_columns(
+        pl.col("DIAGNOSIS_ICD10_CD").map_elements(met_site_group, return_dtype=pl.String).alias("site")
+    ).drop_nulls("site").select(["DFCI_MRN", "site"]).unique()
+
+    site_indicators = site_df.with_columns(pl.lit(1).cast(pl.Int32).alias("present")).pivot(
+        on="site", index="DFCI_MRN", values="present"
+    )
+    # pivot only emits columns for groups actually observed in the cohort;
+    # add any missing group explicitly so the column set is never data-dependent.
+    for group in MET_SITE_GROUPS:
+        if group not in site_indicators.columns:
+            site_indicators = site_indicators.with_columns(pl.lit(0).cast(pl.Int32).alias(group))
+    site_indicators = site_indicators.select(
+        ["DFCI_MRN"] + [pl.col(group).fill_null(0).cast(pl.Int32) for group in MET_SITE_GROUPS]
+    ).rename({group: f"MET_SITE_{group}" for group in MET_SITE_GROUPS})
+
+    site_indicators = site_indicators.with_columns(
+        pl.sum_horizontal([f"MET_SITE_{group}" for group in MET_SITE_GROUPS]).cast(pl.Int32).alias("N_MET_SITES")
+    )
+
+    met_burden_df = (
+        cohort_df.select(pl.col("DFCI_MRN").unique())
+        .join(site_indicators, on="DFCI_MRN", how="left")
+    )
+    fill_cols = ["N_MET_SITES"] + [f"MET_SITE_{group}" for group in MET_SITE_GROUPS]
+    met_burden_df = met_burden_df.with_columns(
+        [pl.col(c).fill_null(0).cast(pl.Int32) for c in fill_cols]
+    )
+    return met_burden_df.select(["DFCI_MRN"] + fill_cols)
+
+
 def main() -> None:
     os.makedirs(FEATURE_PATH, exist_ok=True)
 
@@ -206,6 +288,15 @@ def main() -> None:
     categorical_treatment_data_by_line.write_csv(
         os.path.join(FEATURE_PATH, 'categorical_treatment_data_by_line.csv.gz'), compression="gzip"
     )
+
+    met_burden_df = build_met_burden_df(cohort_df)
+    assert_schema(
+        met_burden_df,
+        "met_burden_df",
+        required_cols=["DFCI_MRN", "N_MET_SITES"] + [f"MET_SITE_{s}" for s in MET_SITE_GROUPS],
+        key_col="DFCI_MRN",
+    )
+    met_burden_df.write_csv(os.path.join(FEATURE_PATH, 'met_burden_df.csv.gz'), compression="gzip")
 
 
 if __name__ == "__main__":

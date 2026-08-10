@@ -1,6 +1,7 @@
 """Run Feature Comp Task script for model training workflows."""
 
 import argparse
+import copy
 import json
 import os
 import time
@@ -10,6 +11,7 @@ import pandas as pd
 from anchors import ANCHORS, DEFAULT_ANCHOR, age_col
 from config import SURV_PATH
 from schemes import SCHEMES, get_output_dir
+from shared.icd10 import MET_SITE_GROUPS
 from survival import get_heldout_risk_scores_CoxPH, run_grid_CoxPH_parallel
 
 from pipelines.training.slurm_array_utils import (
@@ -33,7 +35,7 @@ def _write_skip_report(scheme: str, event: str, run_type: str, reason: str) -> N
         f.write(json.dumps(entry) + "\n")
 
 
-ALL_MODALITIES = ["stage", "treatment", "somatic", "prs", "text"]
+ALL_MODALITIES = ["stage", "treatment", "somatic", "prs", "text", "metburden"]
 
 
 def _parse_args() -> argparse.Namespace:
@@ -43,7 +45,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--modality",
         required=True,
-        choices=["stage", "treatment", "somatic", "prs", "text", "all"],
+        choices=["stage", "treatment", "somatic", "prs", "text", "metburden", "all"],
     )
     parser.add_argument("--anchor", default=DEFAULT_ANCHOR, choices=sorted(ANCHORS.keys()))
     parser.add_argument("--n-jobs", type=int, default=None)
@@ -92,7 +94,22 @@ def _run_one_modality(
 
     base_vars = ["GENDER", age_col(args.anchor)]
     type_cols = type_cols_base
-    cfg = modality_cfg[modality]
+    # Deep-copy: modality_cfg is built once per process and shared across every
+    # modality in the ``--modality all`` in-process loop (see main() below).
+    # The constant-column drop a few lines down, and the concordant-site drop
+    # for metburden, both mutate cfg's lists in place — without copying first,
+    # a column dropped while processing one modality would stay dropped for
+    # every subsequent modality in the same loop iteration's modality_cfg.
+    cfg = copy.deepcopy(modality_cfg[modality])
+    if modality == "metburden" and args.event.endswith("M") and args.event[:-1] in MET_SITE_GROUPS:
+        # LEAKAGE GUARD: MET_SITE_{site} and the `{site}M` outcome describe the
+        # same anatomy from different sources (pre-index ICD vs. post-index
+        # clinical extraction) — see build_met_burden_df's LEAKAGE WARNING.
+        # Drop only the concordant site's indicator; N_MET_SITES (which
+        # aggregates all eight sites) is kept since the concordant site
+        # contributes at most 1 to it.
+        concordant_col = f"MET_SITE_{args.event[:-1]}"
+        cfg["penalized_cols"] = [c for c in cfg["penalized_cols"] if c != concordant_col]
     all_feature_cols = base_vars + type_cols + cfg["continuous_vars"] + cfg["penalized_cols"]
     # deduplicate while preserving order
     seen = set()
