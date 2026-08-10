@@ -45,7 +45,7 @@ BATCHED_TOKEN_PATH = BATCHED_DATA_PATH / "batched_tokens"
 BATCHED_TOKEN_FILES_PATH = BATCHED_TOKEN_PATH / "tokens"
 BATCHED_METADATA_PATH = BATCHED_TOKEN_PATH / "metadata"
 
-BATCH_SIZE = 200_000
+BATCH_SIZE = 500_000
 TOKENIZER_BATCH_SIZE = 2_048
 TOKENIZER_MODEL_NAME = "Simonlee711/Clinical_ModernBERT"
 TOKEN_BATCH_SUFFIX = ".npy.zst"
@@ -213,7 +213,7 @@ def write_npz_zst(path: Path, arrays: dict[str, np.ndarray]) -> None:
     buf = io.BytesIO()
     np.savez(buf, **arrays)
     with open(path, "wb") as handle:
-        handle.write(zstd.compress(buf.getvalue(), level=15))
+        handle.write(zstd.compress(buf.getvalue(), level=3))
 
 
 def batch_is_complete(batch_idx: int, batch_df: pl.DataFrame) -> bool:
