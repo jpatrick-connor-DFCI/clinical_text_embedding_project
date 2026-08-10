@@ -2,7 +2,27 @@ name: clinical_notes_project
 channels:
   - conda-forge
   - bioconda
+  - nvidia
 dependencies:
+  # Keep Python on a version with prebuilt GPU packages. This avoids compiling
+  # flash-attn locally during environment creation.
+  - python=3.12
+
+  # Pin the CUDA userspace/toolkit version and explicitly request the GPU build
+  # of PyTorch. The host still needs a compatible NVIDIA driver.
+  - cuda-version=12.8
+  - cuda-toolkit=12.8
+  - pytorch-gpu
+  - flash-attn=2.8.3
+
+  # Clinical embedding pipeline dependencies.
+  - numpy
+  - transformers
+  - tqdm
+  - zstandard
+  - ninja
+  - packaging
+
   - pandas
   - ipykernel
   - matplotlib
@@ -15,8 +35,5 @@ dependencies:
   - r-devtools
   - r-data.table
   - xgboost
-  - pytorch
   - orjson
-  - zstandard
   - ijson
-prefix: /data/gusev/USERS/jpconnor/conda/envs/clinical_notes_project
