@@ -10,8 +10,8 @@ dependencies:
 
   # Pin the CUDA userspace/toolkit version and explicitly request the GPU build
   # of PyTorch. The host still needs a compatible NVIDIA driver.
-  - cuda-version=12.8
-  - cuda-toolkit=12.8
+  - cuda-version=12.9
+  - cuda-toolkit=12.9
   - pytorch-gpu
   - flash-attn=2.8.3
 
