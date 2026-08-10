@@ -52,7 +52,15 @@ EMBED_PATH = Path(os.environ.get("EMBED_PATH", str(DATA_ROOT / "embeddings")))
 
 TOKEN_FILE_PATTERN = re.compile(r"clinical_notes_tokenized_batch_(\d+)_tokens\.npy\.zst$")
 MODEL_NAME = "Simonlee711/Clinical_ModernBERT"
-DATALOADER_BATCH_SIZE = 64
+MAX_BATCH_SIZE = int(os.environ.get("EMBED_MAX_BATCH_SIZE", "64"))
+# Attention memory grows approximately with batch_size * sequence_length**2.
+# This default permits one 8,192-token note, four 4,096-token notes, etc.
+MAX_ATTENTION_ELEMENTS = int(os.environ.get("EMBED_MAX_ATTENTION_ELEMENTS", str(8192**2)))
+
+if MAX_BATCH_SIZE < 1:
+    raise ValueError("EMBED_MAX_BATCH_SIZE must be at least 1.")
+if MAX_ATTENTION_ELEMENTS < 1:
+    raise ValueError("EMBED_MAX_ATTENTION_ELEMENTS must be at least 1.")
 
 
 def discover_token_files(token_path: Path) -> dict[int, Path]:
@@ -108,6 +116,71 @@ def build_collate_fn(pad_token_id: int):
     return collate_token_batch
 
 
+def build_length_bucketed_batches(row_splits: np.ndarray) -> list[list[int]]:
+    """Group similarly sized notes while respecting the attention-memory budget.
+
+    Sorting by length minimizes dynamic-padding waste. Predictions are written
+    back using their original row indices, so this does not change output order.
+    """
+    sequence_lengths = np.diff(row_splits)
+    sorted_indices = np.argsort(sequence_lengths, kind="stable")
+    batches: list[list[int]] = []
+    current_batch: list[int] = []
+    current_max_length = 0
+
+    for raw_idx in sorted_indices:
+        idx = int(raw_idx)
+        sequence_length = max(int(sequence_lengths[idx]), 1)
+        candidate_max_length = max(current_max_length, sequence_length)
+        candidate_size = len(current_batch) + 1
+        exceeds_budget = candidate_size * candidate_max_length**2 > MAX_ATTENTION_ELEMENTS
+
+        if current_batch and (candidate_size > MAX_BATCH_SIZE or exceeds_budget):
+            batches.append(current_batch)
+            current_batch = [idx]
+            current_max_length = sequence_length
+        else:
+            current_batch.append(idx)
+            current_max_length = candidate_max_length
+
+    if current_batch:
+        batches.append(current_batch)
+
+    return batches
+
+
+def embed_minibatch(
+    embedding_model: torch.nn.Module,
+    tokens: torch.Tensor,
+    masks: torch.Tensor,
+) -> torch.Tensor:
+    """Mean-pool one minibatch, splitting and retrying after a CUDA OOM."""
+    try:
+        with torch.inference_mode():
+            # The checkpoint has no trained pooler head. Use attention-masked
+            # mean pooling over last_hidden_state instead.
+            out = embedding_model(input_ids=tokens, attention_mask=masks).last_hidden_state
+            mask = masks.unsqueeze(-1).to(out.dtype)
+            return ((out * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1e-9)).cpu()
+    except torch.OutOfMemoryError as exc:
+        if tokens.shape[0] == 1:
+            raise RuntimeError(
+                "CUDA ran out of memory for a single note with padded length "
+                f"{tokens.shape[1]}. Reduce the preprocessing token-length limit or "
+                "run on a GPU with more memory."
+            ) from exc
+
+        split_at = tokens.shape[0] // 2
+        print(
+            "CUDA OOM for minibatch "
+            f"(size={tokens.shape[0]}, length={tokens.shape[1]}); retrying as smaller batches."
+        )
+        torch.cuda.empty_cache()
+        left = embed_minibatch(embedding_model, tokens[:split_at], masks[:split_at])
+        right = embed_minibatch(embedding_model, tokens[split_at:], masks[split_at:])
+        return torch.cat((left, right), dim=0)
+
+
 def main() -> None:
     """Generate attention-masked mean-pooled embeddings for all token batches."""
     from transformers import AutoModel
@@ -133,10 +206,10 @@ def main() -> None:
         cur_batch = load_token_batch(batch_path)
 
         dataset = TokenBatchDataset(cur_batch["input_ids_flat"], cur_batch["row_splits"])
+        minibatches = build_length_bucketed_batches(cur_batch["row_splits"])
         dataloader = DataLoader(
             dataset,
-            batch_size=DATALOADER_BATCH_SIZE,
-            shuffle=False,
+            batch_sampler=minibatches,
             pin_memory=pin_memory,
             collate_fn=collate_fn,
         )
@@ -146,15 +219,7 @@ def main() -> None:
         for indices, tokens, masks in tqdm(dataloader, desc=f"Batch {batch_idx}"):
             tokens = tokens.to(device, non_blocking=pin_memory)
             masks = masks.to(device, non_blocking=pin_memory)
-
-            with torch.inference_mode():
-                # ModernBERT has no pooler head, so .pooler_output is unavailable.
-                # Use attention-masked mean pooling over last_hidden_state; the
-                # clamp guards against all-padding rows.
-                out = embedding_model(input_ids=tokens, attention_mask=masks).last_hidden_state
-                mask = masks.unsqueeze(-1).to(out.dtype)
-                preds = ((out * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1e-9)).cpu()
-
+            preds = embed_minibatch(embedding_model, tokens, masks)
             predictions[indices] = preds
 
         embeddings_bytes = io.BytesIO()
