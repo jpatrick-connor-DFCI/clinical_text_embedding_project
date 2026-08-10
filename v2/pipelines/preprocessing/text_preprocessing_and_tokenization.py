@@ -45,11 +45,29 @@ BATCHED_TOKEN_PATH = BATCHED_DATA_PATH / "batched_tokens"
 BATCHED_TOKEN_FILES_PATH = BATCHED_TOKEN_PATH / "tokens"
 BATCHED_METADATA_PATH = BATCHED_TOKEN_PATH / "metadata"
 
-BATCH_SIZE = 500_000
-TOKENIZER_BATCH_SIZE = 2_048
+BATCH_SIZE = 100_000
+TOKENIZER_BATCH_SIZE = 16_384
 TOKENIZER_MODEL_NAME = "Simonlee711/Clinical_ModernBERT"
 TOKEN_BATCH_SUFFIX = ".npy.zst"
-SHOW_LIVE_PROGRESS = sys.stderr.isatty()
+
+# Rayon threads inside the Rust tokenizer. This is the pipeline's only source of
+# parallelism: the tokenizer parallelizes across the independent sequences in one
+# encode call, which saturates the available cores without the memory multiplier
+# that process-level parallelism over shards would incur (one shard's token
+# sequences are the single largest allocation in the stage). If this is ever
+# combined with multiprocessing, pin it to 1 in the workers to avoid
+# oversubscription.
+TOKENIZER_THREADS = int(os.environ.get("TOKENIZER_THREADS", os.cpu_count() or 4))
+
+# Both variables are read when the tokenizers native library initializes, so they
+# must be set before `transformers` is imported in main() -- setting them inside
+# main() would silently do nothing.
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")
+os.environ.setdefault("RAYON_NUM_THREADS", str(TOKENIZER_THREADS))
+
+# stderr is not a tty when this module runs under subprocess.run from
+# run_preprocessing.ipynb, which disables every bar; FORCE_PROGRESS re-enables them.
+SHOW_LIVE_PROGRESS = os.environ.get("FORCE_PROGRESS", "") == "1" or sys.stderr.isatty()
 TOKEN_FILE_PATTERN = re.compile(r"clinical_notes_tokenized_batch_(\d+)_tokens\.npy\.zst$")
 METADATA_FILE_PATTERN = re.compile(r"clinical_notes_tokenized_batch_(\d+)_metadata\.parquet$")
 
@@ -147,8 +165,11 @@ def load_note_source_df(note_type: str, note_type_label: str, cohort_mrns: set[i
 
 def resolve_token_dtype(tokenizer: Any) -> np.dtype:
     """Choose a compact dtype that can hold the tokenizer vocabulary."""
-    vocab_size = getattr(tokenizer, "vocab_size", None)
-    if vocab_size is not None and int(vocab_size) <= np.iinfo(np.uint16).max:
+    # len(tokenizer) includes added/special tokens; tokenizer.vocab_size does not,
+    # so relying on vocab_size alone can silently pick a dtype too small to hold
+    # every id the tokenizer can actually emit.
+    vocab_size = len(tokenizer)
+    if vocab_size <= np.iinfo(np.uint16).max:
         return np.uint16
     return np.int32
 
@@ -158,12 +179,16 @@ def pack_token_sequences(token_sequences: list[list[int]], token_dtype: np.dtype
     seq_lengths = np.fromiter((len(seq) for seq in token_sequences), dtype=np.int32, count=len(token_sequences))
     row_splits = np.empty(len(token_sequences) + 1, dtype=np.int64)
     row_splits[0] = 0
-    row_splits[1:] = np.cumsum(seq_lengths, dtype=np.int64)
+    np.cumsum(seq_lengths, dtype=np.int64, out=row_splits[1:])
 
-    if row_splits[-1] == 0:
-        input_ids_flat = np.empty(0, dtype=token_dtype)
-    else:
-        input_ids_flat = np.concatenate([np.asarray(seq, dtype=token_dtype) for seq in token_sequences])
+    # Fill a single preallocated buffer in place rather than building one ndarray
+    # per sequence and np.concatenate-ing them, which allocates the full output a
+    # second time and doubles peak memory. The empty-corpus case falls out for
+    # free: np.empty(0, ...) with a loop that never executes.
+    input_ids_flat = np.empty(int(row_splits[-1]), dtype=token_dtype)
+    for seq, start, end in zip(token_sequences, row_splits[:-1], row_splits[1:]):
+        if end > start:
+            input_ids_flat[start:end] = seq
 
     return {
         "input_ids_flat": input_ids_flat,
@@ -174,25 +199,29 @@ def pack_token_sequences(token_sequences: list[list[int]], token_dtype: np.dtype
 
 def tokenize_texts(
     tokenizer: Any,
-    clinical_texts: list[str],
+    clinical_texts: pl.Series,
     *,
     batch_idx: int | None = None,
 ) -> dict[str, np.ndarray]:
     """Tokenize notes into ragged sequences to minimize disk and transfer overhead."""
     token_sequences: list[list[int]] = []
     token_dtype = resolve_token_dtype(tokenizer)
+    n_texts = len(clinical_texts)
 
     description = "Tokenizer chunks" if batch_idx is None else f"Tokenizing batch {batch_idx}"
     with tqdm(
-        total=len(clinical_texts),
+        total=n_texts,
         desc=description,
         unit="notes",
         disable=not SHOW_LIVE_PROGRESS,
         leave=True,
         mininterval=1.0,
     ) as progress:
-        for start_idx in range(0, len(clinical_texts), TOKENIZER_BATCH_SIZE):
-            text_chunk = clinical_texts[start_idx:start_idx + TOKENIZER_BATCH_SIZE]
+        for start_idx in range(0, n_texts, TOKENIZER_BATCH_SIZE):
+            # Slicing the Series is zero-copy; only this chunk is materialized into
+            # Python strings, and it is freed at the next iteration instead of
+            # holding the whole batch's strings alive for the duration of the loop.
+            text_chunk = clinical_texts.slice(start_idx, TOKENIZER_BATCH_SIZE).to_list()
             tokenized_chunk = tokenizer(
                 text_chunk,
                 padding=False,
@@ -249,7 +278,7 @@ def batch_is_complete(batch_idx: int, batch_df: pl.DataFrame) -> bool:
 
 def save_tokenized_batch(batch_df: pl.DataFrame, tokenizer: Any, batch_idx: int) -> None:
     """Tokenize a text batch and save token arrays plus metadata."""
-    clinical_texts = batch_df.get_column("CLINICAL_TEXT").fill_null("").cast(pl.String).to_list()
+    clinical_texts = batch_df.get_column("CLINICAL_TEXT").fill_null("").cast(pl.String)
     tokenized_dict = tokenize_texts(tokenizer, clinical_texts, batch_idx=batch_idx)
     write_npz_zst(
         token_batch_path(batch_idx),
@@ -276,7 +305,13 @@ def main() -> None:
     ensure_output_dirs()
 
     cohort_mrns = load_cohort_mrns()
-    tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_MODEL_NAME)
+    # use_fast=True makes a fallback to the ~20-100x slower Python tokenizer loud
+    # instead of silent (from_pretrained falls back quietly on a tokenizers
+    # version mismatch or a missing tokenizer.json), and the fallback would also
+    # make TOKENIZERS_PARALLELISM/RAYON_NUM_THREADS above inert.
+    tokenizer = AutoTokenizer.from_pretrained(TOKENIZER_MODEL_NAME, use_fast=True)
+    if not tokenizer.is_fast:
+        raise RuntimeError("Fast (Rust) tokenizer required; got the slow Python fallback.")
 
     batch_count = 0
     kept_note_count = 0
