@@ -1,0 +1,22 @@
+name: clinical_notes_project
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - pandas
+  - ipykernel
+  - matplotlib
+  - seaborn
+  - scikit-survival
+  - lifelines
+  - tslearn
+  - matplotlib-venn
+  - polars
+  - r-devtools
+  - r-data.table
+  - xgboost
+  - pytorch
+  - orjson
+  - zstandard
+  - ijson
+prefix: /data/gusev/USERS/jpconnor/conda/envs/clinical_notes_project
