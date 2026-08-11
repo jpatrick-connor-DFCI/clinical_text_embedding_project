@@ -18,3 +18,9 @@ for the full pipeline DAG this order is derived from.
 
 `pipelines.trajectories.*` and `pipelines.biomarkers.*` run after step 05 (full-cohort risk
 scores) and are invoked directly as scripts, not from a notebook — see `REFACTOR_PLAN.md`.
+
+## Diagnostic notebooks (not part of the numbered run order)
+
+| Notebook | Tier | Notes |
+|---|---|---|
+| [`diagnose_prs_conflict.ipynb`](diagnose_prs_conflict.ipynb) | cluster CPU | Read-only investigation of `build_germline_data_df`'s "PRS values disagree across sample IDs" crash — distinguishes an idmap fan-out (fabricated conflict) from a genuine PRS-value disagreement. Run after `01_run_preprocessing.ipynb` (needs `cohort_df.parquet`), before re-running `generate_all_non_text_covariates`. |
