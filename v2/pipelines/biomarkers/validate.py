@@ -10,7 +10,7 @@ import pandas as pd
 
 from data.validation_reference import load_validation_reference
 
-from biomarker_common import get_mutation_type
+from pipelines.biomarkers.biomarker_common import get_mutation_type
 
 # ============================================================
 # Known ICI biomarker validation reference

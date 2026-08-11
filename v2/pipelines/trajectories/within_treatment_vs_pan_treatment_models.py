@@ -8,14 +8,15 @@ import warnings
 
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler
 from sksurv.metrics import concordance_index_censored, cumulative_dynamic_auc
 from sksurv.util import Surv
 from tqdm import tqdm
 
 from config import FEATURE_PATH, RESULTS_PATH
 from schemes import load_embedding_prediction_df
-from survival import RunCheckpoint, get_heldout_risk_scores_CoxPH, run_grid_CoxPH_parallel
+from survival import (RunCheckpoint, dataframe_fingerprint,
+                      fit_predict_external_CoxPH, get_heldout_risk_scores_CoxPH,
+                      run_grid_CoxPH_parallel)
 
 
 def main() -> None:
@@ -99,22 +100,6 @@ def main() -> None:
     # === Identify feature columns ===
     continuous_vars = ['AGE_AT_TREATMENTSTART'] + embed_cols
 
-    # === Scale continuous vars ===
-    scaler = StandardScaler()
-    train_df[continuous_vars] = scaler.fit_transform(train_df[continuous_vars])
-    held_df[continuous_vars] = scaler.transform(held_df[continuous_vars])
-
-    # Impute any remaining missing features to the TRAIN column mean. Pooled embeddings are
-    # NaN for patients lacking notes of a given type; run_grid/get_heldout impute internally,
-    # but the direct model.predict(held_df) below does not — so do it here for every model
-    # feature (StandardScaler ignores NaN in fit and preserves it in transform). Standardized
-    # columns have mean ~0; binary covariates get the train proportion. Matches the per-fold
-    # mean imputation used during fitting and prevents 'Input X contains NaN' at predict time.
-    _feature_cols = base_vars + embed_cols
-    _train_means = train_df[_feature_cols].mean()
-    train_df[_feature_cols] = train_df[_feature_cols].fillna(_train_means)
-    held_df[_feature_cols] = held_df[_feature_cols].fillna(_train_means)
-
     # === Checkpoint store (writes intermediate results during the run; enables resume) ===
     RESUME = True
     train_outdir = os.path.join(RESULTS_PATH, 'pan_vs_within_treatment')
@@ -130,6 +115,11 @@ def main() -> None:
         'n_base': int(len(base_vars)),
         'strata': sorted(within_eligible),
         'seed': 1234,
+        'data_hash': dataframe_fingerprint(
+            train_df,
+            ['DFCI_MRN', event, f'tt_{event}', 'TREATMENT_CLASSIFICATION']
+            + base_vars + embed_cols,
+        ),
     }
     ckpt = RunCheckpoint(os.path.join(train_outdir, 'checkpoints'), fingerprint, resume=RESUME)
 
@@ -190,7 +180,11 @@ def main() -> None:
         trained_matched_pan['STRATUM'] = treatment
         matched_pan_held = pd.DataFrame({
             'DFCI_MRN': held_df['DFCI_MRN'].values,
-            'pan_treatment_risk_score': matched_model.predict(held_df[base_vars + embed_cols]),
+            'pan_treatment_risk_score': fit_predict_external_CoxPH(
+                matched_pan_train, held_df, base_vars, continuous_vars, embed_cols,
+                event_col=event, tstop_col=f'tt_{event}', l1_ratio=matched_l1,
+                alpha=matched_alpha, max_iter=3000,
+            ),
             'STRATUM': treatment,
         })
         return trained_matched_pan, matched_pan_held, (float(matched_l1), float(matched_alpha))
@@ -210,7 +204,7 @@ def main() -> None:
         matched_pan_key = f'{treatment}__matched_pan__'
 
         st = ckpt.status(treatment)
-        if st == 'done':
+        if st == 'done' and ckpt.stratum_done(treatment) and ckpt.stratum_done(matched_pan_key):
             _tr, _hd = ckpt.load_stratum(treatment)
             train_score_frames.append(_tr)
             held_score_frames.append(_hd)
@@ -218,6 +212,8 @@ def main() -> None:
             matched_pan_train_frames.append(_mp_tr)
             matched_pan_held_frames.append(_mp_hd)
             continue
+        if st == 'done':
+            ckpt.log(f"incomplete checkpoint pair for {treatment}; refitting")
         if st == 'skipped':
             continue
 
@@ -249,7 +245,11 @@ def main() -> None:
         sub_held = held_df.loc[held_df['TREATMENT_CLASSIFICATION'] == treatment]
         held_sub = pd.DataFrame({
             'DFCI_MRN': sub_held['DFCI_MRN'].values,
-            'within_treatment_risk_score': cur_model.predict(sub_held[base_vars + embed_cols]),
+            'within_treatment_risk_score': fit_predict_external_CoxPH(
+                sub_df, sub_held, base_vars, continuous_vars, embed_cols,
+                event_col=event, tstop_col=f'tt_{event}', l1_ratio=best_l1,
+                alpha=best_alpha, max_iter=3000,
+            ),
             'STRATUM': treatment,
         })
 
@@ -280,6 +280,8 @@ def main() -> None:
         matched_pan_train_frames.append(trained_matched_pan)
         matched_pan_held_frames.append(matched_pan_held)
 
+    if not train_score_frames:
+        raise RuntimeError("No within-treatment stratum completed successfully.")
     trained_within = pd.concat(train_score_frames, ignore_index=True)
     within_held_all = pd.concat(held_score_frames, ignore_index=True)
     # Size-matched pan scores, one row per (stratum, patient) — a patient can appear in more

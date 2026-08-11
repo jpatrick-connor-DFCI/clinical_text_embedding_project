@@ -25,7 +25,8 @@ ANCHOR=${ANCHOR:-treatment}
 
 PROJECT_ROOT=${PROJECT_ROOT:-/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project}
 V2_ROOT="$PROJECT_ROOT/v2"
-MANIFEST=${MANIFEST:-$V2_ROOT/slurm/slurm_manifests/feature_comp_tasks.tsv}
+if [[ "$ANCHOR" == "treatment" ]]; then ANCHOR_SUFFIX=""; else ANCHOR_SUFFIX="__${ANCHOR}"; fi
+MANIFEST=${MANIFEST:-$V2_ROOT/slurm/slurm_manifests/feature_comp_tasks${ANCHOR_SUFFIX}.tsv}
 ROWS_PER_TASK=${ROWS_PER_TASK:-7}
 
 if [[ ! -d "$V2_ROOT" ]]; then
@@ -75,8 +76,9 @@ fi
 
 echo "Task ${SLURM_ARRAY_TASK_ID}: processing manifest rows ${START_LINE}-${END_LINE}"
 
-DATA_PATH=${DATA_PATH:-/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project}
-RESULTS_ROOT="$DATA_PATH/time-to-event_analysis/results"
+export CTEP_DATA_PATH=${CTEP_DATA_PATH:-${DATA_PATH:-/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project}}
+RESULTS_ROOT="$CTEP_DATA_PATH/time-to-event_analysis/results"
+FAILED_ROWS=0
 
 for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
   TASK_LINE=$(sed -n "${LINE_NUM}p" "$MANIFEST")
@@ -145,7 +147,7 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
   # one modality failing does not stop the rest). Otherwise (a single manifest-pinned modality,
   # or a big/small resource class) invoke run_feature_comp_task.py once per modality as before.
   if [[ -z "${MANIFEST_MODALITY:-}" && "$MODALITY_CLASS" == "all" ]]; then
-    python -m pipelines.training.run_feature_comp_task \
+    if ! python -m pipelines.training.run_feature_comp_task \
       --scheme "$SCHEME" \
       --event "$EVENT" \
       --modality all \
@@ -153,11 +155,13 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
       --n-jobs "${SLURM_CPUS_PER_TASK:-1}" \
       --max-iter "${COXNET_MAX_ITER:-5000}" \
       --backend "${COXNET_BACKEND:-threading}" \
-      ${OVERWRITE_FLAG[@]+"${OVERWRITE_FLAG[@]}"} \
-      || echo "[error] row ${LINE_NUM} failed: scheme=${SCHEME}, event=${EVENT}, modality=all"
+      ${OVERWRITE_FLAG[@]+"${OVERWRITE_FLAG[@]}"}; then
+      echo "[error] row ${LINE_NUM} failed: scheme=${SCHEME}, event=${EVENT}, modality=all"
+      FAILED_ROWS=$((FAILED_ROWS + 1))
+    fi
   else
     for MODALITY in "${MODALITIES[@]}"; do
-      python -m pipelines.training.run_feature_comp_task \
+      if ! python -m pipelines.training.run_feature_comp_task \
         --scheme "$SCHEME" \
         --event "$EVENT" \
         --modality "$MODALITY" \
@@ -165,10 +169,16 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
         --n-jobs "${SLURM_CPUS_PER_TASK:-1}" \
         --max-iter "${COXNET_MAX_ITER:-5000}" \
         --backend "${COXNET_BACKEND:-threading}" \
-        ${OVERWRITE_FLAG[@]+"${OVERWRITE_FLAG[@]}"} \
-        || echo "[error] row ${LINE_NUM} failed: scheme=${SCHEME}, event=${EVENT}, modality=${MODALITY}"
+        ${OVERWRITE_FLAG[@]+"${OVERWRITE_FLAG[@]}"}; then
+        echo "[error] row ${LINE_NUM} failed: scheme=${SCHEME}, event=${EVENT}, modality=${MODALITY}"
+        FAILED_ROWS=$((FAILED_ROWS + 1))
+      fi
     done
   fi
 done
 
 conda deactivate
+if [[ "$FAILED_ROWS" -gt 0 ]]; then
+  echo "$FAILED_ROWS modality run(s) failed"
+  exit 1
+fi

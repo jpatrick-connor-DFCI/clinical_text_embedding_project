@@ -28,6 +28,18 @@ MANIFEST_COLS = ['key', 'status', 'reason', 'n_train', 'n_held',
                  'l1', 'alpha', 'c_pan', 'c_within', 'delta_c', 'elapsed_s', 'ts']
 
 
+def dataframe_fingerprint(df, columns):
+    """Content hash for checkpoint inputs, including column order and row index."""
+    selected = list(dict.fromkeys(columns))
+    missing = [column for column in selected if column not in df.columns]
+    if missing:
+        raise ValueError(f"Cannot fingerprint missing columns: {missing}")
+    digest = hashlib.sha256()
+    digest.update("\0".join(selected).encode("utf-8"))
+    digest.update(pd.util.hash_pandas_object(df[selected], index=True).values.tobytes())
+    return digest.hexdigest()
+
+
 def _slug(key):
     """Stable, filesystem-safe id for a stratum name (hashlib, not the salted builtin hash)."""
     return hashlib.md5(str(key).encode('utf-8')).hexdigest()[:16]
@@ -119,6 +131,14 @@ class RunCheckpoint:
         """Return 'done' | 'skipped' | None for a stratum key."""
         row = self._manifest.get(key)
         return row['status'] if row else None
+
+    def stratum_done(self, key):
+        """True only when the manifest and both score files are complete."""
+        return (
+            self.status(key) == 'done'
+            and os.path.isfile(self._train_path(key))
+            and os.path.isfile(self._held_path(key))
+        )
 
     # ---- file paths ----------------------------------------------------------
     def _train_path(self, key):

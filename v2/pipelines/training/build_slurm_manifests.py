@@ -78,10 +78,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--min-events",
         type=int,
-        default=None,
+        default=MIN_EVENTS_FOR_CV,
         help=(
             "Minimum number of positive events required to include a task. "
-            f"Defaults to MIN_EVENTS_FOR_CV ({MIN_EVENTS_FOR_CV}) from slurm_array_utils."
+            f"Defaults to MIN_EVENTS_FOR_CV ({MIN_EVENTS_FOR_CV}) from slurm_array_utils; "
+            "use 0 to disable this filter."
         ),
     )
     return parser.parse_args()
@@ -107,7 +108,7 @@ def main() -> None:
         pred_df = load_embedding_prediction_df(scheme, args.anchor)
         events = get_events_from_df(pred_df)
         for event in events:
-            if args.min_events is not None and not _event_has_enough_cases(pred_df, event, args.min_events):
+            if args.min_events > 0 and not _event_has_enough_cases(pred_df, event, args.min_events):
                 too_few_events += 1
                 continue
             if args.skip_completed and _full_cohort_complete(scheme, event, args.anchor):
@@ -128,7 +129,7 @@ def main() -> None:
 
     print(f"[wrote] {full_fp} ({len(full_rows)} rows)")
     print(f"[wrote] {feature_fp} ({len(feature_rows)} rows)")
-    if args.min_events is not None:
+    if args.min_events > 0:
         print(f"[min-events] {too_few_events} events excluded (fewer than {args.min_events} positive cases)")
     if args.skip_completed:
         print(f"[skip-completed] full_cohort: {full_skipped} already done, {len(full_rows)} remaining")

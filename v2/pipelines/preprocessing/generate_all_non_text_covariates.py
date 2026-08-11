@@ -151,11 +151,32 @@ def build_germline_data_df(cohort_df: pl.DataFrame) -> pl.DataFrame:
         pl.col("cbio_sample_id").cast(pl.String),
     )
     cohort_idmap = idmap.filter(pl.col("DFCI_MRN").is_in(cohort_df.get_column("DFCI_MRN")))
-    return (
+    joined = (
         pl.read_csv(PRS_MATRIX_FILE, separator="\t")
         .rename({"IID": "cbio_sample_id"})
         .with_columns(pl.col("cbio_sample_id").cast(pl.String))
         .join(cohort_idmap, on="cbio_sample_id", how="inner")
+    )
+    pgs_cols = [column for column in joined.columns if "PGS" in column]
+    if not pgs_cols:
+        raise ValueError(f"No PGS columns found in {PRS_MATRIX_FILE}")
+
+    # Multiple PROFILE sample IDs may map to one patient. Patient-level PRS
+    # values must agree before collapsing those rows; otherwise a random row
+    # choice could hide an upstream identity error and duplicate a patient
+    # across model folds.
+    conflicts = joined.group_by("DFCI_MRN").agg(
+        [pl.col(column).drop_nulls().n_unique().alias(column) for column in pgs_cols]
+    ).filter(pl.max_horizontal(pgs_cols) > 1)
+    if conflicts.height:
+        raise ValueError(
+            f"PRS values disagree across sample IDs for {conflicts.height} patient(s)."
+        )
+
+    return (
+        joined.sort(["DFCI_MRN", "cbio_sample_id"])
+        .group_by("DFCI_MRN", maintain_order=True)
+        .agg(pl.all().first())
     )
 
 
@@ -273,7 +294,13 @@ def main() -> None:
     )
 
     complete_germline_data_df = build_germline_data_df(cohort_df)
-    assert_schema(complete_germline_data_df, "complete_germline_data_df", required_cols=["DFCI_MRN"], key_col=None)
+    assert_schema(
+        complete_germline_data_df,
+        "complete_germline_data_df",
+        required_cols=["DFCI_MRN"],
+        key_col="DFCI_MRN",
+        unique_key=True,
+    )
     complete_germline_data_df.write_csv(
         os.path.join(FEATURE_PATH, 'complete_germline_data_df.csv.gz'), compression="gzip"
     )

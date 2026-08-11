@@ -15,9 +15,10 @@
 set -euo pipefail
 
 PROJECT_ROOT="${PROJECT_ROOT:-/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project}"
-MANIFEST="${MANIFEST:-$PROJECT_ROOT/v2/slurm/slurm_manifests/full_cohort_tasks.tsv}"
-ROWS_PER_TASK="${ROWS_PER_TASK:-20}"
 ANCHOR="${ANCHOR:-treatment}"
+if [[ "$ANCHOR" == "treatment" ]]; then ANCHOR_SUFFIX=""; else ANCHOR_SUFFIX="__${ANCHOR}"; fi
+MANIFEST="${MANIFEST:-$PROJECT_ROOT/v2/slurm/slurm_manifests/full_cohort_tasks${ANCHOR_SUFFIX}.tsv}"
+ROWS_PER_TASK="${ROWS_PER_TASK:-20}"
 
 if [[ ! -f "$MANIFEST" ]]; then
     echo "Error: manifest not found: $MANIFEST"

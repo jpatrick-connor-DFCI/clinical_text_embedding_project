@@ -66,7 +66,7 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")
 os.environ.setdefault("RAYON_NUM_THREADS", str(TOKENIZER_THREADS))
 
 # stderr is not a tty when this module runs under subprocess.run from
-# run_preprocessing.ipynb, which disables every bar; FORCE_PROGRESS re-enables them.
+# 01_run_preprocessing.ipynb, which disables every bar; FORCE_PROGRESS re-enables them.
 SHOW_LIVE_PROGRESS = os.environ.get("FORCE_PROGRESS", "") == "1" or sys.stderr.isatty()
 TOKEN_FILE_PATTERN = re.compile(r"clinical_notes_tokenized_batch_(\d+)_tokens\.npy\.zst$")
 METADATA_FILE_PATTERN = re.compile(r"clinical_notes_tokenized_batch_(\d+)_metadata\.parquet$")

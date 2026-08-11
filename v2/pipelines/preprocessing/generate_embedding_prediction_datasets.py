@@ -373,7 +373,15 @@ def main() -> None:
         continuous_window=False,
         pool_fx={key: 'time_decay_mean' for key in NOTE_TYPES},
         decay_param=0.01,
-    ).dropna()
+    )
+    n_any_text = len(pooled_embedding_df)
+    pooled_embedding_df = pooled_embedding_df.dropna()
+    print(
+        "  Complete-case text cohort (Clinician + Imaging + Pathology): "
+        f"{len(pooled_embedding_df)}/{n_any_text} patients retained"
+    )
+    if pooled_embedding_df.empty:
+        raise ValueError("No patients have complete pre-anchor embeddings for all note types.")
 
     # =========================
     # SHARED DEATH + MET DATASET

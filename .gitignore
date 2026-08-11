@@ -24,3 +24,8 @@ dist/
 *.csv
 *.parquet
 data/
+
+# v2/data contains versioned code and the curated biomarker-validation table,
+# not generated project data.
+!v2/data/
+!v2/data/**

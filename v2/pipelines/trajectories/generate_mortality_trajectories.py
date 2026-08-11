@@ -48,7 +48,7 @@ def main() -> None:
     # Column groups
     embed_cols = [c for c in full_prediction_df.columns if 'EMBEDDING' in c or '2015' in c]
     continuous_vars = ['AGE_AT_TREATMENTSTART'] + embed_cols
-    type_cols = [c for c in full_prediction_df.columns if 'CANCER_TYPE' in c]
+    type_cols = [c for c in full_prediction_df.columns if c.startswith('CANCER_TYPE_')]
 
     ## Train the baseline cancer model
     _, embed_val_results, pan_cancer_model = run_grid_CoxPH_parallel(
@@ -74,6 +74,7 @@ def main() -> None:
                                                                       if mrn not in risk_scores['DFCI_MRN'].unique()}))
 
     prev_mrns = cohort_mrns
+    failed_landmarks = []
     for month_adj in tqdm(months_to_test):
         notes_meta_copy = notes_meta.loc[notes_meta['DFCI_MRN'].isin(prev_mrns)].copy()
         events_data_copy = events_data.loc[events_data['DFCI_MRN'].isin(prev_mrns)].copy()
@@ -92,10 +93,15 @@ def main() -> None:
                                                                                {mrn: np.nan for mrn in cohort_mrns if mrn not in risk_scores['DFCI_MRN'].unique()}))
             prev_mrns = risk_scores['DFCI_MRN'].unique()
 
-        except:
+        except Exception as exc:
+            print(f"Trajectory landmark {month_adj} months failed: {exc}")
+            failed_landmarks.append((month_adj, str(exc)))
             continue
 
     trajectory_predictions_df.to_csv(os.path.join(trajectory_path, f'survival_trajectories_w_decay_param_{decay_param}.csv'), index=False)
+    if failed_landmarks:
+        failed_months = ", ".join(str(month) for month, _ in failed_landmarks)
+        raise RuntimeError(f"Trajectory generation failed at month landmarks: {failed_months}")
 
 
 if __name__ == "__main__":

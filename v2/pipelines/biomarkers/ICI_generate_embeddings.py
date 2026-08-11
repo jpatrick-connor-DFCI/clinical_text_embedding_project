@@ -15,7 +15,7 @@ from tqdm import tqdm
 from config import DATA_PATH, MATCHED_COHORT_PATH
 from survival import generate_survival_embedding_df
 
-from biomarker_common import load_note_embeddings
+from pipelines.biomarkers.biomarker_common import load_note_embeddings
 
 # ============================================================
 # Configuration

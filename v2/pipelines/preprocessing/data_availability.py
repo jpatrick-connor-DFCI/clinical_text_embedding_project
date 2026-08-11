@@ -57,7 +57,7 @@ def _mrns_with_text(cohort_mrns: set[int]) -> set[int]:
     (one row per note), rather than a downstream *_embedding_prediction_df.parquet
     scheme output — those aren't built until after the embeddings pipeline runs, so
     depending on one would make this report's ordering depend on stages that run
-    much later (see run_preprocessing.ipynb)."""
+    much later (see 01_run_preprocessing.ipynb)."""
     metadata_fp = os.path.join(NOTES_PATH, "full_clinical_notes_embeddings_metadata.parquet")
     if not os.path.exists(metadata_fp):
         print(f"  missing {metadata_fp}")

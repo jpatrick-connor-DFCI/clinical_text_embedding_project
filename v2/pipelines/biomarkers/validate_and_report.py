@@ -11,8 +11,8 @@ import os
 
 from config import DATA_PATH
 
-from validate import load_or_bootstrap_findings_df, validate_findings
-from report import load_or_init_report_doc, update_report_document
+from pipelines.biomarkers.validate import load_or_bootstrap_findings_df, validate_findings
+from pipelines.biomarkers.report import load_or_init_report_doc, update_report_document
 
 # ============================================================
 # Paths

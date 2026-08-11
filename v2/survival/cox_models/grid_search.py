@@ -92,8 +92,11 @@ def run_grid_CoxPH_parallel(
     if n_dropped > 0:
         logger.info("run_grid_CoxPH_parallel: dropped %d/%d rows with invalid tstop/event", n_dropped, n_before)
 
-    all_cols = base_cols + penalized_cols
-    base_col_set = set(base_cols)
+    # Continuous variables may introduce additional unpenalized predictors
+    # (for example N_MET_SITES). A variable explicitly listed as penalized
+    # remains penalized even when it is also continuous.
+    all_cols = list(dict.fromkeys(base_cols + continuous_vars + penalized_cols))
+    base_col_set = set(base_cols) | (set(continuous_vars) - set(penalized_cols))
 
     # ---- X in RAM (float32); NaN in features is handled per-fold via _impute_train_test_np ----
     X_full = df[all_cols].to_numpy(dtype=np.float32, copy=False)

@@ -75,7 +75,7 @@ def main() -> None:
         "cohort_minus_cancer_type_n": len(cohort_mrns - cancer_type_mrns),
         "cancer_type_minus_cohort_n": len(cancer_type_mrns - cohort_mrns),
         "symmetric_difference_n": len(delta_mrns),
-        "all_five_modalities_n": len(all_thresholds),
+        "all_modalities_n": len(all_thresholds),
         "n_observed_combinations": len(combinations_df),
     }
     with open(summary_fp, "w") as f:

@@ -71,7 +71,7 @@ def main() -> None:
         reason = f"No rows with tt_{args.event} > 0"
         print(f"[skip-data] {args.scheme}:{args.event} — {reason}")
         _write_skip_report(args.scheme, args.event, "full_cohort", reason)
-        return
+        raise RuntimeError(reason)
 
     anchor_age_col = age_col(args.anchor)
     base_vars = ["GENDER", anchor_age_col]
@@ -85,7 +85,7 @@ def main() -> None:
         reason = str(e)
         print(f"[skip-data] {label} — {reason}")
         _write_skip_report(args.scheme, args.event, "full_cohort", reason)
-        return
+        raise RuntimeError(reason) from e
     type_cols = [c for c in type_cols if c not in dropped_cols]
     embed_cols = [c for c in embed_cols if c not in dropped_cols]
     all_feature_cols = [c for c in all_feature_cols if c not in dropped_cols]

@@ -1,0 +1,89 @@
+---
+title: "Render manuscript figures (R tier)"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+find_v2_root <- function() {
+  d <- normalizePath(getwd(), mustWork = TRUE)
+  while (nchar(d) > 1) {
+    if (file.exists(file.path(d, "config.py")) &&
+        dir.exists(file.path(d, "R"))) return(d)
+    parent <- dirname(d)
+    if (parent == d) break
+    d <- parent
+  }
+  stop("Could not find v2 root from ", getwd())
+}
+
+V2_ROOT <- find_v2_root()
+knitr::opts_knit$set(root.dir = V2_ROOT)
+```
+
+Runs the `R/plot_figure_*.R` scripts in this notebook's **R kernel**. Each
+script reads the CSVs written by the Python prep tier and builds every panel as a standalone
+ggplot object, saving each one individually (both PNG and PDF) — there is no composed
+multi-panel figure.
+
+All figures render scored by Harrell's **C-index** only (`MANUSCRIPT_METRIC="cindex"`, see
+`R/figure_utils.R::METRIC`) — mean time-dependent AUC(t) rendering is disabled.
+
+- **Prep tier**: [06_generate_figure_data.ipynb](06_generate_figure_data.ipynb) (Python kernel) — run first.
+- **One-time R package bootstrap** (any host with R):
+
+  ```
+  Rscript v2/R/install_packages.R
+  ```
+
+Each plot script is `sys.source()`-ed in its own environment so per-script ggplot objects
+(`p2a`, `p3b`, …) don't leak between cells. v2 R scripts always assume the working directory
+is `v2/` (they `source("R/figure_utils.R")` with a relative path), so this document sets the
+R working directory to the v2 root (via `knitr::opts_knit$set(root.dir = ...)`, which — unlike a
+bare `setwd()` in a chunk — persists across all chunks) before sourcing anything.
+
+```{r find-root}
+R_DIR <- file.path(V2_ROOT, "R")
+
+cat("v2 root:   ", V2_ROOT, "\n", sep = "")
+cat("R scripts: ", R_DIR, "\n", sep = "")
+cat("R version: ", R.version.string, "\n", sep = "")
+```
+
+```{r render-plots}
+PLOT_SCRIPTS <- c(
+  "plot_figure_0.R",
+  "plot_figure_1.R",
+  "plot_figure_2.R",
+  "plot_figure_2_supp.R",
+  "plot_figure_2_supp_events.R",
+  "plot_figure_2_supp_anchor.R",
+  "plot_figure_3.R",
+  "plot_figure_4.R",
+  "plot_figure_4_supp.R",
+  "plot_figure_5.R"
+)
+
+# MANUSCRIPT_METRIC pins every script to Harrell's C-index (see
+# R/figure_utils.R::METRIC) — mean AUC(t) rendering is disabled.
+Sys.setenv(MANUSCRIPT_METRIC = "cindex")
+
+run_plot <- function(script) {
+  cat("\n=== ", script, " ===\n", sep = "")
+  env <- new.env(parent = globalenv())
+  sys.source(file.path(R_DIR, script), envir = env)
+}
+
+for (s in PLOT_SCRIPTS) run_plot(s)
+
+Sys.unsetenv("MANUSCRIPT_METRIC")
+
+cat("\nDone.\n")
+cat("Panel PNGs: $CLINICAL_FIGURES_OUT/png/<figureN>/ (or /data/.../manuscript_figures/png/<figureN>/)\n")
+cat("Panel PDFs: $CLINICAL_FIGURES_OUT/pdf/<figureN>/ (or /data/.../manuscript_figures/pdf/<figureN>/)\n")
+```
+
+Render with:
+
+```
+Rscript -e 'rmarkdown::render("v2/notebooks/07_render_figures.Rmd")'
+```

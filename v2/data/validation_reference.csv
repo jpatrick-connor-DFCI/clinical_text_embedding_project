@@ -1,0 +1,172 @@
+gene,mutation_type,cancer_type,level,notes
+JAK2,_SNV,pan_cancer,Moderate,JAK2 mutations can impair IFN-gamma signaling and antigen presentation; validated ICI resistance mechanism (Zaretsky et al. NEJM 2016; Shin et al. Cancer Discov 2017)
+JAK2,_DEL,pan_cancer,Moderate,JAK2 loss impairs IFN-gamma signaling; established ICI resistance pathway (Zaretsky et al. NEJM 2016)
+JAK3,_SNV,,Indirect,"JAK3 primarily mediates IL-2/IL-4/IL-7/IL-15 signaling in lymphocytes; ICI-specific evidence is limited compared to JAK1/JAK2, but functionally linked to T-cell homeostasis"
+JAK3,_DEL,,Indirect,JAK3 loss may impair lymphocyte signaling; less directly implicated in ICI response than JAK1/JAK2
+SOCS1,_DEL,,Moderate,SOCS1 is a negative regulator of JAK-STAT signaling; SOCS1 loss-of-function mutations associated with enhanced IFN-gamma sensitivity and ICI response (Gutiontov et al. Cancer Discov 2021)
+SOCS1,_SNV,,Moderate,SOCS1 truncating mutations enhance IFN-gamma signaling and are associated with ICI benefit in multiple cancer types (Gutiontov et al. Cancer Discov 2021)
+CIITA,_DEL,,Moderate,"CIITA is the master regulator of MHC class II expression; loss disrupts antigen presentation to CD4+ T cells, a key ICI efficacy mechanism (Rodig et al. Nat Med 2018)"
+CIITA,_SNV,,Moderate,CIITA mutations impair MHC-II-mediated antigen presentation; linked to immune evasion and reduced ICI response in multiple tumor types
+CSF1R,_SNV,pan_cancer,Moderate,CSF1R drives TAM polarization; CSF1R inhibitors are in clinical ICI combination trials. Mutations may alter TAM signaling and ICI response (Ries et al. Cancer Cell 2014)
+CSF1R,_DEL,,Indirect,CSF1R deletion could reduce TAM recruitment; CSF1R is an active ICI combination target but deletion-specific ICI evidence is limited
+BRCA1,_SNV,,Moderate,"BRCA1 mutations impair homologous recombination repair, increasing TMB and neoantigen load; associated with ICI benefit in breast (IMpassion130), ovarian, and pan-cancer studies (Samstein et al. Nat Genet 2019; Teo et al. JCO 2018)"
+BRCA1,_DEL,,Moderate,BRCA1 loss-of-function impairs HR repair; associated with elevated TMB and ICI response (Samstein et al. Nat Genet 2019)
+BRIP1,_SNV,,Indirect,BRIP1 (FANCJ) participates in HR/Fanconi anemia repair; mutations may increase TMB but direct ICI evidence is limited
+BRIP1,_DEL,,Indirect,BRIP1 loss impairs DNA repair; indirect ICI relevance via potential TMB increase
+BARD1,_SNV,,Indirect,"BARD1 partners with BRCA1 in HR repair; mutations may increase genomic instability and neoantigen load, but direct ICI-specific evidence is sparse"
+BARD1,_DEL,,Indirect,"BARD1 deletion impairs BRCA1-dependent DNA repair; potential ICI relevance via TMB, but no direct clinical validation"
+PALB2,_SNV,,Moderate,PALB2 mutations impair HR repair and are associated with elevated TMB; included in DDR biomarker panels for ICI prediction (Teo et al. JCO 2018)
+PALB2,_DEL,,Indirect,PALB2 deletion impairs BRCA2-dependent HR repair; DDR-ICI connection established but deletion-specific data is limited
+RAD51D,_SNV,,Indirect,RAD51D participates in HR repair; mutations may increase TMB but ICI-specific clinical evidence is limited
+RAD51D,_DEL,,Indirect,RAD51D loss impairs HR; indirect ICI relevance via genomic instability pathway
+FANCA,_SNV,,Indirect,"Fanconi anemia pathway gene; mutations increase genomic instability and potentially TMB, but direct ICI evidence is limited"
+FANCA,_DEL,,Indirect,FANCA loss impairs interstrand crosslink repair; indirect ICI relevance via genomic instability
+FANCF,_SNV,,Indirect,FANCF participates in Fanconi anemia DNA repair; loss may increase TMB but direct ICI data is sparse
+FANCF,_DEL,,Indirect,FANCF deletion impairs FA pathway; indirect ICI relevance through DNA repair deficiency
+FANCI,_SNV,,Indirect,FANCI is part of the Fanconi anemia repair pathway; mutations may modestly increase TMB
+FANCI,_DEL,,Indirect,FANCI loss impairs FA pathway repair; indirect ICI relevance via genomic instability
+FANCG,_DEL,,Indirect,"FANCG participates in FA-mediated DNA repair; deletion may increase genomic instability and TMB, but direct ICI evidence is absent"
+EME1,_SNV,,Indirect,EME1 resolves Holliday junctions in HR repair; mutations may increase genomic instability
+GEN1,_SNV,,Indirect,GEN1 resolves Holliday junctions; mutations may contribute to genomic instability but no direct ICI association reported
+HELQ,_SNV,,Indirect,HELQ helicase involved in DNA repair and replication fork stability; indirect ICI relevance through DDR pathway
+WRN,_SNV,,Weak,"WRN helicase deficiency causes microsatellite instability in MSI-H cancers; WRN is a synthetic lethal target in MSI-H tumors (Chan et al. Nat Med 2019), and MSI-H is a strong ICI biomarker, but WRN SNV-ICI link is indirect"
+WRN,_DEL,,Weak,WRN loss is synthetically lethal in MSI-H tumors; indirect connection to ICI via MSI-H phenotype (Chan et al. Nat Med 2019)
+XRCC4,_SNV,,Indirect,XRCC4 mediates non-homologous end joining; mutations may increase genomic instability but no direct ICI evidence
+XRCC5,_SNV,,Indirect,"XRCC5 (Ku80) is essential for NHEJ; loss increases DSBs and potentially TMB, but ICI-specific evidence is limited"
+BABAM1,_DEL,,Indirect,BABAM1 is part of the BRCA1-A complex involved in DNA damage response; loss may impair HR repair and increase genomic instability
+NEIL1,_DEL,,Indirect,NEIL1 is a base excision repair glycosylase; deletion may increase mutagenesis but direct ICI evidence is absent
+NEIL3,_AMP,,Weak,NEIL3 is a DNA glycosylase involved in base excision repair; amplification is functionally ambiguous and not established as an ICI biomarker
+NEIL3,_DEL,,Indirect,NEIL3 loss may impair BER; indirect ICI relevance via DNA repair deficiency
+PAXIP1,_SNV,,Indirect,PAXIP1 (PTIP) participates in HR repair and chromatin remodeling; mutations may impair DNA repair but direct ICI evidence is limited
+DIS3L2,_SNV,,Weak,DIS3L2 is an RNA exonuclease involved in RNA surveillance; not established as a DNA repair gene or ICI biomarker
+CDK12,_SNV,,Moderate,CDK12 loss-of-function causes tandem duplicator phenotype and neoantigen generation; CDK12-mutant prostate and ovarian cancers show ICI response (Wu et al. Cell 2018; Antonarakis et al. JCO 2020)
+CDK12,_DEL,,Moderate,CDK12 biallelic loss drives genomic instability and neoantigen production; emerging ICI biomarker in prostate and other cancers (Wu et al. Cell 2018)
+ARID2,_SNV,,Moderate,ARID2 is a SWI/SNF subunit; ARID2 mutations sensitize to ICI in melanoma and pan-cancer via chromatin remodeling effects on IFN signaling (Pan et al. Science 2018; Miao et al. Nat Genet 2018)
+ARID2,_DEL,,Indirect,ARID2 deletion disrupts SWI/SNF chromatin remodeling; ICI relevance established for SNV but deletion-specific data is limited
+EZH2,_SNV,,Moderate,EZH2 gain-of-function silences tumor suppressor genes and modulates TME; EZH2 inhibition enhances anti-tumor immunity (Zingg et al. Nat Commun 2017). EZH2 mutations may alter ICI response through epigenetic reprogramming
+SMARCA4,_SNV,BREAST,Weak,SMARCA4 mutations are established ICI-relevant biomarkers in NSCLC; breast-specific ICI evidence is limited but SWI/SNF pathway is functionally linked to immune regulation
+SMARCA4,_DEL,BREAST,Weak,SMARCA4 loss established as prognostic in NSCLC-ICI context; breast-specific evidence is limited
+SMARCE1,_SNV,,Indirect,SMARCE1 is a SWI/SNF core subunit; mutations disrupt chromatin remodeling but ICI-specific evidence is lacking
+SMARCB1,_DEL,,Moderate,SMARCB1 (INI1) loss defines rhabdoid tumors and is associated with immune-hot TME; ICI responses reported in SMARCB1-deficient tumors (Leruste et al. Nat Commun 2019)
+KAT6B,_SNV,,Indirect,KAT6B is a histone acetyltransferase; epigenetic regulation may modulate TME but no direct ICI evidence exists
+KAT6B,_DEL,,Indirect,KAT6B deletion may alter histone acetylation patterns; indirect ICI relevance through epigenetic immune modulation
+SUZ12,_DEL,,Indirect,"SUZ12 is a PRC2 subunit; loss derepresses gene expression and may modulate TME, but direct ICI data is limited"
+H3F3B,_SNV,,Weak,"Histone H3.3 variant; H3.3 mutations (e.g., K27M) are oncogenic drivers in pediatric gliomas but ICI-specific biomarker evidence is limited"
+MED12,_SNV,,Weak,MED12 is a Mediator complex subunit; mutations reported in uterine leiomyomas and some cancers but not established as ICI biomarker
+STAG1,_DEL,,Indirect,"STAG1 is a cohesin subunit; loss may cause chromosomal instability and increase TMB, with indirect ICI relevance"
+STAG2,_SNV,,Weak,STAG2 cohesin mutations cause aneuploidy; associated with response to ICI in bladder cancer (Taylor-Weiner et al. Cancer Cell 2021) but breast-specific data is limited
+SMC3,_SNV,,Indirect,SMC3 is a cohesin complex subunit; mutations may cause chromosomal instability but ICI-specific evidence is absent
+TET1,_SNV,,Moderate,TET1 loss-of-function associated with DNA hypermethylation and immune evasion; TET1 mutations linked to ICI response through TMB enrichment (Wu et al. Genome Med 2019)
+TET1,_DEL,,Weak,"TET1 deletion may promote DNA hypermethylation; ICI relevance primarily established for SNVs (Wu et al. Genome Med 2019), deletion-specific data limited"
+TET2,_SNV,,Moderate,TET2 mutations enhance anti-tumor immunity in preclinical models; TET2-mutant T cells show improved persistence. Pan-cancer ICI association emerging (Fraietta et al. Nature 2018)
+TET2,_DEL,,Indirect,TET2 deletion alters epigenetic regulation; ICI relevance primarily reported for SNV/loss-of-function (Fraietta et al. Nature 2018)
+SS18,_SV,,Indirect,SS18 rearrangement defines synovial sarcoma; SS18-SSX drives immune-cold phenotype. ICI responses in synovial sarcoma are rare (D'Angelo et al. Lancet Oncol 2018)
+EGFR,_AMP,BRAIN,Partial,EGFR amplification defines a major GBM subtype; ICI trials in GBM (CheckMate 143) have been largely negative. EGFR-driven tumors tend to be immune-cold (Reardon et al. JAMA Oncol 2020)
+EGFR,_SNV,pan_cancer,Partial,EGFR mutations associated with ICI resistance in NSCLC (Lee et al. JTO 2017); pan-cancer generalization of EGFR-ICI resistance is less established outside NSCLC
+BRAF,_SNV,BREAST,Weak,BRAF mutations are rare in breast cancer; ICI relevance primarily established in melanoma and NSCLC. Breast-specific BRAF-ICI data is absent
+PTEN,_SNV,BREAST,Moderate,PTEN loss associated with ICI resistance in melanoma (Peng et al. Cancer Discov 2016); PTEN loss in breast cancer promotes immunosuppressive TME and may reduce ICI efficacy
+PTEN,_DEL,BREAST,Moderate,PTEN deletion drives PI3K activation and immunosuppressive TME; linked to ICI resistance in melanoma with emerging evidence in breast (Peng et al. Cancer Discov 2016)
+APC,_SNV,,Weak,APC loss activates Wnt signaling and promotes immune-excluded TME; limited direct ICI biomarker evidence outside colorectal cancer
+FBXW7,_SNV,,Weak,FBXW7 mutations may alter Notch/MYC signaling and immune microenvironment; pan-cancer ICI association suggested (Miao et al. Nat Genet 2018) but not robustly validated
+FBXW7,_DEL,,Indirect,FBXW7 deletion disrupts protein degradation pathways; indirect ICI relevance through potential effects on PD-L1 stability and immune regulation
+RB1,_SNV,BREAST,Weak,RB1 loss associated with high proliferation and immune infiltration in some contexts; breast-specific ICI evidence is limited (Iyer et al. Cell 2017 — bladder context)
+PIK3R1,_SNV,,Weak,PIK3R1 is a PI3K regulatory subunit; mutations activate PI3K signaling but ICI-specific biomarker evidence is limited
+PIK3R1,_DEL,,Weak,PIK3R1 deletion activates PI3K pathway; may contribute to immunosuppressive TME but direct ICI evidence is sparse
+AKT2,_AMP,,Indirect,AKT2 amplification activates PI3K-AKT-mTOR signaling; pathway implicated in ICI resistance but AKT2-specific ICI evidence is limited
+ERBB2,_AMP,BREAST,Moderate,HER2 amplification in breast cancer is associated with distinct immune phenotype; ICI benefit in HER2+ breast cancer shown in KEYNOTE-811 (Janjigian et al. Nature 2021). Trastuzumab+ICI combinations are FDA-approved
+ERBB3,_SNV,,Weak,ERBB3 mutations activate HER signaling; ICI-specific evidence is limited compared to ERBB2/EGFR
+ESR1,_AMP,pan_cancer,Moderate,ESR1 amplification associated with hormone-driven tumors and potentially immune-cold TME; ESR1-ICI interaction is biologically plausible via estrogen-mediated immune suppression
+AR,_SNV,,Weak,Androgen receptor mutations alter hormonal signaling; AR-ICI crosstalk explored in prostate cancer (Graff et al. Oncologist 2016) but evidence in other contexts is limited
+AR,_AMP,,Weak,AR amplification primarily relevant in prostate cancer; ICI evidence in AR-amplified tumors is limited and context-dependent
+CCNE1,_AMP,,Weak,Cyclin E1 amplification drives replication stress and genomic instability; may increase TMB but ICI-specific biomarker evidence is limited
+MTAP,_DEL,,Moderate,MTAP deletion is common in cancers with CDKN2A co-deletion; MTAP loss alters methionine metabolism and TME. Emerging ICI-relevant biomarker (Sanderson et al. Cancer Discov 2019; Fang et al. Cell 2023)
+MAP2K2,_SNV,,Indirect,MAP2K2 (MEK2) mutations activate MAPK signaling; MEK-ICI combinations explored clinically but MAP2K2 SNV as standalone ICI biomarker is not established
+MAP2K1,_SNV,,Indirect,MAP2K1 (MEK1) mutations activate MAPK pathway; MEK inhibitor-ICI combinations in trials but MAP2K1 mutation as ICI biomarker not validated
+MAPK1,_AMP,,Indirect,MAPK1 (ERK2) amplification activates MAPK signaling; indirect ICI relevance through proliferation and TME modulation
+RHEB,_AMP,,Indirect,RHEB activates mTOR signaling; pathway implicated in ICI resistance but RHEB-specific ICI evidence is absent
+RASA1,_SNV,,Indirect,RASA1 is a RAS GAP; loss-of-function activates RAS signaling. RAS pathway activation modulates TME but RASA1-ICI evidence is limited
+FAS,_SNV,,Moderate,FAS (CD95) mediates T-cell-induced apoptosis of tumor cells; FAS loss is an immune evasion mechanism allowing tumors to resist cytotoxic T cells (Takahashi et al. J Immunol 2006; Zhu et al. Nat Commun 2019)
+FAS,_DEL,,Moderate,FAS deletion enables tumor immune evasion by preventing T-cell-mediated killing; established immune evasion mechanism (Zhu et al. Nat Commun 2019)
+FLT1,_SNV,,Indirect,FLT1 (VEGFR1) modulates angiogenesis and immune cell trafficking; VEGF-ICI combinations are FDA-approved but FLT1 SNV as biomarker is not established
+FLT3,_SNV,,Weak,FLT3 primarily relevant in AML; limited ICI biomarker evidence in solid tumors
+FLT3,_AMP,,Weak,FLT3 amplification primarily characterized in AML; solid tumor ICI relevance not established
+PDGFRB,_SNV,,Indirect,PDGFRB modulates stromal/vascular signaling; indirect ICI relevance through TME but not established as ICI biomarker
+FGFR2,_SNV,,Weak,FGFR alterations associated with non-inflamed TME in bladder cancer; breast-specific FGFR2-ICI evidence is limited
+AXL,_SNV,,Moderate,AXL is a TAM receptor kinase driving epithelial-mesenchymal transition and immune evasion; AXL-high tumors associated with ICI resistance (Hugo et al. Cell 2016; Aguilera et al. Cancer Res 2016)
+ROS1,_FUSION,BRAIN,Partial,ROS1 fusions are established oncogenic drivers in NSCLC; brain-specific ICI evidence is limited. ROS1-rearranged NSCLC shows poor ICI response (Mazieres et al. Ann Oncol 2019)
+NTRK3,_SV,,Weak,NTRK fusions are targetable drivers; ICI response in NTRK-fusion cancers not well characterized
+MET,_AMP,,Moderate,MET amplification associated with ICI resistance in NSCLC (Sabari et al. Clin Cancer Res 2018); pan-cancer evidence emerging for MET-ICI interaction
+ITK,_DEL,,Indirect,"ITK is a T-cell kinase essential for TCR signaling; ITK loss may impair T-cell function and ICI efficacy, but direct clinical evidence is absent"
+AXIN2,_SNV,,Indirect,AXIN2 is a negative Wnt regulator; Wnt pathway activation promotes immune exclusion (Spranger et al. Nature 2015) but AXIN2-specific ICI data is absent
+RNF43,_SNV,,Indirect,RNF43 is a negative Wnt regulator; loss-of-function activates Wnt and may promote immune-excluded TME (Spranger et al. Nature 2015)
+SOX9,_SNV,,Indirect,SOX9 modulates Wnt signaling and stemness; indirect immune modulation but not established as ICI biomarker
+TCF7L2,_SNV,,Indirect,TCF7L2 is a Wnt effector; Wnt activation associated with immune exclusion (Spranger et al. Nature 2015) but TCF7L2-specific ICI evidence is absent
+SUFU,_SNV,,Indirect,SUFU is a Hedgehog pathway suppressor; Hedgehog signaling modulates TME but ICI-specific evidence is limited
+GLI1,_AMP,,Indirect,GLI1 amplification activates Hedgehog signaling; pathway modulates TME but GLI1-ICI biomarker evidence is absent
+BMPR1A,_SNV,,Indirect,BMPR1A mediates BMP/TGF-beta signaling; pathway modulates immune regulation but BMPR1A-specific ICI evidence is limited
+NOTCH3,_SNV,,Weak,NOTCH3 modulates T-cell differentiation and TME; NOTCH pathway mutations pan-cancer associated with ICI response but NOTCH3-specific evidence is weaker than NOTCH1 (Zhang et al. Front Immunol 2021)
+NOTCH3,_DEL,,Weak,NOTCH3 deletion may alter T-cell regulation; NOTCH pathway broadly linked to immune response but NOTCH3 deletion-specific ICI data is limited
+STAT3,_SNV,,Indirect,STAT3 is a key immune signaling transcription factor; STAT3 activation promotes immunosuppressive TME. Mutations may alter ICI response but direction depends on context
+GATA4,_SNV,,Weak,GATA4 is a developmental transcription factor; limited cancer immunology evidence. Not established as ICI biomarker
+KLF2,_DEL,,Indirect,KLF2 regulates T-cell quiescence and trafficking; loss may alter immune cell homing but direct ICI biomarker evidence is absent
+ETV4,_SV,,Weak,ETV4 is an ETS family transcription factor; oncogenic fusions known in prostate cancer but ICI-specific evidence is limited
+ERG,_SV,,Weak,ERG rearrangements primarily studied in prostate cancer; not established as ICI biomarker outside prostate context
+PAX5,_DEL,,Weak,"PAX5 is essential for B-cell development; deletion primarily relevant in B-ALL. Tumor-infiltrating B cells modulate ICI response, but PAX5 deletion as biomarker is not established"
+MEF2B,_SNV,,Weak,MEF2B mutations reported in lymphomas; limited solid tumor or ICI biomarker evidence
+RUNX1,_DEL,,Weak,RUNX1 is a key hematopoietic transcription factor; deletions primarily characterized in AML. Solid tumor ICI relevance is not established
+RUNX1,_SNV,,Weak,RUNX1 mutations primarily characterized in hematologic malignancies; solid tumor ICI biomarker evidence is limited
+TCF3,_DEL,,Weak,TCF3 (E2A) is a transcription factor primarily implicated in B-ALL; ICI-specific evidence in solid tumors is absent
+CD79B,_SNV,,Weak,CD79B is a B-cell receptor signaling component; mutations primarily in lymphoma. B-cell infiltration modulates ICI response but CD79B-specific solid tumor ICI evidence is absent
+CARD11,_SNV,,Weak,CARD11 mediates NF-kB signaling in lymphocytes; mutations primarily in lymphomas. Solid tumor ICI biomarker evidence is limited
+SH2D1A,_DEL,,Indirect,SH2D1A (SAP) is essential for NKT and CD8+ T-cell function; loss impairs anti-tumor immunity but direct ICI biomarker evidence is absent
+PRF1,_DEL,,Indirect,Perforin is essential for cytotoxic T-cell and NK-cell killing; PRF1 loss impairs anti-tumor immune responses relevant to ICI efficacy
+CDK5,_DEL,,Indirect,"CDK5 regulates PD-L1 expression in some tumor types (Dorand et al. Science 2016); CDK5 loss may upregulate PD-L1, potentially relevant to ICI sensitivity"
+CDK8,_SNV,,Indirect,CDK8 mediates Mediator kinase module activity; modulates Wnt and STAT signaling but ICI-specific evidence is limited
+PPM1D,_SNV,,Indirect,PPM1D (WIP1) negatively regulates p53 and DDR; mutations may modulate genomic instability and TMB but direct ICI evidence is limited
+TRIM37,_AMP,,Weak,TRIM37 amplification promotes tumorigenesis; not established as ICI biomarker
+SQSTM1,_DEL,,Indirect,SQSTM1 (p62) modulates autophagy and NF-kB signaling; autophagy influences antigen presentation and TME but SQSTM1-specific ICI evidence is absent
+USP28,_DEL,,Indirect,USP28 deubiquitinase stabilizes MYC and other oncoproteins; loss may alter proliferation and TME but ICI-specific evidence is absent
+PRKAR1A,_DEL,,Indirect,PRKAR1A regulates PKA signaling; PKA modulates T-cell function but PRKAR1A deletion as ICI biomarker is not established
+IDH2,_SNV,,Weak,IDH2 mutations produce 2-HG which modulates TME and T-cell function; studied in glioma and AML but breast-specific ICI evidence is limited (Bunse et al. Nat Med 2018)
+FLCN,_SNV,,Weak,"Folliculin loss activates TFE3/TFEB and is associated with renal cell carcinoma; ICI relevance primarily in RCC (ICI-responsive histology), pancreas-specific data absent"
+NPM1,_SNV,,Weak,NPM1 mutations primarily characterized in AML; limited ICI biomarker evidence in solid tumors
+CALR,_SNV,,Indirect,Calreticulin is essential for immunogenic cell death and MHC-I loading; CALR mutations (primarily in MPN) alter immune recognition. Solid tumor ICI biomarker evidence is limited but mechanism is immunologically relevant
+CALR,_DEL,,Indirect,Calreticulin loss may impair MHC-I-mediated antigen presentation and immunogenic cell death
+GNA11,_SNV,,Weak,GNA11 mutations are oncogenic drivers in uveal melanoma; ICI response in uveal melanoma is poor. Other cancer contexts have limited evidence
+PHOX2B,_SNV,,Weak,PHOX2B is a neuroblastoma susceptibility gene; limited ICI biomarker evidence in lung cancer
+GALNT12,_SNV,,Weak,GALNT12 is a glycosyltransferase implicated in colorectal cancer susceptibility; not established as ICI biomarker
+FAH,_SNV,,Weak,FAH catalyzes tyrosine degradation; germline loss causes tyrosinemia. Not established as cancer ICI biomarker
+TSHR,_SNV,,Weak,TSH receptor; primarily relevant to thyroid cancer. Not established as ICI biomarker in breast cancer
+KCNQ1,_SNV,,Weak,KCNQ1 is a potassium channel implicated in Beckwith-Wiedemann syndrome and colorectal cancer; ICI relevance not established
+KLLN,_SNV,,Weak,KLLN is a p53-regulated gene involved in apoptosis; limited cancer immunology evidence. Not established as ICI biomarker
+PRSS1,_SNV,,Weak,PRSS1 encodes trypsin; primarily associated with hereditary pancreatitis. Not established as ICI biomarker
+NT5C2,_DEL,,Weak,NT5C2 is a nucleotidase involved in purine metabolism; not established as cancer ICI biomarker
+HABP2,_SNV,,Weak,HABP2 is a hyaluronan binding protease; limited cancer genomics evidence and not established as ICI biomarker
+LMO2,_DEL,,Weak,LMO2 is a transcription factor in hematopoietic development; not established as ICI biomarker in solid tumors
+SLC34A2,_SV,,Weak,SLC34A2 is a sodium-phosphate transporter; SLC34A2-ROS1 fusions known in NSCLC but SLC34A2 itself is not an ICI biomarker
+INSIG1,_DEL,,Weak,INSIG1 regulates cholesterol/lipid metabolism; cholesterol pathway modulates T-cell function but INSIG1-specific ICI evidence is absent
+DEPDC5,_DEL,,Weak,DEPDC5 is a GATOR1 complex component regulating mTOR; mTOR modulates immunity but DEPDC5-specific ICI evidence is absent
+NPRL3,_DEL,,Weak,NPRL3 is a GATOR1 complex component; loss activates mTOR signaling. ICI-specific evidence is absent
+KCNIP1,_DEL,,Weak,KCNIP1 is a potassium channel interacting protein; no established cancer immunology or ICI biomarker evidence
+CRTC1,_SV,,Weak,CRTC1 is a transcriptional coactivator; CRTC1-MAML2 fusions define mucoepidermoid carcinoma but ICI biomarker evidence is limited
+CRTC2,_SV,,Weak,CRTC2 is a CREB coactivator involved in gluconeogenesis; cancer ICI relevance not established
+BCL2L1,_AMP,,Indirect,BCL2L1 (BCL-XL) amplification promotes anti-apoptotic signaling; may impair immune-mediated killing but direct ICI biomarker evidence is limited
+EPHA3,_SNV,,Weak,EPHA3 is an ephrin receptor; mutations reported in lung and colorectal cancer but ICI biomarker evidence is limited
+DOCK8,_DEL,,Indirect,DOCK8 is essential for immune cell migration and function; germline DOCK8 deficiency causes immunodeficiency. Somatic deletion may impair anti-tumor immunity but direct ICI data is absent
+MAP3K1,_SNV,,Weak,MAP3K1 mutations are common in luminal breast cancer; associated with low immune infiltration (Banerji et al. Nature 2012) but direct ICI biomarker evidence is limited
+MAX,_SNV,,Weak,MAX is a MYC binding partner; mutations may alter MYC signaling but ICI-specific evidence is absent
+RARA,_SV,,Weak,RARA rearrangements define APL; retinoic acid modulates immunity but RARA as ICI biomarker in solid tumors is not established
+PML,_DEL,,Indirect,"PML regulates p53, senescence, and IFN signaling; PML loss may impair IFN-mediated immune activation (Bernardi et al. Nat Rev Mol Cell Biol 2004)"
+RHOH,_DEL,,Indirect,RHOH is a hematopoietic-specific GTPase regulating TCR signaling; loss may impair T-cell function with indirect ICI relevance
+RHOT1,_DEL,,Weak,RHOT1 (MIRO1) regulates mitochondrial trafficking; not established as ICI biomarker
+MEN1,_DEL,,Weak,Menin regulates gene expression via MLL complex; MEN1 loss defines parathyroid/pancreatic NET but ICI-specific evidence is limited
+FAT1,_SNV,,Weak,FAT1 is a tumor suppressor modulating Wnt/Hippo signaling; mutations associated with immune infiltration in HNSCC (Martin et al. Cancer Immunol Res 2019) but brain-specific ICI evidence is limited
+ID4,_AMP,,Weak,ID4 is a helix-loop-helix transcription factor overexpressed in some cancers; not established as ICI biomarker
+TRAF7,_SNV,,Weak,TRAF7 is an E3 ubiquitin ligase involved in NF-kB signaling; mutations reported in meningioma but ICI biomarker evidence is limited
+SDHD,_DEL,SOFT_TISSUE,Weak,SDHD loss drives SDH-deficient tumors with distinct metabolic phenotype; limited ICI-specific evidence in soft tissue sarcoma
+BRD3,_DEL,,Indirect,BRD3 is a BET family bromodomain protein; BET inhibitors modulate PD-L1 and TME (Hogg et al. Nat Rev Drug Discov 2021) but BRD3 deletion-specific ICI data is limited
+BRD4,_DEL,,Indirect,BRD4 regulates PD-L1 transcription and immune gene expression; BET inhibitor-ICI combinations in clinical trials (Hogg et al. Nat Rev Drug Discov 2021)
+RARA,_DEL,,Weak,RARA deletion may alter retinoid signaling; not established as ICI biomarker
+HNF1A,_DEL,,Weak,HNF1A is a hepatocyte transcription factor; not established as ICI biomarker
+YAP1,_AMP,,Indirect,YAP1 activates Hippo pathway effector signaling; YAP activation promotes immune evasion and resistance to anti-PD-1 therapy (Miao et al. Nat Genet 2018; Lee et al. Cell 2020)
+YAP1,_DEL,,Indirect,YAP1 loss may paradoxically alter Hippo signaling and TME; Hippo pathway linked to ICI response but YAP1 deletion-specific data is limited

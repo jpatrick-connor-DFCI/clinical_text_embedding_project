@@ -30,7 +30,7 @@ from tqdm import tqdm
 
 from config import BIOMARKER_PATH
 
-from biomarker_common import get_mutation_type
+from pipelines.biomarkers.biomarker_common import get_mutation_type
 
 logger = logging.getLogger(__name__)
 

@@ -29,6 +29,8 @@ dependencies:
   - seaborn
   - scikit-survival
   - lifelines
+  - statsmodels
+  - python-docx
   - tslearn
   - matplotlib-venn
   - polars
@@ -37,3 +39,4 @@ dependencies:
   - xgboost
   - orjson
   - ijson
+  - pytest

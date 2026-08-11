@@ -29,6 +29,63 @@ from ._common import (
 logger = logging.getLogger(__name__)
 
 
+def fit_predict_external_CoxPH(
+    train_df: pd.DataFrame,
+    eval_df: pd.DataFrame,
+    base_cols: list[str],
+    continuous_vars: list[str],
+    penalized_cols: list[str],
+    *,
+    event_col: str,
+    tstop_col: str,
+    l1_ratio: float,
+    alpha: float,
+    max_iter: int = 10000,
+    pca_config: dict[str, tuple[list[str], int]] | None = None,
+    pca_iterated_power: int = 1,
+) -> np.ndarray:
+    """Fit on ``train_df`` and score an external frame with identical preprocessing.
+
+    Unlike returning the bare Coxnet estimator from grid search, this function
+    applies training-only imputation, PCA, and scaling to ``eval_df`` before
+    prediction, preventing a transformed/raw feature mismatch.
+    """
+    pca_config = pca_config or {}
+    all_cols = list(dict.fromkeys(base_cols + continuous_vars + penalized_cols))
+    base_col_set = set(base_cols) | (set(continuous_vars) - set(penalized_cols))
+    missing_train = [c for c in all_cols + [event_col, tstop_col] if c not in train_df]
+    missing_eval = [c for c in all_cols if c not in eval_df]
+    if missing_train or missing_eval:
+        raise ValueError(
+            f"Missing external-score columns: train={missing_train}, eval={missing_eval}"
+        )
+
+    valid = train_df[tstop_col].notna() & (train_df[tstop_col] > 0) & train_df[event_col].notna()
+    train = train_df.loc[valid]
+    X_tr = train[all_cols].to_numpy(dtype=np.float32, copy=True)
+    X_ev = eval_df[all_cols].to_numpy(dtype=np.float32, copy=True)
+    y_tr = _make_surv_array(train[event_col].to_numpy(), train[tstop_col].to_numpy())
+    X_tr, X_ev = _impute_train_test_np(X_tr, X_ev)
+    colnames = list(all_cols)
+    for group_name, (cols, k) in pca_config.items():
+        X_tr, X_ev, colnames, _ = apply_group_pca_np(
+            X_tr, X_ev, colnames, cols, group_name, k,
+            random_state=1234, iterated_power=pca_iterated_power,
+        )
+    X_tr, X_ev = _scale_continuous_train_test_np(
+        X_tr, X_ev, colnames, continuous_vars
+    )
+    penalty = np.fromiter(
+        (0.0 if c in base_col_set else 1.0 for c in colnames), dtype=np.float32
+    )
+    model = CoxnetSurvivalAnalysis(
+        alphas=[alpha], l1_ratio=l1_ratio, max_iter=max_iter,
+        fit_baseline_model=True, penalty_factor=penalty,
+    )
+    model.fit(X_tr, y_tr)
+    return np.asarray(model.predict(X_ev), dtype=np.float64)
+
+
 def get_heldout_risk_scores_CoxPH(
     df: pd.DataFrame,
     base_cols: list[str],
@@ -74,8 +131,8 @@ def get_heldout_risk_scores_CoxPH(
     if n_dropped > 0:
         logger.info("get_heldout_risk_scores: dropped %d/%d rows with invalid tstop/event", n_dropped, n_before)
 
-    all_cols = base_cols + penalized_cols
-    base_col_set = set(base_cols)
+    all_cols = list(dict.fromkeys(base_cols + continuous_vars + penalized_cols))
+    base_col_set = set(base_cols) | (set(continuous_vars) - set(penalized_cols))
 
     # ---- X in RAM (float32); NaN in features handled per-fold via _impute_train_test_np ----
     X = df[all_cols].to_numpy(dtype=np.float32, copy=False)

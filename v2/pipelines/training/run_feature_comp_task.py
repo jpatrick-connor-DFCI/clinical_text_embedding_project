@@ -90,7 +90,7 @@ def _run_one_modality(
         reason = f"No rows with tt_{args.event} > 0"
         print(f"[skip-data] {args.scheme}:{args.event}:{modality} — {reason}")
         _write_skip_report(args.scheme, args.event, f"feature_comps_{modality}", reason)
-        return
+        raise RuntimeError(reason)
 
     base_vars = ["GENDER", age_col(args.anchor)]
     type_cols = type_cols_base
@@ -123,7 +123,7 @@ def _run_one_modality(
         reason = str(e)
         print(f"[skip-data] {label} — {reason}")
         _write_skip_report(args.scheme, args.event, f"feature_comps_{modality}", reason)
-        return
+        raise RuntimeError(reason) from e
     type_cols = [c for c in type_cols if c not in dropped_cols]
     cfg["continuous_vars"] = [c for c in cfg["continuous_vars"] if c not in dropped_cols]
     cfg["penalized_cols"] = [c for c in cfg["penalized_cols"] if c not in dropped_cols]
@@ -207,11 +207,16 @@ def main() -> None:
         )
 
     if args.modality == "all":
+        failures = []
         for modality in ALL_MODALITIES:
             try:
                 _run_one_modality(args, modality, full_prediction_df, type_cols, modality_cfg)
             except Exception as e:
                 print(f"[error] {args.scheme}:{args.event}:{modality} failed: {e}")
+                failures.append((modality, str(e)))
+        if failures:
+            failed_names = ", ".join(modality for modality, _ in failures)
+            raise RuntimeError(f"Failed modalities: {failed_names}")
     else:
         _run_one_modality(args, args.modality, full_prediction_df, type_cols, modality_cfg)
 

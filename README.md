@@ -32,7 +32,16 @@ and the phase-by-phase migration record.
 
 - Reproducing or extending the manuscript figures: `v2/figures/prep/figure0.py` … `figure5.py`,
   rendered via the R scripts in `v2/R/`. `v2/notebooks/` has thin driver notebooks for both steps.
-- Understanding the pipeline DAG: `REFACTOR_PLAN.md`'s Context section traces raw data through to
-  the figures.
+- Understanding the pipeline DAG: `REFACTOR_PLAN.md` traces raw data through to the figures.
 - Digging into what changed during the refactor: `REFACTOR_PLAN.md`'s phase-by-phase plan, or
   diff a `v2/` file against its `v1/` counterpart directly.
+
+## Configuration and validation
+
+Set `CTEP_DATA_PATH` to override the project data root and `PROFILE_DATA_PATH`
+to override compiled PROFILE inputs. Create the environment with
+`conda env create -f environment.yml`; run checks with `python -m pytest`.
+
+Prediction-dataset generation uses patients with all three pre-anchor note
+modalities (Clinician, Imaging, and Pathology). The stage reports the resulting
+complete-case cohort size.
