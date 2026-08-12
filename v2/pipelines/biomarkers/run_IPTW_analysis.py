@@ -206,7 +206,8 @@ def _fdr_within_mutation_type(results_df, p_col, fdr_col, sig_col):
 # =============================================
 
 TRACK2_RESULT_COLS = [
-    'marker', 'beta_markerxICI', 'HR_markerxICI', 'p_markerxICI',
+    'marker', 'beta_markerxICI', 'HR_markerxICI',
+    'CI95_markerxICI_low', 'CI95_markerxICI_high', 'p_markerxICI',
     'beta_marker_ICI', 'HR_marker_ICI', 'CI95_marker_ICI_low',
     'CI95_marker_ICI_high', 'p_marker_ICI',
     'beta_marker_nonICI', 'HR_marker_nonICI', 'CI95_marker_nonICI_low',
@@ -245,6 +246,7 @@ def _fit_track2_marker(df, marker, base_vars, weights_col):
     beta_mx = float(b[mx])
     se_mx = float(np.sqrt(V.loc[mx, mx]))
     p_mx = float(summ.loc[summ['covariate'] == mx, 'p'].values[0])
+    ci_mx = (np.exp(beta_mx - 1.96 * se_mx), np.exp(beta_mx + 1.96 * se_mx))
 
     hr_nonici = np.exp(beta_m)
     ci_nonici = (np.exp(beta_m - 1.96 * se_m), np.exp(beta_m + 1.96 * se_m))
@@ -263,7 +265,9 @@ def _fit_track2_marker(df, marker, base_vars, weights_col):
 
     result = {
         "marker": marker,
-        "beta_markerxICI": beta_mx, "HR_markerxICI": np.exp(beta_mx), "p_markerxICI": p_mx,
+        "beta_markerxICI": beta_mx, "HR_markerxICI": np.exp(beta_mx),
+        "CI95_markerxICI_low": ci_mx[0], "CI95_markerxICI_high": ci_mx[1],
+        "p_markerxICI": p_mx,
         "beta_marker_ICI": beta_ici, "HR_marker_ICI": hr_ici,
         "CI95_marker_ICI_low": ci_ici[0], "CI95_marker_ICI_high": ci_ici[1], "p_marker_ICI": p_ici,
         "beta_marker_nonICI": beta_m, "HR_marker_nonICI": hr_nonici,

@@ -1,10 +1,11 @@
 {
-  "MODALITY_ORDER": ["stage", "treatment", "somatic", "prs", "text"],
+  "MODALITY_ORDER": ["stage", "treatment", "somatic", "prs", "metburden", "text"],
   "MODALITY_COLORS": {
     "stage": "#8C8C8C",
     "treatment": "#E8B72E",
     "somatic": "#60BD68",
     "prs": "#B276B2",
+    "metburden": "#1F77B4",
     "text": "#D62728"
   },
   "MODALITY_DISPLAY": {
@@ -12,6 +13,7 @@
     "treatment": "Treatment",
     "somatic": "Somatic",
     "prs": "PRS",
+    "metburden": "Met. Burden",
     "text": "Text"
   },
   "MODEL_COLORS": {

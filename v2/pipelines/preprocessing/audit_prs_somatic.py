@@ -1,11 +1,13 @@
 """Report-only audit of the PRS (germline) and somatic per-patient collapse.
 
-Both `build_germline_data_df` and `build_somatic_data_df`
-(`generate_all_non_text_covariates.py`) collapse multiple sample-level rows to one row per
-patient via a `group_by("DFCI_MRN").agg(pl.all().first())` pattern. This script re-derives
-the same intermediate frames and checks that the collapse is *correct*, not merely
-non-crashing -- duplicate MRNs, patients with disagreeing per-sample values, selection-rule
-edge cases, and cohort-coverage impact.
+`build_somatic_data_df` (`generate_all_non_text_covariates.py`) collapses multiple
+sample-level rows to one row per patient via `group_by("DFCI_MRN").agg(pl.all().first())`.
+`build_germline_data_df` collapses the same way for non-PGS columns, but averages PGS score
+columns across a patient's samples rather than taking one sample's raw values (nulls
+excluded from the mean) -- disagreeing samples are no longer a hard error. This script
+re-derives the same intermediate frames and checks that both collapses are *correct*, not
+merely non-crashing -- duplicate MRNs, patients with disagreeing per-sample values,
+selection-rule edge cases, and cohort-coverage impact.
 
 Read-only: makes zero writes and changes no pipeline behavior. Findings are printed, not
 acted on -- fixes for anything found here are a separate, deliberate follow-up.
@@ -94,43 +96,34 @@ def audit_prs(cohort_df: pl.DataFrame) -> None:
         for row in dist.iter_rows(named=True):
             print(f"    {row['n_samples']} samples: {row['len']} patients")
 
-    # --- Conflict check: which patients/traits disagree, not just IF any do ---
-    conflicts = joined.group_by("DFCI_MRN").agg(
+    # --- Disagreement check: which patients/traits disagree across samples ---
+    # build_germline_data_df no longer raises on this -- it averages each PGS column across
+    # a patient's samples (nulls excluded from the mean). This is now purely informational:
+    # how many patients' final PGS values are actually an average of >1 distinct value,
+    # rather than a single sample's raw score.
+    disagreements = joined.group_by("DFCI_MRN").agg(
         [pl.col(c).drop_nulls().n_unique().alias(c) for c in pgs_cols]
     ).filter(pl.max_horizontal(pgs_cols) > 1)
-    print(f"\nConflict check (pl.col(c).drop_nulls().n_unique() > 1 for any PGS column): {conflicts.height} patient(s) flagged.")
-    if conflicts.height:
-        for row in conflicts.iter_rows(named=True):
+    print(
+        f"\nDisagreement check (pl.col(c).drop_nulls().n_unique() > 1 for any PGS column): "
+        f"{disagreements.height} patient(s) have >=1 PGS trait averaged across disagreeing samples."
+    )
+    if disagreements.height:
+        for row in disagreements.iter_rows(named=True):
             bad_traits = [c for c in pgs_cols if row[c] > 1]
-            print(f"  DFCI_MRN={row['DFCI_MRN']}: disagreeing trait(s) = {bad_traits}")
+            print(f"  DFCI_MRN={row['DFCI_MRN']}: averaged trait(s) = {bad_traits}")
 
-    # --- The asymmetry: conflict check uses drop_nulls(), collapse has no null preference ---
+    # --- Confirm the averaging collapse matches build_germline_data_df exactly ---
+    other_cols = [c for c in joined.columns if c not in pgs_cols and c != "DFCI_MRN"]
     collapsed = (
         joined.sort(["DFCI_MRN", "cbio_sample_id"])
         .group_by("DFCI_MRN", maintain_order=True)
-        .agg(pl.all().first())
+        .agg(
+            [pl.col(c).first() for c in other_cols]
+            + [pl.col(c).mean().alias(c) for c in pgs_cols]
+        )
     )
-    # A patient is affected if the collapsed (first-by-sort-order) row is null for some PGS
-    # column, but at least one sibling sample row for that patient has a non-null value.
-    sibling_has_value = joined.group_by("DFCI_MRN").agg(
-        [pl.col(c).drop_nulls().len().alias(f"{c}__n_nonnull") for c in pgs_cols]
-    )
-    check = collapsed.select(["DFCI_MRN"] + pgs_cols).join(sibling_has_value, on="DFCI_MRN", how="left")
-    affected_mrns: set = set()
-    for c in pgs_cols:
-        hit = check.filter(pl.col(c).is_null() & (pl.col(f"{c}__n_nonnull") > 0))
-        affected_mrns.update(hit.get_column("DFCI_MRN").to_list())
-    print(
-        f"\nFINDING (asymmetry, report only -- fix deferred): {len(affected_mrns)} patient(s) whose "
-        "collapsed row is null for a PGS trait while a sibling sample had a value.\n"
-        "  Conflict check uses pl.col(c).drop_nulls().n_unique() (agreement among non-null values\n"
-        "  only); collapse is pl.all().first() after sorting by cbio_sample_id, with no null\n"
-        "  preference. A patient whose lexicographically-first sample has a null PGS passes the\n"
-        "  conflict check and then keeps the null."
-    )
-    if affected_mrns:
-        print(f"  Affected DFCI_MRN sample: {sorted(list(affected_mrns))[:20]}"
-              + (" ..." if len(affected_mrns) > 20 else ""))
+    print(f"\nCollapsed (averaged) frame: {collapsed.height} rows, {collapsed.get_column('DFCI_MRN').n_unique()} unique DFCI_MRN.")
 
     # --- Confirm output file matches expectation ---
     out_fp = os.path.join(FEATURE_PATH, "complete_germline_data_df.csv.gz")

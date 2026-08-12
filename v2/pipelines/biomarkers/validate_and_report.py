@@ -7,9 +7,12 @@ and regenerates the Word document with updated summary tables.
 Runs locally — does not require cluster access.
 """
 
+import logging
 import os
 
 from config import DATA_PATH
+
+logger = logging.getLogger(__name__)
 
 from pipelines.biomarkers.validate import load_or_bootstrap_findings_df, validate_findings
 from pipelines.biomarkers.report import load_or_init_report_doc, update_report_document
@@ -39,6 +42,12 @@ def _resolve_compiled_dir():
     ]
 
     if not any(os.path.exists(path) for path in preferred_inputs) and any(os.path.exists(path) for path in legacy_inputs):
+        logger.warning(
+            "COMPILED_DIR: no inputs found in %s, falling back to hardcoded legacy path %s. "
+            "This can silently read a STALE result set on machines where that path exists. "
+            "Set the COMPILED_DIR env var to be explicit.",
+            preferred, LEGACY_COMPILED_DIR,
+        )
         return LEGACY_COMPILED_DIR
     return preferred
 

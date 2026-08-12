@@ -142,7 +142,11 @@ def build_germline_data_df(cohort_df: pl.DataFrame) -> pl.DataFrame:
     """PRS scores unchanged (mjsaleh TSV), bridged to DFCI_MRN via
     PROFILE_2024_idmap.csv joined against the new cohort rather than
     px_metadata_min. PRS coverage is limited to MRNs in the 2024 idmap, so
-    this modality covers fewer patients than the others."""
+    this modality covers fewer patients than the others.
+
+    Patients with multiple mapped sample IDs get per-PGS-column averages
+    across their samples (see the conflict handling below), not a single
+    sample's raw values."""
     idmap = pl.read_csv(
         os.path.join(PROFILE_PATH, "PROFILE_2024_idmap.csv"),
         columns=["DFCI_MRN", "cbio_sample_id"],
@@ -161,22 +165,20 @@ def build_germline_data_df(cohort_df: pl.DataFrame) -> pl.DataFrame:
     if not pgs_cols:
         raise ValueError(f"No PGS columns found in {PRS_MATRIX_FILE}")
 
-    # Multiple PROFILE sample IDs may map to one patient. Patient-level PRS
-    # values must agree before collapsing those rows; otherwise a random row
-    # choice could hide an upstream identity error and duplicate a patient
-    # across model folds.
-    conflicts = joined.group_by("DFCI_MRN").agg(
-        [pl.col(column).drop_nulls().n_unique().alias(column) for column in pgs_cols]
-    ).filter(pl.max_horizontal(pgs_cols) > 1)
-    if conflicts.height:
-        raise ValueError(
-            f"PRS values disagree across sample IDs for {conflicts.height} patient(s)."
-        )
-
+    # Multiple PROFILE sample IDs may map to one patient (e.g. resequenced or
+    # relabeled samples), and their PGS values do not always agree. Rather
+    # than picking one sample's values arbitrarily, average each PGS column
+    # across a patient's samples (nulls excluded, matching the pre-average
+    # conflict check this replaced). Non-PGS columns still take first() per
+    # patient, since averaging a sample ID or other identifier is meaningless.
+    other_cols = [column for column in joined.columns if column not in pgs_cols and column != "DFCI_MRN"]
     return (
         joined.sort(["DFCI_MRN", "cbio_sample_id"])
         .group_by("DFCI_MRN", maintain_order=True)
-        .agg(pl.all().first())
+        .agg(
+            [pl.col(column).first() for column in other_cols]
+            + [pl.col(column).mean().alias(column) for column in pgs_cols]
+        )
     )
 
 

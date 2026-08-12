@@ -277,6 +277,9 @@ def _add_metastatic_events(cohort_df: pd.DataFrame, anchor: str = DEFAULT_ANCHOR
     met_date_df['MET_DATE'] = pd.to_datetime(met_date_df['MET_DATE'].astype(str).str.split(' ').str[0], errors='coerce')
     met_date_df['TIME_TO_MET'] = (met_date_df['MET_DATE'] - met_date_df[anchor_date_col]).dt.days
     met_date_df = met_date_df.dropna(subset=['TIME_TO_MET'])
+    # Matches the ICD3/ICD4/phecode paths below (e.g. `icd_data_base['TIME_TO_ICD'] > 0`):
+    # a met event recorded before the anchor date is not a valid post-baseline event.
+    met_date_df = met_date_df.loc[met_date_df['TIME_TO_MET'] > 0]
 
     met_events_added = []
     met_event_cols: dict[str, pd.Series] = {}

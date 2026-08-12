@@ -116,34 +116,39 @@ def get_heldout_risk_scores_CoxPH(
       - y and penalty kept in memory.
     """
 
-    if ignore_warnings:
-        for _cat, _msg in _SUPPRESSED_WARNINGS:
-            warnings.filterwarnings("ignore", category=_cat, message=_msg)
+    # Scoped to setup only: the per-fold fits below already suppress these warnings themselves
+    # (unconditionally, inside their own catch_warnings()), so this covers only
+    # train_test_split/StratifiedKFold below without leaking into the caller's process-global
+    # warning filters afterward.
+    with warnings.catch_warnings():
+        if ignore_warnings:
+            for _cat, _msg in _SUPPRESSED_WARNINGS:
+                warnings.filterwarnings("ignore", category=_cat, message=_msg)
 
-    if pca_config is None:
-        pca_config = {}
-    use_memmap = len(pca_config) > 0  # <-- automatic switch
+        if pca_config is None:
+            pca_config = {}
+        use_memmap = len(pca_config) > 0  # <-- automatic switch
 
-    # ---- Filter invalid (NaN/non-positive tstop, NaN event) ----
-    n_before = len(df)
-    df = df[df[tstop_col].notna() & (df[tstop_col] > 0) & df[event_col].notna()].copy()
-    n_dropped = n_before - len(df)
-    if n_dropped > 0:
-        logger.info("get_heldout_risk_scores: dropped %d/%d rows with invalid tstop/event", n_dropped, n_before)
+        # ---- Filter invalid (NaN/non-positive tstop, NaN event) ----
+        n_before = len(df)
+        df = df[df[tstop_col].notna() & (df[tstop_col] > 0) & df[event_col].notna()].copy()
+        n_dropped = n_before - len(df)
+        if n_dropped > 0:
+            logger.info("get_heldout_risk_scores: dropped %d/%d rows with invalid tstop/event", n_dropped, n_before)
 
-    all_cols = list(dict.fromkeys(base_cols + continuous_vars + penalized_cols))
-    base_col_set = set(base_cols) | (set(continuous_vars) - set(penalized_cols))
+        all_cols = list(dict.fromkeys(base_cols + continuous_vars + penalized_cols))
+        base_col_set = set(base_cols) | (set(continuous_vars) - set(penalized_cols))
 
-    # ---- X in RAM (float32); NaN in features handled per-fold via _impute_train_test_np ----
-    X = df[all_cols].to_numpy(dtype=np.float32, copy=False)
+        # ---- X in RAM (float32); NaN in features handled per-fold via _impute_train_test_np ----
+        X = df[all_cols].to_numpy(dtype=np.float32, copy=False)
 
-    # ---- Structured survival array ----
-    y = _make_surv_array(df[event_col].to_numpy(), df[tstop_col].to_numpy())
+        # ---- Structured survival array ----
+        y = _make_surv_array(df[event_col].to_numpy(), df[tstop_col].to_numpy())
 
-    # ---- CV ----
-    strat_labels = df[event_col].astype(int).to_numpy()
-    cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=1234)
-    splits = list(cv.split(X, strat_labels))  # materialize once
+        # ---- CV ----
+        strat_labels = df[event_col].astype(int).to_numpy()
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=1234)
+        splits = list(cv.split(X, strat_labels))  # materialize once
 
     out_risk = np.full(X.shape[0], np.nan, dtype=np.float64)
 
@@ -189,8 +194,7 @@ def get_heldout_risk_scores_CoxPH(
                         model.fit(X_tr, y_tr)
                         preds = model.predict(X_te)
                 except Exception as e:
-                    if verbose:
-                        print(f"[heldout] failure: {e}")
+                    logger.warning("[heldout] fold failure, writing NaN risk scores for %d patient(s): %s", len(test_idx), e)
                     preds = np.full(len(test_idx), np.nan, dtype=np.float64)
 
             return test_idx, np.asarray(preds, dtype=np.float64)
@@ -296,8 +300,7 @@ def get_heldout_risk_scores_CoxPH(
                         model.fit(X_tr_np, y_tr)
                         preds = model.predict(X_te_np)
                 except Exception as e:
-                    if verbose:
-                        print(f"[fold {fold}] failure: {e}")
+                    logger.warning("[fold %s] failure, writing NaN risk scores for %d patient(s): %s", fold, len(test_idx), e)
                     preds = np.full(len(test_idx), np.nan, dtype=np.float64)
 
             return test_idx, np.asarray(preds, dtype=np.float64)

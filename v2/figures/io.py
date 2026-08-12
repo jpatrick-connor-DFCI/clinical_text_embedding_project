@@ -10,6 +10,7 @@ Conventions
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -17,6 +18,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 from config import FIGURE_DATA_DIR, FIGURE_OUT_DIR
+
+logger = logging.getLogger(__name__)
 
 FIGURE_OUT_DIR = Path(FIGURE_OUT_DIR)
 
@@ -65,6 +68,13 @@ def save_figure_data(df: pd.DataFrame, name: str) -> str:
     """Write a prepared CSV to FIGURE_DATA_DIR and return the path."""
     if len(df.columns) == 0:
         raise ValueError(f"Refusing to write schema-less figure data for {name}")
+    if len(df) == 0:
+        # Not raised: many prep functions deliberately return `pd.DataFrame(columns=[...])`
+        # on a data-not-available path, and that 0-row CSV is a legitimate output today.
+        # But it is currently indistinguishable on disk from a successful run (R turns a
+        # missing/empty file into an empty tibble and silently renders a placeholder panel),
+        # so at minimum this must not pass without a loud signal in the run log.
+        logger.warning("[EMPTY FIGURE DATA] %s has columns but 0 rows -- a downstream panel will likely be a placeholder.", name)
     os.makedirs(FIGURE_DATA_DIR, exist_ok=True)
     out = figure_data_path(name)
     df.to_csv(out, index=False)

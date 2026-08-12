@@ -40,7 +40,12 @@ echo "Rows:          $N_ROWS"
 echo "Rows per task: $ROWS_PER_TASK"
 echo "Array tasks:   $N_TASKS  (--array=0-${MAX_TASK})"
 
+# See launch_full_cohort.sh for why --output/--error are overridden here with absolute paths
+# rather than left to the array script's relative #SBATCH directives.
+mkdir -p "$PROJECT_ROOT/v2/slurm/array_full_cohort_risk_scores/output" "$PROJECT_ROOT/v2/slurm/array_full_cohort_risk_scores/error"
 sbatch \
     --array="0-${MAX_TASK}" \
+    --output="$PROJECT_ROOT/v2/slurm/array_full_cohort_risk_scores/output/%A_%a.out" \
+    --error="$PROJECT_ROOT/v2/slurm/array_full_cohort_risk_scores/error/%A_%a.err" \
     --export=ALL,PROJECT_ROOT="$PROJECT_ROOT",MANIFEST="$MANIFEST",ROWS_PER_TASK="$ROWS_PER_TASK",ANCHOR="$ANCHOR" \
     "$PROJECT_ROOT/v2/slurm/array_full_cohort_risk_scores.sh"

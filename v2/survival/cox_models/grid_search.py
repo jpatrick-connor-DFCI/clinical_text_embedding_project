@@ -77,51 +77,56 @@ def run_grid_CoxPH_parallel(
       - parallel_axis="auto": picks "fold" when l1 grid is small, else "l1".
     """
 
-    if ignore_warnings:
-        for _cat, _msg in _SUPPRESSED_WARNINGS:
-            warnings.filterwarnings("ignore", category=_cat, message=_msg)
+    # Scoped to setup only: the per-fold fits in _run_grid_no_pca / _run_grid_with_pca already
+    # suppress these warnings themselves (unconditionally, inside their own catch_warnings()),
+    # so this covers only train_test_split/StratifiedKFold below without leaking into the
+    # caller's process-global warning filters afterward.
+    with warnings.catch_warnings():
+        if ignore_warnings:
+            for _cat, _msg in _SUPPRESSED_WARNINGS:
+                warnings.filterwarnings("ignore", category=_cat, message=_msg)
 
-    if pca_config is None:
-        pca_config = {}
-    use_memmap = len(pca_config) > 0  # <-- automatic switch
+        if pca_config is None:
+            pca_config = {}
+        use_memmap = len(pca_config) > 0  # <-- automatic switch
 
-    # ---- Filter invalid (NaN/non-positive tstop, NaN event) ----
-    n_before = len(df)
-    df = df[df[tstop_col].notna() & (df[tstop_col] > 0) & df[event_col].notna()].copy()
-    n_dropped = n_before - len(df)
-    if n_dropped > 0:
-        logger.info("run_grid_CoxPH_parallel: dropped %d/%d rows with invalid tstop/event", n_dropped, n_before)
+        # ---- Filter invalid (NaN/non-positive tstop, NaN event) ----
+        n_before = len(df)
+        df = df[df[tstop_col].notna() & (df[tstop_col] > 0) & df[event_col].notna()].copy()
+        n_dropped = n_before - len(df)
+        if n_dropped > 0:
+            logger.info("run_grid_CoxPH_parallel: dropped %d/%d rows with invalid tstop/event", n_dropped, n_before)
 
-    # Continuous variables may introduce additional unpenalized predictors
-    # (for example N_MET_SITES). A variable explicitly listed as penalized
-    # remains penalized even when it is also continuous.
-    all_cols = list(dict.fromkeys(base_cols + continuous_vars + penalized_cols))
-    base_col_set = set(base_cols) | (set(continuous_vars) - set(penalized_cols))
+        # Continuous variables may introduce additional unpenalized predictors
+        # (for example N_MET_SITES). A variable explicitly listed as penalized
+        # remains penalized even when it is also continuous.
+        all_cols = list(dict.fromkeys(base_cols + continuous_vars + penalized_cols))
+        base_col_set = set(base_cols) | (set(continuous_vars) - set(penalized_cols))
 
-    # ---- X in RAM (float32); NaN in features is handled per-fold via _impute_train_test_np ----
-    X_full = df[all_cols].to_numpy(dtype=np.float32, copy=False)
+        # ---- X in RAM (float32); NaN in features is handled per-fold via _impute_train_test_np ----
+        X_full = df[all_cols].to_numpy(dtype=np.float32, copy=False)
 
-    # ---- Structured survival array ----
-    y_struct = _make_surv_array(df[event_col].to_numpy(), df[tstop_col].to_numpy())
+        # ---- Structured survival array ----
+        y_struct = _make_surv_array(df[event_col].to_numpy(), df[tstop_col].to_numpy())
 
-    # ---- Train/val vs test split ----
-    idx = np.arange(X_full.shape[0])
-    idx_train_val, idx_test = train_test_split(
-        idx,
-        test_size=0.2,
-        stratify=df[event_col].astype(int),
-        random_state=1234,
-    )
+        # ---- Train/val vs test split ----
+        idx = np.arange(X_full.shape[0])
+        idx_train_val, idx_test = train_test_split(
+            idx,
+            test_size=0.2,
+            stratify=df[event_col].astype(int),
+            random_state=1234,
+        )
 
-    X_train_val = X_full[idx_train_val]
-    X_test = X_full[idx_test]
-    y_train_val = y_struct[idx_train_val]
-    y_test = y_struct[idx_test]
+        X_train_val = X_full[idx_train_val]
+        X_test = X_full[idx_test]
+        y_train_val = y_struct[idx_train_val]
+        y_test = y_struct[idx_test]
 
-    # ---- CV ----
-    strat_labels = df[event_col].astype(int).iloc[idx_train_val].to_numpy()
-    cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=1234)
-    folds = list(cv.split(X_train_val, strat_labels))  # materialize once
+        # ---- CV ----
+        strat_labels = df[event_col].astype(int).iloc[idx_train_val].to_numpy()
+        cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=1234)
+        folds = list(cv.split(X_train_val, strat_labels))  # materialize once
 
     # ---- Evaluation time points ----
     lower, upper = np.percentile(y_train_val["Survival_in_days"], [time_evals[0], time_evals[1]])
@@ -244,14 +249,15 @@ def _run_grid_no_pca(
             rows.append([
                 float(l1_ratio),
                 float(alpha),
-                np.nan,
+                np.nan,  # mean_c_index: not computed in CV (only AUC is); always NaN here, see evaluate_surv_model for the *_test.csv path where it is computed
                 float(np.nanmean(fold_aucs[:, ai])),
-                np.nan,
+                np.nan,  # mean_ibs: not computed in CV, same as mean_c_index above; always NaN here
                 float(np.mean(fold_times)),
                 fold_times.tolist(),
-                fold_errors.tolist(),
-                float(np.mean(fold_errors)),
+                fold_errors.tolist(),  # fold_error_flags: one bool per fold for this whole l1-path, identical across every alpha row -- a single alpha's failure marks the entire path, not just that row
+                float(np.mean(fold_errors)),  # error_rate: same per-l1-path (not per-alpha) caveat as fold_error_flags above
                 [0] * len(folds),
+                int(np.sum(~np.isnan(fold_aucs[:, ai]))),  # n_folds_contributing: per-alpha count behind mean_auc(t); no minimum enforced, a 1-fold mean is a valid winner
             ])
         return rows
 
@@ -283,6 +289,7 @@ def _run_grid_no_pca(
             "fold_error_flags",
             "error_rate",
             "fold_warning_counts",
+            "n_folds_contributing",
         ],
     )
 
@@ -291,6 +298,10 @@ def _run_grid_no_pca(
         raise RuntimeError("All CV evaluations failed (all NaN mean_auc(t)). Check data and parameters.")
     opt = valid_cv.sort_values("mean_auc(t)", ascending=False).iloc[0]
     opt_l1, opt_alpha = float(opt.l1_ratio), float(opt.alpha)
+    logger.info(
+        "Selected l1_ratio=%.3f alpha=%.3e with mean_auc(t)=%.4f from %d/%d fold(s) (no min_folds gate)",
+        opt_l1, opt_alpha, opt["mean_auc(t)"], int(opt.n_folds_contributing), len(folds),
+    )
 
     # Impute then scale continuous variables for final fit
     X_trval_scaled = np.array(X_train_val, dtype=np.float32, copy=True)
@@ -447,14 +458,15 @@ def _run_grid_with_pca(
                 rows.append([
                     float(l1_ratio),
                     float(alpha),
-                    np.nan,
+                    np.nan,  # mean_c_index: not computed in CV, always NaN here (see no-PCA path's comment)
                     float(np.nanmean(fold_aucs[:, ai])),
-                    np.nan,
+                    np.nan,  # mean_ibs: not computed in CV, always NaN here
                     float(np.mean(fold_times)),
                     fold_times.tolist(),
-                    fold_errors.tolist(),
-                    float(np.mean(fold_errors)),
+                    fold_errors.tolist(),  # fold_error_flags: per-l1-path, identical across every alpha row
+                    float(np.mean(fold_errors)),  # error_rate: per-l1-path, not per-alpha
                     [0] * len(fold_meta),
+                    int(np.sum(~np.isnan(fold_aucs[:, ai]))),  # n_folds_contributing: see no-PCA path's comment
                 ])
             return rows
 
@@ -486,6 +498,7 @@ def _run_grid_with_pca(
                 "fold_error_flags",
                 "error_rate",
                 "fold_warning_counts",
+                "n_folds_contributing",
             ],
         )
 
@@ -495,6 +508,10 @@ def _run_grid_with_pca(
             raise RuntimeError("All CV evaluations failed (all NaN mean_auc(t)). Check data and parameters.")
         opt = valid_cv.sort_values("mean_auc(t)", ascending=False).iloc[0]
         opt_l1, opt_alpha = float(opt.l1_ratio), float(opt.alpha)
+        logger.info(
+            "Selected l1_ratio=%.3f alpha=%.3e with mean_auc(t)=%.4f from %d/%d fold(s) (no min_folds gate)",
+            opt_l1, opt_alpha, opt["mean_auc(t)"], int(opt.n_folds_contributing), len(fold_meta),
+        )
 
         X_trval = np.array(X_train_val, dtype=np.float32, copy=True)
         X_te = np.array(X_test, dtype=np.float32, copy=True)

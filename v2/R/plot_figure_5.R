@@ -304,10 +304,10 @@ build_fig5d <- function() {
 # fig5e: synthesis forest — T1 (prognostic-in-ICI) vs T2 (predictive-of-ICI)
 # for the headline gene set, with literature-validation strip on the right.
 #
-# T1 brackets are the Cox HR's 95% CI (from primary spec). T2 brackets are
-# inter-spec range (min/max across robust specs) — upstream emits no SE for
-# the marker × ICI interaction term, so this is honest spec-spread, not an
-# inferential CI. Documented in the figure caption.
+# T1 and T2 brackets are both genuine Wald 95% CIs from the primary spec
+# (T2: se_mx = sqrt(V[mx, mx]) on the marker x ICI interaction term, computed
+# in run_IPTW_analysis._fit_track2_marker and propagated as
+# CI95_markerxICI_low/high). No longer an inter-spec range.
 # ============================================================================
 TRACK_LABEL  <- c(T1_prognostic_in_ICI = "T1 · Prognostic within ICI",
                   T2_predictive_of_ICI = "T2 · Predictive of ICI benefit")
@@ -359,7 +359,7 @@ build_fig5e <- function() {
     scale_x_log10(limits = c(xmin, xmax),
                   breaks = c(0.1, 0.25, 0.5, 1, 2, 4, 10),
                   oob = scales::squish) +
-    labs(x = "Hazard ratio (log scale)\nT1: Cox HR (95% CI) · T2: interaction HR (inter-spec range)",
+    labs(x = "Hazard ratio (log scale, 95% CI)\nT1: Cox HR · T2: interaction HR",
          y = NULL,
          title = "Synthesis · Prognostic vs Predictive Signal for Headline Markers") +
     theme_manuscript() +

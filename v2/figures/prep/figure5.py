@@ -390,12 +390,11 @@ def _track1_row(t1: pd.DataFrame, marker: str, cancer: str, cohort: str) -> dict
 
 
 def _track2_row(t2: pd.DataFrame, marker: str, cancer: str, cohort: str) -> dict | None:
-    """Primary-spec Track-2 interaction estimate, with inter-spec range as 'CI'.
+    """Primary-spec Track-2 interaction estimate, with the real Wald CI95.
 
-    Track-2 upstream emits no SE for the interaction term, so the CI bracket on
-    the forest is the min/max HR across all robust specs for this gene-cancer-
-    cohort triple — interpreted as inter-spec spread, NOT a confidence interval.
-    Documented as such on the figure caption.
+    `CI95_markerxICI_low`/`_high` are the Wald interval for the interaction term
+    itself (run_IPTW_analysis._fit_track2_marker: se_mx = sqrt(V[mx, mx])), not
+    the inter-spec min/max range this used to plot.
     """
     sub = t2[(t2["marker"] == marker) & (t2["cancer_type"] == cancer)
              & (t2["cohort"] == cohort)]
@@ -408,8 +407,8 @@ def _track2_row(t2: pd.DataFrame, marker: str, cancer: str, cohort: str) -> dict
     r = primary.iloc[0]
     return {
         "HR":       float(r["HR_markerxICI"]),
-        "CI95_low": float(sub["HR_markerxICI"].min()),
-        "CI95_high": float(sub["HR_markerxICI"].max()),
+        "CI95_low": float(r["CI95_markerxICI_low"]),
+        "CI95_high": float(r["CI95_markerxICI_high"]),
         "p_value":  float(r["p_markerxICI"]),
         "n_pos":    int(r.get("n_ICI_pos", 0) or 0),
         "n_specs":  int(len(sub)),

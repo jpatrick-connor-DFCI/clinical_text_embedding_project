@@ -40,7 +40,14 @@ echo "Rows:          $N_ROWS"
 echo "Rows per task: $ROWS_PER_TASK"
 echo "Array tasks:   $N_TASKS  (--array=0-${MAX_TASK})"
 
+# The array script's #SBATCH --output/--error are relative to the submission CWD, not to
+# $PROJECT_ROOT (which the script only cd's into after the job starts) -- override them here
+# with absolute paths so log location doesn't depend on where this launcher happens to be run
+# from.
+mkdir -p "$PROJECT_ROOT/v2/slurm/array_full_cohort_run/output" "$PROJECT_ROOT/v2/slurm/array_full_cohort_run/error"
 sbatch \
     --array="0-${MAX_TASK}" \
+    --output="$PROJECT_ROOT/v2/slurm/array_full_cohort_run/output/%A_%a.out" \
+    --error="$PROJECT_ROOT/v2/slurm/array_full_cohort_run/error/%A_%a.err" \
     --export=ALL,PROJECT_ROOT="$PROJECT_ROOT",MANIFEST="$MANIFEST",ROWS_PER_TASK="$ROWS_PER_TASK",ANCHOR="$ANCHOR" \
     "$PROJECT_ROOT/v2/slurm/array_full_cohort_run.sh"

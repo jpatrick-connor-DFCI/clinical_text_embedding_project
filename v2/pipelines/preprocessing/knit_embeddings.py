@@ -127,6 +127,17 @@ def main() -> None:
     metadata_df = pl.concat(metadata_list, how="vertical_relaxed")
     embeddings = np.concatenate(embedding_array_list, axis=0)
 
+    # metadata_df is positionally row-aligned with `embeddings` above (length-checked per
+    # batch, EMBEDDING_INDEX assigned below); a duplicate DFCI_MRN in cohort_df would fan
+    # this left join out and silently break that alignment.
+    n_cohort_mrn = cohort_df.get_column("DFCI_MRN").len()
+    n_cohort_mrn_unique = cohort_df.get_column("DFCI_MRN").n_unique()
+    if n_cohort_mrn_unique != n_cohort_mrn:
+        raise ValueError(
+            f"cohort_df has {n_cohort_mrn - n_cohort_mrn_unique} duplicate DFCI_MRN value(s); "
+            "the metadata<->embedding positional alignment below requires a unique key."
+        )
+
     metadata_df = metadata_df.with_columns(
         pl.col("DFCI_MRN").cast(pl.Int64, strict=False),
         parse_note_datetimes(metadata_df).alias("NOTE_DATETIME"),

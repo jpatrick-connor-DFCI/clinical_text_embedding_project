@@ -48,6 +48,7 @@ _MODALITY_LABELS = {
     "treatment": "With Treatment",
     "somatic": "With Somatic",
     "prs": "With PRS",
+    "metburden": "With Met. Burden",
 }
 
 

@@ -40,14 +40,18 @@ if [[ ! -f "$MANIFEST" ]]; then
   exit 1
 fi
 
-cd "$V2_ROOT"
+cd "$V2_ROOT" || { echo "Failed to cd into $V2_ROOT"; exit 1; }
 export PYTHONPATH="$V2_ROOT"
 
-module load miniforge3
+module load miniforge3 || { echo "Failed to load module miniforge3"; exit 1; }
 eval "$(conda shell.bash hook)"
 conda activate clinical_notes_project || { echo "Failed to activate conda env clinical_notes_project"; exit 1; }
 python -c "import config" 2>/dev/null || { echo "config not importable - check conda env / PYTHONPATH"; exit 1; }
 
+# Deliberately enabled only here, after the prologue above: module load / conda activate /
+# `eval "$(conda shell.bash hook)"` commonly reference unset variables internally and can
+# behave unpredictably under -u; every step above already has its own explicit failure guard,
+# so nothing upstream of this line silently continues past a failure.
 set -euo pipefail
 
 export OMP_NUM_THREADS=1
