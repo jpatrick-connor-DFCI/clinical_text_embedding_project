@@ -27,6 +27,7 @@ import polars as pl
 
 from config import BIOMARKER_PATH, DATA_PATH, FEATURE_PATH
 from figures.io import save_figure_data
+from shared.polars_utils import filter_finite_rows
 
 COHORT = "cohort2"
 PS_BUFFER = 30
@@ -266,8 +267,9 @@ def _km_top_hit() -> tuple[pl.DataFrame, pl.DataFrame]:
     cancer_col = f"CANCER_TYPE_{cancer}"
     if cancer != "pan_cancer" and cancer_col in iptw.columns:
         iptw = iptw.filter(pl.col(cancer_col) == 1)
-    iptw = iptw.drop_nulls(subset=[marker, "PX_on_ICI", "tt_death", "death"])
-    iptw = iptw.filter(pl.col("tt_death") > 0)
+    iptw = filter_finite_rows(
+        iptw, [marker, "PX_on_ICI", "tt_death", "death"]
+    ).filter(pl.col("tt_death") > 0)
     km = iptw.select(["DFCI_MRN", marker, "PX_on_ICI", "death", "tt_death"]).rename(
         {marker: "marker_value"}
     )
@@ -511,8 +513,7 @@ def _km_examples() -> pl.DataFrame:
         if not set(required).issubset(iptw.columns):
             print(f"  skipping KM example {marker}/{cancer}: missing required columns")
             continue
-        cur = iptw.drop_nulls(subset=required)
-        cur = cur.filter(pl.col("tt_death") > 0)
+        cur = filter_finite_rows(iptw, required).filter(pl.col("tt_death") > 0)
         if cur.is_empty():
             continue
         # Track 2 (interaction) → ICI Benefit / ICI Harm; Track 1 fallback is
@@ -577,7 +578,7 @@ def _love_smd() -> pl.DataFrame:
 
     # Rows without a propensity/treatment value can't be weighted — drop them so the
     # weighted SMDs don't collapse to NaN.
-    df = df.drop_nulls(subset=["PX_on_ICI", "ICI_prediction"])
+    df = filter_finite_rows(df, ["PX_on_ICI", "ICI_prediction"])
     if df.is_empty():
         return pl.DataFrame(schema={c: pl.Float64 for c in LOVE_SMD_COLUMNS})
 

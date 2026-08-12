@@ -32,6 +32,7 @@ from tqdm import tqdm
 from config import BIOMARKER_PATH
 
 from pipelines.biomarkers.biomarker_common import get_mutation_type
+from shared.polars_utils import filter_finite_rows, finite_or_zero
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,7 @@ def merge_rare_cancer_types_into_other(df, min_total=30):
         return out, [], []
 
     cancer_matrix = out.select([
-        (pl.col(c).cast(pl.Float64, strict=False).fill_null(0) > 0).cast(pl.Int64).alias(c)
+        (finite_or_zero(c) > 0).cast(pl.Int64).alias(c)
         for c in c_cols
     ])
     total_counts = {c: int(cancer_matrix[c].sum()) for c in c_cols}
@@ -111,8 +112,8 @@ def merge_rare_cancer_types_into_other(df, min_total=30):
 def marker_has_within_arm_support(df, marker, treat_col='PX_on_ICI',
                                   min_pos_per_arm=10, min_neg_per_arm=10,
                                   min_events_per_group=5):
-    marker_bin = (df[marker].cast(pl.Float64, strict=False).fill_null(0) > 0).cast(pl.Int64).to_numpy()
-    treatment = df[treat_col].cast(pl.Float64, strict=False).fill_null(0).cast(pl.Int64).to_numpy()
+    marker_bin = df.select((finite_or_zero(marker) > 0).cast(pl.Int64)).to_series().to_numpy()
+    treatment = df.select(finite_or_zero(treat_col).cast(pl.Int64)).to_series().to_numpy()
     death = df['death'].to_numpy()
     for arm in (0, 1):
         arm_mask = treatment == arm
@@ -130,8 +131,8 @@ def marker_has_within_arm_support(df, marker, treat_col='PX_on_ICI',
 
 def get_marker_event_counts(df, marker, treat_col='PX_on_ICI'):
     """Return event counts for a marker across treatment arms."""
-    marker_bin = (df[marker].cast(pl.Float64, strict=False).fill_null(0) > 0).cast(pl.Int64).to_numpy()
-    treatment = df[treat_col].cast(pl.Float64, strict=False).fill_null(0).cast(pl.Int64).to_numpy()
+    marker_bin = df.select((finite_or_zero(marker) > 0).cast(pl.Int64)).to_series().to_numpy()
+    treatment = df.select(finite_or_zero(treat_col).cast(pl.Int64)).to_series().to_numpy()
     death = df['death'].to_numpy()
     counts = {}
     for arm, arm_label in [(1, 'ICI'), (0, 'nonICI')]:
@@ -148,7 +149,7 @@ def get_marker_event_counts(df, marker, treat_col='PX_on_ICI'):
 def marker_has_ici_only_support(df, marker, min_pos=10, min_events=5):
     """Check if marker has enough positive cases and events within ICI patients."""
     ici_df = df.filter(pl.col('PX_on_ICI') == 1)
-    marker_bin = (ici_df[marker].cast(pl.Float64, strict=False).fill_null(0) > 0).to_numpy()
+    marker_bin = ici_df.select((finite_or_zero(marker) > 0)).to_series().to_numpy()
     death = ici_df['death'].to_numpy()
     marker_pos = int(marker_bin.sum())
     marker_neg = len(ici_df) - marker_pos
@@ -160,7 +161,7 @@ def compute_smd(df, covariates, treat_col='PX_on_ICI', weights=None):
     t_mask = (df[treat_col] == 1).to_numpy()
     rows = []
     for cov in covariates:
-        x = df[cov].cast(pl.Float64, strict=False).fill_null(0).to_numpy()
+        x = df.select(finite_or_zero(cov)).to_series().to_numpy()
         x_t, x_c = x[t_mask], x[~t_mask]
         pooled_sd = np.sqrt((x_t.var() + x_c.var()) / 2)
         smd_raw = (x_t.mean() - x_c.mean()) / pooled_sd if pooled_sd > 0 else 0.0
@@ -238,7 +239,7 @@ def _fit_track2_marker(df, marker, base_vars, weights_col):
     cols = ['tt_death', 'death', 'PX_on_ICI'] + base_vars + [marker]
     if weights_col is not None:
         cols.append(weights_col)
-    df_fit_pl = df.select(cols).drop_nulls()
+    df_fit_pl = filter_finite_rows(df.select(cols), cols)
 
     # Compute event counts before fitting
     event_counts = get_marker_event_counts(df_fit_pl, marker)
@@ -369,10 +370,10 @@ def _fit_track1_marker(df, marker, base_vars, weights_col):
     cols = ['tt_death', 'death'] + base_vars + [marker]
     if weights_col is not None:
         cols.append(weights_col)
-    df_fit_pl = df.select(cols).drop_nulls()
+    df_fit_pl = filter_finite_rows(df.select(cols), cols)
 
     # Compute event counts
-    marker_bin = (df_fit_pl[marker].cast(pl.Float64, strict=False).fill_null(0) > 0).to_numpy()
+    marker_bin = (df_fit_pl[marker] > 0).to_numpy()
     death = df_fit_pl['death'].to_numpy()
     n_pos = int(marker_bin.sum())
     n_neg = int((~marker_bin).sum())

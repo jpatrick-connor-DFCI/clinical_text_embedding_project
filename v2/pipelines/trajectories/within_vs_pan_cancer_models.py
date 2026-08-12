@@ -17,6 +17,7 @@ from schemes import load_embedding_prediction_df
 from survival import (RunCheckpoint, dataframe_fingerprint,
                       fit_predict_external_CoxPH, get_heldout_risk_scores_CoxPH,
                       run_grid_CoxPH_parallel)
+from shared.polars_utils import filter_finite_rows
 
 
 def main() -> None:
@@ -151,9 +152,7 @@ def main() -> None:
              .join(matched_pan_held_df, on=['DFCI_MRN', 'STRATUM'])
              .join(full_df.select(['DFCI_MRN', f'tt_{event}', event]), on='DFCI_MRN'))
         cols = ['within_cancer_risk_score', 'pan_cancer_risk_score', f'tt_{event}', event]
-        m = m.with_columns([
-            pl.col(c).replace([float('inf'), float('-inf')], None) for c in cols
-        ]).drop_nulls(subset=cols)
+        m = filter_finite_rows(m, cols)
         if len(m) < MIN_HELDOUT_N or m[event].sum() == 0:
             return None, None, len(m)
         eb = m[event].cast(pl.Boolean).to_numpy()
@@ -183,7 +182,9 @@ def main() -> None:
         if matched_model is None:
             return None, None, None
 
-        best_row = matched_val.sort('mean_auc(t)', descending=True).row(0, named=True)
+        best_row = filter_finite_rows(matched_val, ['mean_auc(t)']).sort(
+            'mean_auc(t)', descending=True
+        ).row(0, named=True)
         matched_l1, matched_alpha = best_row['l1_ratio'], best_row['alpha']
         trained_matched_pan = (
             get_heldout_risk_scores_CoxPH(
@@ -245,7 +246,9 @@ def main() -> None:
             ckpt.mark_skipped(cancer_type, 'no_converge', meta={'n_train': int(len(sub_df))})
             continue
 
-        best_row = cur_val.sort('mean_auc(t)', descending=True).row(0, named=True)
+        best_row = filter_finite_rows(cur_val, ['mean_auc(t)']).sort(
+            'mean_auc(t)', descending=True
+        ).row(0, named=True)
         best_l1, best_alpha = best_row['l1_ratio'], best_row['alpha']
         trained_sub = get_heldout_risk_scores_CoxPH(
             sub_df, base_vars, continuous_vars, embed_cols,
@@ -316,11 +319,8 @@ def main() -> None:
     # every metric call below sees only finite values.
     _score_cols = ['pan_cancer_risk_score', 'within_cancer_risk_score']
     _finite_cols = _score_cols + [f'tt_{event}', event]
-    complete_train = complete_train.with_columns([
-        pl.col(c).replace([float('inf'), float('-inf')], None) for c in _finite_cols
-    ])
     _n0 = len(complete_train)
-    complete_train = complete_train.drop_nulls(subset=_finite_cols)
+    complete_train = filter_finite_rows(complete_train, _finite_cols)
     if len(complete_train) < _n0:
         print(f"Train: dropped {_n0 - len(complete_train)} rows with non-finite risk scores / outcomes")
 
@@ -341,11 +341,8 @@ def main() -> None:
     )
 
     # Drop non-finite held-out risk scores / outcomes (divergent within-cancer strata).
-    held_scores = held_scores.with_columns([
-        pl.col(c).replace([float('inf'), float('-inf')], None) for c in _finite_cols
-    ])
     _n0 = len(held_scores)
-    held_scores = held_scores.drop_nulls(subset=_finite_cols)
+    held_scores = filter_finite_rows(held_scores, _finite_cols)
     if len(held_scores) < _n0:
         print(f"Held-out: dropped {_n0 - len(held_scores)} rows with non-finite risk scores / outcomes")
 

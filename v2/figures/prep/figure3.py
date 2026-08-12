@@ -29,6 +29,7 @@ from figures.io import save_figure_data
 from pipelines.training.slurm_array_utils import get_events_from_df
 from schemes import feature_held_out_dir, load_embedding_prediction_df, scheme_results_dir
 from shared.palette import MODALITY_ORDER
+from shared.polars_utils import filter_finite_rows
 
 SCHEMES = ["death_met", "icd3_post", "icd4_post", "phecode_post"]
 DEATH_SCHEME = "death_met"    # scheme for the correlation heatmap
@@ -124,8 +125,9 @@ def _joint_betas(scheme: str) -> pl.DataFrame:
         # held-out risk-score files don't all cover the same patients (their
         # outer join can leave NaNs for partially-overlapping cohorts), and
         # lifelines refuses NaNs outright.
-        merged = merged.drop_nulls(subset=risk_cols + [event, f"tt_{event}"])
-        merged = merged.filter(pl.col(f"tt_{event}") > 0)
+        merged = filter_finite_rows(
+            merged, risk_cols + [event, f"tt_{event}"]
+        ).filter(pl.col(f"tt_{event}") > 0)
         # Drop constant risk-score columns within this event slice; a feature
         # with zero variance breaks StandardScaler and makes the Cox design
         # matrix singular.
@@ -219,7 +221,10 @@ def _complete_case_rank_matrix(metrics_df: pl.DataFrame, value_col: str):
     key_df = mat.select(["scheme", "event"])
     mat = mat.select(modalities)
     complete_mask = mat.select(
-        pl.all_horizontal([pl.col(m).is_not_null() for m in modalities]).alias("_ok")
+        pl.all_horizontal([
+            pl.col(m).cast(pl.Float64, strict=False).is_finite()
+            for m in modalities
+        ]).alias("_ok")
     )["_ok"].to_numpy()
     if not complete_mask.any():
         return None, [], None
@@ -313,6 +318,9 @@ def _risk_score_corr(scheme: str, event: str = "death") -> pl.DataFrame:
         return pl.DataFrame(schema={c: pl.Float64 for c in RISK_SCORE_CORR_COLUMNS})
     merged = reduce(lambda l, r: l.join(r, on="DFCI_MRN", how="inner"), dfs)
     cols = [c for c in merged.columns if c.endswith("_risk_score")]
+    merged = filter_finite_rows(merged, cols)
+    if merged.is_empty():
+        return pl.DataFrame(schema={c: pl.Float64 for c in RISK_SCORE_CORR_COLUMNS})
     corr_mat = np.corrcoef(merged.select(cols).to_numpy(), rowvar=False)
     mod_names = [c.replace("_risk_score", "") for c in cols]
     out = pl.DataFrame({"modality": mod_names})

@@ -10,6 +10,7 @@ import polars as pl
 from anchors import DEFAULT_ANCHOR, age_col
 from config import FEATURE_PATH
 from schemes import load_embedding_prediction_df
+from shared.polars_utils import finite_or_zero
 
 DEFAULT_ALPHAS = np.logspace(-5, 0, 25).tolist()
 DEFAULT_L1_RATIOS = [0.5, 1.0]
@@ -83,15 +84,15 @@ def filter_event_rows(full_prediction_df: pl.DataFrame, event: str) -> pl.DataFr
     tt_col = f"tt_{event}"
     if tt_col not in full_prediction_df.columns:
         raise ValueError(f"Missing column '{tt_col}' in prediction dataframe.")
-    # Drop rows with NaN or non-positive time-to-event values
-    mask = full_prediction_df[tt_col].is_not_null() & (full_prediction_df[tt_col] > 0)
-    # Also drop rows where the event indicator itself is NaN
+    # Drop null, NaN, infinite, and non-positive time-to-event values.
+    mask = pl.col(tt_col).cast(pl.Float64, strict=False).is_finite() & (pl.col(tt_col) > 0)
+    # Also drop rows where the event indicator is null, NaN, or infinite.
     if event in full_prediction_df.columns:
-        mask = mask & full_prediction_df[event].is_not_null()
+        mask = mask & pl.col(event).cast(pl.Float64, strict=False).is_finite()
     event_pred_df = full_prediction_df.filter(mask)
     if event == "brainM" and "CANCER_TYPE_BRAIN" in event_pred_df.columns:
         event_pred_df = event_pred_df.filter(
-            event_pred_df["CANCER_TYPE_BRAIN"].fill_null(0).cast(pl.Boolean) == False
+            finite_or_zero("CANCER_TYPE_BRAIN").cast(pl.Boolean) == False
         )
     return event_pred_df
 
@@ -182,7 +183,7 @@ def load_feature_modalities_df(
             met_burden_df.select(["DFCI_MRN"] + met_cols), on="DFCI_MRN", how="left"
         )
         full_prediction_df = full_prediction_df.with_columns(
-            [pl.col(c).fill_null(0) for c in met_cols]
+            [finite_or_zero(c).alias(c) for c in met_cols]
         )
 
     anchor_age_col = age_col(anchor)
@@ -256,11 +257,15 @@ def validate_cox_inputs(
     assert tstop_col in df.columns, f"{tag}Missing time column '{tstop_col}'"
     assert event_col in df.columns, f"{tag}Missing event column '{event_col}'"
 
-    n_nan_time = df[tstop_col].is_null().sum()
-    n_nan_event = df[event_col].is_null().sum()
-    if n_nan_time > 0 or n_nan_event > 0:
+    n_bad_time = df.select(
+        (~pl.col(tstop_col).cast(pl.Float64, strict=False).is_finite().fill_null(False)).sum()
+    ).item()
+    n_bad_event = df.select(
+        (~pl.col(event_col).cast(pl.Float64, strict=False).is_finite().fill_null(False)).sum()
+    ).item()
+    if n_bad_time > 0 or n_bad_event > 0:
         raise ValueError(
-            f"{tag}{n_nan_time} NaN times, {n_nan_event} NaN events — "
+            f"{tag}{n_bad_time} invalid times, {n_bad_event} invalid events — "
             "filter_event_rows should have removed these"
         )
 
@@ -300,13 +305,19 @@ def validate_cox_inputs(
         print(f"{tag}Dropping {len(constant_cols)} constant feature columns: {sorted(constant_cols)}")
         df = df.drop(constant_cols)
 
-    # NaN in features: warn (run_grid_CoxPH_parallel drops these internally)
+    # Null/NaN/infinite feature values are imputed or removed by the caller.
     non_constant = [c for c in present if c not in constant_cols]
-    n_feat_nan = df.select(non_constant).select(
-        pl.any_horizontal(pl.all().is_null())
-    ).to_series().sum()
-    if n_feat_nan > 0:
-        print(f"{tag}Warning: {n_feat_nan}/{len(df)} rows have NaN in feature columns")
+    n_feat_invalid = df.select(
+        pl.any_horizontal([
+            ~pl.col(c).cast(pl.Float64, strict=False).is_finite().fill_null(False)
+            for c in non_constant
+        ]).sum()
+    ).item() if non_constant else 0
+    if n_feat_invalid > 0:
+        print(
+            f"{tag}Warning: {n_feat_invalid}/{len(df)} rows have invalid "
+            "feature values"
+        )
 
     return df, constant_cols
 
@@ -314,7 +325,10 @@ def validate_cox_inputs(
 def get_best_hparams(val_fp: str) -> tuple[float, float]:
     """Return (l1_ratio, alpha) from the CV row with highest mean_auc(t)."""
     val_df = pl.read_csv(val_fp)
-    best = val_df.sort(by="mean_auc(t)", descending=True).row(0, named=True)
+    valid = val_df.filter(pl.col("mean_auc(t)").is_finite())
+    if valid.is_empty():
+        raise ValueError(f"No finite mean_auc(t) values in {val_fp}")
+    best = valid.sort(by="mean_auc(t)", descending=True).row(0, named=True)
     return float(best["l1_ratio"]), float(best["alpha"])
 
 

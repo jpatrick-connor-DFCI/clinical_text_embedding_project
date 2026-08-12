@@ -28,6 +28,7 @@ from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 
 from config import DATA_PATH, SURV_PATH
+from shared.polars_utils import filter_finite_rows
 
 # ============================================================
 # Configuration
@@ -53,10 +54,10 @@ def train_propensity_cv(pred_df, feature_cols, label):
 
     cv_mrns, cv_preds, cv_probs, cv_true = [], [], [], []
 
-    X_pd = X.to_pandas()
-    y_pd = y.to_pandas()
+    X_np = X.to_numpy()
+    y_np = y.to_numpy()
 
-    for fold, (train_idx, test_idx) in enumerate(skf.split(X_pd, y_pd), 1):
+    for fold, (train_idx, test_idx) in enumerate(skf.split(X_np, y_np), 1):
         X_train, X_test = X[train_idx], X[test_idx]
         y_train, y_test = y[train_idx], y[test_idx]
 
@@ -64,12 +65,12 @@ def train_propensity_cv(pred_df, feature_cols, label):
         X_train = X_train.drop('DFCI_MRN')
         X_test = X_test.drop('DFCI_MRN')
 
-        X_train_pd = X_train.to_pandas()
-        X_test_pd = X_test.to_pandas()
+        X_train_np = X_train.to_numpy()
+        X_test_np = X_test.to_numpy()
 
-        scaler = StandardScaler().fit(X_train_pd)
-        X_train_s = scaler.transform(X_train_pd)
-        X_test_s = scaler.transform(X_test_pd)
+        scaler = StandardScaler().fit(X_train_np)
+        X_train_s = scaler.transform(X_train_np)
+        X_test_s = scaler.transform(X_test_np)
 
         clf = LogisticRegressionCV(
             penalty='elasticnet',
@@ -162,15 +163,26 @@ def main() -> None:
                 pred_with_covars = pred_with_covars.join(surv_demo, on='DFCI_MRN', how='left')
 
             covar_cols = (demo_cols + cancer_type_feature_cols + line_feature_cols)
-            covar_cols = [c for c in covar_cols if pred_with_covars[c].null_count() < pred_with_covars.height]
+            covar_cols = [
+                c for c in covar_cols
+                if pred_with_covars.select(
+                    pl.col(c).cast(pl.Float64, strict=False).is_finite().any()
+                ).item()
+            ]
 
             covar_plus_embed_cols = covar_cols + embedding_cols
-            covar_plus_embed_cols = [c for c in covar_plus_embed_cols
-                                      if pred_with_covars[c].null_count() < pred_with_covars.height]
+            covar_plus_embed_cols = [
+                c for c in covar_plus_embed_cols
+                if pred_with_covars.select(
+                    pl.col(c).cast(pl.Float64, strict=False).is_finite().any()
+                ).item()
+            ]
 
             # Use the same patients for both PS models: restrict to those with
             # complete data for the most demanding feature set (covariates + embeddings).
-            common_source_df = pred_with_covars.drop_nulls(subset=covar_plus_embed_cols)
+            common_source_df = filter_finite_rows(
+                pred_with_covars, covar_plus_embed_cols + ['PX_on_ICI']
+            )
             print(f"    Common patient set: {common_source_df.height} "
                   f"(dropped {pred_with_covars.height - common_source_df.height} with missing embeddings/covariates)")
 

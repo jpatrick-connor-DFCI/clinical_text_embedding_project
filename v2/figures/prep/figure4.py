@@ -58,6 +58,7 @@ from sklearn.preprocessing import StandardScaler
 
 from config import FEATURE_PATH, RESULTS_PATH, SURV_PATH
 from figures.io import save_figure_data
+from shared.polars_utils import filter_finite_rows, finite_or_zero
 from shared.stages import STAGE_ORDER, is_stage_iv, load_stage_map, normalize_stage
 
 
@@ -141,14 +142,20 @@ def _scaled_trajectory_matrix(input_path: str) -> tuple[pl.DataFrame, list[str]]
     traj_df = pl.read_csv(input_path)
     monthly_cols = [c for c in traj_df.columns if c != "DFCI_MRN"]
     n_rows = len(traj_df)
-    missing_colwise = {c: int(traj_df[c].null_count()) for c in monthly_cols}
-    months_to_keep = [c for c in monthly_cols if missing_colwise[c] < 0.9 * n_rows]
+    observed_colwise = {
+        c: int(traj_df.select(pl.col(c).cast(pl.Float64, strict=False).is_finite().sum()).item())
+        for c in monthly_cols
+    }
+    months_to_keep = [c for c in monthly_cols if observed_colwise[c] > 0.1 * n_rows]
     month_nums = _month_nums(months_to_keep)
     months_to_keep = [col for col, month in zip(months_to_keep, month_nums)
                       if month <= SLOPE_LANDMARK_MONTHS]
     if months_to_keep:
         non_null_counts = traj_df.select(
-            pl.sum_horizontal([pl.col(c).is_not_null().cast(pl.Int64) for c in months_to_keep]).alias("_n")
+            pl.sum_horizontal([
+                pl.col(c).cast(pl.Float64, strict=False).is_finite().cast(pl.Int64)
+                for c in months_to_keep
+            ]).alias("_n")
         )["_n"].to_numpy()
     else:
         non_null_counts = np.zeros(n_rows, dtype=int)
@@ -168,7 +175,7 @@ def _ols_slopes(traj_sub: pl.DataFrame, months_to_keep: list[str]) -> np.ndarray
     values = traj_sub.select(months_to_keep).to_numpy().astype(float)
     slopes = np.full(len(traj_sub), np.nan, dtype=float)
     for i, y in enumerate(values):
-        mask = ~np.isnan(y)
+        mask = np.isfinite(y)
         if mask.sum() < MIN_SLOPE_POINTS:
             continue
         x_obs = x[mask]
@@ -261,8 +268,16 @@ def _heatmap_downsample(traj_sub: pl.DataFrame, months_to_keep: list[str],
     scaled = traj_sub.select(keep)
     # Display-only forward fill keeps the raster readable. Grouping slopes above
     # always use the original, un-imputed observations.
-    ffilled = scaled.select(months_to_keep).to_pandas().ffill(axis=1)
-    display_values = ffilled.to_numpy(dtype=float)
+    display_values = scaled.select(months_to_keep).to_numpy().astype(float, copy=False)
+    # Forward-fill horizontally without creating a pandas frame. Leading NaNs
+    # remain NaN, matching pandas' ``ffill(axis=1)`` behavior.
+    if display_values.shape[1] > 0:
+        valid = ~np.isnan(display_values)
+        source_col = np.where(valid, np.arange(display_values.shape[1]), 0)
+        np.maximum.accumulate(source_col, axis=1, out=source_col)
+        display_values = display_values[
+            np.arange(display_values.shape[0])[:, None], source_col
+        ]
     scaled_vals = StandardScaler().fit_transform(display_values)
     scaled = scaled.select(["DFCI_MRN", "cluster"]).with_columns([
         pl.Series(months_to_keep[i], scaled_vals[:, i]) for i in range(len(months_to_keep))
@@ -284,10 +299,10 @@ def _km_data(traj_sub: pl.DataFrame) -> pl.DataFrame:
     if traj_sub.is_empty():
         return pl.DataFrame(schema={c: pl.Float64 for c in KM_COLUMNS})
     surv_df = pl.read_parquet(os.path.join(SURV_PATH, "death_met_surv_df.parquet"))
-    out = (traj_sub.select(["DFCI_MRN", "cluster"])
-           .join(surv_df.select(["DFCI_MRN", "death", "tt_death"]), on="DFCI_MRN", how="inner")
-           .drop_nulls())
-    out = out.filter(pl.col("tt_death") > 0)
+    out = traj_sub.select(["DFCI_MRN", "cluster"]).join(
+        surv_df.select(["DFCI_MRN", "death", "tt_death"]), on="DFCI_MRN", how="inner"
+    )
+    out = filter_finite_rows(out, ["cluster", "death", "tt_death"]).filter(pl.col("tt_death") > 0)
     # Attach major stage (I-IV) so the Fig 4 supplement can build within-stage KM
     # curves (Stage I / Stage IV) stratified by trajectory cluster. NaN where the
     # pickle is unavailable or the MRN has no recognizable stage.
@@ -334,7 +349,7 @@ def _cluster_severity(traj_sub: pl.DataFrame, treatment_df: pl.DataFrame) -> pl.
         # and used in the metburden modality. Different anatomy source, different
         # time window, different column casing — do not conflate the two.
         n_met_sites = pl.sum_horizontal([
-            pl.col(c).fill_null(0).clip(upper_bound=1) for c in met_cols
+            finite_or_zero(c).clip(upper_bound=1) for c in met_cols
         ]).alias("n_met_sites")
         merged = merged.with_columns(n_met_sites)
     else:
@@ -354,15 +369,14 @@ def _cluster_severity(traj_sub: pl.DataFrame, treatment_df: pl.DataFrame) -> pl.
         ever_ici = (treatment_df.group_by("DFCI_MRN")
                     .agg(pl.col(ici_col).max().alias("ever_ici")))
         merged = merged.join(ever_ici, on="DFCI_MRN", how="left")
-        merged = merged.with_columns(pl.col("ever_ici").fill_null(0).cast(pl.Float64))
+        merged = merged.with_columns(finite_or_zero("ever_ici").alias("ever_ici"))
     else:
         print(f"  no ICI column found among PX_on_* (looked for ICI/immune checkpoint inhibitors)")
         merged = merged.with_columns(pl.lit(None, dtype=pl.Float64).alias("ever_ici"))
 
     rows = []
     for (k,), sub in merged.group_by(["cluster"], maintain_order=True):
-        valid = sub.drop_nulls(subset=["death", "tt_death"])
-        valid = valid.filter(pl.col("tt_death") > 0)
+        valid = filter_finite_rows(sub, ["death", "tt_death"]).filter(pl.col("tt_death") > 0)
         rmst = np.nan
         if not valid.is_empty():
             kmf = KaplanMeierFitter().fit(valid["tt_death"].to_numpy() / 30.44, valid["death"].to_numpy())

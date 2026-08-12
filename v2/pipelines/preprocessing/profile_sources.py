@@ -7,8 +7,8 @@ were bare string literals repeated at each use site across ~20 files.
 
 PROFILE_DATA parquets are multi-release-deduped (2021_11 -> 2026_03), typed
 `DFCI_MRN: Int64` and `pl.Date` throughout (except `EVENT_DATE` in the notes
-metadata, which is tz-aware UTC). Loaders return polars DataFrames; callers
-convert to pandas at the boundary where downstream v2 code expects it.
+metadata, which is tz-aware UTC). Loaders return Polars DataFrames; callers
+keep them in Polars except at explicit third-party-library boundaries.
 """
 
 import os

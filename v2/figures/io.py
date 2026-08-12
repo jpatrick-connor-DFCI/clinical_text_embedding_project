@@ -69,7 +69,7 @@ def save_figure_data(df: pl.DataFrame, name: str) -> str:
     if len(df.columns) == 0:
         raise ValueError(f"Refusing to write schema-less figure data for {name}")
     if len(df) == 0:
-        # Not raised: many prep functions deliberately return `pd.DataFrame(columns=[...])`
+        # Not raised: many prep functions deliberately return empty typed Polars frames.
         # on a data-not-available path, and that 0-row CSV is a legitimate output today.
         # But it is currently indistinguishable on disk from a successful run (R turns a
         # missing/empty file into an empty tibble and silently renders a placeholder panel),

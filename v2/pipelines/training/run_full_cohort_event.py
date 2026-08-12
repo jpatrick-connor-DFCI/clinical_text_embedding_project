@@ -5,6 +5,8 @@ import json
 import os
 import time
 
+import polars as pl
+
 from anchors import ANCHORS, DEFAULT_ANCHOR, age_col
 from config import SURV_PATH
 from schemes import SCHEMES, get_output_dir
@@ -67,7 +69,7 @@ def main() -> None:
         return
 
     event_pred_df = filter_event_rows(full_prediction_df, args.event)
-    if event_pred_df.empty:
+    if event_pred_df.is_empty():
         reason = f"No rows with tt_{args.event} > 0"
         print(f"[skip-data] {args.scheme}:{args.event} — {reason}")
         _write_skip_report(args.scheme, args.event, "full_cohort", reason)
@@ -90,7 +92,13 @@ def main() -> None:
     embed_cols = [c for c in embed_cols if c not in dropped_cols]
     all_feature_cols = [c for c in all_feature_cols if c not in dropped_cols]
     n_before = len(event_pred_df)
-    event_pred_df = event_pred_df.dropna(subset=all_feature_cols + [args.event, f"tt_{args.event}"])
+    required_cols = all_feature_cols + [args.event, f"tt_{args.event}"]
+    event_pred_df = event_pred_df.filter(
+        pl.all_horizontal([
+            pl.col(c).cast(pl.Float64, strict=False).is_finite()
+            for c in required_cols
+        ])
+    )
     n_dropped = n_before - len(event_pred_df)
     if n_dropped > 0:
         print(f"{label} Dropped {n_dropped}/{n_before} rows with NaN values")
@@ -111,8 +119,8 @@ def main() -> None:
             n_jobs=n_jobs,
             backend=args.backend,
         )
-        text_test.to_csv(text_test_fp, index=False)
-        text_val.to_csv(text_val_fp, index=False)
+        text_test.write_csv(text_test_fp)
+        text_val.write_csv(text_val_fp)
         print(f"[time] {label} text model: {(time.time() - t0) / 60:.1f}m")
     else:
         print(f"[skip] {label} text model already exists")
@@ -127,8 +135,8 @@ def main() -> None:
             tstop_col=f"tt_{args.event}",
             max_iter=args.max_iter,
         )
-        base_results[base_results["eval_data"] == "test_data"].drop(columns="eval_data").to_csv(base_test_fp, index=False)
-        base_results[base_results["eval_data"] == "cv_data"].drop(columns="eval_data").to_csv(base_val_fp, index=False)
+        base_results.filter(pl.col("eval_data") == "test_data").drop("eval_data").write_csv(base_test_fp)
+        base_results.filter(pl.col("eval_data") == "cv_data").drop("eval_data").write_csv(base_val_fp)
         print(f"[time] {label} base model: {(time.time() - t0) / 60:.1f}m")
     else:
         print(f"[skip] {label} base model already exists")

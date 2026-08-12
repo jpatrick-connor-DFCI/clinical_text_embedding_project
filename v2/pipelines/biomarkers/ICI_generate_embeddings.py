@@ -14,6 +14,7 @@ from tqdm import tqdm
 
 from config import DATA_PATH, MATCHED_COHORT_PATH
 from survival import generate_survival_embedding_df
+from shared.polars_utils import filter_finite_rows
 
 from pipelines.biomarkers.biomarker_common import load_note_embeddings
 
@@ -75,7 +76,7 @@ def main() -> None:
                 note_types=note_types, note_timing_col="NOTE_TIME_REL_PRED_START_DT",
                 max_note_window=-buffer, pool_fx=pool_fx, decay_param=0.01, continuous_window=False)
 
-            embedding_vals_pl = embedding_vals.drop_nulls()
+            embedding_vals_pl = filter_finite_rows(embedding_vals, embedding_vals.columns)
             full_dataset = cohort_df.join(embedding_vals_pl, on='DFCI_MRN')
             full_dataset.write_csv(
                 os.path.join(buffer_path, f'ICI_prediction_df_w_{buffer}_day_buffer.csv.gz'),

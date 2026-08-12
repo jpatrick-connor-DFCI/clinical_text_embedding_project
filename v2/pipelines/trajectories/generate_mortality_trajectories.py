@@ -11,6 +11,7 @@ from tqdm import tqdm
 from config import FEATURE_PATH, NOTES_PATH, SURV_PATH
 from schemes import scheme_results_dir
 from survival import generate_survival_embedding_df, get_heldout_risk_scores_CoxPH, run_grid_CoxPH_parallel
+from shared.polars_utils import filter_finite_rows
 
 
 def main() -> None:
@@ -37,8 +38,9 @@ def main() -> None:
     full_prediction_df = (generate_survival_embedding_df(notes_meta, events_data, embeddings_data,
                                                          note_types=note_types, pool_fx={key: 'time_decay_mean' for key in note_types},
                                                          decay_param=decay_param, max_note_window=0)
-                              .join(cancer_type_df, on='DFCI_MRN').drop_nulls())
-    full_prediction_df = full_prediction_df.filter(pl.col(f'tt_{event}') > 0)
+                              .join(cancer_type_df, on='DFCI_MRN'))
+    numeric_cols = [c for c, dtype in full_prediction_df.schema.items() if dtype.is_numeric()]
+    full_prediction_df = filter_finite_rows(full_prediction_df, numeric_cols).filter(pl.col(f'tt_{event}') > 0)
 
     # Define model columns
     base_vars = ['GENDER', 'AGE_AT_TREATMENTSTART']
@@ -56,7 +58,9 @@ def main() -> None:
         l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}',
         max_iter=3000, verbose=5)
 
-    opt_row = embed_val_results.sort('mean_auc(t)', descending=True).row(0, named=True)
+    opt_row = filter_finite_rows(embed_val_results, ['mean_auc(t)']).sort(
+        'mean_auc(t)', descending=True
+    ).row(0, named=True)
     opt_l1_ratio, opt_alpha = opt_row['l1_ratio'], opt_row['alpha']
 
     ## Generate monthly data frames
@@ -86,8 +90,9 @@ def main() -> None:
                                                       pool_fx={key: 'time_decay_mean' for key in note_types}, decay_param=decay_param,
                                                       max_note_window=month_adj * 30)
                         .select(['DFCI_MRN', event, f'tt_{event}'] + base_vars + embed_cols)
-                        .join(cancer_type_df, on='DFCI_MRN').drop_nulls())
-        monthly_data = monthly_data.filter(pl.col(f'tt_{event}') > 0)
+                        .join(cancer_type_df, on='DFCI_MRN'))
+        numeric_cols = [c for c, dtype in monthly_data.schema.items() if dtype.is_numeric()]
+        monthly_data = filter_finite_rows(monthly_data, numeric_cols).filter(pl.col(f'tt_{event}') > 0)
 
         try:
             risk_scores = get_heldout_risk_scores_CoxPH(monthly_data, base_vars + type_cols, continuous_vars, embed_cols,

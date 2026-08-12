@@ -29,6 +29,7 @@ from anchors import ANCHORS
 from figures.io import save_figure_data
 from pipelines.training.slurm_array_utils import filter_event_rows
 from schemes import full_cohort_event_dir, full_cohort_risk_dir, list_trained_events, load_embedding_prediction_df
+from shared.polars_utils import filter_finite_rows
 
 SCHEMES = ["death_met", "icd3_post", "icd4_post", "phecode_post"]
 ANCHOR_LIST = sorted(ANCHORS.keys())
@@ -146,10 +147,11 @@ def _intersection_cohort_metrics(anchor: str, intersection_mrns: dict[str, froze
             surv_cols = ["DFCI_MRN", event, f"tt_{event}"]
             for model, fp in (("text", text_fp), ("base", base_fp)):
                 risk_df = pl.read_csv(fp)
-                merged = risk_df.join(event_df.select(surv_cols), on="DFCI_MRN").drop_nulls()
+                merged = risk_df.join(event_df.select(surv_cols), on="DFCI_MRN")
+                score_col = "text_risk_score" if "text_risk_score" in merged.columns else "base_risk_score"
+                merged = filter_finite_rows(merged, [score_col, event, f"tt_{event}"])
                 if merged.is_empty():
                     continue
-                score_col = "text_risk_score" if "text_risk_score" in merged.columns else "base_risk_score"
                 cindex, mean_auc = _score_predictor(
                     merged[event], merged[f"tt_{event}"], merged[score_col],
                 )

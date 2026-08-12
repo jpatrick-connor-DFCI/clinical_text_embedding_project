@@ -11,6 +11,8 @@ import json
 import os
 import time
 
+import polars as pl
+
 from anchors import ANCHORS, DEFAULT_ANCHOR, age_col
 from config import SURV_PATH
 from schemes import SCHEMES, get_output_dir
@@ -84,7 +86,7 @@ def main() -> None:
         )
 
     event_pred_df = filter_event_rows(full_prediction_df, args.event)
-    if event_pred_df.empty:
+    if event_pred_df.is_empty():
         reason = f"No rows with tt_{args.event} > 0"
         print(f"[skip-data] {args.scheme}:{args.event} — {reason}")
         _write_skip_report(args.scheme, args.event, run_type, reason)
@@ -107,7 +109,13 @@ def main() -> None:
     embed_cols = [c for c in embed_cols if c not in dropped_cols]
     all_feature_cols = [c for c in all_feature_cols if c not in dropped_cols]
     n_before = len(event_pred_df)
-    event_pred_df = event_pred_df.dropna(subset=all_feature_cols + [args.event, f"tt_{args.event}"])
+    required_cols = all_feature_cols + [args.event, f"tt_{args.event}"]
+    event_pred_df = event_pred_df.filter(
+        pl.all_horizontal([
+            pl.col(c).cast(pl.Float64, strict=False).is_finite()
+            for c in required_cols
+        ])
+    )
     n_dropped = n_before - len(event_pred_df)
     if n_dropped > 0:
         print(f"{label} Dropped {n_dropped}/{n_before} rows with NaN values")
@@ -129,8 +137,8 @@ def main() -> None:
             alpha=text_alpha,
             n_jobs=n_jobs,
             backend=args.backend,
-        ).rename(columns={"risk_score": "text_risk_score"})
-        text_scores.to_csv(text_risk_fp, index=False)
+        ).rename({"risk_score": "text_risk_score"})
+        text_scores.write_csv(text_risk_fp)
         print(f"[time] {label} text risk: {(time.time() - t0) / 60:.1f}m ({len(text_scores)} patients)")
     else:
         print(f"[skip] {label} text risk scores already exist")
@@ -148,8 +156,8 @@ def main() -> None:
             penalized=False,
             n_jobs=n_jobs,
             backend=args.backend,
-        ).rename(columns={"risk_score": "base_risk_score"})
-        base_scores.to_csv(base_risk_fp, index=False)
+        ).rename({"risk_score": "base_risk_score"})
+        base_scores.write_csv(base_risk_fp)
         print(f"[time] {label} base risk: {(time.time() - t0) / 60:.1f}m ({len(base_scores)} patients)")
     else:
         print(f"[skip] {label} base risk scores already exist")

@@ -128,12 +128,17 @@ def validate_findings(df, findings_csv):
 
     Returns the updated DataFrame.
     """
-    # Fix any NaN validation_level from previous runs that wrote 'None' (parsed as NaN by pandas)
-    nan_mask = df['validation_level'].is_null() & df['validation_notes'].is_not_null()
-    n_nan = nan_mask.sum()
+    # Normalize legacy pandas outputs: blank/null values and literal None/NaN
+    # strings should all mean a completed review with no supporting evidence.
+    level = pl.col('validation_level').cast(pl.String, strict=False)
+    missing_level = (
+        (level.is_null() | level.str.strip_chars().str.to_lowercase().is_in(['', 'none', 'nan']))
+        & pl.col('validation_notes').is_not_null()
+    )
+    n_nan = int(df.select(missing_level.sum()).item())
     if n_nan > 0:
         df = df.with_columns(
-            pl.when(nan_mask).then(pl.lit('No Evidence')).otherwise(pl.col('validation_level')).alias('validation_level')
+            pl.when(missing_level).then(pl.lit('No Evidence')).otherwise(pl.col('validation_level')).alias('validation_level')
         )
         print(f"  Fixed {n_nan} rows with NaN validation_level -> 'No Evidence'")
 

@@ -66,6 +66,7 @@ from config import CODE_PATH, RESULTS_PATH, SURV_PATH
 from figures.io import save_figure_data
 from pipelines.training.slurm_array_utils import filter_event_rows
 from schemes import full_cohort_event_dir, full_cohort_risk_dir, list_trained_events, load_embedding_prediction_df
+from shared.polars_utils import filter_finite_rows
 from shared.stages import STAGE_ORDER, load_stage_map, normalize_stage
 from survival import find_icd_code
 
@@ -486,9 +487,10 @@ def _merge_risk_with_surv(
     text_rs = pl.read_csv(tp)
     base_rs = pl.read_csv(bp)
     merged = (text_rs.join(base_rs, on="DFCI_MRN")
-                     .join(surv_df.select(["DFCI_MRN", event, f"tt_{event}"]), on="DFCI_MRN")
-                     .drop_nulls())
-    merged = merged.filter(pl.col(f"tt_{event}") > 0)
+                     .join(surv_df.select(["DFCI_MRN", event, f"tt_{event}"]), on="DFCI_MRN"))
+    merged = filter_finite_rows(
+        merged, ["text_risk_score", "base_risk_score", event, f"tt_{event}"]
+    ).filter(pl.col(f"tt_{event}") > 0)
     return merged
 
 
@@ -548,7 +550,7 @@ def _scheme_delta_topk(metrics: pl.DataFrame, k: int = TOPK_PER_CATEGORY) -> pl.
                        [_event_phecode(s, e) for s, e in zip(d["scheme"].to_list(), d["event"].to_list())])
         )
     d = d.with_columns((pl.col("text_cindex") - pl.col("base_cindex")).alias("delta"))
-    d = d.drop_nulls(subset=["delta", "category"])
+    d = filter_finite_rows(d.drop_nulls(subset=["category"]), ["delta"])
     eligible = [_top_hit_eligible(scheme, event)
                 for scheme, event in zip(d["scheme"].to_list(), d["event"].to_list())]
     d = d.filter(pl.Series(eligible))
@@ -781,7 +783,7 @@ def _within_vs_pan(kind: str) -> pl.DataFrame:
         (pl.col("cindex_within") - pl.col("cindex_pan")).alias("cindex_delta"),
         (pl.col("stratum") == "Overall").alias("is_overall"),
     ])
-    out = out.drop_nulls(subset=["auc_pan", "auc_within"])
+    out = filter_finite_rows(out, ["auc_pan", "auc_within"])
     out = out.filter(pl.col("is_overall") | (pl.col("n_heldout") >= 30))
     return out.select(WITHIN_VS_PAN_COLUMNS)
 

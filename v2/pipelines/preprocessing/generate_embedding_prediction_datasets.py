@@ -24,6 +24,7 @@ from anchors import DEFAULT_ANCHOR, anchor_suffix, date_col, ensure_anchor, note
 from config import CODE_PATH, NOTES_PATH, PROCESSED_DATA_PATH, SURV_PATH
 from shared.icd10 import normalize_icd10_undotted, to_icd10_level_3, to_icd10_level_4
 from survival import generate_survival_embedding_df, map_time_to_event
+from shared.polars_utils import filter_finite_rows
 
 # Shared columns/config
 BASE_INPUT_COLS = [
@@ -292,9 +293,13 @@ def _map_events_to_columns(
 
 def _add_metastatic_events(cohort_df: pl.DataFrame, anchor: str = DEFAULT_ANCHOR) -> tuple[pl.DataFrame, list[str]]:
     dfs_to_concat = [
-        pl.read_csv(os.path.join(PROCESSED_DATA_PATH, f'clinical_to_{site}_met.csv'))
+        pl.read_csv(
+            os.path.join(PROCESSED_DATA_PATH, f'clinical_to_{site}_met.csv'),
+            schema_overrides={'dfci_mrn': pl.Float64},
+        )
         .filter(pl.col('event') == 1)
         .select(['dfci_mrn', 'date', 'type'])
+        .with_columns(pl.col('dfci_mrn').cast(pl.Int64))
         for site in MET_SITES
     ]
     met_date_df = pl.concat(dfs_to_concat, how='vertical')
@@ -369,7 +374,7 @@ def _write_outputs(
 
     monthly_data = events_data_sub.join(pooled_embedding_df, on='DFCI_MRN', how='left')
     embedding_cols = [col for col in pooled_embedding_df.columns if col != 'DFCI_MRN']
-    monthly_data = monthly_data.drop_nulls(subset=embedding_cols)
+    monthly_data = filter_finite_rows(monthly_data, embedding_cols)
     monthly_data.write_parquet(os.path.join(SURV_PATH, embedding_filename))
 
 
@@ -398,7 +403,7 @@ def _write_death_met_outputs(
 
     monthly_data = events_data_sub.join(pooled_embedding_df, on='DFCI_MRN', how='left')
     embedding_cols = [col for col in pooled_embedding_df.columns if col != 'DFCI_MRN']
-    monthly_data = monthly_data.drop_nulls(subset=embedding_cols)
+    monthly_data = filter_finite_rows(monthly_data, embedding_cols)
     monthly_data.write_parquet(os.path.join(SURV_PATH, embedding_filename))
 
 
@@ -426,7 +431,7 @@ def main() -> None:
         decay_param=0.01,
     )
     n_any_text = len(pooled_embedding_df)
-    pooled_embedding_df = pooled_embedding_df.drop_nulls()
+    pooled_embedding_df = filter_finite_rows(pooled_embedding_df, pooled_embedding_df.columns)
     print(
         "  Complete-case text cohort (Clinician + Imaging + Pathology): "
         f"{len(pooled_embedding_df)}/{n_any_text} patients retained"

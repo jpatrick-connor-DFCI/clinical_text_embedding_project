@@ -21,7 +21,7 @@ DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[2] / "slurm" / "slurm_mani
 def _event_has_enough_cases(pred_df, event: str, min_events: int = MIN_EVENTS_FOR_CV) -> bool:
     """Check if an event has enough positive and censored cases for CV."""
     event_df = filter_event_rows(pred_df, event)
-    if event_df.empty:
+    if event_df.is_empty():
         return False
     n_events = int(event_df[event].sum())
     n_non_events = len(event_df) - n_events

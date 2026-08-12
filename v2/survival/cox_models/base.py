@@ -27,9 +27,13 @@ def scale_model_data(X_train: pl.DataFrame, X_test: pl.DataFrame, continuous_var
     Returns:
         tuple[pl.DataFrame, pl.DataFrame]: Scaled X_train and X_test.
     """
-    scaler = StandardScaler().fit(X_train.select(continuous_vars).to_pandas())
-    train_scaled = scaler.transform(X_train.select(continuous_vars).to_pandas())
-    test_scaled = scaler.transform(X_test.select(continuous_vars).to_pandas())
+    if not continuous_vars:
+        return X_train, X_test
+    train_continuous = X_train.select(continuous_vars).to_numpy()
+    test_continuous = X_test.select(continuous_vars).to_numpy()
+    scaler = StandardScaler().fit(train_continuous)
+    train_scaled = scaler.transform(train_continuous)
+    test_scaled = scaler.transform(test_continuous)
     X_train_scaled = X_train.with_columns(
         [pl.Series(c, train_scaled[:, i]) for i, c in enumerate(continuous_vars)]
     )
@@ -57,20 +61,28 @@ def run_base_CoxPH(df: pl.DataFrame, base_cols: list[str], continuous_vars: list
 
         # Drop rows with NaN/non-positive time-to-event or NaN event indicators
         n_before = len(df)
+        required_cols = list(dict.fromkeys(base_cols + continuous_vars + [event_col, tstop_col]))
         df = df.filter(
-            pl.col(tstop_col).is_not_null() & (pl.col(tstop_col) > 0) & pl.col(event_col).is_not_null()
+            pl.all_horizontal([
+                pl.col(c).cast(pl.Float64, strict=False).is_finite()
+                for c in required_cols
+            ])
+            & (pl.col(tstop_col) > 0)
         )
-        # Drop rows with NaN in any feature column
-        df = df.drop_nulls(subset=base_cols + continuous_vars)
         n_dropped = n_before - len(df)
         if n_dropped > 0:
             logger.info("run_base_CoxPH: dropped %d/%d rows with invalid tstop/event/features", n_dropped, n_before)
 
         # Split into train+val and held-out test set
-        strat_labels = df[event_col].cast(pl.Int64).to_pandas()
-        df_trainval_pd, df_test_pd = train_test_split(df.to_pandas(), test_size=test_size,
-                                                stratify=strat_labels, random_state=1234)
-        df_trainval, df_test = pl.from_pandas(df_trainval_pd), pl.from_pandas(df_test_pd)
+        row_idx = np.arange(df.height)
+        trainval_idx, test_idx = train_test_split(
+            row_idx,
+            test_size=test_size,
+            stratify=df[event_col].cast(pl.Int64).to_numpy(),
+            random_state=1234,
+        )
+        df_trainval = df[trainval_idx.tolist()]
+        df_test = df[test_idx.tolist()]
 
         Xt_trainval = df_trainval.select(base_cols)
         y_trainval = _make_surv_array(df_trainval[event_col].to_numpy(), df_trainval[tstop_col].to_numpy())
@@ -96,8 +108,10 @@ def run_base_CoxPH(df: pl.DataFrame, base_cols: list[str], continuous_vars: list
 
             cox_model = CoxPHSurvivalAnalysis(n_iter=max_iter)
             try:
-                cox_model.fit(X_train.to_pandas(), y_train)
-                mean_auc_t, ibs, c_index = evaluate_surv_model(cox_model, X_val.to_pandas(), y_train, y_val, eval_times)
+                cox_model.fit(X_train.to_numpy(), y_train)
+                mean_auc_t, ibs, c_index = evaluate_surv_model(
+                    cox_model, X_val.to_numpy(), y_train, y_val, eval_times
+                )
             except Exception as e:
                 logger.warning("run_base_CoxPH CV fold failed: %s", e)
                 mean_auc_t, ibs, c_index = np.nan, np.nan, np.nan
@@ -111,9 +125,9 @@ def run_base_CoxPH(df: pl.DataFrame, base_cols: list[str], continuous_vars: list
         Xt_trainval_scaled, Xt_test_scaled = scale_model_data(Xt_trainval, Xt_test, continuous_vars)
         cox_model_final = CoxPHSurvivalAnalysis(n_iter=max_iter)
         try:
-            cox_model_final.fit(Xt_trainval_scaled.to_pandas(), y_trainval)
+            cox_model_final.fit(Xt_trainval_scaled.to_numpy(), y_trainval)
             mean_auc_t_test, ibs_test, c_index_test = evaluate_surv_model(
-                cox_model_final, Xt_test_scaled.to_pandas(), y_trainval, y_test, eval_times)
+                cox_model_final, Xt_test_scaled.to_numpy(), y_trainval, y_test, eval_times)
         except Exception as e:
             logger.warning("run_base_CoxPH final model failed: %s", e)
             mean_auc_t_test, ibs_test, c_index_test = np.nan, np.nan, np.nan

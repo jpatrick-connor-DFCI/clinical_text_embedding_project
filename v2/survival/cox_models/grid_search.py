@@ -93,7 +93,9 @@ def run_grid_CoxPH_parallel(
         # ---- Filter invalid (NaN/non-positive tstop, NaN event) ----
         n_before = len(df)
         df = df.filter(
-            pl.col(tstop_col).is_not_null() & (pl.col(tstop_col) > 0) & pl.col(event_col).is_not_null()
+            pl.col(tstop_col).cast(pl.Float64, strict=False).is_finite()
+            & (pl.col(tstop_col) > 0)
+            & pl.col(event_col).cast(pl.Float64, strict=False).is_finite()
         )
         n_dropped = n_before - len(df)
         if n_dropped > 0:
@@ -297,7 +299,7 @@ def _run_grid_no_pca(
         orient="row",
     )
 
-    valid_cv = cv_results_df.drop_nulls(subset=["mean_auc(t)"]).filter(pl.col("mean_auc(t)").is_not_nan())
+    valid_cv = cv_results_df.filter(pl.col("mean_auc(t)").is_finite())
     if valid_cv.is_empty():
         raise RuntimeError("All CV evaluations failed (all NaN mean_auc(t)). Check data and parameters.")
     opt = valid_cv.sort("mean_auc(t)", descending=True).row(0, named=True)
@@ -508,7 +510,7 @@ def _run_grid_with_pca(
         )
 
         # ---- final fit (apply same preprocessing to train_val/test) ----
-        valid_cv = cv_results_df.drop_nulls(subset=["mean_auc(t)"]).filter(pl.col("mean_auc(t)").is_not_nan())
+        valid_cv = cv_results_df.filter(pl.col("mean_auc(t)").is_finite())
         if valid_cv.is_empty():
             raise RuntimeError("All CV evaluations failed (all NaN mean_auc(t)). Check data and parameters.")
         opt = valid_cv.sort("mean_auc(t)", descending=True).row(0, named=True)

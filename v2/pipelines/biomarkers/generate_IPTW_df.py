@@ -14,6 +14,7 @@ import random
 import polars as pl
 
 from config import BIOMARKER_PATH, DATA_PATH, SURV_PATH
+from shared.polars_utils import filter_finite_rows
 
 # ============================================================
 # Configuration — edit these to control which combinations to run
@@ -84,7 +85,8 @@ def main() -> None:
             required_pred_cols = {'DFCI_MRN', 'ground_truth', 'model_probs'}
             if not required_pred_cols.issubset(set(preds.columns)):
                 raise ValueError(f"predictions.csv must contain columns: {sorted(required_pred_cols)}")
-            preds = preds.select(['DFCI_MRN', 'ground_truth', 'model_probs']).drop_nulls()
+            preds = preds.select(['DFCI_MRN', 'ground_truth', 'model_probs']).drop_nulls('DFCI_MRN')
+            preds = filter_finite_rows(preds, ['ground_truth', 'model_probs'])
             preds = preds.with_columns(pl.col('ground_truth').cast(pl.Int64))
             ps_pred_dfs[PS_MODEL] = preds
             model_mrns = set(preds['DFCI_MRN'].to_list())
@@ -187,7 +189,9 @@ def main() -> None:
             print(f"  {len(embedding_cols)} embedding cols included for prognostic score")
             interaction_ICI_df = patient_df.select(output_cols)
 
-            interaction_ICI_df = interaction_ICI_df.drop_nulls(subset=['ICI_prediction', 'tt_death', 'death'])
+            interaction_ICI_df = filter_finite_rows(
+                interaction_ICI_df, ['ICI_prediction', 'tt_death', 'death', 'PX_on_ICI']
+            )
             interaction_ICI_df = interaction_ICI_df.with_columns([
                 pl.col('PX_on_ICI').cast(pl.Int64),
                 pl.col('death').cast(pl.Int64),

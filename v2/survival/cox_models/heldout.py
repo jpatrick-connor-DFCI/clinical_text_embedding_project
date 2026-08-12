@@ -61,7 +61,9 @@ def fit_predict_external_CoxPH(
         )
 
     train = train_df.filter(
-        pl.col(tstop_col).is_not_null() & (pl.col(tstop_col) > 0) & pl.col(event_col).is_not_null()
+        pl.col(tstop_col).cast(pl.Float64, strict=False).is_finite()
+        & (pl.col(tstop_col) > 0)
+        & pl.col(event_col).cast(pl.Float64, strict=False).is_finite()
     )
     X_tr = train.select(all_cols).to_numpy().astype(np.float32, copy=True)
     X_ev = eval_df.select(all_cols).to_numpy().astype(np.float32, copy=True)
@@ -113,7 +115,7 @@ def get_heldout_risk_scores_CoxPH(
       - If pca_config has entries, precompute fold-transformed matrices and MEMMAP them (avoids recomputing PCA/scaling).
 
     Other principles:
-      - float32 X, minimal pandas.
+      - float32 NumPy matrices at the estimator boundary; no pandas round trips.
       - y and penalty kept in memory.
     """
 
@@ -133,7 +135,9 @@ def get_heldout_risk_scores_CoxPH(
         # ---- Filter invalid (NaN/non-positive tstop, NaN event) ----
         n_before = len(df)
         df = df.filter(
-            pl.col(tstop_col).is_not_null() & (pl.col(tstop_col) > 0) & pl.col(event_col).is_not_null()
+            pl.col(tstop_col).cast(pl.Float64, strict=False).is_finite()
+            & (pl.col(tstop_col) > 0)
+            & pl.col(event_col).cast(pl.Float64, strict=False).is_finite()
         )
         n_dropped = n_before - len(df)
         if n_dropped > 0:
