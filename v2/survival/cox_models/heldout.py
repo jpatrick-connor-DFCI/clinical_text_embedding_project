@@ -12,7 +12,7 @@ import warnings
 
 import joblib
 import numpy as np
-import pandas as pd
+import polars as pl
 from sklearn.model_selection import StratifiedKFold
 
 from sksurv.linear_model import CoxPHSurvivalAnalysis, CoxnetSurvivalAnalysis
@@ -30,8 +30,8 @@ logger = logging.getLogger(__name__)
 
 
 def fit_predict_external_CoxPH(
-    train_df: pd.DataFrame,
-    eval_df: pd.DataFrame,
+    train_df: pl.DataFrame,
+    eval_df: pl.DataFrame,
     base_cols: list[str],
     continuous_vars: list[str],
     penalized_cols: list[str],
@@ -53,17 +53,18 @@ def fit_predict_external_CoxPH(
     pca_config = pca_config or {}
     all_cols = list(dict.fromkeys(base_cols + continuous_vars + penalized_cols))
     base_col_set = set(base_cols) | (set(continuous_vars) - set(penalized_cols))
-    missing_train = [c for c in all_cols + [event_col, tstop_col] if c not in train_df]
-    missing_eval = [c for c in all_cols if c not in eval_df]
+    missing_train = [c for c in all_cols + [event_col, tstop_col] if c not in train_df.columns]
+    missing_eval = [c for c in all_cols if c not in eval_df.columns]
     if missing_train or missing_eval:
         raise ValueError(
             f"Missing external-score columns: train={missing_train}, eval={missing_eval}"
         )
 
-    valid = train_df[tstop_col].notna() & (train_df[tstop_col] > 0) & train_df[event_col].notna()
-    train = train_df.loc[valid]
-    X_tr = train[all_cols].to_numpy(dtype=np.float32, copy=True)
-    X_ev = eval_df[all_cols].to_numpy(dtype=np.float32, copy=True)
+    train = train_df.filter(
+        pl.col(tstop_col).is_not_null() & (pl.col(tstop_col) > 0) & pl.col(event_col).is_not_null()
+    )
+    X_tr = train.select(all_cols).to_numpy().astype(np.float32, copy=True)
+    X_ev = eval_df.select(all_cols).to_numpy().astype(np.float32, copy=True)
     y_tr = _make_surv_array(train[event_col].to_numpy(), train[tstop_col].to_numpy())
     X_tr, X_ev = _impute_train_test_np(X_tr, X_ev)
     colnames = list(all_cols)
@@ -87,7 +88,7 @@ def fit_predict_external_CoxPH(
 
 
 def get_heldout_risk_scores_CoxPH(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     base_cols: list[str],
     continuous_vars: list[str],
     penalized_cols: list[str],
@@ -105,7 +106,7 @@ def get_heldout_risk_scores_CoxPH(
     ignore_warnings: bool = True,
     backend: str = "loky",          # "loky" or "threading"
     pca_iterated_power: int = 1,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """
     Auto-switch behavior:
       - If pca_config is None or {}, run NO-memmap in-RAM fold fitting (fastest for dense text).
@@ -131,7 +132,9 @@ def get_heldout_risk_scores_CoxPH(
 
         # ---- Filter invalid (NaN/non-positive tstop, NaN event) ----
         n_before = len(df)
-        df = df[df[tstop_col].notna() & (df[tstop_col] > 0) & df[event_col].notna()].copy()
+        df = df.filter(
+            pl.col(tstop_col).is_not_null() & (pl.col(tstop_col) > 0) & pl.col(event_col).is_not_null()
+        )
         n_dropped = n_before - len(df)
         if n_dropped > 0:
             logger.info("get_heldout_risk_scores: dropped %d/%d rows with invalid tstop/event", n_dropped, n_before)
@@ -140,13 +143,13 @@ def get_heldout_risk_scores_CoxPH(
         base_col_set = set(base_cols) | (set(continuous_vars) - set(penalized_cols))
 
         # ---- X in RAM (float32); NaN in features handled per-fold via _impute_train_test_np ----
-        X = df[all_cols].to_numpy(dtype=np.float32, copy=False)
+        X = df.select(all_cols).to_numpy().astype(np.float32, copy=False)
 
         # ---- Structured survival array ----
         y = _make_surv_array(df[event_col].to_numpy(), df[tstop_col].to_numpy())
 
         # ---- CV ----
-        strat_labels = df[event_col].astype(int).to_numpy()
+        strat_labels = df[event_col].cast(pl.Int64).to_numpy()
         cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=1234)
         splits = list(cv.split(X, strat_labels))  # materialize once
 
@@ -208,8 +211,8 @@ def get_heldout_risk_scores_CoxPH(
             out_risk[test_idx] = preds
 
         if id_col in df.columns:
-            return pd.DataFrame({id_col: df[id_col].to_numpy(), "risk_score": out_risk})
-        return pd.DataFrame({"index": df.index.to_numpy(), "risk_score": out_risk})
+            return pl.DataFrame({id_col: df[id_col].to_numpy(), "risk_score": out_risk})
+        return pl.DataFrame({"index": np.arange(df.height), "risk_score": out_risk})
 
     # ==========================================================================================
     # Path B: PCA present => PRECOMPUTE + MEMMAP transformed X
@@ -314,8 +317,8 @@ def get_heldout_risk_scores_CoxPH(
             out_risk[test_idx] = preds
 
         if id_col in df.columns:
-            return pd.DataFrame({id_col: df[id_col].to_numpy(), "risk_score": out_risk})
-        return pd.DataFrame({"index": df.index.to_numpy(), "risk_score": out_risk})
+            return pl.DataFrame({id_col: df[id_col].to_numpy(), "risk_score": out_risk})
+        return pl.DataFrame({"index": np.arange(df.height), "risk_score": out_risk})
 
     finally:
         try:

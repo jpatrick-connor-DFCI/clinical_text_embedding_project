@@ -7,7 +7,7 @@ carried the same four entries; confirmed byte-identical before merging.
 """
 import os
 
-import pandas as pd
+import polars as pl
 
 from anchors import DEFAULT_ANCHOR, anchor_suffix, ensure_anchor
 from config import SURV_PATH
@@ -85,8 +85,8 @@ def feature_held_out_dir(scheme: str, event: str, anchor: str = DEFAULT_ANCHOR) 
     return os.path.join(scheme_results_dir(scheme, anchor), "held_out_risk_scores", event)
 
 
-def load_embedding_prediction_df(scheme: str, anchor: str = DEFAULT_ANCHOR) -> pd.DataFrame:
-    return pd.read_parquet(os.path.join(SURV_PATH, embedding_file(scheme, anchor)))
+def load_embedding_prediction_df(scheme: str, anchor: str = DEFAULT_ANCHOR) -> pl.DataFrame:
+    return pl.read_parquet(os.path.join(SURV_PATH, embedding_file(scheme, anchor)))
 
 
 def list_trained_events(scheme: str, anchor: str = DEFAULT_ANCHOR) -> list[str]:

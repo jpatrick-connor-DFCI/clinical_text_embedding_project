@@ -5,7 +5,7 @@ import os
 from typing import Any
 
 import numpy as np
-import pandas as pd
+import polars as pl
 
 from anchors import DEFAULT_ANCHOR, age_col
 from config import FEATURE_PATH
@@ -40,12 +40,12 @@ def _get_common_feature_mrns() -> set:
     reuse the same computed set instead of re-reading from disk. Callers must not mutate the
     returned set in place — it is the cached object itself, not a copy.
     """
-    somatic_mrns = set(pd.read_csv(os.path.join(FEATURE_PATH, "complete_somatic_data_df.csv.gz"), usecols=["DFCI_MRN"])["DFCI_MRN"])
-    prs_mrns = set(pd.read_csv(os.path.join(FEATURE_PATH, "complete_germline_data_df.csv.gz"), usecols=["DFCI_MRN"])["DFCI_MRN"])
-    stage_mrns = set(pd.read_csv(os.path.join(FEATURE_PATH, "cancer_stage_df.csv.gz"), usecols=["DFCI_MRN"])["DFCI_MRN"])
+    somatic_mrns = set(pl.read_csv(os.path.join(FEATURE_PATH, "complete_somatic_data_df.csv.gz"), columns=["DFCI_MRN"])["DFCI_MRN"])
+    prs_mrns = set(pl.read_csv(os.path.join(FEATURE_PATH, "complete_germline_data_df.csv.gz"), columns=["DFCI_MRN"])["DFCI_MRN"])
+    stage_mrns = set(pl.read_csv(os.path.join(FEATURE_PATH, "cancer_stage_df.csv.gz"), columns=["DFCI_MRN"])["DFCI_MRN"])
     treatment_mrns = set(
-        pd.read_csv(os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv.gz"), usecols=["DFCI_MRN", "treatment_line"])
-        .query("treatment_line == 1")["DFCI_MRN"]
+        pl.read_csv(os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv.gz"), columns=["DFCI_MRN", "treatment_line"])
+        .filter(pl.col("treatment_line") == 1)["DFCI_MRN"]
     )
     common = somatic_mrns & prs_mrns & stage_mrns & treatment_mrns
     print(f"  Common feature cohort: {len(common)} patients (intersection of all modality files)")
@@ -58,39 +58,41 @@ def _get_n_jobs(default: int | None = None) -> int:
     return int(os.getenv("SLURM_CPUS_PER_TASK", "1"))
 
 
-def load_cancer_type_df() -> tuple[pd.DataFrame, list[str]]:
-    cancer_type_df = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_type_df.csv.gz"))
+def load_cancer_type_df() -> tuple[pl.DataFrame, list[str]]:
+    cancer_type_df = pl.read_csv(os.path.join(FEATURE_PATH, "cancer_type_df.csv.gz"))
     type_cols = [col for col in cancer_type_df.columns if col.startswith("CANCER_TYPE_")]
     return cancer_type_df, type_cols
 
 
-def get_events_from_df(df: pd.DataFrame) -> list[str]:
+def get_events_from_df(df: pl.DataFrame) -> list[str]:
     return [col[3:] for col in df.columns if col.startswith("tt_")]
 
 
 def build_full_prediction_df(
     scheme: str, anchor: str = DEFAULT_ANCHOR
-) -> tuple[pd.DataFrame, list[str], list[str], list[str]]:
+) -> tuple[pl.DataFrame, list[str], list[str], list[str]]:
     emb_df = load_embedding_prediction_df(scheme, anchor)
     cancer_type_df, type_cols = load_cancer_type_df()
-    full_prediction_df = emb_df.merge(cancer_type_df[["DFCI_MRN"] + type_cols], on="DFCI_MRN")
+    full_prediction_df = emb_df.join(cancer_type_df.select(["DFCI_MRN"] + type_cols), on="DFCI_MRN")
     embed_cols = [col for col in full_prediction_df.columns if ("EMBEDDING" in col or "2015" in col)]
     events = get_events_from_df(full_prediction_df)
     return full_prediction_df, type_cols, embed_cols, events
 
 
-def filter_event_rows(full_prediction_df: pd.DataFrame, event: str) -> pd.DataFrame:
+def filter_event_rows(full_prediction_df: pl.DataFrame, event: str) -> pl.DataFrame:
     tt_col = f"tt_{event}"
     if tt_col not in full_prediction_df.columns:
         raise ValueError(f"Missing column '{tt_col}' in prediction dataframe.")
     # Drop rows with NaN or non-positive time-to-event values
-    mask = full_prediction_df[tt_col].notna() & (full_prediction_df[tt_col] > 0)
+    mask = full_prediction_df[tt_col].is_not_null() & (full_prediction_df[tt_col] > 0)
     # Also drop rows where the event indicator itself is NaN
     if event in full_prediction_df.columns:
-        mask = mask & full_prediction_df[event].notna()
-    event_pred_df = full_prediction_df.loc[mask].copy()
+        mask = mask & full_prediction_df[event].is_not_null()
+    event_pred_df = full_prediction_df.filter(mask)
     if event == "brainM" and "CANCER_TYPE_BRAIN" in event_pred_df.columns:
-        event_pred_df = event_pred_df.loc[event_pred_df["CANCER_TYPE_BRAIN"].fillna(0).astype(bool) == False].copy()
+        event_pred_df = event_pred_df.filter(
+            event_pred_df["CANCER_TYPE_BRAIN"].fill_null(0).cast(pl.Boolean) == False
+        )
     return event_pred_df
 
 
@@ -98,7 +100,7 @@ def load_feature_modalities_df(
     scheme: str,
     modality: str | None = None,
     anchor: str = DEFAULT_ANCHOR,
-) -> tuple[pd.DataFrame, list[str], list[str], dict[str, Any], dict[str, list[str]]]:
+) -> tuple[pl.DataFrame, list[str], list[str], dict[str, Any], dict[str, list[str]]]:
     """Load feature data for the given scheme.
 
     When *modality* is one of the seven modality names, only that modality's CSV is read and
@@ -123,7 +125,7 @@ def load_feature_modalities_df(
         )
 
     emb_df = load_embedding_prediction_df(scheme, anchor)
-    cancer_type_df = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_type_df.csv.gz"))
+    cancer_type_df = pl.read_csv(os.path.join(FEATURE_PATH, "cancer_type_df.csv.gz"))
     type_cols = [col for col in cancer_type_df.columns if col.startswith("CANCER_TYPE_")]
     embed_cols = [col for col in emb_df.columns if ("EMBEDDING" in col or "2015" in col)]
 
@@ -134,11 +136,11 @@ def load_feature_modalities_df(
     )
 
     # Load only what is needed
-    mrn_stage_df = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_stage_df.csv.gz")) if "stage" in _to_load else None
-    somatic_df = pd.read_csv(os.path.join(FEATURE_PATH, "complete_somatic_data_df.csv.gz")) if "somatic" in _to_load else None
-    prs_df = pd.read_csv(os.path.join(FEATURE_PATH, "complete_germline_data_df.csv.gz")) if "prs" in _to_load else None
-    treatment_df = pd.read_csv(os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv.gz")) if "treatment" in _to_load else None
-    met_burden_df = pd.read_csv(os.path.join(FEATURE_PATH, "met_burden_df.csv.gz")) if "metburden" in _to_load else None
+    mrn_stage_df = pl.read_csv(os.path.join(FEATURE_PATH, "cancer_stage_df.csv.gz")) if "stage" in _to_load else None
+    somatic_df = pl.read_csv(os.path.join(FEATURE_PATH, "complete_somatic_data_df.csv.gz")) if "somatic" in _to_load else None
+    prs_df = pl.read_csv(os.path.join(FEATURE_PATH, "complete_germline_data_df.csv.gz")) if "prs" in _to_load else None
+    treatment_df = pl.read_csv(os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv.gz")) if "treatment" in _to_load else None
+    met_burden_df = pl.read_csv(os.path.join(FEATURE_PATH, "met_burden_df.csv.gz")) if "metburden" in _to_load else None
 
     stage_cols = [col for col in mrn_stage_df.columns if col.startswith("CANCER_STAGE_")] if mrn_stage_df is not None else []
     somatic_cols = [col for col in somatic_df.columns if col.endswith(('_AMP', '_DEL', '_SNV', '_SV', '_FUSION'))] if somatic_df is not None else []
@@ -152,22 +154,22 @@ def load_feature_modalities_df(
     # cohort-unrestricted behaviour) skips this.
     if modality is not None:
         common_mrns = _get_common_feature_mrns()
-        emb_df = emb_df[emb_df["DFCI_MRN"].isin(common_mrns)].copy()
+        emb_df = emb_df.filter(pl.col("DFCI_MRN").is_in(common_mrns))
 
     # Base merge: embedding + cancer type (always needed)
-    full_prediction_df = emb_df.merge(cancer_type_df[["DFCI_MRN"] + type_cols], on="DFCI_MRN")
+    full_prediction_df = emb_df.join(cancer_type_df.select(["DFCI_MRN"] + type_cols), on="DFCI_MRN")
 
     if somatic_df is not None:
-        full_prediction_df = full_prediction_df.merge(somatic_df[["DFCI_MRN"] + somatic_cols], on="DFCI_MRN")
+        full_prediction_df = full_prediction_df.join(somatic_df.select(["DFCI_MRN"] + somatic_cols), on="DFCI_MRN")
     if prs_df is not None:
-        full_prediction_df = full_prediction_df.merge(prs_df[["DFCI_MRN"] + prs_cols], on="DFCI_MRN")
+        full_prediction_df = full_prediction_df.join(prs_df.select(["DFCI_MRN"] + prs_cols), on="DFCI_MRN")
     if treatment_df is not None:
-        full_prediction_df = full_prediction_df.merge(
-            treatment_df.loc[treatment_df["treatment_line"] == 1, ["DFCI_MRN"] + treatment_cols],
+        full_prediction_df = full_prediction_df.join(
+            treatment_df.filter(pl.col("treatment_line") == 1).select(["DFCI_MRN"] + treatment_cols),
             on="DFCI_MRN",
         )
     if mrn_stage_df is not None:
-        full_prediction_df = full_prediction_df.merge(mrn_stage_df[["DFCI_MRN"] + stage_cols], on="DFCI_MRN")
+        full_prediction_df = full_prediction_df.join(mrn_stage_df.select(["DFCI_MRN"] + stage_cols), on="DFCI_MRN")
     if met_burden_df is not None:
         # left join + fillna(0), unlike the inner joins above: met_burden_df is
         # zero-filled to the full cohort by construction, so a missing MRN here
@@ -176,10 +178,12 @@ def load_feature_modalities_df(
         # alone on a stale file; left join + fillna(0) degrades gracefully and
         # matches the file's intended zero-fill semantics.
         met_cols = ["N_MET_SITES"] + met_site_cols
-        full_prediction_df = full_prediction_df.merge(
-            met_burden_df[["DFCI_MRN"] + met_cols], on="DFCI_MRN", how="left"
+        full_prediction_df = full_prediction_df.join(
+            met_burden_df.select(["DFCI_MRN"] + met_cols), on="DFCI_MRN", how="left"
         )
-        full_prediction_df[met_cols] = full_prediction_df[met_cols].fillna(0)
+        full_prediction_df = full_prediction_df.with_columns(
+            [pl.col(c).fill_null(0) for c in met_cols]
+        )
 
     anchor_age_col = age_col(anchor)
     modality_cfg: dict[str, dict[str, Any]] = {
@@ -235,12 +239,12 @@ MIN_NON_EVENTS_FOR_CV = 50
 
 
 def validate_cox_inputs(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     event_col: str,
     tstop_col: str,
     feature_cols: list[str],
     label: str = "",
-) -> tuple[pd.DataFrame, set[str]]:
+) -> tuple[pl.DataFrame, set[str]]:
     """Validate data suitability for Cox PH models before fitting.
 
     Returns (possibly filtered DataFrame, set of dropped constant columns).
@@ -252,8 +256,8 @@ def validate_cox_inputs(
     assert tstop_col in df.columns, f"{tag}Missing time column '{tstop_col}'"
     assert event_col in df.columns, f"{tag}Missing event column '{event_col}'"
 
-    n_nan_time = df[tstop_col].isna().sum()
-    n_nan_event = df[event_col].isna().sum()
+    n_nan_time = df[tstop_col].is_null().sum()
+    n_nan_event = df[event_col].is_null().sum()
     if n_nan_time > 0 or n_nan_event > 0:
         raise ValueError(
             f"{tag}{n_nan_time} NaN times, {n_nan_event} NaN events — "
@@ -265,7 +269,7 @@ def validate_cox_inputs(
         raise ValueError(f"{tag}{n_bad} rows with non-positive time-to-event")
 
     # event must be binary 0/1
-    unique_events = set(df[event_col].unique())
+    unique_events = set(df[event_col].unique().to_list())
     if not unique_events.issubset({0, 1, 0.0, 1.0, True, False}):
         raise ValueError(
             f"{tag}Event column '{event_col}' has non-binary values: "
@@ -291,14 +295,16 @@ def validate_cox_inputs(
     if missing:
         raise ValueError(f"{tag}Missing feature columns: {sorted(missing)}")
 
-    constant_cols = set(c for c in present if df[c].nunique(dropna=False) <= 1)
+    constant_cols = set(c for c in present if df[c].n_unique() <= 1)
     if constant_cols:
         print(f"{tag}Dropping {len(constant_cols)} constant feature columns: {sorted(constant_cols)}")
-        df = df.drop(columns=constant_cols)
+        df = df.drop(constant_cols)
 
     # NaN in features: warn (run_grid_CoxPH_parallel drops these internally)
     non_constant = [c for c in present if c not in constant_cols]
-    n_feat_nan = df[non_constant].isna().any(axis=1).sum()
+    n_feat_nan = df.select(non_constant).select(
+        pl.any_horizontal(pl.all().is_null())
+    ).to_series().sum()
     if n_feat_nan > 0:
         print(f"{tag}Warning: {n_feat_nan}/{len(df)} rows have NaN in feature columns")
 
@@ -307,8 +313,8 @@ def validate_cox_inputs(
 
 def get_best_hparams(val_fp: str) -> tuple[float, float]:
     """Return (l1_ratio, alpha) from the CV row with highest mean_auc(t)."""
-    val_df = pd.read_csv(val_fp)
-    best = val_df.sort_values(by="mean_auc(t)", ascending=False).iloc[0]
+    val_df = pl.read_csv(val_fp)
+    best = val_df.sort(by="mean_auc(t)", descending=True).row(0, named=True)
     return float(best["l1_ratio"]), float(best["alpha"])
 
 

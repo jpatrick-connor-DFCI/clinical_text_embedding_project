@@ -7,7 +7,7 @@ import time
 import warnings
 
 import numpy as np
-import pandas as pd
+import polars as pl
 from sksurv.metrics import concordance_index_censored, cumulative_dynamic_auc
 from sksurv.util import Surv
 from tqdm import tqdm
@@ -44,42 +44,54 @@ def main() -> None:
     time_decayed_events_df = load_embedding_prediction_df("icd3_post")
 
     # Load cancer types
-    cancer_type_df = pd.read_csv(
+    cancer_type_df = pl.read_csv(
         os.path.join(FEATURE_PATH, 'cancer_type_df.csv.gz'),
-        usecols=['DFCI_MRN', 'CANCER_TYPE'])
-    cancer_type_sub = cancer_type_df.loc[cancer_type_df['DFCI_MRN'].isin(time_decayed_events_df['DFCI_MRN'].unique())].copy()
+        columns=['DFCI_MRN', 'CANCER_TYPE'])
+    _emb_mrns = set(time_decayed_events_df['DFCI_MRN'].unique().to_list())
+    cancer_type_sub = cancer_type_df.filter(pl.col('DFCI_MRN').is_in(_emb_mrns))
 
     cancer_type_counts = cancer_type_sub['CANCER_TYPE'].value_counts()
-    types_to_keep = cancer_type_counts[cancer_type_counts >= 500].index.tolist()
-    cancer_type_sub['CANCER_TYPE'] = cancer_type_sub['CANCER_TYPE'].where(cancer_type_sub['CANCER_TYPE'].isin(types_to_keep), 'OTHER')
-    cancer_type_sub = pd.get_dummies(cancer_type_sub, columns=['CANCER_TYPE'], drop_first=True)
+    types_to_keep = set(cancer_type_counts.filter(pl.col('count') >= 500)['CANCER_TYPE'].to_list())
+    cancer_type_sub = cancer_type_sub.with_columns(
+        pl.when(pl.col('CANCER_TYPE').is_in(types_to_keep))
+        .then(pl.col('CANCER_TYPE'))
+        .otherwise(pl.lit('OTHER'))
+        .alias('CANCER_TYPE')
+    )
+    cancer_type_sub = cancer_type_sub.to_dummies(columns=['CANCER_TYPE'], drop_first=True)
 
     # First-line treatment class per patient, derived from the same one-hot source Figure 1 uses
     # (categorical_treatment_data_by_line.csv.gz: DFCI_MRN, treatment_line, PX_on_<class> dummies).
     # Take the first line (treatment_line == 1) and assign each patient the single present class.
     # These dummies are NOT drop_first encoded (a PX_on_OTHER column exists), so a patient with any
     # first-line med has at least one 1; idxmax picks the first class when first line is combination.
-    treatment_by_line = pd.read_csv(os.path.join(FEATURE_PATH, 'categorical_treatment_data_by_line.csv.gz'))
+    treatment_by_line = pl.read_csv(os.path.join(FEATURE_PATH, 'categorical_treatment_data_by_line.csv.gz'))
     tx_cols = [c for c in treatment_by_line.columns if c.startswith('PX_on_')]
-    tx1 = treatment_by_line.loc[treatment_by_line['treatment_line'] == 1].copy()
-    tx1 = tx1.loc[tx1[tx_cols].sum(axis=1) > 0]  # keep patients with a known first-line class
-    tx1['TREATMENT_CLASSIFICATION'] = tx1[tx_cols].idxmax(axis=1).str.replace('PX_on_', '', regex=False)
-    treatment_df = tx1[['DFCI_MRN', 'TREATMENT_CLASSIFICATION']].drop_duplicates(subset='DFCI_MRN')
-    treatment_types = treatment_df['TREATMENT_CLASSIFICATION'].unique()
+    tx1 = treatment_by_line.filter(pl.col('treatment_line') == 1)
+    tx1 = tx1.filter(pl.sum_horizontal(tx_cols) > 0)  # keep patients with a known first-line class
+    tx_matrix = tx1.select(tx_cols).to_numpy()
+    argmax_idx = np.argmax(tx_matrix, axis=1)
+    tx_classes = [tx_cols[i].replace('PX_on_', '', 1) for i in argmax_idx]
+    tx1 = tx1.with_columns(pl.Series('TREATMENT_CLASSIFICATION', tx_classes))
+    treatment_df = tx1.select(['DFCI_MRN', 'TREATMENT_CLASSIFICATION']).unique(subset='DFCI_MRN')
+    treatment_types = treatment_df['TREATMENT_CLASSIFICATION'].unique().to_list()
 
     # Per-class patient counts within the embedding cohort. These gate WHICH classes get a within-model
     # (and therefore a size-matched pan-treatment comparator; see _fit_matched_pan below).
-    _cohort_mrns = time_decayed_events_df['DFCI_MRN'].unique()
-    treatment_counts = treatment_df.loc[treatment_df['DFCI_MRN'].isin(_cohort_mrns), 'TREATMENT_CLASSIFICATION'].value_counts()
-    within_eligible = set(treatment_counts[treatment_counts >= MIN_STRATUM_N].index)
+    _cohort_mrns = set(time_decayed_events_df['DFCI_MRN'].unique().to_list())
+    treatment_counts = (treatment_df.filter(pl.col('DFCI_MRN').is_in(_cohort_mrns))['TREATMENT_CLASSIFICATION']
+                         .value_counts())
+    within_eligible = set(
+        treatment_counts.filter(pl.col('count') >= MIN_STRATUM_N)['TREATMENT_CLASSIFICATION'].to_list()
+    )
 
     # Merge embeddings + cancer types + events
     full_df = (time_decayed_events_df
-               .merge(treatment_df, on='DFCI_MRN', how='inner')
-               .merge(cancer_type_sub, on='DFCI_MRN', how='inner'))
+               .join(treatment_df, on='DFCI_MRN', how='inner')
+               .join(cancer_type_sub, on='DFCI_MRN', how='inner'))
 
     # === Feature definitions ===
-    base_vars = ['GENDER', 'AGE_AT_TREATMENTSTART'] + [col for col in full_df if 'CANCER_TYPE' in col]
+    base_vars = ['GENDER', 'AGE_AT_TREATMENTSTART'] + [col for col in full_df.columns if 'CANCER_TYPE' in col]
     event = 'death'
 
     # Find all time-to-event columns
@@ -90,12 +102,12 @@ def main() -> None:
     embed_cols = [c for c in full_df.columns if ('EMBEDDING' in c or '2015' in c)]
 
     # === Train/held-out split (75% train, 25% held-out evaluation) ===
-    held_mrns = full_df['DFCI_MRN'].sample(frac=0.25, random_state=1234).tolist()
-    train_df = full_df.loc[~full_df['DFCI_MRN'].isin(held_mrns)].reset_index(drop=True)
-    held_df  = full_df.loc[ full_df['DFCI_MRN'].isin(held_mrns)].reset_index(drop=True)
+    held_mrns = set(full_df['DFCI_MRN'].sample(fraction=0.25, seed=1234).to_list())
+    train_df = full_df.filter(~pl.col('DFCI_MRN').is_in(held_mrns))
+    held_df  = full_df.filter( pl.col('DFCI_MRN').is_in(held_mrns))
 
     # Ensure consistent column order
-    held_df = held_df[train_df.columns]
+    held_df = held_df.select(train_df.columns)
 
     # === Identify feature columns ===
     continuous_vars = ['AGE_AT_TREATMENTSTART'] + embed_cols
@@ -134,18 +146,19 @@ def main() -> None:
         """Reference-free per-stratum held-out C-index (size-matched pan vs within) for the
         progress manifest."""
         m = (held_within_df
-             .merge(matched_pan_held_df, on=['DFCI_MRN', 'STRATUM'])
-             .merge(full_df[['DFCI_MRN', f'tt_{event}', event]], on='DFCI_MRN'))
+             .join(matched_pan_held_df, on=['DFCI_MRN', 'STRATUM'])
+             .join(full_df.select(['DFCI_MRN', f'tt_{event}', event]), on='DFCI_MRN'))
         cols = ['within_treatment_risk_score', 'pan_treatment_risk_score', f'tt_{event}', event]
-        m[cols] = m[cols].replace([np.inf, -np.inf], np.nan)
-        m = m.dropna(subset=cols)
+        m = m.with_columns([
+            pl.col(c).replace([float('inf'), float('-inf')], None) for c in cols
+        ]).drop_nulls(subset=cols)
         if len(m) < MIN_HELDOUT_N or m[event].sum() == 0:
             return None, None, len(m)
-        eb = m[event].astype(bool)
-        t = m[f'tt_{event}']
+        eb = m[event].to_numpy().astype(bool)
+        t = m[f'tt_{event}'].to_numpy()
         try:
-            cp = concordance_index_censored(eb, t, m['pan_treatment_risk_score'])[0]
-            cw = concordance_index_censored(eb, t, m['within_treatment_risk_score'])[0]
+            cp = concordance_index_censored(eb, t, m['pan_treatment_risk_score'].to_numpy())[0]
+            cw = concordance_index_censored(eb, t, m['within_treatment_risk_score'].to_numpy())[0]
         except Exception:
             return None, None, len(m)
         return float(cp), float(cw), len(m)
@@ -157,9 +170,9 @@ def main() -> None:
         Checkpointed under a distinct per-class key via RunCheckpoint.save_stratum/
         load_stratum (RunCheckpoint's pan-specific save_pan/load_pan/pan_done slot is unused
         here — there is no single full-cohort pan model to cache)."""
-        pan_pool = train_df.loc[train_df['TREATMENT_CLASSIFICATION'] != treatment]
+        pan_pool = train_df.filter(pl.col('TREATMENT_CLASSIFICATION') != treatment)
         n_match = min(n_match, len(pan_pool))
-        matched_pan_train = pan_pool.sample(n=n_match, random_state=seed)
+        matched_pan_train = pan_pool.sample(n=n_match, seed=seed)
 
         _, matched_val, matched_model = run_grid_CoxPH_parallel(
             matched_pan_train, base_vars, continuous_vars, embed_cols,
@@ -168,25 +181,24 @@ def main() -> None:
         if matched_model is None:
             return None, None, None
 
-        matched_l1, matched_alpha = matched_val.sort_values(
-            by='mean_auc(t)', ascending=False).iloc[0][['l1_ratio', 'alpha']]
+        _best = matched_val.sort('mean_auc(t)', descending=True).row(0, named=True)
+        matched_l1, matched_alpha = _best['l1_ratio'], _best['alpha']
         trained_matched_pan = (
             get_heldout_risk_scores_CoxPH(
                 matched_pan_train, base_vars, continuous_vars, embed_cols,
                 event_col=event, tstop_col=f'tt_{event}', penalized=True, max_iter=3000,
                 l1_ratio=matched_l1, alpha=matched_alpha, backend="threading")
-            .rename(columns={'risk_score': 'pan_treatment_risk_score'})
+            .rename({'risk_score': 'pan_treatment_risk_score'})
         )
-        trained_matched_pan['STRATUM'] = treatment
-        matched_pan_held = pd.DataFrame({
-            'DFCI_MRN': held_df['DFCI_MRN'].values,
+        trained_matched_pan = trained_matched_pan.with_columns(pl.lit(treatment).alias('STRATUM'))
+        matched_pan_held = pl.DataFrame({
+            'DFCI_MRN': held_df['DFCI_MRN'],
             'pan_treatment_risk_score': fit_predict_external_CoxPH(
                 matched_pan_train, held_df, base_vars, continuous_vars, embed_cols,
                 event_col=event, tstop_col=f'tt_{event}', l1_ratio=matched_l1,
                 alpha=matched_alpha, max_iter=3000,
             ),
-            'STRATUM': treatment,
-        })
+        }).with_columns(pl.lit(treatment).alias('STRATUM'))
         return trained_matched_pan, matched_pan_held, (float(matched_l1), float(matched_alpha))
 
     # === Train + score within-treatment models (single resumable pass) ===
@@ -217,7 +229,7 @@ def main() -> None:
         if st == 'skipped':
             continue
 
-        sub_df = train_df.loc[train_df['TREATMENT_CLASSIFICATION'] == treatment]
+        sub_df = train_df.filter(pl.col('TREATMENT_CLASSIFICATION') == treatment)
         if len(sub_df) < MIN_TRAIN_N:
             ckpt.mark_skipped(treatment, 'too_small', meta={'n_train': int(len(sub_df))})
             continue
@@ -233,25 +245,25 @@ def main() -> None:
             ckpt.mark_skipped(treatment, 'no_converge', meta={'n_train': int(len(sub_df))})
             continue
 
-        best_l1, best_alpha = cur_val.sort_values(by='mean_auc(t)', ascending=False).iloc[0][['l1_ratio', 'alpha']]
+        _best = cur_val.sort('mean_auc(t)', descending=True).row(0, named=True)
+        best_l1, best_alpha = _best['l1_ratio'], _best['alpha']
         trained_sub = get_heldout_risk_scores_CoxPH(
             sub_df, base_vars, continuous_vars, embed_cols,
             event_col=event, tstop_col=f'tt_{event}', penalized=True, max_iter=3000,
             l1_ratio=best_l1, alpha=best_alpha, backend="threading"
-        ).rename(columns={'risk_score': 'within_treatment_risk_score'})
-        trained_sub['STRATUM'] = treatment
+        ).rename({'risk_score': 'within_treatment_risk_score'})
+        trained_sub = trained_sub.with_columns(pl.lit(treatment).alias('STRATUM'))
 
         # Held-out predictions for this stratum, taken now while the model is in memory.
-        sub_held = held_df.loc[held_df['TREATMENT_CLASSIFICATION'] == treatment]
-        held_sub = pd.DataFrame({
-            'DFCI_MRN': sub_held['DFCI_MRN'].values,
+        sub_held = held_df.filter(pl.col('TREATMENT_CLASSIFICATION') == treatment)
+        held_sub = pl.DataFrame({
+            'DFCI_MRN': sub_held['DFCI_MRN'],
             'within_treatment_risk_score': fit_predict_external_CoxPH(
                 sub_df, sub_held, base_vars, continuous_vars, embed_cols,
                 event_col=event, tstop_col=f'tt_{event}', l1_ratio=best_l1,
                 alpha=best_alpha, max_iter=3000,
             ),
-            'STRATUM': treatment,
-        })
+        }).with_columns(pl.lit(treatment).alias('STRATUM'))
 
         # Size-matched pan comparator: same train N as this class, class's own patients
         # excluded. Seeded off the base seed + class name so it's reproducible per-class.
@@ -282,19 +294,19 @@ def main() -> None:
 
     if not train_score_frames:
         raise RuntimeError("No within-treatment stratum completed successfully.")
-    trained_within = pd.concat(train_score_frames, ignore_index=True)
-    within_held_all = pd.concat(held_score_frames, ignore_index=True)
+    trained_within = pl.concat(train_score_frames, how='diagonal_relaxed')
+    within_held_all = pl.concat(held_score_frames, how='diagonal_relaxed')
     # Size-matched pan scores, one row per (stratum, patient) — a patient can appear in more
     # than one class's matched-pan pool (only their own class is excluded from that pool), so
     # these are merged against the within frames on (DFCI_MRN, STRATUM), not DFCI_MRN alone.
-    matched_pan_train_all = pd.concat(matched_pan_train_frames, ignore_index=True)
-    matched_pan_held_all = pd.concat(matched_pan_held_frames, ignore_index=True)
+    matched_pan_train_all = pl.concat(matched_pan_train_frames, how='diagonal_relaxed')
+    matched_pan_held_all = pl.concat(matched_pan_held_frames, how='diagonal_relaxed')
 
     # === Evaluate on Training Set ===
-    complete_train = trained_within.merge(
-        matched_pan_train_all[['DFCI_MRN', 'STRATUM', 'pan_treatment_risk_score']], on=['DFCI_MRN', 'STRATUM']
-    ).merge(
-        full_df[['DFCI_MRN', 'TREATMENT_CLASSIFICATION', f'tt_{event}', event]], on='DFCI_MRN'
+    complete_train = trained_within.join(
+        matched_pan_train_all.select(['DFCI_MRN', 'STRATUM', 'pan_treatment_risk_score']), on=['DFCI_MRN', 'STRATUM']
+    ).join(
+        full_df.select(['DFCI_MRN', 'TREATMENT_CLASSIFICATION', f'tt_{event}', event]), on='DFCI_MRN'
     )
 
     # Some within-treatment strata diverge during Cox fitting and emit non-finite OOF
@@ -304,41 +316,45 @@ def main() -> None:
     # input, so every metric call below sees only finite values.
     _score_cols = ['pan_treatment_risk_score', 'within_treatment_risk_score']
     _finite_cols = _score_cols + [f'tt_{event}', event]
-    complete_train[_finite_cols] = complete_train[_finite_cols].replace([np.inf, -np.inf], np.nan)
+    complete_train = complete_train.with_columns([
+        pl.col(c).replace([float('inf'), float('-inf')], None) for c in _finite_cols
+    ])
     _n0 = len(complete_train)
-    complete_train = complete_train.dropna(subset=_finite_cols)
+    complete_train = complete_train.drop_nulls(subset=_finite_cols)
     if len(complete_train) < _n0:
         print(f"Train: dropped {_n0 - len(complete_train)} rows with non-finite risk scores / outcomes")
 
-    times = complete_train[f'tt_{event}']
-    events_bool = complete_train[event].astype(bool)
+    times = complete_train[f'tt_{event}'].to_numpy()
+    events_bool = complete_train[event].to_numpy().astype(bool)
 
-    c_pan_train = concordance_index_censored(events_bool, times, complete_train['pan_treatment_risk_score'])[0]
-    c_within_train = concordance_index_censored(events_bool, times, complete_train['within_treatment_risk_score'])[0]
+    c_pan_train = concordance_index_censored(events_bool, times, complete_train['pan_treatment_risk_score'].to_numpy())[0]
+    c_within_train = concordance_index_censored(events_bool, times, complete_train['within_treatment_risk_score'].to_numpy())[0]
 
     print(f"\nTrain set: Pan-cancer C-index = {c_pan_train:.3f}, Within-cancer C-index = {c_within_train:.3f}")
 
     # === Held-out Evaluation (assemble per-stratum within scores + size-matched pan scores) ===
-    held_scores = within_held_all.merge(
-        matched_pan_held_all[['DFCI_MRN', 'STRATUM', 'pan_treatment_risk_score']], on=['DFCI_MRN', 'STRATUM']
-    ).merge(
-        full_df[['DFCI_MRN', 'TREATMENT_CLASSIFICATION', f'tt_{event}', event]],
+    held_scores = within_held_all.join(
+        matched_pan_held_all.select(['DFCI_MRN', 'STRATUM', 'pan_treatment_risk_score']), on=['DFCI_MRN', 'STRATUM']
+    ).join(
+        full_df.select(['DFCI_MRN', 'TREATMENT_CLASSIFICATION', f'tt_{event}', event]),
         on='DFCI_MRN', how='left'
     )
 
     # Drop non-finite held-out risk scores / outcomes (divergent within-treatment strata).
-    held_scores[_finite_cols] = held_scores[_finite_cols].replace([np.inf, -np.inf], np.nan)
+    held_scores = held_scores.with_columns([
+        pl.col(c).replace([float('inf'), float('-inf')], None) for c in _finite_cols
+    ])
     _n0 = len(held_scores)
-    held_scores = held_scores.dropna(subset=_finite_cols)
+    held_scores = held_scores.drop_nulls(subset=_finite_cols)
     if len(held_scores) < _n0:
         print(f"Held-out: dropped {_n0 - len(held_scores)} rows with non-finite risk scores / outcomes")
 
     # === Compute held-out concordance ===
-    times = held_scores[f'tt_{event}']
-    events_bool = held_scores[event].astype(bool)
+    times = held_scores[f'tt_{event}'].to_numpy()
+    events_bool = held_scores[event].to_numpy().astype(bool)
 
-    c_pan_held = concordance_index_censored(events_bool, times, held_scores['pan_treatment_risk_score'])[0]
-    c_within_held = concordance_index_censored(events_bool, times, held_scores['within_treatment_risk_score'])[0]
+    c_pan_held = concordance_index_censored(events_bool, times, held_scores['pan_treatment_risk_score'].to_numpy())[0]
+    c_within_held = concordance_index_censored(events_bool, times, held_scores['within_treatment_risk_score'].to_numpy())[0]
 
     print(f"Held-out set: Pan-treatment C-index = {c_pan_held:.3f}, Within-treatment C-index = {c_within_held:.3f}")
 
@@ -346,8 +362,8 @@ def main() -> None:
     # IPCW reference + eval-time grid from the TRAINING set, matching evaluate_surv_model
     # (5th–95th percentile, 50 points). Per-stratum eval times are clipped to that stratum's
     # held-out follow-up so cumulative_dynamic_auc never sees out-of-range times.
-    y_train_global = Surv.from_arrays(complete_train[event].astype(bool), complete_train[f'tt_{event}'])
-    _lo, _hi = np.percentile(complete_train[f'tt_{event}'], [5, 95])
+    y_train_global = Surv.from_arrays(complete_train[event].to_numpy().astype(bool), complete_train[f'tt_{event}'].to_numpy())
+    _lo, _hi = np.percentile(complete_train[f'tt_{event}'].to_numpy(), [5, 95])
     base_eval_times = np.linspace(_lo, _hi, 50)
 
     def _mean_auc(sub_df, risk_col):
@@ -356,8 +372,8 @@ def main() -> None:
         if len(et) == 0:
             return np.nan
         try:
-            y_test = Surv.from_arrays(sub_df[event].astype(bool), sub_df[f'tt_{event}'])
-            return cumulative_dynamic_auc(y_train_global, y_test, sub_df[risk_col].values, et)[1]
+            y_test = Surv.from_arrays(sub_df[event].to_numpy().astype(bool), sub_df[f'tt_{event}'].to_numpy())
+            return cumulative_dynamic_auc(y_train_global, y_test, sub_df[risk_col].to_numpy(), et)[1]
         except Exception:
             return np.nan
 
@@ -368,16 +384,16 @@ def main() -> None:
 
     # === Per-Treatment Comparison (Held-out) ===
     cindex_by_treatment = []
-    for treatment in tqdm(sorted(held_scores['TREATMENT_CLASSIFICATION'].dropna().unique()), mininterval=30):
-        sub_df = held_scores.loc[held_scores['TREATMENT_CLASSIFICATION'] == treatment]
+    for treatment in tqdm(sorted(held_scores['TREATMENT_CLASSIFICATION'].drop_nulls().unique().to_list()), mininterval=30):
+        sub_df = held_scores.filter(pl.col('TREATMENT_CLASSIFICATION') == treatment)
         if sub_df.shape[0] < MIN_HELDOUT_N:
             continue
 
-        times = sub_df[f'tt_{event}']
-        events_bool = sub_df[event].astype(bool)
+        times = sub_df[f'tt_{event}'].to_numpy()
+        events_bool = sub_df[event].to_numpy().astype(bool)
 
-        c_pan = concordance_index_censored(events_bool, times, sub_df['pan_treatment_risk_score'])[0]
-        c_within = concordance_index_censored(events_bool, times, sub_df['within_treatment_risk_score'])[0]
+        c_pan = concordance_index_censored(events_bool, times, sub_df['pan_treatment_risk_score'].to_numpy())[0]
+        c_within = concordance_index_censored(events_bool, times, sub_df['within_treatment_risk_score'].to_numpy())[0]
         auc_pan = _mean_auc(sub_df, 'pan_treatment_risk_score')
         auc_within = _mean_auc(sub_df, 'within_treatment_risk_score')
 
@@ -392,10 +408,10 @@ def main() -> None:
             'N_HELDOUT': sub_df.shape[0]
         })
 
-    metrics_df = pd.DataFrame(cindex_by_treatment).sort_values('DELTA_AUC_WITHIN_MINUS_PAN', ascending=False)
+    metrics_df = pl.DataFrame(cindex_by_treatment).sort('DELTA_AUC_WITHIN_MINUS_PAN', descending=True)
 
     # Prepend an "Overall" row so the figure has a reference line / summary.
-    overall_row = pd.DataFrame([{
+    overall_row = pl.DataFrame([{
         'TREATMENT': 'Overall',
         'CINDEX_PAN': c_pan_held,
         'CINDEX_WITHIN': c_within_held,
@@ -404,13 +420,13 @@ def main() -> None:
         'AUC_WITHIN': auc_within_held,
         'DELTA_AUC_WITHIN_MINUS_PAN': auc_within_held - auc_pan_held,
         'N_HELDOUT': len(held_scores),
-    }])
-    metrics_df = pd.concat([overall_row, metrics_df], ignore_index=True)
+    }], schema=metrics_df.schema)
+    metrics_df = pl.concat([overall_row, metrics_df])
 
     # === Save Results === (train_outdir / checkpoints dir were created at the checkpoint-store setup)
-    complete_train.to_csv(os.path.join(train_outdir, 'train_risk_scores.csv'), index=False)
-    held_scores.to_csv(os.path.join(train_outdir, 'held_out_risk_scores.csv'), index=False)
-    metrics_df.to_csv(os.path.join(train_outdir, 'metrics_by_treatment.csv'), index=False)
+    complete_train.write_csv(os.path.join(train_outdir, 'train_risk_scores.csv'))
+    held_scores.write_csv(os.path.join(train_outdir, 'held_out_risk_scores.csv'))
+    metrics_df.write_csv(os.path.join(train_outdir, 'metrics_by_treatment.csv'))
 
     print("\n=== Per-Treatment Results (Held-out) ===")
     print(metrics_df)

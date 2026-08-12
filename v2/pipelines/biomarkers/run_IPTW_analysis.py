@@ -11,13 +11,14 @@ Track 2 (full cohort, IPTW-weighted):
 Notebook-ready: loops over all cohort x ps_model combinations automatically.
 """
 
+import gzip
 import logging
 import os
 import random
 import warnings
 
 import numpy as np
-import pandas as pd
+import polars as pl
 from joblib import Parallel, delayed
 from lifelines import CoxPHFitter
 from lifelines.exceptions import ConvergenceWarning
@@ -75,48 +76,53 @@ def classify(row):
 
 
 def merge_rare_cancer_types_into_other(df, min_total=30):
-    out = df.copy()
+    out = df.clone()
     c_cols = [col for col in out.columns if col.startswith('CANCER_TYPE_')]
     if not c_cols:
         return out, [], []
 
-    cancer_matrix = out[c_cols].apply(pd.to_numeric, errors='coerce').fillna(0)
-    cancer_matrix = (cancer_matrix > 0).astype(int)
-    total_counts = cancer_matrix.sum(axis=0)
+    cancer_matrix = out.select([
+        (pl.col(c).cast(pl.Float64, strict=False).fill_null(0) > 0).cast(pl.Int64).alias(c)
+        for c in c_cols
+    ])
+    total_counts = {c: int(cancer_matrix[c].sum()) for c in c_cols}
 
     keep_cols = [c for c in c_cols if total_counts[c] >= min_total and c != 'CANCER_TYPE_OTHER']
     rare_cols = [c for c in c_cols if c not in keep_cols and c != 'CANCER_TYPE_OTHER']
 
-    existing_other = (cancer_matrix['CANCER_TYPE_OTHER'].copy()
-                      if 'CANCER_TYPE_OTHER' in cancer_matrix.columns
-                      else pd.Series(0, index=out.index, dtype=int))
-    merged_other = existing_other.copy()
+    if 'CANCER_TYPE_OTHER' in cancer_matrix.columns:
+        existing_other = cancer_matrix['CANCER_TYPE_OTHER']
+    else:
+        existing_other = pl.Series('CANCER_TYPE_OTHER', [0] * out.height, dtype=pl.Int64)
+
+    merged_other = existing_other
     if rare_cols:
-        merged_other = ((merged_other + cancer_matrix[rare_cols].sum(axis=1)) > 0).astype(int)
+        rare_sum = cancer_matrix.select(pl.sum_horizontal(rare_cols)).to_series()
+        merged_other = ((existing_other + rare_sum) > 0).cast(pl.Int64)
 
-    out = out.drop(columns=c_cols)
-    for c in keep_cols:
-        out[c] = cancer_matrix[c].astype(int)
-    out['CANCER_TYPE_OTHER'] = merged_other.astype(int)
+    out = out.drop(c_cols)
+    out = out.with_columns([cancer_matrix[c].cast(pl.Int64).alias(c) for c in keep_cols])
+    out = out.with_columns(merged_other.cast(pl.Int64).alias('CANCER_TYPE_OTHER'))
 
-    kept = [c for c in (keep_cols + ['CANCER_TYPE_OTHER']) if out[c].sum() > 0]
+    kept = [c for c in (keep_cols + ['CANCER_TYPE_OTHER']) if int(out[c].sum()) > 0]
     return out, kept, rare_cols
 
 
 def marker_has_within_arm_support(df, marker, treat_col='PX_on_ICI',
                                   min_pos_per_arm=10, min_neg_per_arm=10,
                                   min_events_per_group=5):
-    marker_bin = (pd.to_numeric(df[marker], errors='coerce').fillna(0) > 0).astype(int)
-    treatment = pd.to_numeric(df[treat_col], errors='coerce').fillna(0).astype(int)
+    marker_bin = (df[marker].cast(pl.Float64, strict=False).fill_null(0) > 0).cast(pl.Int64).to_numpy()
+    treatment = df[treat_col].cast(pl.Float64, strict=False).fill_null(0).cast(pl.Int64).to_numpy()
+    death = df['death'].to_numpy()
     for arm in (0, 1):
         arm_mask = treatment == arm
         if arm_mask.sum() == 0:
             return False
-        arm_pos = int(marker_bin.loc[arm_mask].sum())
+        arm_pos = int(marker_bin[arm_mask].sum())
         arm_neg = int(arm_mask.sum() - arm_pos)
         if arm_pos < min_pos_per_arm or arm_neg < min_neg_per_arm:
             return False
-        events_pos = int(df.loc[arm_mask & (marker_bin == 1), 'death'].sum())
+        events_pos = int(death[arm_mask & (marker_bin == 1)].sum())
         if events_pos < min_events_per_group:
             return False
     return True
@@ -124,8 +130,9 @@ def marker_has_within_arm_support(df, marker, treat_col='PX_on_ICI',
 
 def get_marker_event_counts(df, marker, treat_col='PX_on_ICI'):
     """Return event counts for a marker across treatment arms."""
-    marker_bin = (pd.to_numeric(df[marker], errors='coerce').fillna(0) > 0).astype(int)
-    treatment = pd.to_numeric(df[treat_col], errors='coerce').fillna(0).astype(int)
+    marker_bin = (df[marker].cast(pl.Float64, strict=False).fill_null(0) > 0).cast(pl.Int64).to_numpy()
+    treatment = df[treat_col].cast(pl.Float64, strict=False).fill_null(0).cast(pl.Int64).to_numpy()
+    death = df['death'].to_numpy()
     counts = {}
     for arm, arm_label in [(1, 'ICI'), (0, 'nonICI')]:
         arm_mask = treatment == arm
@@ -133,26 +140,27 @@ def get_marker_event_counts(df, marker, treat_col='PX_on_ICI'):
         neg_mask = arm_mask & (marker_bin == 0)
         counts[f'n_{arm_label}_pos'] = int(pos_mask.sum())
         counts[f'n_{arm_label}_neg'] = int(neg_mask.sum())
-        counts[f'events_{arm_label}_pos'] = int(df.loc[pos_mask, 'death'].sum())
-        counts[f'events_{arm_label}_neg'] = int(df.loc[neg_mask, 'death'].sum())
+        counts[f'events_{arm_label}_pos'] = int(death[pos_mask].sum())
+        counts[f'events_{arm_label}_neg'] = int(death[neg_mask].sum())
     return counts
 
 
 def marker_has_ici_only_support(df, marker, min_pos=10, min_events=5):
     """Check if marker has enough positive cases and events within ICI patients."""
-    ici_df = df.loc[df['PX_on_ICI'] == 1]
-    marker_bin = (pd.to_numeric(ici_df[marker], errors='coerce').fillna(0) > 0)
-    marker_pos = marker_bin.sum()
+    ici_df = df.filter(pl.col('PX_on_ICI') == 1)
+    marker_bin = (ici_df[marker].cast(pl.Float64, strict=False).fill_null(0) > 0).to_numpy()
+    death = ici_df['death'].to_numpy()
+    marker_pos = int(marker_bin.sum())
     marker_neg = len(ici_df) - marker_pos
-    events_pos = int(ici_df.loc[marker_bin, 'death'].sum())
+    events_pos = int(death[marker_bin].sum())
     return marker_pos >= min_pos and marker_neg >= min_pos and events_pos >= min_events
 
 
 def compute_smd(df, covariates, treat_col='PX_on_ICI', weights=None):
-    t_mask = df[treat_col] == 1
+    t_mask = (df[treat_col] == 1).to_numpy()
     rows = []
     for cov in covariates:
-        x = pd.to_numeric(df[cov], errors='coerce').fillna(0).values
+        x = df[cov].cast(pl.Float64, strict=False).fill_null(0).to_numpy()
         x_t, x_c = x[t_mask], x[~t_mask]
         pooled_sd = np.sqrt((x_t.var() + x_c.var()) / 2)
         smd_raw = (x_t.mean() - x_c.mean()) / pooled_sd if pooled_sd > 0 else 0.0
@@ -163,12 +171,12 @@ def compute_smd(df, covariates, treat_col='PX_on_ICI', weights=None):
             wm_c = np.average(x_c, weights=w_c) if w_c.sum() > 0 else x_c.mean()
             smd_w = (wm_t - wm_c) / pooled_sd if pooled_sd > 0 else 0.0
         rows.append({'covariate': cov, 'SMD_unweighted': smd_raw, 'SMD_weighted': smd_w})
-    return pd.DataFrame(rows)
+    return pl.DataFrame(rows)
 
 
 def recalibrate_propensity_within_subset(df, ps_col='ICI_prediction', treat_col='PX_on_ICI'):
-    ps = df[[ps_col]].values
-    y = df[treat_col].values.astype(int)
+    ps = df.select(ps_col).to_numpy()
+    y = df[treat_col].to_numpy().astype(int)
     lr = LogisticRegression(penalty=None, solver='lbfgs', max_iter=1000)
     lr.fit(ps, y)
     return lr.predict_proba(ps)[:, 1]
@@ -189,16 +197,23 @@ def fit_cph_log_warnings(cph, df_fit, duration_col, event_col,
 
 
 def _fdr_within_mutation_type(results_df, p_col, fdr_col, sig_col):
-    results_df[fdr_col] = np.nan
-    results_df[sig_col] = False
-    for mut_type in results_df['mutation_type'].unique():
-        mask = results_df['mutation_type'] == mut_type
-        pvals = results_df.loc[mask, p_col]
-        if pvals.empty:
+    fdr_values = [None] * results_df.height
+    sig_values = [False] * results_df.height
+    mut_types = results_df['mutation_type'].to_list()
+    pvals_all = results_df[p_col].to_list()
+    for mut_type in results_df['mutation_type'].unique().to_list():
+        idxs = [i for i, m in enumerate(mut_types) if m == mut_type]
+        pvals = [pvals_all[i] for i in idxs]
+        if not pvals:
             continue
         rej, fdr, _, _ = multipletests(pvals, alpha=0.05, method='fdr_bh')
-        results_df.loc[mask, fdr_col] = fdr
-        results_df.loc[mask, sig_col] = rej
+        for i, f, r in zip(idxs, fdr, rej):
+            fdr_values[i] = float(f)
+            sig_values[i] = bool(r)
+    return results_df.with_columns([
+        pl.Series(fdr_col, fdr_values, dtype=pl.Float64),
+        pl.Series(sig_col, sig_values, dtype=pl.Boolean),
+    ])
 
 
 # =============================================
@@ -223,11 +238,12 @@ def _fit_track2_marker(df, marker, base_vars, weights_col):
     cols = ['tt_death', 'death', 'PX_on_ICI'] + base_vars + [marker]
     if weights_col is not None:
         cols.append(weights_col)
-    df_fit = df[cols].dropna().copy()
+    df_fit_pl = df.select(cols).drop_nulls()
 
     # Compute event counts before fitting
-    event_counts = get_marker_event_counts(df_fit, marker)
+    event_counts = get_marker_event_counts(df_fit_pl, marker)
 
+    df_fit = df_fit_pl.to_pandas()
     mx = f"{marker}_x_ICI"
     df_fit[mx] = df_fit['PX_on_ICI'] * df_fit[marker]
 
@@ -280,25 +296,31 @@ def _fit_track2_marker(df, marker, base_vars, weights_col):
 
 
 def add_track2_fdr_and_labels(results_df):
-    if results_df.empty:
-        for col in ['mutation_type', 'classifier']:
-            results_df[col] = pd.Series(dtype=str)
-        return results_df
+    if results_df.is_empty():
+        return results_df.with_columns([
+            pl.lit(None, dtype=pl.Utf8).alias('mutation_type'),
+            pl.lit(None, dtype=pl.Utf8).alias('classifier'),
+        ])
 
-    results_df['mutation_type'] = results_df['marker'].apply(get_mutation_type)
-    _fdr_within_mutation_type(results_df, 'p_markerxICI', 'FDR_markerxICI', 'significant_predictive')
-    _fdr_within_mutation_type(results_df, 'p_marker_ICI', 'FDR_marker_ICI', 'significant_in_ICI')
-    _fdr_within_mutation_type(results_df, 'p_marker_nonICI', 'FDR_marker_nonICI',
+    results_df = results_df.with_columns(
+        pl.col('marker').map_elements(get_mutation_type, return_dtype=pl.Utf8).alias('mutation_type')
+    )
+    results_df = _fdr_within_mutation_type(results_df, 'p_markerxICI', 'FDR_markerxICI', 'significant_predictive')
+    results_df = _fdr_within_mutation_type(results_df, 'p_marker_ICI', 'FDR_marker_ICI', 'significant_in_ICI')
+    results_df = _fdr_within_mutation_type(results_df, 'p_marker_nonICI', 'FDR_marker_nonICI',
                               'significant_prognostic_nonICI')
-    results_df['classifier'] = results_df.apply(classify, axis=1)
+    classifier_values = [classify(row) for row in results_df.iter_rows(named=True)]
+    results_df = results_df.with_columns(pl.Series('classifier', classifier_values, dtype=pl.Utf8))
 
     # Flag extreme HRs indicating possible model separation
-    results_df['extreme_hr_flag'] = (
-        (~np.isfinite(results_df['HR_markerxICI'])) |
-        (results_df['HR_markerxICI'] > HR_EXTREME_THRESHOLD) |
-        (results_df['HR_markerxICI'] < 1.0 / HR_EXTREME_THRESHOLD)
+    results_df = results_df.with_columns(
+        (
+            (~pl.col('HR_markerxICI').is_finite()) |
+            (pl.col('HR_markerxICI') > HR_EXTREME_THRESHOLD) |
+            (pl.col('HR_markerxICI') < 1.0 / HR_EXTREME_THRESHOLD)
+        ).alias('extreme_hr_flag')
     )
-    n_extreme = results_df['extreme_hr_flag'].sum()
+    n_extreme = int(results_df['extreme_hr_flag'].sum())
     if n_extreme > 0:
         logger.warning(f"  {n_extreme} markers flagged with extreme interaction HRs (>{HR_EXTREME_THRESHOLD} or <{1/HR_EXTREME_THRESHOLD:.4f})")
 
@@ -326,11 +348,10 @@ def _run_track2_screen(type_df, cancer_type, base_vars, biomarker_cols, run_path
         if failed:
             print(f"  Track 2 {spec_name} failures: {len(failed)}. "
                   f"First: {failed[0][0]} -> {failed[0][1]}")
-        spec_df = pd.DataFrame(results, columns=TRACK2_RESULT_COLS)
+        spec_df = pl.DataFrame(results, schema=TRACK2_RESULT_COLS) if results else pl.DataFrame(schema={c: pl.Float64 for c in TRACK2_RESULT_COLS})
         spec_df = add_track2_fdr_and_labels(spec_df)
-        spec_df.to_csv(
-            os.path.join(run_path, f'{cancer_type}_track2_{spec_name}_interaction.csv.gz'),
-            index=False)
+        with gzip.open(os.path.join(run_path, f'{cancer_type}_track2_{spec_name}_interaction.csv.gz'), 'wb') as f:
+            spec_df.write_csv(f)
 
 
 # =============================================
@@ -348,15 +369,17 @@ def _fit_track1_marker(df, marker, base_vars, weights_col):
     cols = ['tt_death', 'death'] + base_vars + [marker]
     if weights_col is not None:
         cols.append(weights_col)
-    df_fit = df[cols].dropna().copy()
+    df_fit_pl = df.select(cols).drop_nulls()
 
     # Compute event counts
-    marker_bin = (pd.to_numeric(df_fit[marker], errors='coerce').fillna(0) > 0)
+    marker_bin = (df_fit_pl[marker].cast(pl.Float64, strict=False).fill_null(0) > 0).to_numpy()
+    death = df_fit_pl['death'].to_numpy()
     n_pos = int(marker_bin.sum())
     n_neg = int((~marker_bin).sum())
-    events_pos = int(df_fit.loc[marker_bin, 'death'].sum())
-    events_neg = int(df_fit.loc[~marker_bin, 'death'].sum())
+    events_pos = int(death[marker_bin].sum())
+    events_neg = int(death[~marker_bin].sum())
 
+    df_fit = df_fit_pl.to_pandas()
     cph = CoxPHFitter(penalizer=0.01)
     cph = fit_cph_log_warnings(cph, df_fit, 'tt_death', 'death',
                                 weights_col=weights_col, robust=True, marker_name=marker)
@@ -382,17 +405,20 @@ def _fit_track1_marker(df, marker, base_vars, weights_col):
 
 
 def add_track1_fdr(results_df):
-    if results_df.empty:
-        results_df['mutation_type'] = pd.Series(dtype=str)
-        return results_df
-    results_df['mutation_type'] = results_df['marker'].apply(get_mutation_type)
-    _fdr_within_mutation_type(results_df, 'p_marker', 'FDR_marker', 'significant_marker')
-
-    results_df['extreme_hr_flag'] = (
-        (results_df['HR_marker'] > HR_EXTREME_THRESHOLD) |
-        (results_df['HR_marker'] < 1.0 / HR_EXTREME_THRESHOLD)
+    if results_df.is_empty():
+        return results_df.with_columns(pl.lit(None, dtype=pl.Utf8).alias('mutation_type'))
+    results_df = results_df.with_columns(
+        pl.col('marker').map_elements(get_mutation_type, return_dtype=pl.Utf8).alias('mutation_type')
     )
-    n_extreme = results_df['extreme_hr_flag'].sum()
+    results_df = _fdr_within_mutation_type(results_df, 'p_marker', 'FDR_marker', 'significant_marker')
+
+    results_df = results_df.with_columns(
+        (
+            (pl.col('HR_marker') > HR_EXTREME_THRESHOLD) |
+            (pl.col('HR_marker') < 1.0 / HR_EXTREME_THRESHOLD)
+        ).alias('extreme_hr_flag')
+    )
+    n_extreme = int(results_df['extreme_hr_flag'].sum())
     if n_extreme > 0:
         logger.warning(f"  {n_extreme} markers flagged with extreme HRs (>{HR_EXTREME_THRESHOLD} or <{1/HR_EXTREME_THRESHOLD:.4f})")
 
@@ -402,18 +428,18 @@ def add_track1_fdr(results_df):
 def _run_track1_screen(type_df, cancer_type, base_vars, biomarker_cols, run_path, n_jobs):
     """Track 1: screen markers with ICI-only support via the generalizability-weighted model."""
     eps = 1e-6
-    ici_only_df = type_df.loc[type_df['PX_on_ICI'] == 1].copy()
+    ici_only_df = type_df.filter(pl.col('PX_on_ICI') == 1)
 
     # Generalizability weights for ICI subset: weight = 1 / ps
     # (reweight ICI patients to look like the full eligible population)
-    ici_ps = ici_only_df['ICI_prediction'].clip(eps, 1 - eps)
+    ici_ps = ici_only_df['ICI_prediction'].clip(eps, 1 - eps).to_numpy()
     w_gen = 1.0 / ici_ps
     low_gen, high_gen = np.percentile(w_gen, IPTW_TRUNC_PCT)
     if np.isfinite(low_gen) and np.isfinite(high_gen):
         w_gen_trunc = np.clip(w_gen, low_gen, high_gen)
     else:
         w_gen_trunc = np.ones(len(ici_only_df))
-    ici_only_df['IPTW_GEN'] = np.asarray(w_gen_trunc)
+    ici_only_df = ici_only_df.with_columns(pl.Series('IPTW_GEN', np.asarray(w_gen_trunc)))
 
     track1_markers = [
         m for m in biomarker_cols
@@ -437,11 +463,10 @@ def _run_track1_screen(type_df, cancer_type, base_vars, biomarker_cols, run_path
         if failed:
             print(f"  Track 1 {spec_name} failures: {len(failed)}. "
                   f"First: {failed[0][0]} -> {failed[0][1]}")
-        spec_df = pd.DataFrame(results, columns=TRACK1_RESULT_COLS)
+        spec_df = pl.DataFrame(results, schema=TRACK1_RESULT_COLS) if results else pl.DataFrame(schema={c: pl.Float64 for c in TRACK1_RESULT_COLS})
         spec_df = add_track1_fdr(spec_df)
-        spec_df.to_csv(
-            os.path.join(run_path, f'{cancer_type}_track1_{spec_name}_ICI_only.csv.gz'),
-            index=False)
+        with gzip.open(os.path.join(run_path, f'{cancer_type}_track1_{spec_name}_ICI_only.csv.gz'), 'wb') as f:
+            spec_df.write_csv(f)
 
 
 # =============================================
@@ -483,7 +508,7 @@ def main() -> None:
 
             # === Load data ===
             input_file = os.path.join(BIOMARKER_PATH, f'IPTW_df_{SPEC_LABEL}.csv.gz')
-            full_df = pd.read_csv(input_file)
+            full_df = pl.read_csv(input_file)
 
             # === Identify column groups ===
             required_vars = ['DFCI_MRN', 'tt_death', 'death']
@@ -516,21 +541,21 @@ def main() -> None:
                 print(f"{'='*60}")
 
                 if cancer_type == 'pan_cancer':
-                    type_df = full_df.copy()
+                    type_df = full_df.clone()
                     type_df, pan_ct_cols, merged_rare = merge_rare_cancer_types_into_other(
                         type_df, min_total=MIN_CANCER_TYPE_TOTAL)
                     if merged_rare:
                         print(f"  Merged {len(merged_rare)} rare cancer types into OTHER: "
                               + ", ".join(sorted(merged_rare)))
-                    panel_cols_fit = [c for c in type_df if 'PANEL' in c]
-                    ct_cols_fit = [c for c in type_df if 'CANCER_TYPE' in c]
+                    panel_cols_fit = [c for c in type_df.columns if 'PANEL' in c]
+                    ct_cols_fit = [c for c in type_df.columns if 'CANCER_TYPE' in c]
                     base_vars = base_covars + line_cols + panel_cols_fit + ct_cols_fit
                 else:
                     ct_col = f'CANCER_TYPE_{cancer_type}'
                     if ct_col not in full_df.columns:
                         print(f"  Skipping: column {ct_col} not found.")
                         continue
-                    type_df = full_df.loc[full_df[ct_col].astype(bool)].copy()
+                    type_df = full_df.filter(pl.col(ct_col).cast(pl.Boolean, strict=False))
                     if len(type_df) < MIN_CANCER_TYPE_N:
                         print(f"  Skipping: only {len(type_df)} patients (minimum {MIN_CANCER_TYPE_N}).")
                         continue
@@ -542,28 +567,31 @@ def main() -> None:
                               f"minimum={MIN_PER_ARM_CANCER_TYPE}).")
                         continue
                     # Recalibrate propensity within subset
-                    if type_df['PX_on_ICI'].nunique() >= 2 and len(type_df) > 10:
-                        ps_before = type_df['ICI_prediction'].copy()
-                        type_df['ICI_prediction'] = recalibrate_propensity_within_subset(type_df)
-                        print(f"  Recalibrated PS (mean {ps_before.mean():.3f} -> "
-                              f"{type_df['ICI_prediction'].mean():.3f})")
-                    panel_cols_fit = [c for c in type_df if 'PANEL' in c]
+                    if type_df['PX_on_ICI'].n_unique() >= 2 and len(type_df) > 10:
+                        ps_before_mean = float(type_df['ICI_prediction'].mean())
+                        recal_ps = recalibrate_propensity_within_subset(type_df)
+                        type_df = type_df.with_columns(pl.Series('ICI_prediction', recal_ps))
+                        print(f"  Recalibrated PS (mean {ps_before_mean:.3f} -> "
+                              f"{float(type_df['ICI_prediction'].mean()):.3f})")
+                    panel_cols_fit = [c for c in type_df.columns if 'PANEL' in c]
                     base_vars = base_covars + line_cols + panel_cols_fit
 
-                if type_df.empty:
+                if type_df.is_empty():
                     print(f"  Skipping: no rows.")
                     continue
-                if type_df['PX_on_ICI'].nunique() < 2:
+                if type_df['PX_on_ICI'].n_unique() < 2:
                     print(f"  Skipping: only one treatment group.")
                     continue
 
                 # --- Common support trimming ---
                 eps = 1e-6
-                ps_raw = type_df['ICI_prediction'].clip(eps, 1 - eps)
-                ps_t = ps_raw[type_df['PX_on_ICI'] == 1]
-                ps_c = ps_raw[type_df['PX_on_ICI'] == 0]
+                ps_raw_series = type_df['ICI_prediction'].clip(eps, 1 - eps)
+                treat_col_np = type_df['PX_on_ICI'].to_numpy()
+                ps_raw = ps_raw_series.to_numpy()
+                ps_t = ps_raw[treat_col_np == 1]
+                ps_c = ps_raw[treat_col_np == 0]
 
-                if ps_t.empty or ps_c.empty:
+                if len(ps_t) == 0 or len(ps_c) == 0:
                     print(f"  Skipping: missing treated or control for common support.")
                     continue
 
@@ -572,18 +600,20 @@ def main() -> None:
                 upper = min(np.percentile(ps_t, COMMON_SUPPORT_PCT[1]),
                             np.percentile(ps_c, COMMON_SUPPORT_PCT[1]))
 
-                if pd.isna(lower) or pd.isna(upper) or lower >= upper:
+                if (lower is None or upper is None or np.isnan(lower) or np.isnan(upper)
+                        or lower >= upper):
                     print(f"  Skipping: no propensity overlap.")
                     continue
 
-                type_df = type_df[(ps_raw >= lower) & (ps_raw <= upper)].copy()
-                if type_df.empty or type_df['PX_on_ICI'].nunique() < 2:
+                trim_mask = (ps_raw >= lower) & (ps_raw <= upper)
+                type_df = type_df.filter(pl.Series(trim_mask))
+                if type_df.is_empty() or type_df['PX_on_ICI'].n_unique() < 2:
                     print(f"  Skipping: no rows or one group after trimming.")
                     continue
 
-                ps = type_df['ICI_prediction'].clip(eps, 1 - eps)
-                treat_mask = type_df['PX_on_ICI'] == 1
-                p_treated = type_df['PX_on_ICI'].mean()
+                ps = type_df['ICI_prediction'].clip(eps, 1 - eps).to_numpy()
+                treat_mask = (type_df['PX_on_ICI'] == 1).to_numpy()
+                p_treated = float(type_df['PX_on_ICI'].mean())
 
                 if p_treated <= 0 or p_treated >= 1:
                     print(f"  Skipping: invalid treated proportion ({p_treated:.4f}).")
@@ -596,7 +626,7 @@ def main() -> None:
                     print(f"  Skipping: non-finite ATE truncation bounds.")
                     continue
                 w_ate_trunc = np.clip(w_ate, low, high)
-                type_df['IPTW_ATE'] = w_ate_trunc
+                type_df = type_df.with_columns(pl.Series('IPTW_ATE', w_ate_trunc))
 
                 # --- ESS ---
                 w_t, w_c = w_ate_trunc[treat_mask], w_ate_trunc[~treat_mask]
@@ -609,42 +639,56 @@ def main() -> None:
                 diag_path = os.path.join(RUN_PATH, f'{cancer_type}_diagnostics/')
                 os.makedirs(diag_path, exist_ok=True)
 
-                ps_diag = type_df[['PX_on_ICI', 'ICI_prediction']].copy()
-                ps_diag['IPTW_ATE'] = w_ate_trunc
-                ps_diag.groupby('PX_on_ICI')['ICI_prediction'].describe().to_csv(
-                    os.path.join(diag_path, 'propensity_score_summary.csv.gz'))
+                ps_diag = type_df.select(['PX_on_ICI', 'ICI_prediction']).with_columns(
+                    pl.Series('IPTW_ATE', w_ate_trunc)
+                )
+                ps_summary = ps_diag.group_by('PX_on_ICI').agg([
+                    pl.col('ICI_prediction').count().alias('count'),
+                    pl.col('ICI_prediction').mean().alias('mean'),
+                    pl.col('ICI_prediction').std().alias('std'),
+                    pl.col('ICI_prediction').min().alias('min'),
+                    pl.col('ICI_prediction').quantile(0.25).alias('25%'),
+                    pl.col('ICI_prediction').median().alias('50%'),
+                    pl.col('ICI_prediction').quantile(0.75).alias('75%'),
+                    pl.col('ICI_prediction').max().alias('max'),
+                ]).sort('PX_on_ICI')
+                with gzip.open(os.path.join(diag_path, 'propensity_score_summary.csv.gz'), 'wb') as f:
+                    ps_summary.write_csv(f)
 
                 # PS AUC within this cancer type subset
-                ps_auc = roc_auc_score(type_df['PX_on_ICI'], type_df['ICI_prediction'])
+                ps_auc = roc_auc_score(type_df['PX_on_ICI'].to_numpy(), type_df['ICI_prediction'].to_numpy())
                 print(f"  PS AUC ({cancer_type}): {ps_auc:.4f}")
 
                 # Cohort summary with event rates
+                death_np = type_df['death'].to_numpy()
                 n_treated = int(treat_mask.sum())
                 n_control = int((~treat_mask).sum())
-                events_treated = int(type_df.loc[treat_mask, 'death'].sum())
-                events_control = int(type_df.loc[~treat_mask, 'death'].sum())
+                events_treated = int(death_np[treat_mask].sum())
+                events_control = int(death_np[~treat_mask].sum())
                 print(f"  Cohort: {n_treated} ICI ({events_treated} deaths, {events_treated/max(n_treated,1)*100:.1f}%), "
                       f"{n_control} non-ICI ({events_control} deaths, {events_control/max(n_control,1)*100:.1f}%)")
 
-                pd.DataFrame([{
-                    'cancer_type': cancer_type,
-                    'N_treated': n_treated, 'N_control': n_control,
-                    'events_treated': events_treated, 'events_control': events_control,
-                    'event_rate_treated': events_treated / max(n_treated, 1),
-                    'event_rate_control': events_control / max(n_control, 1),
-                    'PS_AUC': ps_auc,
-                    'ESS_ATE_treated': ess_t, 'ESS_ATE_control': ess_c,
-                }]).to_csv(os.path.join(diag_path, 'effective_sample_sizes.csv.gz'), index=False)
+                with gzip.open(os.path.join(diag_path, 'effective_sample_sizes.csv.gz'), 'wb') as f:
+                    pl.DataFrame([{
+                        'cancer_type': cancer_type,
+                        'N_treated': n_treated, 'N_control': n_control,
+                        'events_treated': events_treated, 'events_control': events_control,
+                        'event_rate_treated': events_treated / max(n_treated, 1),
+                        'event_rate_control': events_control / max(n_control, 1),
+                        'PS_AUC': ps_auc,
+                        'ESS_ATE_treated': ess_t, 'ESS_ATE_control': ess_c,
+                    }]).write_csv(f)
 
                 balance_covars = base_covars + line_cols + [
                     c for c in type_df.columns
                     if c.startswith('CANCER_TYPE_') or c.upper().startswith('PANEL_VERSION_')]
                 smd_ate = compute_smd(type_df, balance_covars, weights=w_ate_trunc)
-                smd_ate.to_csv(os.path.join(diag_path, 'covariate_balance_smd_ATE.csv.gz'), index=False)
+                with gzip.open(os.path.join(diag_path, 'covariate_balance_smd_ATE.csv.gz'), 'wb') as f:
+                    smd_ate.write_csv(f)
 
                 # Max SMD check (balance quality indicator)
-                max_smd_ate = smd_ate['SMD_weighted'].abs().max()
-                n_imbalanced_ate = (smd_ate['SMD_weighted'].abs() > 0.1).sum()
+                max_smd_ate = float(smd_ate['SMD_weighted'].abs().max())
+                n_imbalanced_ate = int((smd_ate['SMD_weighted'].abs() > 0.1).sum())
                 print(f"  ATE balance: max|SMD|={max_smd_ate:.4f}, {n_imbalanced_ate}/{len(smd_ate)} covariates with |SMD|>0.1")
 
                 # === Track 2: full-cohort interaction ===

@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import os
 
-import pandas as pd
+import polars as pl
 
 from config import FEATURE_PATH
 from figures.io import save_figure_data
@@ -52,10 +52,10 @@ _MODALITY_LABELS = {
 }
 
 
-def _data_availability() -> tuple[pd.DataFrame, pd.DataFrame]:
+def _data_availability() -> tuple[pl.DataFrame, pl.DataFrame]:
     # Full cohort + cancer type, same source used as the Fig 1 cohort denominator.
-    cancer_type_df = pd.read_csv(os.path.join(FEATURE_PATH, "cancer_type_df.csv.gz"),
-                                 usecols=["DFCI_MRN"])
+    cancer_type_df = pl.read_csv(os.path.join(FEATURE_PATH, "cancer_type_df.csv.gz"),
+                                 columns=["DFCI_MRN"])
     cohort_mrns = set(cancer_type_df["DFCI_MRN"])
     n_total = len(cohort_mrns)
 
@@ -66,10 +66,10 @@ def _data_availability() -> tuple[pd.DataFrame, pd.DataFrame]:
     rows += [(m, _MODALITY_LABELS[m], modality_sets[m]) for m in MODALITY_ORDER]
     rows.append(("all", "Passes All Thresholds", all_thresholds))
 
-    cascade_df = pd.DataFrame(
+    cascade_df = pl.DataFrame(
         [{"stage": s, "label": lbl, "n_patients": len(mrns), "n_total": n_total}
          for s, lbl, mrns in rows],
-        columns=DATA_AVAILABILITY_COLUMNS,
+        schema=DATA_AVAILABILITY_COLUMNS,
     )
 
     matrix = availability_matrix(cohort_mrns, modality_sets)

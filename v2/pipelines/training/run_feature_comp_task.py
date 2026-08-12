@@ -6,7 +6,7 @@ import json
 import os
 import time
 
-import pandas as pd
+import polars as pl
 
 from anchors import ANCHORS, DEFAULT_ANCHOR, age_col
 from config import SURV_PATH
@@ -58,7 +58,7 @@ def _parse_args() -> argparse.Namespace:
 def _run_one_modality(
     args: argparse.Namespace,
     modality: str,
-    full_prediction_df: pd.DataFrame,
+    full_prediction_df: pl.DataFrame,
     type_cols_base: list[str],
     modality_cfg: dict,
 ) -> None:
@@ -86,7 +86,7 @@ def _run_one_modality(
         return
 
     event_pred_df = filter_event_rows(full_prediction_df, args.event)
-    if event_pred_df.empty:
+    if event_pred_df.is_empty():
         reason = f"No rows with tt_{args.event} > 0"
         print(f"[skip-data] {args.scheme}:{args.event}:{modality} — {reason}")
         _write_skip_report(args.scheme, args.event, f"feature_comps_{modality}", reason)
@@ -133,7 +133,7 @@ def _run_one_modality(
     # mean imputation (e.g. lab values). All other feature NaNs are unexpected and drop the row.
     imputable_cols = {c for c in all_feature_cols if f"{c}_missing" in event_pred_df.columns}
     drop_subset = [c for c in all_feature_cols if c not in imputable_cols] + [args.event, f"tt_{args.event}"]
-    event_pred_df = event_pred_df.dropna(subset=drop_subset)
+    event_pred_df = event_pred_df.drop_nulls(subset=drop_subset)
     n_dropped = n_before - len(event_pred_df)
     if n_dropped > 0:
         print(f"{label} Dropped {n_dropped}/{n_before} rows with NaN values")
@@ -143,11 +143,11 @@ def _run_one_modality(
     # --- Grid search (skip if already done, reuse val results for risk scores) ---
     if (not args.overwrite) and grid_done:
         print(f"[skip] {label} grid search already done, loading val results")
-        val_df = pd.read_csv(val_fp)
+        val_df = pl.read_csv(val_fp).to_pandas()
     else:
         t0 = time.time()
         test_df, val_df, _ = run_grid_CoxPH_parallel(
-            event_pred_df,
+            event_pred_df.to_pandas(),
             base_vars + type_cols,
             cfg["continuous_vars"],
             cfg["penalized_cols"],
@@ -160,8 +160,8 @@ def _run_one_modality(
             n_jobs=n_jobs,
             backend=args.backend,
         )
-        test_df.to_csv(test_fp, index=False)
-        val_df.to_csv(val_fp, index=False)
+        pl.from_pandas(test_df).write_csv(test_fp)
+        pl.from_pandas(val_df).write_csv(val_fp)
         print(f"[time] {label} grid search: {(time.time() - t0) / 60:.1f}m")
 
     # --- Generate held-out risk scores using best hyperparams ---
@@ -173,7 +173,7 @@ def _run_one_modality(
 
     t1 = time.time()
     risk_scores = get_heldout_risk_scores_CoxPH(
-        event_pred_df,
+        event_pred_df.to_pandas(),
         base_vars + type_cols,
         cfg["continuous_vars"],
         cfg["penalized_cols"],
@@ -187,7 +187,7 @@ def _run_one_modality(
         n_jobs=n_jobs,
         backend=args.backend,
     ).rename(columns={"risk_score": f"{modality}_risk_score"})
-    risk_scores.to_csv(risk_fp, index=False)
+    pl.from_pandas(risk_scores).write_csv(risk_fp)
     print(f"[time] {label} held-out risk: {(time.time() - t1) / 60:.1f}m ({len(risk_scores)} patients)")
     print(f"[done] {args.scheme}:{args.event}:{modality} -> {out_dir}")
 

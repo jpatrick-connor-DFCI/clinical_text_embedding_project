@@ -20,6 +20,7 @@ from functools import reduce
 
 import numpy as np
 import pandas as pd
+import polars as pl
 from lifelines import CoxPHFitter
 from lifelines.exceptions import ConvergenceError
 from sklearn.preprocessing import StandardScaler
@@ -42,7 +43,7 @@ JOINT_BETA_COLUMNS = [
 RISK_SCORE_CORR_COLUMNS = ["modality", *MODALITY_ORDER, "n_patients"]
 
 
-def _modality_cindex(scheme: str) -> pd.DataFrame:
+def _modality_cindex(scheme: str) -> pl.DataFrame:
     root = os.path.join(scheme_results_dir(scheme), "feature_comps")
     events = sorted(os.listdir(root)) if os.path.isdir(root) else []
     rows = []
@@ -54,21 +55,26 @@ def _modality_cindex(scheme: str) -> pd.DataFrame:
             if not os.path.exists(fp):
                 continue
             try:
-                row = pd.read_csv(fp).iloc[0]
+                _df = pl.read_csv(fp)
+                if _df.is_empty():
+                    raise IndexError("empty test metrics file")
+                row = _df.row(0, named=True)
                 rows.append({
                     "scheme": scheme, "event": ev, "modality": mod,
                     "cindex": row["mean_c_index"], "auc": row["mean_auc(t)"],
                 })
-            except (KeyError, IndexError, pd.errors.EmptyDataError, pd.errors.ParserError) as e:
+            except (KeyError, IndexError, pl.exceptions.NoDataError, pl.exceptions.ComputeError) as e:
                 print(f"  [{ev}:{mod}] failed to load test metrics — {type(e).__name__}: {e}")
                 n_failed += 1
                 continue
     if n_failed:
         print(f"  total skipped: {n_failed}")
-    return pd.DataFrame(rows, columns=MODALITY_CINDEX_COLUMNS)
+    if rows:
+        return pl.DataFrame(rows).select(MODALITY_CINDEX_COLUMNS)
+    return pl.DataFrame(schema={c: pl.Float64 for c in MODALITY_CINDEX_COLUMNS})
 
 
-def _joint_betas(scheme: str) -> pd.DataFrame:
+def _joint_betas(scheme: str) -> pl.DataFrame:
     """Refit the joint Cox model per (scheme, event) so we have p-values.
 
     The held-out modality risk scores are produced at training time by
@@ -82,12 +88,12 @@ def _joint_betas(scheme: str) -> pd.DataFrame:
     )
     if not os.path.isdir(risk_root):
         print(f"  missing {risk_root}; skipping joint refit")
-        return pd.DataFrame(columns=JOINT_BETA_COLUMNS)
+        return pl.DataFrame(schema={c: pl.Float64 for c in JOINT_BETA_COLUMNS})
     try:
         tte_df = load_embedding_prediction_df(scheme)
     except FileNotFoundError as exc:
         print(f"  {scheme}: cannot load embedding prediction df ({exc})")
-        return pd.DataFrame(columns=JOINT_BETA_COLUMNS)
+        return pl.DataFrame(schema={c: pl.Float64 for c in JOINT_BETA_COLUMNS})
     available_events = sorted(set(get_events_from_df(tte_df)))
     rows: list[dict[str, object]] = []
     for event in available_events:
@@ -99,34 +105,34 @@ def _joint_betas(scheme: str) -> pd.DataFrame:
             fp = os.path.join(event_dir, f"{mod}_risk_scores.csv")
             if not os.path.exists(fp):
                 continue
-            d = pd.read_csv(fp)
+            d = pl.read_csv(fp)
             risk_col = f"{mod}_risk_score"
             if risk_col not in d.columns and "risk_score" in d.columns:
-                d = d.rename(columns={"risk_score": risk_col})
+                d = d.rename({"risk_score": risk_col})
             if risk_col not in d.columns:
                 continue
-            risk_dfs.append(d[["DFCI_MRN", risk_col]].drop_duplicates(subset=["DFCI_MRN"]))
+            risk_dfs.append(d.select(["DFCI_MRN", risk_col]).unique(subset=["DFCI_MRN"]))
         if len(risk_dfs) < 2:
             continue
-        merged = reduce(lambda l, r: l.merge(r, on="DFCI_MRN", how="inner"), risk_dfs)
+        merged = reduce(lambda l, r: l.join(r, on="DFCI_MRN", how="inner"), risk_dfs)
         keep = ["DFCI_MRN", event, f"tt_{event}"]
         if not set(keep).issubset(tte_df.columns):
             continue
-        merged = merged.merge(tte_df[keep], on="DFCI_MRN", how="inner")
+        merged = merged.join(tte_df.select(keep), on="DFCI_MRN", how="inner")
         risk_cols = [c for c in merged.columns if c.endswith("_risk_score")]
         # Drop rows with NaN in *any* feature or in event/time. The per-modality
         # held-out risk-score files don't all cover the same patients (their
         # outer join can leave NaNs for partially-overlapping cohorts), and
         # lifelines refuses NaNs outright.
-        merged = merged.dropna(subset=risk_cols + [event, f"tt_{event}"])
-        merged = merged.loc[merged[f"tt_{event}"] > 0]
+        merged = merged.drop_nulls(subset=risk_cols + [event, f"tt_{event}"])
+        merged = merged.filter(pl.col(f"tt_{event}") > 0)
         # Drop constant risk-score columns within this event slice; a feature
         # with zero variance breaks StandardScaler and makes the Cox design
         # matrix singular.
-        constant_cols = [c for c in risk_cols if merged[c].nunique(dropna=False) <= 1]
+        constant_cols = [c for c in risk_cols if merged[c].n_unique() <= 1]
         if constant_cols:
             print(f"  [{scheme}/{event}] dropping constant risk columns: {constant_cols}")
-            merged = merged.drop(columns=constant_cols)
+            merged = merged.drop(constant_cols)
             risk_cols = [c for c in risk_cols if c not in constant_cols]
         if len(risk_cols) < 2:
             continue
@@ -135,16 +141,16 @@ def _joint_betas(scheme: str) -> pd.DataFrame:
         if n < 20 or n_events < 5 or n - n_events < 5:
             continue
         try:
-            X = StandardScaler().fit_transform(merged[risk_cols].astype(float))
+            X = StandardScaler().fit_transform(merged.select(risk_cols).cast(pl.Float64).to_numpy())
         except ValueError as exc:
             print(f"  [{scheme}/{event}] standardize failed: {exc}")
             continue
         if not np.isfinite(X).all():
             print(f"  [{scheme}/{event}] non-finite values after standardize; skipping")
             continue
-        fit_df = pd.DataFrame(X, columns=risk_cols, index=merged.index)
-        fit_df[event] = merged[event].astype(int).values
-        fit_df[f"tt_{event}"] = merged[f"tt_{event}"].astype(float).values
+        fit_df = pd.DataFrame(X, columns=risk_cols)
+        fit_df[event] = merged[event].cast(pl.Int64).to_numpy()
+        fit_df[f"tt_{event}"] = merged[f"tt_{event}"].cast(pl.Float64).to_numpy()
         # Small L2 ridge stabilizes the fit on highly-collinear modality risk
         # scores. Without it, near-rank-deficient designs produce huge
         # cancelling betas (|beta| > 1e4) and meaningless p-values. With a
@@ -182,22 +188,66 @@ def _joint_betas(scheme: str) -> pd.DataFrame:
                 "n": n,
                 "n_events": n_events,
             })
-    return pd.DataFrame(rows, columns=JOINT_BETA_COLUMNS)
+    if rows:
+        return pl.DataFrame(rows).select(JOINT_BETA_COLUMNS)
+    return pl.DataFrame(schema={c: pl.Float64 for c in JOINT_BETA_COLUMNS})
 
 
-def _modality_cindex_all() -> pd.DataFrame:
+def _modality_cindex_all() -> pl.DataFrame:
     frames = [_modality_cindex(scheme) for scheme in SCHEMES]
-    frames = [f for f in frames if not f.empty]
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=MODALITY_CINDEX_COLUMNS)
+    frames = [f for f in frames if not f.is_empty()]
+    return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame(schema={c: pl.Float64 for c in MODALITY_CINDEX_COLUMNS})
 
 
-def _joint_betas_all() -> pd.DataFrame:
+def _joint_betas_all() -> pl.DataFrame:
     frames = [_joint_betas(scheme) for scheme in SCHEMES]
-    frames = [f for f in frames if not f.empty]
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=JOINT_BETA_COLUMNS)
+    frames = [f for f in frames if not f.is_empty()]
+    return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame(schema={c: pl.Float64 for c in JOINT_BETA_COLUMNS})
 
 
-def _modality_avg_rank(metrics_df: pd.DataFrame, value_col: str = "cindex") -> pd.DataFrame:
+def _complete_case_rank_matrix(metrics_df: pl.DataFrame, value_col: str):
+    """Shared pivot+rank helper for _modality_avg_rank / _modality_ranks_long.
+
+    Returns (scheme_event_df, modalities, ranks_2d) where ranks_2d is an
+    (n_endpoints x n_modalities) numpy array of average ranks (1 = best),
+    or (None, [], None) if there are no complete-case endpoints.
+    """
+    mat = metrics_df.pivot(on="modality", index=["scheme", "event"], values=value_col, aggregate_function="mean")
+    modalities = [m for m in MODALITY_ORDER if m in mat.columns]
+    if not modalities:
+        return None, [], None
+    key_df = mat.select(["scheme", "event"])
+    mat = mat.select(modalities)
+    complete_mask = mat.select(
+        pl.all_horizontal([pl.col(m).is_not_null() for m in modalities]).alias("_ok")
+    )["_ok"].to_numpy()
+    if not complete_mask.any():
+        return None, [], None
+    key_df = key_df.filter(pl.Series(complete_mask))
+    values = mat.filter(pl.Series(complete_mask)).to_numpy()
+
+    # Higher value -> better -> rank 1; ties share the average rank.
+    order = np.argsort(-values, axis=1, kind="mergesort")
+    ranks = np.empty_like(values, dtype=float)
+    for i in range(values.shape[0]):
+        row = values[i]
+        row_order = order[i]
+        sorted_vals = row[row_order]
+        pos = np.arange(1, len(row) + 1, dtype=float)
+        # average rank for ties
+        avg_pos = pos.copy()
+        j = 0
+        while j < len(sorted_vals):
+            k = j
+            while k + 1 < len(sorted_vals) and sorted_vals[k + 1] == sorted_vals[j]:
+                k += 1
+            avg_pos[j:k + 1] = pos[j:k + 1].mean()
+            j = k + 1
+        ranks[i, row_order] = avg_pos
+    return key_df, modalities, ranks
+
+
+def _modality_avg_rank(metrics_df: pl.DataFrame, value_col: str = "cindex") -> pl.DataFrame:
     """Average performance rank per modality across endpoints.
 
     For each (scheme, event) endpoint, rank the modalities by `value_col` (cindex or
@@ -205,58 +255,48 @@ def _modality_avg_rank(metrics_df: pd.DataFrame, value_col: str = "cindex") -> p
     endpoints where every modality in MODALITY_ORDER has a value, so all averages
     rank the same set.
     """
-    if metrics_df.empty:
-        return pd.DataFrame(columns=MODALITY_AVG_RANK_COLUMNS)
+    if metrics_df.is_empty():
+        return pl.DataFrame(schema={c: pl.Float64 for c in MODALITY_AVG_RANK_COLUMNS})
 
-    mat = metrics_df.pivot_table(
-        index=["scheme", "event"], columns="modality", values=value_col, aggfunc="mean",
-    )
-    modalities = [m for m in MODALITY_ORDER if m in mat.columns]
-    mat = mat.reindex(columns=modalities)
-    mat = mat.dropna(how="any")  # complete-case endpoints only
-    if mat.empty:
-        return pd.DataFrame(columns=MODALITY_AVG_RANK_COLUMNS)
+    _key_df, modalities, ranks = _complete_case_rank_matrix(metrics_df, value_col)
+    if ranks is None:
+        return pl.DataFrame(schema={c: pl.Float64 for c in MODALITY_AVG_RANK_COLUMNS})
 
-    # Higher value -> better -> rank 1; ties share the average rank.
-    ranks = mat.rank(axis=1, ascending=False, method="average")
-    n_events = len(ranks)
-    out = pd.DataFrame({
+    n_events = ranks.shape[0]
+    out = pl.DataFrame({
         "modality": modalities,
-        "mean_rank": [ranks[m].mean() for m in modalities],
-        "sem_rank": [ranks[m].std(ddof=1) / np.sqrt(n_events) if n_events > 1 else 0.0
-                     for m in modalities],
-        "n_events": n_events,
+        "mean_rank": [float(ranks[:, i].mean()) for i in range(len(modalities))],
+        "sem_rank": [float(ranks[:, i].std(ddof=1) / np.sqrt(n_events)) if n_events > 1 else 0.0
+                     for i in range(len(modalities))],
+        "n_events": [n_events] * len(modalities),
     })
-    return out.reindex(columns=MODALITY_AVG_RANK_COLUMNS)
+    return out.select(MODALITY_AVG_RANK_COLUMNS)
 
 
-def _modality_ranks_long(metrics_df: pd.DataFrame, value_col: str = "cindex") -> pd.DataFrame:
+def _modality_ranks_long(metrics_df: pl.DataFrame, value_col: str = "cindex") -> pl.DataFrame:
     """Per-endpoint modality ranks (1 = best) by `value_col`, complete-case only.
 
     Long-format companion to _modality_avg_rank's aggregated mean/SEM, so the
     R tier can run a Friedman test (repeated measures across modalities, one
     block per endpoint) for Fig 3C.
     """
-    if metrics_df.empty:
-        return pd.DataFrame(columns=MODALITY_RANKS_LONG_COLUMNS)
+    if metrics_df.is_empty():
+        return pl.DataFrame(schema={c: pl.Float64 for c in MODALITY_RANKS_LONG_COLUMNS})
 
-    mat = metrics_df.pivot_table(
-        index=["scheme", "event"], columns="modality", values=value_col, aggfunc="mean",
+    key_df, modalities, ranks = _complete_case_rank_matrix(metrics_df, value_col)
+    if ranks is None:
+        return pl.DataFrame(schema={c: pl.Float64 for c in MODALITY_RANKS_LONG_COLUMNS})
+
+    ranks_df = key_df.with_columns([
+        pl.Series(m, ranks[:, i]) for i, m in enumerate(modalities)
+    ])
+    out = ranks_df.unpivot(
+        index=["scheme", "event"], on=modalities, variable_name="modality", value_name="rank",
     )
-    modalities = [m for m in MODALITY_ORDER if m in mat.columns]
-    mat = mat.reindex(columns=modalities)
-    mat = mat.dropna(how="any")
-    if mat.empty:
-        return pd.DataFrame(columns=MODALITY_RANKS_LONG_COLUMNS)
-
-    ranks = mat.rank(axis=1, ascending=False, method="average")
-    out = ranks.reset_index().melt(
-        id_vars=["scheme", "event"], var_name="modality", value_name="rank",
-    )
-    return out.reindex(columns=MODALITY_RANKS_LONG_COLUMNS)
+    return out.select(MODALITY_RANKS_LONG_COLUMNS)
 
 
-def _risk_score_corr(scheme: str, event: str = "death") -> pd.DataFrame:
+def _risk_score_corr(scheme: str, event: str = "death") -> pl.DataFrame:
     risk_dir = feature_held_out_dir(scheme, event)
     dfs = []
     for mod in MODALITY_ORDER:
@@ -264,23 +304,28 @@ def _risk_score_corr(scheme: str, event: str = "death") -> pd.DataFrame:
         if not os.path.exists(fp):
             print(f"  missing {fp}")
             continue
-        d = pd.read_csv(fp)
+        d = pl.read_csv(fp)
         risk_col = f"{mod}_risk_score"
         if risk_col not in d.columns and "risk_score" in d.columns:
-            d = d.rename(columns={"risk_score": risk_col})
-        dfs.append(d[["DFCI_MRN", risk_col]])
+            d = d.rename({"risk_score": risk_col})
+        dfs.append(d.select(["DFCI_MRN", risk_col]))
     if not dfs:
-        return pd.DataFrame(columns=RISK_SCORE_CORR_COLUMNS)
-    merged = reduce(lambda l, r: l.merge(r, on="DFCI_MRN", how="inner"), dfs)
+        return pl.DataFrame(schema={c: pl.Float64 for c in RISK_SCORE_CORR_COLUMNS})
+    merged = reduce(lambda l, r: l.join(r, on="DFCI_MRN", how="inner"), dfs)
     cols = [c for c in merged.columns if c.endswith("_risk_score")]
-    corr = merged[cols].corr()
-    corr.index = [c.replace("_risk_score", "") for c in corr.index]
-    corr.columns = [c.replace("_risk_score", "") for c in corr.columns]
-    out = corr.reset_index().rename(columns={"index": "modality"})
-    out["n_patients"] = len(merged)
+    corr_mat = np.corrcoef(merged.select(cols).to_numpy(), rowvar=False)
+    mod_names = [c.replace("_risk_score", "") for c in cols]
+    out = pl.DataFrame({"modality": mod_names})
+    out = out.with_columns([
+        pl.Series(mod_names[i], corr_mat[:, i]) for i in range(len(mod_names))
+    ])
+    out = out.with_columns(pl.lit(len(merged)).alias("n_patients"))
     # Enforce stable schema: always emit all MODALITY_ORDER columns, NaN where
     # the modality risk-score file was missing for this scheme/event.
-    return out.reindex(columns=RISK_SCORE_CORR_COLUMNS)
+    missing = [c for c in RISK_SCORE_CORR_COLUMNS if c not in out.columns]
+    if missing:
+        out = out.with_columns([pl.lit(None, dtype=pl.Float64).alias(c) for c in missing])
+    return out.select(RISK_SCORE_CORR_COLUMNS)
 
 
 def main() -> None:

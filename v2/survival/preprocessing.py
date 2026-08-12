@@ -7,7 +7,7 @@ try:
 except ImportError:  # Keep non-ICD utilities importable in minimal environments.
     icd10 = None
 import numpy as np
-import pandas as pd
+import polars as pl
 
 def clean_text(text: str) -> str:
     """
@@ -106,68 +106,77 @@ def find_icd_block_description(code: str) -> str | None:
 
     return None
 
-def map_time_to_event(df_events: pd.DataFrame, df_all: pd.DataFrame, mrn_col: str, event_col: str,
-                      time_col: str, censor_time_col: str = 'tt_death') -> tuple[pd.Series, pd.Series]:
+def map_time_to_event(df_events: pl.DataFrame, df_all: pl.DataFrame, mrn_col: str, event_col: str,
+                      time_col: str, censor_time_col: str = 'tt_death') -> tuple[pl.Series, pl.Series]:
     """
     Map patient MRNs to time-to-event and event indicators for survival analysis.
 
     Args:
-        df_events (pd.DataFrame): DataFrame with observed events.
-        df_all (pd.DataFrame): DataFrame with all patients (including censored).
+        df_events (pl.DataFrame): DataFrame with observed events.
+        df_all (pl.DataFrame): DataFrame with all patients (including censored).
         mrn_col (str): Column name for patient identifiers (MRN).
         event_col (str): Column name indicating the event.
         time_col (str): Column name for time-to-event.
         censor_time_col (str, optional): Column name for censoring time. Defaults to 'tt_death'.
 
     Returns:
-        tuple[pd.Series, pd.Series]:
+        tuple[pl.Series, pl.Series]:
             - Series mapping MRNs to time-to-event.
             - Series mapping MRNs to event indicator (1=event, 0=censored).
     """
     # Patients with observed events
-    mrns_with_event = df_events[mrn_col].unique()
+    mrns_with_event = set(df_events[mrn_col].unique().to_list())
 
     # Time to event for observed events
-    tt_dict = {mrn: df_events.loc[df_events[mrn_col] == mrn, time_col].min() for mrn in mrns_with_event}
+    tt_events = (
+        df_events.group_by(mrn_col).agg(pl.col(time_col).min().alias('_tt'))
+    )
+    tt_dict = dict(zip(tt_events[mrn_col].to_list(), tt_events['_tt'].to_list()))
     event_dict = {mrn: 1 for mrn in mrns_with_event}
 
     # Patients without event (censored)
-    mrns_without_event = list(set(df_all[mrn_col].unique()) - set(mrns_with_event))
-    tt_dict.update(
-        dict(df_all.loc[df_all[mrn_col].isin(mrns_without_event), [mrn_col, censor_time_col]].values.tolist())
-    )
+    mrns_without_event = list(set(df_all[mrn_col].unique().to_list()) - mrns_with_event)
+    censored = df_all.filter(pl.col(mrn_col).is_in(mrns_without_event)).select([mrn_col, censor_time_col])
+    tt_dict.update(dict(zip(censored[mrn_col].to_list(), censored[censor_time_col].to_list())))
     event_dict.update({mrn: 0 for mrn in mrns_without_event})
 
     # Map dictionaries back to Series aligned with df_all
-    return df_all[mrn_col].map(tt_dict), df_all[mrn_col].map(event_dict)
+    mrn_list = df_all[mrn_col].to_list()
+    tt_series = pl.Series(time_col, [tt_dict.get(mrn) for mrn in mrn_list])
+    event_series = pl.Series(event_col, [event_dict.get(mrn) for mrn in mrn_list])
+    return tt_series, event_series
 
-def find_continuous_records_to_analyze(notes_meta: pd.DataFrame, note_timing_col: str = 'NOTE_TIME_REL_FIRST_TREATMENT_START',
-                                       gap_threshold: int = 2 * 365, max_note_window: int = 0) -> pd.DataFrame:
+def find_continuous_records_to_analyze(notes_meta: pl.DataFrame, note_timing_col: str = 'NOTE_TIME_REL_FIRST_TREATMENT_START',
+                                       gap_threshold: int = 2 * 365, max_note_window: int = 0) -> pl.DataFrame:
     """
     Identify continuous sequences of patient notes within a specified time window. Assume that time 0 is the beginning of the prediction window.
 
     A continuous segment is defined as consecutive notes where gaps do not exceed `gap_threshold`.
 
     Args:
-        notes_meta (pd.DataFrame): Metadata for notes, must include 'DFCI_MRN' and note timing column.
+        notes_meta (pl.DataFrame): Metadata for notes, must include 'DFCI_MRN' and note timing column.
         note_timing_col (str, optional): Column representing time relative to treatment start. Defaults to 'NOTE_TIME_REL_FIRST_TREATMENT_START'.
         gap_threshold (int, optional): Maximum allowed gap (in days) between consecutive notes in a segment. Defaults to 2*365.
 
     Returns:
-        pd.DataFrame: Subset of notes_meta containing only continuous records within allowed windows.
+        pl.DataFrame: Subset of notes_meta containing only continuous records within allowed windows.
     """
 
-    notes_within_window = notes_meta.loc[notes_meta[note_timing_col] < max_note_window].copy()
-    notes_within_window[note_timing_col] = notes_within_window[note_timing_col] - max_note_window
-    indices_to_include = []
+    notes_within_window = notes_meta.filter(pl.col(note_timing_col) < max_note_window)
+    notes_within_window = notes_within_window.with_columns(
+        (pl.col(note_timing_col) - max_note_window).alias(note_timing_col)
+    )
+    notes_within_window = notes_within_window.with_row_index('_row_id')
+    rows_to_include = []
 
     # Process each patient separately
-    for mrn_val in notes_within_window['DFCI_MRN'].unique():
+    for mrn_val in notes_within_window['DFCI_MRN'].unique().to_list():
         mrn_notes = (
-            notes_within_window.loc[notes_within_window['DFCI_MRN'] == mrn_val]
-            .sort_values(by=note_timing_col)
+            notes_within_window.filter(pl.col('DFCI_MRN') == mrn_val)
+            .sort(note_timing_col)
         )
-        note_times = mrn_notes[note_timing_col].values
+        note_times = mrn_notes[note_timing_col].to_numpy()
+        row_ids = mrn_notes['_row_id'].to_numpy()
         if len(note_times) == 0:
             continue
 
@@ -189,17 +198,13 @@ def find_continuous_records_to_analyze(notes_meta: pd.DataFrame, note_timing_col
         if chosen_window is not None:
             lbound, ubound = chosen_window
             # Include all notes within the chosen segment
-            indices_to_include.extend(
-                mrn_notes.loc[
-                    (mrn_notes[note_timing_col] >= lbound)
-                    & (mrn_notes[note_timing_col] <= ubound)
-                ].index.tolist()
-            )
+            mask = (note_times >= lbound) & (note_times <= ubound)
+            rows_to_include.extend(row_ids[mask].tolist())
 
-    notes_within_window = notes_within_window.loc[indices_to_include]
+    notes_within_window = notes_within_window.filter(pl.col('_row_id').is_in(rows_to_include)).drop('_row_id')
 
     # Sanity check to ensure no notes exceed allowed window
-    if not notes_within_window.empty:
+    if not notes_within_window.is_empty():
         max_time = notes_within_window[note_timing_col].max()
         if max_time > 0:
             raise ValueError(
@@ -209,10 +214,10 @@ def find_continuous_records_to_analyze(notes_meta: pd.DataFrame, note_timing_col
 
     return notes_within_window
 
-def pool_embedding_series_vectorized(meta_df: pd.DataFrame, embedding_array: np.ndarray, note_types: list[str],
+def pool_embedding_series_vectorized(meta_df: pl.DataFrame, embedding_array: np.ndarray, note_types: list[str],
                                      note_timing_col: str = 'NOTE_TIME_REL_FIRST_TREATMENT_START',
                                      pool_fx: dict[str, str] | None = None, decay_param: float | None = None,
-                                     year_adj_cols: list[str] = ['Imaging', 'Pathology']) -> pd.DataFrame:
+                                     year_adj_cols: list[str] = ['Imaging', 'Pathology']) -> pl.DataFrame:
     """
     Pool embeddings for each patient and note type using specified strategies.
 
@@ -224,7 +229,7 @@ def pool_embedding_series_vectorized(meta_df: pd.DataFrame, embedding_array: np.
     Also optionally computes year-based adjustments for specified note types.
 
     Args:
-        meta_df (pd.DataFrame): Metadata for notes, including embedding indices.
+        meta_df (pl.DataFrame): Metadata for notes, including embedding indices.
         embedding_array (np.ndarray): Array of embeddings (rows correspond to embeddings in meta_df).
         note_types (list[str]): Note types to include.
         note_timing_col (str, optional): Column representing note timing. Defaults to 'NOTE_TIME_REL_FIRST_TREATMENT_START'.
@@ -233,14 +238,15 @@ def pool_embedding_series_vectorized(meta_df: pd.DataFrame, embedding_array: np.
         year_adj_cols (list[str], optional): Note types for which year-based adjustments are computed. Defaults to ['Imaging', 'Pathology'].
 
     Returns:
-        pd.DataFrame: DataFrame with one row per patient and pooled embeddings per note type.
+        pl.DataFrame: DataFrame with one row per patient and pooled embeddings per note type.
     """
-    meta_df = meta_df.copy()
-    unique_mrns = meta_df['DFCI_MRN'].unique()
+    unique_mrns = meta_df['DFCI_MRN'].unique(maintain_order=True).to_list()
     embed_dim = embedding_array.shape[1]
 
     # Add year column for year-based adjustments
-    meta_df['NOTE_YEAR'] = meta_df['NOTE_DATETIME'].apply(lambda x: int(str(x).split('-')[0]))
+    meta_df = meta_df.with_columns(
+        pl.col('NOTE_DATETIME').cast(pl.Utf8).str.split('-').list.get(0).cast(pl.Int64).alias('NOTE_YEAR')
+    )
 
     # Initialize pooled embeddings and year adjustments
     pooled_embeddings = {nt: np.full((len(unique_mrns), embed_dim), np.nan) for nt in note_types}
@@ -250,13 +256,13 @@ def pool_embedding_series_vectorized(meta_df: pd.DataFrame, embedding_array: np.
     mrn_to_idx = {mrn: i for i, mrn in enumerate(unique_mrns)}
 
     # Group by patient and note type
-    grouped = meta_df.groupby(['DFCI_MRN', 'NOTE_TYPE'])
+    grouped = meta_df.group_by(['DFCI_MRN', 'NOTE_TYPE'])
     for (mrn, note_type), group in grouped:
         if note_type not in note_types:
             continue
         idx = mrn_to_idx[mrn]
-        embed_indices = group['EMBEDDING_INDEX'].values
-        note_times = group[note_timing_col].values
+        embed_indices = group['EMBEDDING_INDEX'].to_numpy()
+        note_times = group[note_timing_col].to_numpy()
         embeddings = embedding_array[embed_indices, :]
 
         strategy = pool_fx.get(note_type, 'mean') if pool_fx else 'mean'
@@ -281,7 +287,7 @@ def pool_embedding_series_vectorized(meta_df: pd.DataFrame, embedding_array: np.
 
         # Year-based adjustment
         if note_type in year_adj_cols:
-            year_adjustments[note_type][idx] = (group['NOTE_YEAR'] < 2015).mean()
+            year_adjustments[note_type][idx] = (group['NOTE_YEAR'] < 2015).to_numpy().mean()
 
     # Build final DataFrame
     df_columns = ['DFCI_MRN']
@@ -291,26 +297,27 @@ def pool_embedding_series_vectorized(meta_df: pd.DataFrame, embedding_array: np.
     for nt in note_types:
         df_columns += [f'{nt.upper()}_EMBEDDING_{i}' for i in range(embed_dim)]
 
-    data_matrix = [unique_mrns.reshape(-1, 1)]
+    unique_mrns_arr = np.array(unique_mrns, dtype=object).reshape(-1, 1)
+    data_matrix = [unique_mrns_arr]
     for nt in year_adj_cols:
         if nt in year_adjustments:
             data_matrix.append(year_adjustments[nt])
     for nt in note_types:
         data_matrix.append(pooled_embeddings[nt])
 
-    pooled_df = pd.DataFrame(np.concatenate(data_matrix, axis=1), columns=df_columns)
+    pooled_df = pl.DataFrame(np.concatenate(data_matrix, axis=1), schema=df_columns, orient="row")
     return pooled_df
 
-def generate_survival_embedding_df(notes_meta: pd.DataFrame, survival_df: pd.DataFrame | None, embedding_array: np.ndarray,
+def generate_survival_embedding_df(notes_meta: pl.DataFrame, survival_df: pl.DataFrame | None, embedding_array: np.ndarray,
                                    note_types: list[str], note_timing_col: str = 'NOTE_TIME_REL_FIRST_TREATMENT_START',
                                    max_note_window: int = 0, pool_fx: dict[str, str] | None = None, decay_param: float | None = None,
-                                   continuous_window: bool = True) -> pd.DataFrame:
+                                   continuous_window: bool = True) -> pl.DataFrame:
     """
     Generate a DataFrame of pooled embeddings optionally merged with survival outcomes.
 
     Args:
-        notes_meta (pd.DataFrame): Note metadata including embedding indices and timing.
-        survival_df (pd.DataFrame | None): Survival outcome data. Must include 'DFCI_MRN' or 'PATIENT_ID'. Can be None.
+        notes_meta (pl.DataFrame): Note metadata including embedding indices and timing.
+        survival_df (pl.DataFrame | None): Survival outcome data. Must include 'DFCI_MRN' or 'PATIENT_ID'. Can be None.
         embedding_array (np.ndarray): Array of note embeddings.
         note_types (list[str]): Note types to include.
         note_timing_col (str, optional): Column for note timing relative to treatment. Defaults to 'NOTE_TIME_REL_FIRST_TREATMENT_START'.
@@ -320,15 +327,17 @@ def generate_survival_embedding_df(notes_meta: pd.DataFrame, survival_df: pd.Dat
         continuous_window (bool, optional): If True, include only continuous note sequences. Defaults to True.
 
     Returns:
-        pd.DataFrame: DataFrame with pooled embeddings, optionally merged with survival data.
+        pl.DataFrame: DataFrame with pooled embeddings, optionally merged with survival data.
     """
     # Select notes based on window strategy
     if continuous_window:
         notes_to_include = find_continuous_records_to_analyze(
             notes_meta, note_timing_col=note_timing_col, max_note_window=max_note_window)
     else:
-        notes_to_include = notes_meta.loc[notes_meta[note_timing_col] < max_note_window].copy()
-        notes_to_include[note_timing_col] = notes_to_include[note_timing_col] - max_note_window
+        notes_to_include = notes_meta.filter(pl.col(note_timing_col) < max_note_window)
+        notes_to_include = notes_to_include.with_columns(
+            (pl.col(note_timing_col) - max_note_window).alias(note_timing_col)
+        )
 
     assert(notes_to_include[note_timing_col].max() <= 0)
 
@@ -338,19 +347,18 @@ def generate_survival_embedding_df(notes_meta: pd.DataFrame, survival_df: pd.Dat
                                                            decay_param=decay_param)
 
     if survival_df is not None:
-        survival_df = survival_df.copy()
-
         # Standardize patient ID column
         if 'PATIENT_ID' in survival_df.columns:
-            survival_df.rename(columns={'PATIENT_ID': 'DFCI_MRN'}, inplace=True)
+            survival_df = survival_df.rename({'PATIENT_ID': 'DFCI_MRN'})
 
         if max_note_window != 0:
             tt_event_cols = [col for col in survival_df.columns if col.startswith('tt_')]
-            for tt_event_col in tt_event_cols:
-                survival_df[tt_event_col] = survival_df[tt_event_col] - max_note_window
+            survival_df = survival_df.with_columns(
+                [(pl.col(c) - max_note_window).alias(c) for c in tt_event_cols]
+            )
 
         # Merge pooled embeddings with survival outcomes
-        merged_df = survival_df.merge(pooled_embedding_df, on='DFCI_MRN', how='left')
+        merged_df = survival_df.join(pooled_embedding_df, on='DFCI_MRN', how='left')
 
         return merged_df
     else:

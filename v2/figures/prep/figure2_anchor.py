@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import os
 
-import pandas as pd
+import polars as pl
 from sksurv.metrics import concordance_index_censored, cumulative_dynamic_auc
 from sksurv.util import Surv
 
@@ -43,15 +43,15 @@ COHORT_OVERLAP_COLUMNS = ["scheme", "n_treatment", "n_sequencing", "n_intersecti
 AUC_TIME_GRID_POINTS = 50
 
 
-def _eval_times(tt: pd.Series) -> pd.Series:
+def _eval_times(tt: pl.Series) -> pl.Series:
     lo, hi = tt.quantile(0.05), tt.quantile(0.95)
-    return pd.Series(pd.array(
+    return pl.Series(
         [lo + (hi - lo) * i / (AUC_TIME_GRID_POINTS - 1) for i in range(AUC_TIME_GRID_POINTS)]
-    ))
+    )
 
 
 def _score_predictor(
-    event_flag: pd.Series, tt: pd.Series, risk_score: pd.Series,
+    event_flag: pl.Series, tt: pl.Series, risk_score: pl.Series,
 ) -> tuple[float, float]:
     """(cindex, mean_auc) for a risk score on (event, time).
 
@@ -60,9 +60,9 @@ def _score_predictor(
     — only the CV-time text_test.csv/base_test.csv files (used by
     _natural_cohort_metrics) have it. The intersection-cohort rows leave ibs NaN.
     """
-    event_arr = event_flag.astype(bool).to_numpy()
-    time_arr = tt.astype(float).to_numpy()
-    score_arr = risk_score.astype(float).to_numpy()
+    event_arr = event_flag.cast(pl.Boolean).to_numpy()
+    time_arr = tt.cast(pl.Float64).to_numpy()
+    score_arr = risk_score.cast(pl.Float64).to_numpy()
     try:
         cindex = concordance_index_censored(event_arr, time_arr, score_arr)[0]
     except (ValueError, ZeroDivisionError):
@@ -70,7 +70,7 @@ def _score_predictor(
 
     y = Surv.from_arrays(event_arr, time_arr)
     et = _eval_times(tt)
-    et = et[(et > time_arr.min()) & (et < time_arr.max())].to_numpy()
+    et = et.filter((et > time_arr.min()) & (et < time_arr.max())).to_numpy()
     mean_auc = float("nan")
     if len(et) > 0:
         try:
@@ -80,7 +80,7 @@ def _score_predictor(
     return cindex, mean_auc
 
 
-def _natural_cohort_metrics(anchor: str) -> pd.DataFrame:
+def _natural_cohort_metrics(anchor: str) -> pl.DataFrame:
     """One row per (scheme, event, model) using each event's own test_data metrics file,
     already computed on that anchor's natural (eligible) held-out test split."""
     rows = []
@@ -88,8 +88,8 @@ def _natural_cohort_metrics(anchor: str) -> pd.DataFrame:
         for event in list_trained_events(scheme, anchor):
             d = full_cohort_event_dir(scheme, event, anchor)
             try:
-                text = pd.read_csv(os.path.join(d, "text_test.csv")).iloc[0]
-                base = pd.read_csv(os.path.join(d, "base_test.csv")).iloc[0]
+                text = pl.read_csv(os.path.join(d, "text_test.csv")).row(0, named=True)
+                base = pl.read_csv(os.path.join(d, "base_test.csv")).row(0, named=True)
             except (FileNotFoundError, KeyError, IndexError) as e:
                 print(f"  [{anchor}:{scheme}:{event}] skipped — {type(e).__name__}: {e}")
                 continue
@@ -104,7 +104,7 @@ def _natural_cohort_metrics(anchor: str) -> pd.DataFrame:
                     "cindex": row["mean_c_index"], "mean_auc": row["mean_auc(t)"],
                     "ibs": row["mean_ibs"],
                 })
-    return pd.DataFrame(rows, columns=ANCHOR_SENSITIVITY_COLUMNS)
+    return pl.DataFrame(rows, schema=ANCHOR_SENSITIVITY_COLUMNS) if rows else pl.DataFrame(schema=ANCHOR_SENSITIVITY_COLUMNS)
 
 
 def _intersection_mrns() -> dict[str, frozenset]:
@@ -123,7 +123,7 @@ def _intersection_mrns() -> dict[str, frozenset]:
     return out
 
 
-def _intersection_cohort_metrics(anchor: str, intersection_mrns: dict[str, frozenset]) -> pd.DataFrame:
+def _intersection_cohort_metrics(anchor: str, intersection_mrns: dict[str, frozenset]) -> pl.DataFrame:
     """Re-score each trained event's held-out risk scores restricted to the
     both-anchors-eligible intersection, so metric shifts can be attributed to the
     timescale rather than to a change in cohort composition."""
@@ -140,14 +140,14 @@ def _intersection_cohort_metrics(anchor: str, intersection_mrns: dict[str, froze
             if not (os.path.exists(text_fp) and os.path.exists(base_fp)):
                 continue
             event_df = filter_event_rows(pred_df, event)
-            event_df = event_df[event_df["DFCI_MRN"].isin(mrns)]
-            if event_df.empty:
+            event_df = event_df.filter(pl.col("DFCI_MRN").is_in(mrns))
+            if event_df.is_empty():
                 continue
             surv_cols = ["DFCI_MRN", event, f"tt_{event}"]
             for model, fp in (("text", text_fp), ("base", base_fp)):
-                risk_df = pd.read_csv(fp)
-                merged = risk_df.merge(event_df[surv_cols], on="DFCI_MRN").dropna()
-                if merged.empty:
+                risk_df = pl.read_csv(fp)
+                merged = risk_df.join(event_df.select(surv_cols), on="DFCI_MRN").drop_nulls()
+                if merged.is_empty():
                     continue
                 score_col = "text_risk_score" if "text_risk_score" in merged.columns else "base_risk_score"
                 cindex, mean_auc = _score_predictor(
@@ -158,17 +158,17 @@ def _intersection_cohort_metrics(anchor: str, intersection_mrns: dict[str, froze
                     "cohort": "intersection", "n": len(merged), "n_events": int(merged[event].sum()),
                     "cindex": cindex, "mean_auc": mean_auc, "ibs": float("nan"),
                 })
-    return pd.DataFrame(rows, columns=ANCHOR_SENSITIVITY_COLUMNS)
+    return pl.DataFrame(rows, schema=ANCHOR_SENSITIVITY_COLUMNS) if rows else pl.DataFrame(schema=ANCHOR_SENSITIVITY_COLUMNS)
 
 
-def _cohort_overlap(intersection_mrns: dict[str, frozenset]) -> pd.DataFrame:
+def _cohort_overlap(intersection_mrns: dict[str, frozenset]) -> pl.DataFrame:
     rows = []
     for scheme in SCHEMES:
         sizes = {}
         for anchor in ANCHOR_LIST:
             try:
                 df = load_embedding_prediction_df(scheme, anchor)
-                sizes[anchor] = df["DFCI_MRN"].nunique()
+                sizes[anchor] = df["DFCI_MRN"].n_unique()
             except FileNotFoundError:
                 sizes[anchor] = 0
         rows.append({
@@ -177,7 +177,7 @@ def _cohort_overlap(intersection_mrns: dict[str, frozenset]) -> pd.DataFrame:
             "n_sequencing": sizes.get("sequencing", 0),
             "n_intersection": len(intersection_mrns.get(scheme, frozenset())),
         })
-    return pd.DataFrame(rows, columns=COHORT_OVERLAP_COLUMNS)
+    return pl.DataFrame(rows, schema=COHORT_OVERLAP_COLUMNS)
 
 
 def main() -> None:
@@ -187,8 +187,8 @@ def main() -> None:
     for anchor in ANCHOR_LIST:
         frames.append(_natural_cohort_metrics(anchor))
         frames.append(_intersection_cohort_metrics(anchor, intersection_mrns))
-    sensitivity_df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(
-        columns=ANCHOR_SENSITIVITY_COLUMNS
+    sensitivity_df = pl.concat(frames, how="vertical") if frames else pl.DataFrame(
+        schema=ANCHOR_SENSITIVITY_COLUMNS
     )
     save_figure_data(sensitivity_df, "fig2_anchor_sensitivity.csv")
     save_figure_data(_cohort_overlap(intersection_mrns), "fig2_anchor_cohort_overlap.csv")

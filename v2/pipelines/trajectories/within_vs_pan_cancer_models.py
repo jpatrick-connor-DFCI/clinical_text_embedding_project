@@ -7,7 +7,7 @@ import time
 import warnings
 
 import numpy as np
-import pandas as pd
+import polars as pl
 from sksurv.metrics import concordance_index_censored, cumulative_dynamic_auc
 from sksurv.util import Surv
 from tqdm import tqdm
@@ -36,17 +36,17 @@ def main() -> None:
     MIN_HELDOUT_N = 30
 
     # === Load datasets ===
-    cancer_type_df = pd.read_csv(
+    cancer_type_df = pl.read_csv(
         os.path.join(FEATURE_PATH, 'cancer_type_df.csv.gz'),
-        usecols=['DFCI_MRN', 'CANCER_TYPE'],
+        columns=['DFCI_MRN', 'CANCER_TYPE'],
     )
 
     time_decayed_events_df = load_embedding_prediction_df("icd3_post")
 
     # Merge embeddings + cancer types + events
     full_df = (time_decayed_events_df
-               .merge(cancer_type_df, on='DFCI_MRN', how='inner')
-               .dropna(subset=['CANCER_TYPE']))
+               .join(cancer_type_df, on='DFCI_MRN', how='inner')
+               .drop_nulls(subset=['CANCER_TYPE']))
 
     # === Feature definitions ===
     base_vars = ['GENDER', 'AGE_AT_TREATMENTSTART']
@@ -61,32 +61,39 @@ def main() -> None:
 
     # Collapse rare cancer types
     cancer_type_counts = full_df['CANCER_TYPE'].value_counts()
-    types_to_keep = cancer_type_counts[cancer_type_counts >= MIN_STRATUM_N].index.tolist()
-    full_df['CANCER_TYPE'] = full_df['CANCER_TYPE'].where(full_df['CANCER_TYPE'].isin(types_to_keep), 'OTHER')
+    types_to_keep = set(
+        cancer_type_counts.filter(pl.col('count') >= MIN_STRATUM_N)['CANCER_TYPE'].to_list()
+    )
+    full_df = full_df.with_columns(
+        pl.when(pl.col('CANCER_TYPE').is_in(types_to_keep))
+        .then(pl.col('CANCER_TYPE'))
+        .otherwise(pl.lit('OTHER'))
+        .alias('CANCER_TYPE')
+    )
     # Preserve the raw stratum label before drop-first encoding. Driving the
     # within-cancer loop from dummy columns omits whichever category becomes
     # the reference level.
-    full_df['STRATUM_CANCER_TYPE'] = full_df['CANCER_TYPE']
+    full_df = full_df.with_columns(pl.col('CANCER_TYPE').alias('STRATUM_CANCER_TYPE'))
 
     # === Train/held-out split (75% train, 25% held-out evaluation) ===
-    held_mrns = full_df['DFCI_MRN'].sample(frac=0.25, random_state=1234).tolist()
-    train_df = full_df.loc[~full_df['DFCI_MRN'].isin(held_mrns)].reset_index(drop=True)
-    held_df  = full_df.loc[ full_df['DFCI_MRN'].isin(held_mrns)].reset_index(drop=True)
+    held_mrns = set(full_df['DFCI_MRN'].sample(fraction=0.25, seed=1234).to_list())
+    train_df = full_df.filter(~pl.col('DFCI_MRN').is_in(held_mrns))
+    held_df  = full_df.filter( pl.col('DFCI_MRN').is_in(held_mrns))
 
     # === One-hot encode cancer type ===
-    train_df = pd.get_dummies(train_df, columns=['CANCER_TYPE'], drop_first=True)
-    held_df  = pd.get_dummies(held_df,  columns=['CANCER_TYPE'], drop_first=True)
+    train_df = train_df.to_dummies(columns=['CANCER_TYPE'], drop_first=True)
+    held_df  = held_df.to_dummies(columns=['CANCER_TYPE'], drop_first=True)
 
     # Align dummy columns across splits
     for c in set(train_df.columns) - set(held_df.columns):
         if c.startswith('CANCER_TYPE_'):
-            held_df[c] = 0
+            held_df = held_df.with_columns(pl.lit(0).alias(c))
     for c in set(held_df.columns) - set(train_df.columns):
         if c.startswith('CANCER_TYPE_'):
-            train_df[c] = 0
+            train_df = train_df.with_columns(pl.lit(0).alias(c))
 
     # Ensure consistent column order
-    held_df = held_df[train_df.columns]
+    held_df = held_df.select(train_df.columns)
 
     # === Dummy consistency checks ===
     train_types = [c for c in train_df.columns if c.startswith('CANCER_TYPE_')]
@@ -120,7 +127,7 @@ def main() -> None:
         'n_embed': int(len(embed_cols)),
         'n_base': int(len(base_vars)),
         'n_type': int(len(type_cols)),
-        'strata': sorted(train_df['STRATUM_CANCER_TYPE'].dropna().unique().tolist()),
+        'strata': sorted(train_df['STRATUM_CANCER_TYPE'].drop_nulls().unique().to_list()),
         'seed': 1234,
         'data_hash': dataframe_fingerprint(
             train_df,
@@ -141,18 +148,19 @@ def main() -> None:
         """Reference-free per-stratum held-out C-index (size-matched pan vs within) for the
         progress manifest."""
         m = (held_within_df
-             .merge(matched_pan_held_df, on=['DFCI_MRN', 'STRATUM'])
-             .merge(full_df[['DFCI_MRN', f'tt_{event}', event]], on='DFCI_MRN'))
+             .join(matched_pan_held_df, on=['DFCI_MRN', 'STRATUM'])
+             .join(full_df.select(['DFCI_MRN', f'tt_{event}', event]), on='DFCI_MRN'))
         cols = ['within_cancer_risk_score', 'pan_cancer_risk_score', f'tt_{event}', event]
-        m[cols] = m[cols].replace([np.inf, -np.inf], np.nan)
-        m = m.dropna(subset=cols)
+        m = m.with_columns([
+            pl.col(c).replace([float('inf'), float('-inf')], None) for c in cols
+        ]).drop_nulls(subset=cols)
         if len(m) < MIN_HELDOUT_N or m[event].sum() == 0:
             return None, None, len(m)
-        eb = m[event].astype(bool)
-        t = m[f'tt_{event}']
+        eb = m[event].cast(pl.Boolean).to_numpy()
+        t = m[f'tt_{event}'].to_numpy()
         try:
-            cp = concordance_index_censored(eb, t, m['pan_cancer_risk_score'])[0]
-            cw = concordance_index_censored(eb, t, m['within_cancer_risk_score'])[0]
+            cp = concordance_index_censored(eb, t, m['pan_cancer_risk_score'].to_numpy())[0]
+            cw = concordance_index_censored(eb, t, m['within_cancer_risk_score'].to_numpy())[0]
         except Exception:
             return None, None, len(m)
         return float(cp), float(cw), len(m)
@@ -164,9 +172,9 @@ def main() -> None:
         distinct per-stratum key via RunCheckpoint.save_stratum/load_stratum (RunCheckpoint's
         pan-specific save_pan/load_pan/pan_done slot is unused here — there is no single
         full-cohort pan model to cache)."""
-        pan_pool = train_df.loc[train_df['STRATUM_CANCER_TYPE'] != cancer_type]
+        pan_pool = train_df.filter(pl.col('STRATUM_CANCER_TYPE') != cancer_type)
         n_match = min(n_match, len(pan_pool))
-        matched_pan_train = pan_pool.sample(n=n_match, random_state=seed)
+        matched_pan_train = pan_pool.sample(n=n_match, seed=seed)
 
         _, matched_val, matched_model = run_grid_CoxPH_parallel(
             matched_pan_train, base_vars + type_cols, continuous_vars, embed_cols,
@@ -175,25 +183,24 @@ def main() -> None:
         if matched_model is None:
             return None, None, None
 
-        matched_l1, matched_alpha = matched_val.sort_values(
-            by='mean_auc(t)', ascending=False).iloc[0][['l1_ratio', 'alpha']]
+        best_row = matched_val.sort('mean_auc(t)', descending=True).row(0, named=True)
+        matched_l1, matched_alpha = best_row['l1_ratio'], best_row['alpha']
         trained_matched_pan = (
             get_heldout_risk_scores_CoxPH(
                 matched_pan_train, base_vars + type_cols, continuous_vars, embed_cols,
                 event_col=event, tstop_col=f'tt_{event}', penalized=True, max_iter=3000,
                 l1_ratio=matched_l1, alpha=matched_alpha, backend="threading")
-            .rename(columns={'risk_score': 'pan_cancer_risk_score'})
+            .rename({'risk_score': 'pan_cancer_risk_score'})
         )
-        trained_matched_pan['STRATUM'] = cancer_type
-        matched_pan_held = pd.DataFrame({
-            'DFCI_MRN': held_df['DFCI_MRN'].values,
+        trained_matched_pan = trained_matched_pan.with_columns(pl.lit(cancer_type).alias('STRATUM'))
+        matched_pan_held = pl.DataFrame({
+            'DFCI_MRN': held_df['DFCI_MRN'].to_numpy(),
             'pan_cancer_risk_score': fit_predict_external_CoxPH(
                 matched_pan_train, held_df, base_vars + type_cols, continuous_vars,
                 embed_cols, event_col=event, tstop_col=f'tt_{event}',
                 l1_ratio=matched_l1, alpha=matched_alpha, max_iter=3000,
             ),
-            'STRATUM': cancer_type,
-        })
+        }).with_columns(pl.lit(cancer_type).alias('STRATUM'))
         return trained_matched_pan, matched_pan_held, (float(matched_l1), float(matched_alpha))
 
     # === Train + score within-cancer models (single resumable pass) ===
@@ -204,7 +211,7 @@ def main() -> None:
     train_score_frames, held_score_frames = [], []
     matched_pan_train_frames, matched_pan_held_frames = [], []
 
-    cancer_strata = sorted(train_df['STRATUM_CANCER_TYPE'].dropna().unique())
+    cancer_strata = sorted(train_df['STRATUM_CANCER_TYPE'].drop_nulls().unique().to_list())
     for cancer_type in tqdm(cancer_strata, mininterval=30):
         matched_pan_key = f'{cancer_type}__matched_pan__'
 
@@ -222,7 +229,7 @@ def main() -> None:
         if st == 'skipped':
             continue
 
-        sub_df = train_df.loc[train_df['STRATUM_CANCER_TYPE'] == cancer_type]
+        sub_df = train_df.filter(pl.col('STRATUM_CANCER_TYPE') == cancer_type)
         if len(sub_df) < MIN_TRAIN_N:
             ckpt.mark_skipped(cancer_type, 'too_small', meta={'n_train': int(len(sub_df))})
             continue
@@ -238,25 +245,25 @@ def main() -> None:
             ckpt.mark_skipped(cancer_type, 'no_converge', meta={'n_train': int(len(sub_df))})
             continue
 
-        best_l1, best_alpha = cur_val.sort_values(by='mean_auc(t)', ascending=False).iloc[0][['l1_ratio', 'alpha']]
+        best_row = cur_val.sort('mean_auc(t)', descending=True).row(0, named=True)
+        best_l1, best_alpha = best_row['l1_ratio'], best_row['alpha']
         trained_sub = get_heldout_risk_scores_CoxPH(
             sub_df, base_vars, continuous_vars, embed_cols,
             event_col=event, tstop_col=f'tt_{event}', penalized=True, max_iter=3000,
             l1_ratio=best_l1, alpha=best_alpha, backend="threading"
-        ).rename(columns={'risk_score': 'within_cancer_risk_score'})
-        trained_sub['STRATUM'] = cancer_type
+        ).rename({'risk_score': 'within_cancer_risk_score'})
+        trained_sub = trained_sub.with_columns(pl.lit(cancer_type).alias('STRATUM'))
 
         # Held-out predictions for this stratum, taken now while the model is in memory.
-        sub_held = held_df.loc[held_df['STRATUM_CANCER_TYPE'] == cancer_type]
-        held_sub = pd.DataFrame({
-            'DFCI_MRN': sub_held['DFCI_MRN'].values,
+        sub_held = held_df.filter(pl.col('STRATUM_CANCER_TYPE') == cancer_type)
+        held_sub = pl.DataFrame({
+            'DFCI_MRN': sub_held['DFCI_MRN'].to_numpy(),
             'within_cancer_risk_score': fit_predict_external_CoxPH(
                 sub_df, sub_held, base_vars, continuous_vars, embed_cols,
                 event_col=event, tstop_col=f'tt_{event}', l1_ratio=best_l1,
                 alpha=best_alpha, max_iter=3000,
             ),
-            'STRATUM': cancer_type,
-        })
+        }).with_columns(pl.lit(cancer_type).alias('STRATUM'))
 
         # Size-matched pan comparator: same train N as this stratum, stratum's own patients
         # excluded. Seeded off the base seed + stratum name so it's reproducible per-stratum.
@@ -287,19 +294,19 @@ def main() -> None:
 
     if not train_score_frames:
         raise RuntimeError("No within-cancer stratum completed successfully.")
-    trained_within = pd.concat(train_score_frames, ignore_index=True)
-    within_held_all = pd.concat(held_score_frames, ignore_index=True)
+    trained_within = pl.concat(train_score_frames, how='diagonal_relaxed')
+    within_held_all = pl.concat(held_score_frames, how='diagonal_relaxed')
     # Size-matched pan scores, one row per (stratum, patient) — a patient can appear in more
     # than one stratum's matched-pan pool (only their own stratum is excluded from that pool),
     # so these are merged against the within frames on (DFCI_MRN, STRATUM), not DFCI_MRN alone.
-    matched_pan_train_all = pd.concat(matched_pan_train_frames, ignore_index=True)
-    matched_pan_held_all = pd.concat(matched_pan_held_frames, ignore_index=True)
+    matched_pan_train_all = pl.concat(matched_pan_train_frames, how='diagonal_relaxed')
+    matched_pan_held_all = pl.concat(matched_pan_held_frames, how='diagonal_relaxed')
 
     # === Evaluate on Training Set ===
-    complete_train = trained_within.merge(
-        matched_pan_train_all[['DFCI_MRN', 'STRATUM', 'pan_cancer_risk_score']], on=['DFCI_MRN', 'STRATUM']
-    ).merge(
-        full_df[['DFCI_MRN', 'CANCER_TYPE', f'tt_{event}', event]], on='DFCI_MRN'
+    complete_train = trained_within.join(
+        matched_pan_train_all.select(['DFCI_MRN', 'STRATUM', 'pan_cancer_risk_score']), on=['DFCI_MRN', 'STRATUM']
+    ).join(
+        full_df.select(['DFCI_MRN', 'CANCER_TYPE', f'tt_{event}', event]), on='DFCI_MRN'
     )
 
     # Some within-cancer strata diverge during Cox fitting and emit non-finite OOF risk
@@ -309,55 +316,59 @@ def main() -> None:
     # every metric call below sees only finite values.
     _score_cols = ['pan_cancer_risk_score', 'within_cancer_risk_score']
     _finite_cols = _score_cols + [f'tt_{event}', event]
-    complete_train[_finite_cols] = complete_train[_finite_cols].replace([np.inf, -np.inf], np.nan)
+    complete_train = complete_train.with_columns([
+        pl.col(c).replace([float('inf'), float('-inf')], None) for c in _finite_cols
+    ])
     _n0 = len(complete_train)
-    complete_train = complete_train.dropna(subset=_finite_cols)
+    complete_train = complete_train.drop_nulls(subset=_finite_cols)
     if len(complete_train) < _n0:
         print(f"Train: dropped {_n0 - len(complete_train)} rows with non-finite risk scores / outcomes")
 
-    times = complete_train[f'tt_{event}']
-    events_bool = complete_train[event].astype(bool)
+    times = complete_train[f'tt_{event}'].to_numpy()
+    events_bool = complete_train[event].cast(pl.Boolean).to_numpy()
 
-    c_pan_train = concordance_index_censored(events_bool, times, complete_train['pan_cancer_risk_score'])[0]
-    c_within_train = concordance_index_censored(events_bool, times, complete_train['within_cancer_risk_score'])[0]
+    c_pan_train = concordance_index_censored(events_bool, times, complete_train['pan_cancer_risk_score'].to_numpy())[0]
+    c_within_train = concordance_index_censored(events_bool, times, complete_train['within_cancer_risk_score'].to_numpy())[0]
 
     print(f"\nTrain set: Pan-cancer C-index = {c_pan_train:.3f}, Within-cancer C-index = {c_within_train:.3f}")
 
     # === Held-out Evaluation (assemble per-stratum within scores + size-matched pan scores) ===
-    held_scores = within_held_all.merge(
-        matched_pan_held_all[['DFCI_MRN', 'STRATUM', 'pan_cancer_risk_score']], on=['DFCI_MRN', 'STRATUM']
-    ).merge(
-        full_df[['DFCI_MRN', 'CANCER_TYPE', f'tt_{event}', event]],
+    held_scores = within_held_all.join(
+        matched_pan_held_all.select(['DFCI_MRN', 'STRATUM', 'pan_cancer_risk_score']), on=['DFCI_MRN', 'STRATUM']
+    ).join(
+        full_df.select(['DFCI_MRN', 'CANCER_TYPE', f'tt_{event}', event]),
         on='DFCI_MRN', how='left'
     )
 
     # Drop non-finite held-out risk scores / outcomes (divergent within-cancer strata).
-    held_scores[_finite_cols] = held_scores[_finite_cols].replace([np.inf, -np.inf], np.nan)
+    held_scores = held_scores.with_columns([
+        pl.col(c).replace([float('inf'), float('-inf')], None) for c in _finite_cols
+    ])
     _n0 = len(held_scores)
-    held_scores = held_scores.dropna(subset=_finite_cols)
+    held_scores = held_scores.drop_nulls(subset=_finite_cols)
     if len(held_scores) < _n0:
         print(f"Held-out: dropped {_n0 - len(held_scores)} rows with non-finite risk scores / outcomes")
 
     # === Merge consistency checks ===
     print("\n=== Held-out Merge Consistency Check ===")
     print(f"Total predictions: {len(within_held_all)}")
-    print(f"Matched to held_df metadata: {held_scores['CANCER_TYPE'].notna().sum()}")
-    missing = held_scores[held_scores[f'tt_{event}'].isna()]
+    print(f"Matched to held_df metadata: {held_scores['CANCER_TYPE'].is_not_null().sum()}")
+    missing = held_scores.filter(pl.col(f'tt_{event}').is_null())
     if len(missing) > 0:
         print(f"⚠️ {len(missing)} held-out predictions could not be matched to full_df!")
     else:
         print("✅ All held-out predictions successfully matched to metadata.")
 
     dup_counts = held_scores['DFCI_MRN'].value_counts()
-    if (dup_counts > 1).any():
-        print(f"⚠️ {sum(dup_counts > 1)} MRNs appear multiple times in held_scores!")
+    if (dup_counts['count'] > 1).any():
+        print(f"⚠️ {(dup_counts['count'] > 1).sum()} MRNs appear multiple times in held_scores!")
 
     # === Compute held-out concordance ===
-    times = held_scores[f'tt_{event}']
-    events_bool = held_scores[event].astype(bool)
+    times = held_scores[f'tt_{event}'].to_numpy()
+    events_bool = held_scores[event].cast(pl.Boolean).to_numpy()
 
-    c_pan_held = concordance_index_censored(events_bool, times, held_scores['pan_cancer_risk_score'])[0]
-    c_within_held = concordance_index_censored(events_bool, times, held_scores['within_cancer_risk_score'])[0]
+    c_pan_held = concordance_index_censored(events_bool, times, held_scores['pan_cancer_risk_score'].to_numpy())[0]
+    c_within_held = concordance_index_censored(events_bool, times, held_scores['within_cancer_risk_score'].to_numpy())[0]
 
     print(f"Held-out set: Pan-cancer C-index = {c_pan_held:.3f}, Within-cancer C-index = {c_within_held:.3f}")
 
@@ -365,18 +376,19 @@ def main() -> None:
     # IPCW reference + eval-time grid from the TRAINING set, matching evaluate_surv_model
     # (5th–95th percentile, 50 points). Per-stratum eval times are clipped to that stratum's
     # held-out follow-up so cumulative_dynamic_auc never sees out-of-range times.
-    y_train_global = Surv.from_arrays(complete_train[event].astype(bool), complete_train[f'tt_{event}'])
-    _lo, _hi = np.percentile(complete_train[f'tt_{event}'], [5, 95])
+    y_train_global = Surv.from_arrays(complete_train[event].cast(pl.Boolean).to_numpy(), complete_train[f'tt_{event}'].to_numpy())
+    _lo, _hi = np.percentile(complete_train[f'tt_{event}'].to_numpy(), [5, 95])
     base_eval_times = np.linspace(_lo, _hi, 50)
 
     def _mean_auc(sub_df, risk_col):
-        et = base_eval_times[(base_eval_times > sub_df[f'tt_{event}'].min())
-                             & (base_eval_times < sub_df[f'tt_{event}'].max())]
+        tt = sub_df[f'tt_{event}'].to_numpy()
+        et = base_eval_times[(base_eval_times > tt.min())
+                             & (base_eval_times < tt.max())]
         if len(et) == 0:
             return np.nan
         try:
-            y_test = Surv.from_arrays(sub_df[event].astype(bool), sub_df[f'tt_{event}'])
-            return cumulative_dynamic_auc(y_train_global, y_test, sub_df[risk_col].values, et)[1]
+            y_test = Surv.from_arrays(sub_df[event].cast(pl.Boolean).to_numpy(), tt)
+            return cumulative_dynamic_auc(y_train_global, y_test, sub_df[risk_col].to_numpy(), et)[1]
         except Exception:
             return np.nan
 
@@ -387,16 +399,16 @@ def main() -> None:
 
     # === Per-Cancer-Type Comparison (Held-out) ===
     cindex_by_type = []
-    for cancer_type in tqdm(sorted(held_scores['CANCER_TYPE'].dropna().unique()), mininterval=30):
-        sub_df = held_scores.loc[held_scores['CANCER_TYPE'] == cancer_type]
+    for cancer_type in tqdm(sorted(held_scores['CANCER_TYPE'].drop_nulls().unique().to_list()), mininterval=30):
+        sub_df = held_scores.filter(pl.col('CANCER_TYPE') == cancer_type)
         if sub_df.shape[0] < MIN_HELDOUT_N:
             continue
 
-        times = sub_df[f'tt_{event}']
-        events_bool = sub_df[event].astype(bool)
+        times = sub_df[f'tt_{event}'].to_numpy()
+        events_bool = sub_df[event].cast(pl.Boolean).to_numpy()
 
-        c_pan = concordance_index_censored(events_bool, times, sub_df['pan_cancer_risk_score'])[0]
-        c_within = concordance_index_censored(events_bool, times, sub_df['within_cancer_risk_score'])[0]
+        c_pan = concordance_index_censored(events_bool, times, sub_df['pan_cancer_risk_score'].to_numpy())[0]
+        c_within = concordance_index_censored(events_bool, times, sub_df['within_cancer_risk_score'].to_numpy())[0]
         auc_pan = _mean_auc(sub_df, 'pan_cancer_risk_score')
         auc_within = _mean_auc(sub_df, 'within_cancer_risk_score')
 
@@ -411,10 +423,10 @@ def main() -> None:
             'N_HELDOUT': sub_df.shape[0]
         })
 
-    metrics_df = pd.DataFrame(cindex_by_type).sort_values('DELTA_AUC_WITHIN_MINUS_PAN', ascending=False)
+    metrics_df = pl.DataFrame(cindex_by_type).sort('DELTA_AUC_WITHIN_MINUS_PAN', descending=True)
 
     # Prepend an "Overall" row so the figure has a reference line / summary.
-    overall_row = pd.DataFrame([{
+    overall_row = pl.DataFrame([{
         'CANCER_TYPE': 'Overall',
         'CINDEX_PAN': c_pan_held,
         'CINDEX_WITHIN': c_within_held,
@@ -423,13 +435,13 @@ def main() -> None:
         'AUC_WITHIN': auc_within_held,
         'DELTA_AUC_WITHIN_MINUS_PAN': auc_within_held - auc_pan_held,
         'N_HELDOUT': len(held_scores),
-    }])
-    metrics_df = pd.concat([overall_row, metrics_df], ignore_index=True)
+    }], schema=metrics_df.schema)
+    metrics_df = pl.concat([overall_row, metrics_df])
 
     # === Save Results === (train_outdir / checkpoints dir were created at the checkpoint-store setup)
-    complete_train.to_csv(os.path.join(train_outdir, 'train_risk_scores.csv'), index=False)
-    held_scores.to_csv(os.path.join(train_outdir, 'held_out_risk_scores.csv'), index=False)
-    metrics_df.to_csv(os.path.join(train_outdir, 'metrics_by_cancer_type.csv'), index=False)
+    complete_train.write_csv(os.path.join(train_outdir, 'train_risk_scores.csv'))
+    held_scores.write_csv(os.path.join(train_outdir, 'held_out_risk_scores.csv'))
+    metrics_df.write_csv(os.path.join(train_outdir, 'metrics_by_cancer_type.csv'))
 
     print("\n=== Per-Cancer-Type Results (Held-out) ===")
     print(metrics_df)

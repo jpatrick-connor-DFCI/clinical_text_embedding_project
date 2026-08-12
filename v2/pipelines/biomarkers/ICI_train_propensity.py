@@ -18,7 +18,7 @@ import warnings
 
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
+import polars as pl
 import seaborn as sns
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.linear_model import LogisticRegressionCV
@@ -46,24 +46,30 @@ def train_propensity_cv(pred_df, feature_cols, label):
     Inner loop: LogisticRegressionCV tunes C and l1_ratio via 3-fold CV
                 within each outer training fold.
     """
-    X = pred_df[['DFCI_MRN'] + feature_cols].copy()
-    y = pred_df['PX_on_ICI'].astype(int)
+    X = pred_df.select(['DFCI_MRN'] + feature_cols)
+    y = pred_df.select(pl.col('PX_on_ICI').cast(pl.Int64)).to_series()
 
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=1234)
 
     cv_mrns, cv_preds, cv_probs, cv_true = [], [], [], []
 
-    for fold, (train_idx, test_idx) in enumerate(skf.split(X, y), 1):
-        X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
-        y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+    X_pd = X.to_pandas()
+    y_pd = y.to_pandas()
 
-        cv_mrns += X_test['DFCI_MRN'].tolist()
-        X_train = X_train.drop(columns=['DFCI_MRN'])
-        X_test = X_test.drop(columns=['DFCI_MRN'])
+    for fold, (train_idx, test_idx) in enumerate(skf.split(X_pd, y_pd), 1):
+        X_train, X_test = X[train_idx], X[test_idx]
+        y_train, y_test = y[train_idx], y[test_idx]
 
-        scaler = StandardScaler().fit(X_train)
-        X_train_s = scaler.transform(X_train)
-        X_test_s = scaler.transform(X_test)
+        cv_mrns += X_test['DFCI_MRN'].to_list()
+        X_train = X_train.drop('DFCI_MRN')
+        X_test = X_test.drop('DFCI_MRN')
+
+        X_train_pd = X_train.to_pandas()
+        X_test_pd = X_test.to_pandas()
+
+        scaler = StandardScaler().fit(X_train_pd)
+        X_train_s = scaler.transform(X_train_pd)
+        X_test_s = scaler.transform(X_test_pd)
 
         clf = LogisticRegressionCV(
             penalty='elasticnet',
@@ -77,7 +83,7 @@ def train_propensity_cv(pred_df, feature_cols, label):
             random_state=1234,
             n_jobs=4,
         )
-        clf.fit(X_train_s, y_train.values.ravel())
+        clf.fit(X_train_s, y_train.to_numpy().ravel())
 
         n_nonzero = np.sum(clf.coef_ != 0)
         n_total = clf.coef_.size
@@ -86,12 +92,12 @@ def train_propensity_cv(pred_df, feature_cols, label):
 
         cv_preds += clf.predict(X_test_s).tolist()
         cv_probs += clf.predict_proba(X_test_s)[:, 1].tolist()
-        cv_true += y_test.tolist()
+        cv_true += y_test.to_list()
 
     auc = roc_auc_score(cv_true, cv_probs)
     print(f"  [{label}] AUC = {auc:.4f}")
 
-    return pd.DataFrame({
+    return pl.DataFrame({
         'DFCI_MRN': cv_mrns,
         'model_preds': cv_preds,
         'model_probs': cv_probs,
@@ -102,7 +108,7 @@ def train_propensity_cv(pred_df, feature_cols, label):
 def main() -> None:
     warnings.filterwarnings('ignore', category=ConvergenceWarning)
 
-    cancer_type_df = pd.read_csv(
+    cancer_type_df = pl.read_csv(
         os.path.join(DATA_PATH, 'clinical_and_genomic_features/cancer_type_df.csv.gz'))
 
     # ============================================================
@@ -119,7 +125,7 @@ def main() -> None:
         for buffer in tqdm(BUFFERS, desc="Training propensity models"):
             buffer_input_path = os.path.join(EMBEDDING_DATA_PATH, f'w_{buffer}_day_buffer/')
 
-            pred_df = pd.read_csv(
+            pred_df = pl.read_csv(
                 os.path.join(buffer_input_path, f'ICI_prediction_df_w_{buffer}_day_buffer.csv.gz'))
 
             # Embedding feature columns
@@ -127,36 +133,46 @@ def main() -> None:
                               if ('IMAGING' in col) or ('PATHOLOGY' in col) or ('CLINICIAN' in col)]
 
             # Build covariate feature set
-            pred_with_covars = pred_df.merge(cancer_type_df, on='DFCI_MRN', how='left')
+            pred_with_covars = pred_df.join(cancer_type_df, on='DFCI_MRN', how='left')
 
             cancer_type_feature_cols = [c for c in pred_with_covars.columns if c.startswith('CANCER_TYPE_')]
             # Line category dummies: cohort 1 is first-line ICI only — no line variation to adjust for
             if COHORT != 'cohort1':
-                pred_with_covars['line_category'] = pred_with_covars['line_category'].clip(upper=3)
-                pred_with_covars = pd.get_dummies(
-                    pred_with_covars, columns=['line_category'], prefix='LINE', drop_first=True, dtype=int)
+                pred_with_covars = pred_with_covars.with_columns(
+                    pl.col('line_category').clip(upper_bound=3))
+                pred_with_covars = pred_with_covars.to_dummies(
+                    columns=['line_category'])
+                line_feature_cols_raw = [c for c in pred_with_covars.columns if c.startswith('line_category_')]
+                rename_map = {}
+                keep_line_cols = sorted(line_feature_cols_raw)[1:]
+                for c in keep_line_cols:
+                    suffix = c[len('line_category_'):]
+                    rename_map[c] = f'LINE_{suffix}'
+                drop_line_cols = [c for c in line_feature_cols_raw if c not in keep_line_cols]
+                pred_with_covars = pred_with_covars.drop(drop_line_cols).rename(rename_map)
                 line_feature_cols = [c for c in pred_with_covars.columns if c.startswith('LINE_')]
             else:
                 line_feature_cols = []
 
             demo_cols = ['GENDER', 'AGE_AT_TREATMENTSTART']
             if 'GENDER' not in pred_with_covars.columns or 'AGE_AT_TREATMENTSTART' not in pred_with_covars.columns:
-                surv_demo = pd.read_parquet(
+                surv_demo = pl.read_parquet(
                     os.path.join(SURV_PATH, 'death_met_surv_df.parquet'),
                     columns=['DFCI_MRN', 'GENDER', 'AGE_AT_TREATMENTSTART'])
-                pred_with_covars = pred_with_covars.merge(surv_demo, on='DFCI_MRN', how='left')
+                pred_with_covars = pred_with_covars.join(surv_demo, on='DFCI_MRN', how='left')
 
             covar_cols = (demo_cols + cancer_type_feature_cols + line_feature_cols)
-            covar_cols = [c for c in covar_cols if pred_with_covars[c].notna().any()]
+            covar_cols = [c for c in covar_cols if pred_with_covars[c].null_count() < pred_with_covars.height]
 
             covar_plus_embed_cols = covar_cols + embedding_cols
-            covar_plus_embed_cols = [c for c in covar_plus_embed_cols if pred_with_covars[c].notna().any()]
+            covar_plus_embed_cols = [c for c in covar_plus_embed_cols
+                                      if pred_with_covars[c].null_count() < pred_with_covars.height]
 
             # Use the same patients for both PS models: restrict to those with
             # complete data for the most demanding feature set (covariates + embeddings).
-            common_source_df = pred_with_covars.dropna(subset=covar_plus_embed_cols)
-            print(f"    Common patient set: {len(common_source_df)} "
-                  f"(dropped {len(pred_with_covars) - len(common_source_df)} with missing embeddings/covariates)")
+            common_source_df = pred_with_covars.drop_nulls(subset=covar_plus_embed_cols)
+            print(f"    Common patient set: {common_source_df.height} "
+                  f"(dropped {pred_with_covars.height - common_source_df.height} with missing embeddings/covariates)")
 
             for ps_model in PS_MODELS:
                 output_path = os.path.join(OUTPUT_BASE, f'{ps_model}_propensity/w_{buffer}_day_buffer/')
@@ -169,7 +185,7 @@ def main() -> None:
 
                 label = f"buffer={buffer}, {ps_model}"
                 out_df = train_propensity_cv(common_source_df, features, label)
-                out_df.to_csv(os.path.join(output_path, 'predictions.csv.gz'), index=False)
+                out_df.write_csv(os.path.join(output_path, 'predictions.csv.gz'), compression='gzip')
 
         # === Plot ROC curves for the 30-day buffer ===
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
@@ -177,7 +193,7 @@ def main() -> None:
 
         for i, ps_model in enumerate(PS_MODELS):
             pred_path = os.path.join(OUTPUT_BASE, f'{ps_model}_propensity/w_{PLOT_BUFFER}_day_buffer/predictions.csv.gz')
-            pred_df = pd.read_csv(pred_path)
+            pred_df = pl.read_csv(pred_path)
 
             auc = roc_auc_score(pred_df['ground_truth'], pred_df['model_probs'])
             fpr, tpr, _ = roc_curve(pred_df['ground_truth'], pred_df['model_probs'])

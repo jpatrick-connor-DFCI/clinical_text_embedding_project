@@ -15,7 +15,7 @@ import warnings
 
 import joblib
 import numpy as np
-import pandas as pd
+import polars as pl
 from sklearn.model_selection import train_test_split, StratifiedKFold
 
 from sksurv.linear_model import CoxnetSurvivalAnalysis
@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 # ==========================================
 
 def run_grid_CoxPH_parallel(
-    df: pd.DataFrame,
+    df: pl.DataFrame,
     base_cols: list[str],
     continuous_vars: list[str],
     penalized_cols: list[str],
@@ -61,7 +61,7 @@ def run_grid_CoxPH_parallel(
     pre_dispatch: int | str = "2*n_jobs",
     batch_size: int | str = "auto",
     parallel_axis: str = "auto",    # "auto", "l1", or "fold"
-) -> tuple[pd.DataFrame, pd.DataFrame, object]:
+) -> tuple[pl.DataFrame, pl.DataFrame, object]:
     """
     Auto-switch behavior:
       - If pca_config is None or {}, runs the NO-memmap in-RAM path (fastest for dense text).
@@ -92,7 +92,9 @@ def run_grid_CoxPH_parallel(
 
         # ---- Filter invalid (NaN/non-positive tstop, NaN event) ----
         n_before = len(df)
-        df = df[df[tstop_col].notna() & (df[tstop_col] > 0) & df[event_col].notna()].copy()
+        df = df.filter(
+            pl.col(tstop_col).is_not_null() & (pl.col(tstop_col) > 0) & pl.col(event_col).is_not_null()
+        )
         n_dropped = n_before - len(df)
         if n_dropped > 0:
             logger.info("run_grid_CoxPH_parallel: dropped %d/%d rows with invalid tstop/event", n_dropped, n_before)
@@ -104,7 +106,7 @@ def run_grid_CoxPH_parallel(
         base_col_set = set(base_cols) | (set(continuous_vars) - set(penalized_cols))
 
         # ---- X in RAM (float32); NaN in features is handled per-fold via _impute_train_test_np ----
-        X_full = df[all_cols].to_numpy(dtype=np.float32, copy=False)
+        X_full = df.select(all_cols).to_numpy().astype(np.float32, copy=False)
 
         # ---- Structured survival array ----
         y_struct = _make_surv_array(df[event_col].to_numpy(), df[tstop_col].to_numpy())
@@ -114,7 +116,7 @@ def run_grid_CoxPH_parallel(
         idx_train_val, idx_test = train_test_split(
             idx,
             test_size=0.2,
-            stratify=df[event_col].astype(int),
+            stratify=df[event_col].cast(pl.Int64).to_numpy(),
             random_state=1234,
         )
 
@@ -124,7 +126,8 @@ def run_grid_CoxPH_parallel(
         y_test = y_struct[idx_test]
 
         # ---- CV ----
-        strat_labels = df[event_col].astype(int).iloc[idx_train_val].to_numpy()
+        event_int_np = df[event_col].cast(pl.Int64).to_numpy()
+        strat_labels = event_int_np[idx_train_val]
         cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=1234)
         folds = list(cv.split(X_train_val, strat_labels))  # materialize once
 
@@ -276,9 +279,9 @@ def _run_grid_no_pca(
         nested = [evaluate_l1_path_no_pca(l1) for l1 in l1_ratios]
     results = [row for batch in nested for row in batch]
 
-    cv_results_df = pd.DataFrame(
+    cv_results_df = pl.DataFrame(
         results,
-        columns=[
+        schema=[
             "l1_ratio",
             "alpha",
             "mean_c_index",
@@ -291,16 +294,17 @@ def _run_grid_no_pca(
             "fold_warning_counts",
             "n_folds_contributing",
         ],
+        orient="row",
     )
 
-    valid_cv = cv_results_df.dropna(subset=["mean_auc(t)"])
-    if valid_cv.empty:
+    valid_cv = cv_results_df.drop_nulls(subset=["mean_auc(t)"]).filter(pl.col("mean_auc(t)").is_not_nan())
+    if valid_cv.is_empty():
         raise RuntimeError("All CV evaluations failed (all NaN mean_auc(t)). Check data and parameters.")
-    opt = valid_cv.sort_values("mean_auc(t)", ascending=False).iloc[0]
-    opt_l1, opt_alpha = float(opt.l1_ratio), float(opt.alpha)
+    opt = valid_cv.sort("mean_auc(t)", descending=True).row(0, named=True)
+    opt_l1, opt_alpha = float(opt["l1_ratio"]), float(opt["alpha"])
     logger.info(
         "Selected l1_ratio=%.3f alpha=%.3e with mean_auc(t)=%.4f from %d/%d fold(s) (no min_folds gate)",
-        opt_l1, opt_alpha, opt["mean_auc(t)"], int(opt.n_folds_contributing), len(folds),
+        opt_l1, opt_alpha, opt["mean_auc(t)"], int(opt["n_folds_contributing"]), len(folds),
     )
 
     # Impute then scale continuous variables for final fit
@@ -324,7 +328,7 @@ def _run_grid_no_pca(
         logger.warning("Grid search final model (no PCA) failed: %s", e)
         final_model, mean_auc, ibs, cidx = None, np.nan, np.nan, np.nan
 
-    test_df = pd.DataFrame({"mean_auc(t)": [mean_auc], "mean_ibs": [ibs], "mean_c_index": [cidx]})
+    test_df = pl.DataFrame({"mean_auc(t)": [mean_auc], "mean_ibs": [ibs], "mean_c_index": [cidx]})
     return test_df, cv_results_df, final_model
 
 
@@ -485,9 +489,9 @@ def _run_grid_with_pca(
             nested = [evaluate_l1_path_with_pca(l1) for l1 in l1_ratios]
         results = [row for batch in nested for row in batch]
 
-        cv_results_df = pd.DataFrame(
+        cv_results_df = pl.DataFrame(
             results,
-            columns=[
+            schema=[
                 "l1_ratio",
                 "alpha",
                 "mean_c_index",
@@ -500,17 +504,18 @@ def _run_grid_with_pca(
                 "fold_warning_counts",
                 "n_folds_contributing",
             ],
+            orient="row",
         )
 
         # ---- final fit (apply same preprocessing to train_val/test) ----
-        valid_cv = cv_results_df.dropna(subset=["mean_auc(t)"])
-        if valid_cv.empty:
+        valid_cv = cv_results_df.drop_nulls(subset=["mean_auc(t)"]).filter(pl.col("mean_auc(t)").is_not_nan())
+        if valid_cv.is_empty():
             raise RuntimeError("All CV evaluations failed (all NaN mean_auc(t)). Check data and parameters.")
-        opt = valid_cv.sort_values("mean_auc(t)", ascending=False).iloc[0]
-        opt_l1, opt_alpha = float(opt.l1_ratio), float(opt.alpha)
+        opt = valid_cv.sort("mean_auc(t)", descending=True).row(0, named=True)
+        opt_l1, opt_alpha = float(opt["l1_ratio"]), float(opt["alpha"])
         logger.info(
             "Selected l1_ratio=%.3f alpha=%.3e with mean_auc(t)=%.4f from %d/%d fold(s) (no min_folds gate)",
-            opt_l1, opt_alpha, opt["mean_auc(t)"], int(opt.n_folds_contributing), len(fold_meta),
+            opt_l1, opt_alpha, opt["mean_auc(t)"], int(opt["n_folds_contributing"]), len(fold_meta),
         )
 
         X_trval = np.array(X_train_val, dtype=np.float32, copy=True)
@@ -549,7 +554,7 @@ def _run_grid_with_pca(
             logger.warning("Grid search final model (PCA) failed: %s", e)
             final_model, mean_auc, ibs, cidx = None, np.nan, np.nan, np.nan
 
-        test_df = pd.DataFrame({"mean_auc(t)": [mean_auc], "mean_ibs": [ibs], "mean_c_index": [cidx]})
+        test_df = pl.DataFrame({"mean_auc(t)": [mean_auc], "mean_ibs": [ibs], "mean_c_index": [cidx]})
         return test_df, cv_results_df, final_model
 
     finally:

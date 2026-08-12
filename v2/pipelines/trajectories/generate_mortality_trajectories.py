@@ -5,6 +5,7 @@ import os
 
 import numpy as np
 import pandas as pd
+import polars as pl
 import zstandard as zstd
 from tqdm import tqdm
 
@@ -20,12 +21,12 @@ def main() -> None:
     os.makedirs(trajectory_path, exist_ok=True)
 
     # Load datasets
-    notes_meta = pd.read_parquet(NOTES_PATH + 'full_clinical_notes_embeddings_metadata.parquet')
+    notes_meta = pl.read_parquet(NOTES_PATH + 'full_clinical_notes_embeddings_metadata.parquet').to_pandas()
     with open(NOTES_PATH + 'full_clinical_notes_embeddings_as_array.npy.zst', 'rb') as f:
         embeddings_data = np.load(io.BytesIO(zstd.decompress(f.read())))
     embeddings_data = embeddings_data.astype(np.float32)
-    events_data = pd.read_parquet(SURV_PATH + 'death_met_surv_df.parquet')
-    cancer_type_df = pd.read_csv(os.path.join(FEATURE_PATH, 'cancer_type_df.csv.gz'))
+    events_data = pl.read_parquet(SURV_PATH + 'death_met_surv_df.parquet').to_pandas()
+    cancer_type_df = pl.read_csv(os.path.join(FEATURE_PATH, 'cancer_type_df.csv.gz')).to_pandas()
 
     event = 'death'
     alphas_to_test = np.logspace(-5, 0, 25)
@@ -98,7 +99,8 @@ def main() -> None:
             failed_landmarks.append((month_adj, str(exc)))
             continue
 
-    trajectory_predictions_df.to_csv(os.path.join(trajectory_path, f'survival_trajectories_w_decay_param_{decay_param}.csv'), index=False)
+    pl.from_pandas(trajectory_predictions_df).write_csv(
+        os.path.join(trajectory_path, f'survival_trajectories_w_decay_param_{decay_param}.csv'))
     if failed_landmarks:
         failed_months = ", ".join(str(month) for month, _ in failed_landmarks)
         raise RuntimeError(f"Trajectory generation failed at month landmarks: {failed_months}")

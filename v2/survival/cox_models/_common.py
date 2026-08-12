@@ -57,7 +57,7 @@ def evaluate_surv_model(surv_model, X_eval, y_train, y_eval, eval_times: np.ndar
 
     Args:
         surv_model: Fitted survival model (CoxPHSurvivalAnalysis or CoxnetSurvivalAnalysis).
-        X_eval (pd.DataFrame): Evaluation features.
+        X_eval: Evaluation features (pd.DataFrame or np.ndarray, as required by surv_model.predict).
         y_train: Training structured survival array for dynamic AUC calculation.
         y_eval: Evaluation structured survival array.
         eval_times (np.ndarray): Times at which to compute AUC and Brier score.

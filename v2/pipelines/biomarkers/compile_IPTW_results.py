@@ -16,7 +16,7 @@ Notebook-ready: no argparse, output directory set via variable.
 import os
 import re
 
-import pandas as pd
+import polars as pl
 
 from config import BIOMARKER_PATH, MATCHED_COHORT_PATH
 
@@ -71,9 +71,8 @@ def main() -> None:
                 diag_path = os.path.join(run_path, f'{cancer_type}_diagnostics/')
                 ess_file = os.path.join(diag_path, 'effective_sample_sizes.csv.gz')
                 if os.path.isfile(ess_file):
-                    ess = pd.read_csv(ess_file)
-                    ess['cohort'] = cohort
-                    ess['ps_model'] = ps_model
+                    ess = pl.read_csv(ess_file)
+                    ess = ess.with_columns(pl.lit(cohort).alias('cohort'), pl.lit(ps_model).alias('ps_model'))
                     diag_rows.append(ess)
 
                 # Track 1
@@ -81,12 +80,17 @@ def main() -> None:
                     fname = f'{cancer_type}_track1_{weight}_ICI_only.csv.gz'
                     fpath = os.path.join(run_path, fname)
                     if os.path.isfile(fpath):
-                        df = pd.read_csv(fpath)
-                        sig = df[df.get('significant_marker', pd.Series(dtype=bool)) == True].copy()
-                        sig['cohort'] = cohort
-                        sig['ps_model'] = ps_model
-                        sig['weight_type'] = weight
-                        sig['cancer_type'] = cancer_type
+                        df = pl.read_csv(fpath)
+                        if 'significant_marker' not in df.columns:
+                            sig = df.clear()
+                        else:
+                            sig = df.filter(pl.col('significant_marker') == True)
+                        sig = sig.with_columns(
+                            pl.lit(cohort).alias('cohort'),
+                            pl.lit(ps_model).alias('ps_model'),
+                            pl.lit(weight).alias('weight_type'),
+                            pl.lit(cancer_type).alias('cancer_type'),
+                        )
                         all_t1.append(sig)
 
                 # Track 2
@@ -94,22 +98,27 @@ def main() -> None:
                     fname = f'{cancer_type}_track2_{weight}_interaction.csv.gz'
                     fpath = os.path.join(run_path, fname)
                     if os.path.isfile(fpath):
-                        df = pd.read_csv(fpath)
-                        sig = df[df.get('significant_predictive', pd.Series(dtype=bool)) == True].copy()
-                        sig['cohort'] = cohort
-                        sig['ps_model'] = ps_model
-                        sig['weight_type'] = weight
-                        sig['cancer_type'] = cancer_type
+                        df = pl.read_csv(fpath)
+                        if 'significant_predictive' not in df.columns:
+                            sig = df.clear()
+                        else:
+                            sig = df.filter(pl.col('significant_predictive') == True)
+                        sig = sig.with_columns(
+                            pl.lit(cohort).alias('cohort'),
+                            pl.lit(ps_model).alias('ps_model'),
+                            pl.lit(weight).alias('weight_type'),
+                            pl.lit(cancer_type).alias('cancer_type'),
+                        )
                         all_t2.append(sig)
 
-    t1 = pd.concat(all_t1, ignore_index=True) if all_t1 else pd.DataFrame()
-    t2 = pd.concat(all_t2, ignore_index=True) if all_t2 else pd.DataFrame()
+    t1 = pl.concat(all_t1, how='diagonal_relaxed') if all_t1 else pl.DataFrame()
+    t2 = pl.concat(all_t2, how='diagonal_relaxed') if all_t2 else pl.DataFrame()
 
     print(f"Track 1 (ICI-only): {len(t1)} significant hits")
     print(f"Track 2 (interaction): {len(t2)} significant hits")
 
-    t1.to_csv(os.path.join(OUTPUT_DIR, 'track1_all_significant_hits.csv'), index=False)
-    t2.to_csv(os.path.join(OUTPUT_DIR, 'track2_all_significant_hits.csv'), index=False)
+    t1.write_csv(os.path.join(OUTPUT_DIR, 'track1_all_significant_hits.csv'))
+    t2.write_csv(os.path.join(OUTPUT_DIR, 'track2_all_significant_hits.csv'))
 
     # ================================================
     # 2. Cohort patient counts by cancer type
@@ -122,9 +131,10 @@ def main() -> None:
         if not os.path.isfile(cohort_file):
             print(f"  Cohort file not found: {cohort_file}")
             continue
-        cdf = pd.read_csv(cohort_file)
+        cdf = pl.read_csv(cohort_file)
         ct_col = 'cancer_type' if 'cancer_type' in cdf.columns else 'CANCER_TYPE'
-        for ct, grp in cdf.groupby(ct_col):
+        for ct, grp in cdf.group_by(ct_col):
+            ct = ct[0]
             n_ici = int(grp['PX_on_ICI'].sum())
             n_ctrl = len(grp) - n_ici
             cohort_counts_rows.append({
@@ -142,11 +152,11 @@ def main() -> None:
             if not os.path.isfile(iptw_file):
                 print(f"  IPTW file not found: {iptw_file}")
                 continue
-            idf = pd.read_csv(iptw_file)
+            idf = pl.read_csv(iptw_file)
             cancer_type_cols = [c for c in idf.columns if c.startswith('CANCER_TYPE_')]
             for ct_c in cancer_type_cols:
                 ct_name = ct_c.replace('CANCER_TYPE_', '')
-                grp = idf[idf[ct_c].astype(bool)]
+                grp = idf.filter(pl.col(ct_c).cast(pl.Boolean))
                 n_ici = int(grp['PX_on_ICI'].sum())
                 n_ctrl = len(grp) - n_ici
                 cohort_counts_rows.append({
@@ -179,10 +189,10 @@ def main() -> None:
                 ess_file = os.path.join(run_path, f'{cancer_type}_diagnostics/effective_sample_sizes.csv.gz')
                 if not os.path.isfile(ess_file):
                     continue
-                ess = pd.read_csv(ess_file)
-                if ess.empty:
+                ess = pl.read_csv(ess_file)
+                if ess.is_empty():
                     continue
-                row = ess.iloc[0]
+                row = ess.row(0, named=True)
                 cohort_counts_rows.append({
                     'cancer_type': cancer_type,
                     'cohort': cohort,
@@ -192,17 +202,18 @@ def main() -> None:
                     'n_total': int(row['N_treated'] + row['N_control']),
                 })
 
-    cohort_counts = pd.DataFrame(cohort_counts_rows)
-    cohort_counts.to_csv(os.path.join(OUTPUT_DIR, 'cohort_patient_counts.csv.gz'), index=False)
+    cohort_counts = pl.DataFrame(cohort_counts_rows)
+    cohort_counts.write_csv(os.path.join(OUTPUT_DIR, 'cohort_patient_counts.csv.gz'), compression='gzip')
     print(f"\nCohort patient counts ({len(cohort_counts)} rows):")
-    print(cohort_counts.to_string(index=False))
+    with pl.Config(tbl_rows=-1):
+        print(cohort_counts)
 
     # ================================================
     # 3. Diagnostics summary
     # ================================================
     if diag_rows:
-        diag_df = pd.concat(diag_rows, ignore_index=True)
-        diag_df.to_csv(os.path.join(OUTPUT_DIR, 'scheme_diagnostics_summary.csv.gz'), index=False)
+        diag_df = pl.concat(diag_rows, how='diagonal_relaxed')
+        diag_df.write_csv(os.path.join(OUTPUT_DIR, 'scheme_diagnostics_summary.csv.gz'), compression='gzip')
         print(f"\nDiagnostics summary saved ({len(diag_df)} rows)")
 
     print(f"\nAll outputs saved to {OUTPUT_DIR}")

@@ -21,7 +21,7 @@ import os
 import time
 from datetime import datetime
 
-import pandas as pd
+import polars as pl
 
 PAN_KEY = '__pan__'
 MANIFEST_COLS = ['key', 'status', 'reason', 'n_train', 'n_held',
@@ -34,9 +34,15 @@ def dataframe_fingerprint(df, columns):
     missing = [column for column in selected if column not in df.columns]
     if missing:
         raise ValueError(f"Cannot fingerprint missing columns: {missing}")
+    # NOTE: previously used pd.util.hash_pandas_object (pandas' xxhash-based row hash).
+    # Polars has no direct equivalent; this uses DataFrame.hash_rows(), a different
+    # hash algorithm producing different digests for the same data. This is a
+    # DELIBERATE BREAKING CHANGE to the checkpoint fingerprint format — any
+    # checkpoints on disk from before this migration will be treated as stale
+    # (fingerprint mismatch) and the run will restart fresh. See migration report.
     digest = hashlib.sha256()
     digest.update("\0".join(selected).encode("utf-8"))
-    digest.update(pd.util.hash_pandas_object(df[selected], index=True).values.tobytes())
+    digest.update(df.select(selected).hash_rows().to_numpy().tobytes())
     return digest.hexdigest()
 
 
@@ -67,8 +73,8 @@ class RunCheckpoint:
             with open(self.meta_path) as fh:
                 prev = json.load(fh).get('fingerprint')
             if prev == fingerprint:
-                man = pd.read_csv(self.manifest_path, dtype={'key': str})
-                self._manifest = {r['key']: dict(r) for r in man.to_dict('records')}
+                man = pl.read_csv(self.manifest_path, schema_overrides={'key': pl.Utf8})
+                self._manifest = {r['key']: dict(r) for r in man.to_dicts()}
                 self.log(f"resume: loaded manifest with {len(self._manifest)} entries")
             else:
                 stale = True
@@ -96,8 +102,9 @@ class RunCheckpoint:
         the header, self._manifest is empty at that point) or if a caller ever needs a full
         resync. Per-record writes go through ``_append_manifest_row`` instead (Phase-A A9).
         """
-        df = pd.DataFrame(list(self._manifest.values()), columns=MANIFEST_COLS)
-        df.to_csv(self.manifest_path, index=False)
+        rows = [{c: row.get(c) for c in MANIFEST_COLS} for row in self._manifest.values()]
+        df = pl.DataFrame(rows, schema=MANIFEST_COLS)
+        df.write_csv(self.manifest_path)
 
     def _append_manifest_row(self, row):
         """Append a single record to the manifest CSV without rewriting the whole file.
@@ -111,9 +118,9 @@ class RunCheckpoint:
         created (fresh start or stale-fingerprint reset); every _record() thereafter appends.
         """
         write_header = not os.path.exists(self.manifest_path)
-        pd.DataFrame([row], columns=MANIFEST_COLS).to_csv(
-            self.manifest_path, mode='a', header=write_header, index=False,
-        )
+        row_df = pl.DataFrame([{c: row.get(c) for c in MANIFEST_COLS}], schema=MANIFEST_COLS)
+        with open(self.manifest_path, 'a') as fh:
+            row_df.write_csv(fh, include_header=write_header)
 
     def _record(self, key, status, reason=None, meta=None):
         meta = meta or {}
@@ -156,11 +163,11 @@ class RunCheckpoint:
     def load_pan(self):
         self._resumed.add(PAN_KEY)
         self.log("resumed: pan model scores")
-        return pd.read_csv(self._train_path(PAN_KEY)), pd.read_csv(self._held_path(PAN_KEY))
+        return pl.read_csv(self._train_path(PAN_KEY)), pl.read_csv(self._held_path(PAN_KEY))
 
     def save_pan(self, train_scores_df, held_scores_df, meta=None):
-        train_scores_df.to_csv(self._train_path(PAN_KEY), index=False)
-        held_scores_df.to_csv(self._held_path(PAN_KEY), index=False)
+        train_scores_df.write_csv(self._train_path(PAN_KEY))
+        held_scores_df.write_csv(self._held_path(PAN_KEY))
         self._record(PAN_KEY, 'done', meta=meta)
         self._fit.add(PAN_KEY)
         m = meta or {}
@@ -171,11 +178,11 @@ class RunCheckpoint:
     def load_stratum(self, key):
         self._resumed.add(key)
         self.log(f"resumed: {key}")
-        return pd.read_csv(self._train_path(key)), pd.read_csv(self._held_path(key))
+        return pl.read_csv(self._train_path(key)), pl.read_csv(self._held_path(key))
 
     def save_stratum(self, key, train_scores_df, held_scores_df, meta=None):
-        train_scores_df.to_csv(self._train_path(key), index=False)
-        held_scores_df.to_csv(self._held_path(key), index=False)
+        train_scores_df.write_csv(self._train_path(key))
+        held_scores_df.write_csv(self._held_path(key))
         self._record(key, 'done', meta=meta)
         self._fit.add(key)
         m = meta or {}

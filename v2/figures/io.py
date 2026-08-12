@@ -15,7 +15,7 @@ import os
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import pandas as pd
+import polars as pl
 
 from config import FIGURE_DATA_DIR, FIGURE_OUT_DIR
 
@@ -64,7 +64,7 @@ def figure_data_path(name: str) -> str:
     return os.path.join(FIGURE_DATA_DIR, name)
 
 
-def save_figure_data(df: pd.DataFrame, name: str) -> str:
+def save_figure_data(df: pl.DataFrame, name: str) -> str:
     """Write a prepared CSV to FIGURE_DATA_DIR and return the path."""
     if len(df.columns) == 0:
         raise ValueError(f"Refusing to write schema-less figure data for {name}")
@@ -77,11 +77,11 @@ def save_figure_data(df: pd.DataFrame, name: str) -> str:
         logger.warning("[EMPTY FIGURE DATA] %s has columns but 0 rows -- a downstream panel will likely be a placeholder.", name)
     os.makedirs(FIGURE_DATA_DIR, exist_ok=True)
     out = figure_data_path(name)
-    df.to_csv(out, index=False)
+    df.write_csv(out)
     print(f"[wrote] {out}  ({len(df):,} rows)")
     return out
 
 
-def load_figure_data(name: str) -> pd.DataFrame:
+def load_figure_data(name: str) -> pl.DataFrame:
     """Read a prepared CSV from FIGURE_DATA_DIR."""
-    return pd.read_csv(figure_data_path(name))
+    return pl.read_csv(figure_data_path(name))

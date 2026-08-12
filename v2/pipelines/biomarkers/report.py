@@ -1,8 +1,9 @@
 """Word document assembly for the ICI biomarker validation report."""
 
+import math
 import os
 
-import pandas as pd
+import polars as pl
 from docx import Document
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -10,10 +11,10 @@ from docx.shared import Pt
 
 
 def add_docx_table(doc, df, title=None, font_size=8):
-    """Add a pandas DataFrame as a formatted table to a Word document."""
+    """Add a polars DataFrame as a formatted table to a Word document."""
     if title:
         doc.add_heading(title, level=2)
-    if df.empty:
+    if df.is_empty():
         doc.add_paragraph('No data available.')
         return
 
@@ -30,10 +31,11 @@ def add_docx_table(doc, df, title=None, font_size=8):
                 run.bold = True
                 run.font.size = Pt(font_size)
 
-    for _, row in df.iterrows():
+    for row in df.iter_rows():
         row_cells = table.add_row().cells
         for j, val in enumerate(row):
-            row_cells[j].text = str(val) if pd.notna(val) else ''
+            is_missing = val is None or (isinstance(val, float) and math.isnan(val))
+            row_cells[j].text = str(val) if not is_missing else ''
             for paragraph in row_cells[j].paragraphs:
                 for run in paragraph.runs:
                     run.font.size = Pt(font_size)
@@ -85,7 +87,7 @@ def update_report_document(doc, df):
     doc.add_heading('3. Updated Validation Summary', level=1)
 
     n_total_findings = len(df)
-    n_unique_markers = len(df.drop_duplicates(subset=['marker', 'cancer_type']))
+    n_unique_markers = len(df.unique(subset=['marker', 'cancer_type']))
 
     doc.add_paragraph(
         'This section provides updated validation results after systematic literature review '
@@ -107,13 +109,13 @@ def update_report_document(doc, df):
     doc.add_paragraph(f'Each row counts findings for that specification. Rows sum to {n_total_findings}.')
 
     summary_rows = []
-    for (track, cohort, ps_model, weight_type), grp in df.groupby(
+    for (track, cohort, ps_model, weight_type), grp in df.group_by(
             ['track', 'cohort', 'ps_model', 'weight_type']):
         track_label = f'Track {track}'
         n = len(grp)
-        n_validated = grp['validation_level'].isin(
+        n_validated = grp['validation_level'].is_in(
             ['Very Strong', 'Strong', 'Moderate']).sum()
-        n_weak = grp['validation_level'].isin(
+        n_weak = grp['validation_level'].is_in(
             ['Weak', 'Partial', 'Indirect']).sum()
         n_none = (grp['validation_level'] == 'No Evidence').sum()
         summary_rows.append({
@@ -127,7 +129,7 @@ def update_report_document(doc, df):
             'No Evidence': n_none,
         })
 
-    summary_df = pd.DataFrame(summary_rows)
+    summary_df = pl.DataFrame(summary_rows)
     add_docx_table(doc, summary_df, font_size=7)
 
     # Table 2: Validation distribution overall (all rows)
@@ -135,13 +137,17 @@ def update_report_document(doc, df):
 
     doc.add_paragraph(f'Counts all {n_total_findings} findings.')
 
-    val_dist = df['validation_level'].value_counts().reset_index()
+    val_dist = df['validation_level'].value_counts()
     val_dist.columns = ['Validation Level', 'Count']
-    val_dist['Percentage'] = (val_dist['Count'] / val_dist['Count'].sum() * 100).round(1).astype(str) + '%'
+    total_count = val_dist['Count'].sum()
+    val_dist = val_dist.with_columns(
+        ((pl.col('Count') / total_count * 100).round(1).cast(pl.String) + '%').alias('Percentage')
+    )
     level_order = ['Very Strong', 'Strong', 'Moderate', 'Partial', 'Indirect', 'Weak', 'No Evidence', 'Unassessed']
-    val_dist['_sort'] = val_dist['Validation Level'].map(
-        {v: i for i, v in enumerate(level_order)}).fillna(99)
-    val_dist = val_dist.sort_values('_sort').drop(columns='_sort')
+    sort_map = {v: i for i, v in enumerate(level_order)}
+    val_dist = val_dist.with_columns(
+        pl.col('Validation Level').replace_strict(sort_map, default=99, return_dtype=pl.Int64).alias('_sort')
+    ).sort('_sort').drop('_sort')
     add_docx_table(doc, val_dist, font_size=8)
 
     # Table 3: Validation by cancer type (all rows)
@@ -149,13 +155,14 @@ def update_report_document(doc, df):
 
     doc.add_paragraph(f'Counts all {n_total_findings} findings. Rows sum to {n_total_findings}.')
 
-    ct_val = (df.groupby('cancer_type')['validation_level']
-              .value_counts()
-              .unstack(fill_value=0)
-              .reset_index())
+    ct_val = (df.group_by(['cancer_type', 'validation_level'])
+              .agg(pl.len().alias('n'))
+              .pivot(on='validation_level', index='cancer_type', values='n')
+              .fill_null(0))
     ordered_cols = ['cancer_type'] + [c for c in level_order if c in ct_val.columns]
-    ct_val = ct_val[ordered_cols]
-    ct_val['Total'] = ct_val[[c for c in ct_val.columns if c != 'cancer_type']].sum(axis=1)
+    ct_val = ct_val.select(ordered_cols)
+    value_cols = [c for c in ct_val.columns if c != 'cancer_type']
+    ct_val = ct_val.with_columns(pl.sum_horizontal(value_cols).alias('Total'))
     add_docx_table(doc, ct_val, font_size=7)
 
     # Table 4: Validated vs novel by track/cohort (all rows)
@@ -168,10 +175,10 @@ def update_report_document(doc, df):
     )
 
     track_cohort_rows = []
-    for (track, cohort), grp in df.groupby(['track', 'cohort']):
+    for (track, cohort), grp in df.group_by(['track', 'cohort']):
         n = len(grp)
-        n_val = grp['validation_level'].isin(['Very Strong', 'Strong', 'Moderate']).sum()
-        n_supp = grp['validation_level'].isin(['Weak', 'Partial', 'Indirect']).sum()
+        n_val = grp['validation_level'].is_in(['Very Strong', 'Strong', 'Moderate']).sum()
+        n_supp = grp['validation_level'].is_in(['Weak', 'Partial', 'Indirect']).sum()
         n_none = (grp['validation_level'] == 'No Evidence').sum()
         track_cohort_rows.append({
             'Track': f'Track {track}',
@@ -183,7 +190,7 @@ def update_report_document(doc, df):
             '% Validated': f'{n_val / max(n, 1) * 100:.0f}%',
         })
 
-    tc_df = pd.DataFrame(track_cohort_rows)
+    tc_df = pl.DataFrame(track_cohort_rows)
     add_docx_table(doc, tc_df, font_size=8)
 
     # Table 5: By track/cohort/weighting (all rows)
@@ -195,10 +202,10 @@ def update_report_document(doc, df):
     )
 
     tcw_rows = []
-    for (track, cohort, weight_type), grp in df.groupby(['track', 'cohort', 'weight_type']):
+    for (track, cohort, weight_type), grp in df.group_by(['track', 'cohort', 'weight_type']):
         n = len(grp)
-        n_val = grp['validation_level'].isin(['Very Strong', 'Strong', 'Moderate']).sum()
-        n_supp = grp['validation_level'].isin(['Weak', 'Partial', 'Indirect']).sum()
+        n_val = grp['validation_level'].is_in(['Very Strong', 'Strong', 'Moderate']).sum()
+        n_supp = grp['validation_level'].is_in(['Weak', 'Partial', 'Indirect']).sum()
         n_none = (grp['validation_level'] == 'No Evidence').sum()
         tcw_rows.append({
             'Track': f'Track {track}',
@@ -211,7 +218,7 @@ def update_report_document(doc, df):
             '% Validated': f'{n_val / max(n, 1) * 100:.0f}%',
         })
 
-    tcw_df = pd.DataFrame(tcw_rows)
+    tcw_df = pl.DataFrame(tcw_rows)
     add_docx_table(doc, tcw_df, font_size=7)
 
     # Table 6: Weighted vs unweighted overlap (unique marker x cancer within track x cohort)
@@ -225,16 +232,14 @@ def update_report_document(doc, df):
     )
 
     overlap_rows = []
-    for (track, cohort), grp in df.groupby(['track', 'cohort']):
+    for (track, cohort), grp in df.group_by(['track', 'cohort']):
         weighted_key = 'ATE'
         unweighted_key = 'unweighted' if track == 1 else 'noIPTW'
 
-        w_hits = set(
-            grp[grp['weight_type'] == weighted_key]
-            .apply(lambda r: (r['marker'], r['cancer_type']), axis=1))
-        uw_hits = set(
-            grp[grp['weight_type'] == unweighted_key]
-            .apply(lambda r: (r['marker'], r['cancer_type']), axis=1))
+        w_grp = grp.filter(pl.col('weight_type') == weighted_key)
+        uw_grp = grp.filter(pl.col('weight_type') == unweighted_key)
+        w_hits = set(zip(w_grp['marker'], w_grp['cancer_type']))
+        uw_hits = set(zip(uw_grp['marker'], uw_grp['cancer_type']))
 
         both = w_hits & uw_hits
         w_only = w_hits - uw_hits
@@ -251,7 +256,7 @@ def update_report_document(doc, df):
             '% Overlap': f'{len(both) / max(total, 1) * 100:.0f}%',
         })
 
-    overlap_df = pd.DataFrame(overlap_rows)
+    overlap_df = pl.DataFrame(overlap_rows)
     add_docx_table(doc, overlap_df, font_size=8)
 
     # Table 7: Validation enrichment in concordant hits (unique marker x cancer)
@@ -264,16 +269,14 @@ def update_report_document(doc, df):
     )
 
     enrich_rows = []
-    for (track, cohort), grp in df.groupby(['track', 'cohort']):
+    for (track, cohort), grp in df.group_by(['track', 'cohort']):
         weighted_key = 'ATE'
         unweighted_key = 'unweighted' if track == 1 else 'noIPTW'
 
-        w_hits = set(
-            grp[grp['weight_type'] == weighted_key]
-            .apply(lambda r: (r['marker'], r['cancer_type']), axis=1))
-        uw_hits = set(
-            grp[grp['weight_type'] == unweighted_key]
-            .apply(lambda r: (r['marker'], r['cancer_type']), axis=1))
+        w_grp = grp.filter(pl.col('weight_type') == weighted_key)
+        uw_grp = grp.filter(pl.col('weight_type') == unweighted_key)
+        w_hits = set(zip(w_grp['marker'], w_grp['cancer_type']))
+        uw_hits = set(zip(uw_grp['marker'], uw_grp['cancer_type']))
 
         both = w_hits & uw_hits
         w_only = w_hits - uw_hits
@@ -284,12 +287,14 @@ def update_report_document(doc, df):
                                (f'{unweighted_key} only', uw_only)]:
             if not hit_set:
                 continue
-            subset = grp[grp.apply(
-                lambda r: (r['marker'], r['cancer_type']) in hit_set, axis=1
-            )].drop_duplicates(subset=['marker', 'cancer_type'])
+            mask = [
+                (m, c) in hit_set
+                for m, c in zip(grp['marker'], grp['cancer_type'])
+            ]
+            subset = grp.filter(pl.Series(mask)).unique(subset=['marker', 'cancer_type'])
             n = len(subset)
-            n_val = subset['validation_level'].isin(['Very Strong', 'Strong', 'Moderate']).sum()
-            n_supp = subset['validation_level'].isin(['Weak', 'Partial', 'Indirect']).sum()
+            n_val = subset['validation_level'].is_in(['Very Strong', 'Strong', 'Moderate']).sum()
+            n_supp = subset['validation_level'].is_in(['Weak', 'Partial', 'Indirect']).sum()
             n_none = (subset['validation_level'] == 'No Evidence').sum()
             enrich_rows.append({
                 'Track': f'Track {track}',
@@ -302,7 +307,7 @@ def update_report_document(doc, df):
                 '% Validated': f'{n_val / max(n, 1) * 100:.0f}%',
             })
 
-    enrich_df = pd.DataFrame(enrich_rows)
+    enrich_df = pl.DataFrame(enrich_rows)
     add_docx_table(doc, enrich_df, font_size=7)
 
     # Interpretive summary paragraph

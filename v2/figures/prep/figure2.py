@@ -58,7 +58,7 @@ import subprocess
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
+import polars as pl
 from sksurv.metrics import concordance_index_censored, cumulative_dynamic_auc
 from sksurv.util import Surv
 
@@ -94,7 +94,7 @@ MET_SITES = {"brainM", "boneM", "adrenalM", "liverM", "lungM", "nodeM", "periton
 # Code lookups are generated and loaded once at the start of main().
 def _normalize_phecode(code: object) -> str | None:
     """Canonicalize phecodes exactly as endpoint generation does."""
-    if code is None or pd.isna(code):
+    if code is None or (isinstance(code, float) and np.isnan(code)):
         return None
     value = re.sub(r"[^0-9.]", "", str(code).strip())
     if not value:
@@ -114,13 +114,13 @@ def _normalize_phecode(code: object) -> str | None:
 
 def _normalize_icd10(code: object) -> str | None:
     """Return the uppercase, undotted ICD-10-CM representation."""
-    if code is None or pd.isna(code):
+    if code is None or (isinstance(code, float) and np.isnan(code)):
         return None
     value = re.sub(r"[^A-Z0-9]", "", str(code).strip().upper())
     return value or None
 
 
-def _lookup_columns(df: pd.DataFrame, *required: str) -> list[str]:
+def _lookup_columns(df: pl.DataFrame, *required: str) -> list[str]:
     """Resolve lookup-table columns without depending on capitalization."""
     available = {str(col).strip().lower(): col for col in df.columns}
     missing = [col for col in required if col.lower() not in available]
@@ -145,16 +145,16 @@ def _load_icd_descriptions() -> dict[str, str]:
 
     out: dict[str, str] = {}
     try:
-        icd_df = pd.read_parquet(path)
+        icd_df = pl.read_parquet(path)
         code_col, description_col = _lookup_columns(
             icd_df, "DIAGNOSIS_ICD10_CD", "DIAGNOSIS_ICD10_NM"
         )
         for raw_code, raw_description in zip(
-            icd_df[code_col], icd_df[description_col]
+            icd_df[code_col].to_list(), icd_df[description_col].to_list()
         ):
             code = _normalize_icd10(raw_code)
             description = (
-                "" if pd.isna(raw_description) else str(raw_description).strip()
+                "" if raw_description is None else str(raw_description).strip()
             )
             if code and description:
                 out.setdefault(code, description)
@@ -169,13 +169,13 @@ def _load_phecode_descriptions() -> dict[str, str]:
     if not os.path.exists(path):
         print(f"  [phecode labels] {path} not found — phecode events will fall back to raw codes")
         return {}
-    df = pd.read_csv(path, dtype=str)
+    df = pl.read_csv(path, infer_schema=False)
     phecode_col, description_col = _lookup_columns(df, "phecode", "description")
     out: dict[str, str] = {}
-    for raw_code, raw_description in zip(df[phecode_col], df[description_col]):
+    for raw_code, raw_description in zip(df[phecode_col].to_list(), df[description_col].to_list()):
         code = _normalize_phecode(raw_code)
         description = (
-            "" if pd.isna(raw_description) else str(raw_description).strip()
+            "" if raw_description is None else str(raw_description).strip()
         )
         if code and description:
             out.setdefault(code, description)
@@ -197,7 +197,7 @@ def _load_icd10_to_phecode() -> tuple[
     if not os.path.exists(path):
         print(f"  [icd->phecode map] {path} not found — cross-scheme event dedup disabled")
         return {}, {}, {}
-    df = pd.read_csv(path, dtype=str)
+    df = pl.read_csv(path, infer_schema=False)
     icd_col, phecode_col = _lookup_columns(df, "icd10_code", "phecode")
     # icd3_post/icd4_post events are level-3/4 ICD prefixes, not full codes; the mapping
     # file is keyed on full codes, so retain every phecode reachable from a mapped
@@ -205,7 +205,7 @@ def _load_icd10_to_phecode() -> tuple[
     out: dict[str, set[str]] = {}
     phecode_cohort_descriptions: dict[str, str] = {}
     phecode_to_icd10: dict[str, set[str]] = {}
-    for raw_icd, raw_phecode in zip(df[icd_col], df[phecode_col]):
+    for raw_icd, raw_phecode in zip(df[icd_col].to_list(), df[phecode_col].to_list()):
         icd_code = _normalize_icd10(raw_icd)
         phecode = _normalize_phecode(raw_phecode)
         if not icd_code or not phecode:
@@ -442,16 +442,16 @@ STAGE_VS_RISK_AUC_COLUMNS = ["stage_group", "mean_auc", "n"]
 AUC_TIME_GRID_POINTS = 50
 
 
-def _full_cohort_metrics() -> pd.DataFrame:
+def _full_cohort_metrics() -> pl.DataFrame:
     rows = []
     n_skipped = 0
     for scheme in SCHEMES:
         for ev in list_trained_events(scheme):
             d = full_cohort_event_dir(scheme, ev)
             try:
-                text = pd.read_csv(os.path.join(d, "text_test.csv")).iloc[0]
-                base = pd.read_csv(os.path.join(d, "base_test.csv")).iloc[0]
-            except (FileNotFoundError, KeyError, IndexError) as e:
+                text = pl.read_csv(os.path.join(d, "text_test.csv")).row(0, named=True)
+                base = pl.read_csv(os.path.join(d, "base_test.csv")).row(0, named=True)
+            except (FileNotFoundError, KeyError, IndexError, pl.exceptions.OutOfBoundsError) as e:
                 print(f"  [{scheme}:{ev}] skipped — {type(e).__name__}: {e}")
                 n_skipped += 1
                 continue
@@ -465,12 +465,14 @@ def _full_cohort_metrics() -> pd.DataFrame:
             })
     if n_skipped:
         print(f"  total skipped: {n_skipped}")
-    return pd.DataFrame(rows, columns=FULL_COHORT_METRIC_COLUMNS)
+    if not rows:
+        return pl.DataFrame(schema={c: pl.Float64 for c in FULL_COHORT_METRIC_COLUMNS})
+    return pl.DataFrame(rows).select(FULL_COHORT_METRIC_COLUMNS)
 
 
 def _merge_risk_with_surv(
-    event: str, surv_df: pd.DataFrame, scheme: str = "death_met",
-) -> pd.DataFrame | None:
+    event: str, surv_df: pl.DataFrame, scheme: str = "death_met",
+) -> pl.DataFrame | None:
     """Merge a scheme's per-event held-out text/base risk scores with survival labels.
 
     `surv_df` must already carry the `event`/`tt_{event}` columns for `scheme` (for
@@ -481,46 +483,48 @@ def _merge_risk_with_surv(
     bp = os.path.join(rd, "base_risk_scores.csv")
     if not (os.path.exists(tp) and os.path.exists(bp)):
         return None
-    text_rs = pd.read_csv(tp)
-    base_rs = pd.read_csv(bp)
-    merged = (text_rs.merge(base_rs, on="DFCI_MRN")
-                     .merge(surv_df[["DFCI_MRN", event, f"tt_{event}"]], on="DFCI_MRN")
-                     .dropna())
-    merged = merged[merged[f"tt_{event}"] > 0]
+    text_rs = pl.read_csv(tp)
+    base_rs = pl.read_csv(bp)
+    merged = (text_rs.join(base_rs, on="DFCI_MRN")
+                     .join(surv_df.select(["DFCI_MRN", event, f"tt_{event}"]), on="DFCI_MRN")
+                     .drop_nulls())
+    merged = merged.filter(pl.col(f"tt_{event}") > 0)
     return merged
 
 
-def _safe_quantiles(scores: pd.Series, n: int, labels: list[str], label: str) -> pd.Series:
+def _safe_quantiles(scores: pl.Series, n: int, labels: list[str], label: str) -> pl.Series:
     """qcut into n equal-frequency bins, falling back to rank-based bins when ties at
     boundaries would otherwise raise. Base-model risk often has many ties
     (e.g. age + sex + cancer-type alone collapses many patients onto identical
     linear predictors)."""
     try:
-        return pd.qcut(scores, n, labels=labels).astype(str)
-    except ValueError:
-        ranks = scores.rank(method="first")
-        out = pd.qcut(ranks, n, labels=labels).astype(str)
+        out = scores.qcut(n, labels=labels, allow_duplicates=False)
+        return out.cast(pl.Utf8)
+    except pl.exceptions.DuplicateError:
+        ranks = scores.rank(method="ordinal")
+        out = ranks.qcut(n, labels=labels, allow_duplicates=False).cast(pl.Utf8)
         print(f"  [{label}] qcut hit duplicate edges; used rank-based bins (n={n})")
         return out
 
 
-def _safe_tertiles(scores: pd.Series, label: str) -> pd.Series:
+def _safe_tertiles(scores: pl.Series, label: str) -> pl.Series:
     """Backwards-compatible low/mid/high tertiles (used by the Fig 2D panel)."""
     return _safe_quantiles(scores, 3, ["low", "mid", "high"], label)
 
 
-def _km_tertiles(surv_df: pd.DataFrame) -> pd.DataFrame:
+def _km_tertiles(surv_df: pl.DataFrame) -> pl.DataFrame:
     """Patient-level table for the Fig 2D text-vs-base tertile KM panel."""
     m = _merge_risk_with_surv("death", surv_df)
     if m is None:
-        return pd.DataFrame(columns=KM_TERTILE_COLUMNS)
-    m = m.copy()
-    m["text_tertile"] = _safe_tertiles(m["text_risk_score"], "text")
-    m["base_tertile"] = _safe_tertiles(m["base_risk_score"], "base")
-    return m[KM_TERTILE_COLUMNS]
+        return pl.DataFrame(schema={c: pl.Float64 for c in KM_TERTILE_COLUMNS})
+    m = m.with_columns([
+        _safe_tertiles(m["text_risk_score"], "text").alias("text_tertile"),
+        _safe_tertiles(m["base_risk_score"], "base").alias("base_tertile"),
+    ])
+    return m.select(KM_TERTILE_COLUMNS)
 
 
-def _scheme_delta_topk(metrics: pd.DataFrame, k: int = TOPK_PER_CATEGORY) -> pd.DataFrame:
+def _scheme_delta_topk(metrics: pl.DataFrame, k: int = TOPK_PER_CATEGORY) -> pl.DataFrame:
     """Top-k events per category (mets/ICD10/phecodes) by largest *positive* delta C-index
     (text - base). Events with delta <= 0 are excluded — a "top" event is never a
     net-negative one. Social-determinant outcomes are not eligible for highlighting.
@@ -531,29 +535,30 @@ def _scheme_delta_topk(metrics: pd.DataFrame, k: int = TOPK_PER_CATEGORY) -> pd.
     phecode). CATEGORY_ORDER ranks ICD10 before phecodes, so once an ICD10 event is
     selected, any later phecode event mapping to the same phecode is skipped in favor
     of the next-best-delta phecode event."""
-    if metrics.empty:
-        return pd.DataFrame(columns=SCHEME_DELTA_TOPK_COLUMNS)
-    d = metrics.copy()
-    d["category"] = [
-        _event_category(s, e) for s, e in zip(d["scheme"], d["event"])
-    ]
+    if metrics.is_empty():
+        return pl.DataFrame(schema={c: pl.Float64 for c in SCHEME_DELTA_TOPK_COLUMNS})
+    d = metrics
+    d = d.with_columns(
+        pl.Series("category",
+                   [_event_category(s, e) for s, e in zip(d["scheme"].to_list(), d["event"].to_list())])
+    )
     if "phecode_id" not in d.columns:
-        d["phecode_id"] = [
-            _event_phecode(s, e) for s, e in zip(d["scheme"], d["event"])
-        ]
-    d["phecode_id"] = d["phecode_id"].where(d["phecode_id"].notna(), None)
-    d["delta"] = d["text_cindex"] - d["base_cindex"]
-    d = d.dropna(subset=["delta", "category"])
-    d = d[
-        [_top_hit_eligible(scheme, event) for scheme, event in zip(d["scheme"], d["event"])]
-    ]
-    d = d[d["delta"] > 0]
+        d = d.with_columns(
+            pl.Series("phecode_id",
+                       [_event_phecode(s, e) for s, e in zip(d["scheme"].to_list(), d["event"].to_list())])
+        )
+    d = d.with_columns((pl.col("text_cindex") - pl.col("base_cindex")).alias("delta"))
+    d = d.drop_nulls(subset=["delta", "category"])
+    eligible = [_top_hit_eligible(scheme, event)
+                for scheme, event in zip(d["scheme"].to_list(), d["event"].to_list())]
+    d = d.filter(pl.Series(eligible))
+    d = d.filter(pl.col("delta") > 0)
     rows = []
     seen_phecodes: set[str] = set()
     for category in CATEGORY_ORDER:
-        sub = d[d["category"] == category].sort_values("delta", ascending=False)
+        sub = d.filter(pl.col("category") == category).sort("delta", descending=True)
         selected = []
-        for _, r in sub.iterrows():
+        for r in sub.iter_rows(named=True):
             event_phecodes = _event_phecodes(r["scheme"], r["event"])
             if event_phecodes & seen_phecodes:
                 continue
@@ -567,19 +572,21 @@ def _scheme_delta_topk(metrics: pd.DataFrame, k: int = TOPK_PER_CATEGORY) -> pd.
                 "event_lbl": r["event_lbl"], "text_cindex": r["text_cindex"],
                 "base_cindex": r["base_cindex"], "delta": r["delta"],
             })
-    return pd.DataFrame(rows, columns=SCHEME_DELTA_TOPK_COLUMNS)
+    if not rows:
+        return pl.DataFrame(schema={c: pl.Float64 for c in SCHEME_DELTA_TOPK_COLUMNS})
+    return pl.DataFrame(rows).select(SCHEME_DELTA_TOPK_COLUMNS)
 
 
-def _scheme_event_km(topk: pd.DataFrame) -> pd.DataFrame:
+def _scheme_event_km(topk: pl.DataFrame) -> pl.DataFrame:
     """Patient-level held-out text/base risk scores + survival for the events selected in
     fig2_scheme_delta_topk.csv, one row per (event, patient). Events whose held-out
     risk-score files don't yet exist on disk (run_full_cohort_risk_scores.py not yet run
     for that scheme/event) are skipped with a printed note rather than raising."""
-    if topk.empty:
-        return pd.DataFrame(columns=SCHEME_EVENT_KM_COLUMNS)
+    if topk.is_empty():
+        return pl.DataFrame(schema={c: pl.Float64 for c in SCHEME_EVENT_KM_COLUMNS})
     frames = []
-    surv_cache: dict[str, pd.DataFrame] = {}
-    for _, row in topk.iterrows():
+    surv_cache: dict[str, pl.DataFrame] = {}
+    for row in topk.iter_rows(named=True):
         scheme, event = row["scheme"], row["event"]
         if scheme not in surv_cache:
             surv_cache[scheme] = load_embedding_prediction_df(scheme)
@@ -588,108 +595,116 @@ def _scheme_event_km(topk: pd.DataFrame) -> pd.DataFrame:
         if m is None:
             print(f"  [{scheme}:{event}] skipped fig2_scheme_event_km — missing risk-score files")
             continue
-        if m.empty:
+        if m.is_empty():
             print(f"  [{scheme}:{event}] skipped fig2_scheme_event_km — no overlapping patients")
             continue
-        m = m.copy()
-        m["category"] = row["category"]
-        m["event_lbl"] = row["event_lbl"]
-        m["text_tertile"] = _safe_tertiles(m["text_risk_score"], f"{scheme}:{event} text")
-        m["base_tertile"] = _safe_tertiles(m["base_risk_score"], f"{scheme}:{event} base")
-        m = m.rename(columns={event: "event_flag", f"tt_{event}": "tt"})
-        m["scheme"] = scheme
-        m["event"] = event
-        frames.append(m[SCHEME_EVENT_KM_COLUMNS])
+        m = m.with_columns([
+            pl.lit(row["category"]).alias("category"),
+            pl.lit(row["event_lbl"]).alias("event_lbl"),
+            _safe_tertiles(m["text_risk_score"], f"{scheme}:{event} text").alias("text_tertile"),
+            _safe_tertiles(m["base_risk_score"], f"{scheme}:{event} base").alias("base_tertile"),
+        ])
+        m = m.rename({event: "event_flag", f"tt_{event}": "tt"})
+        m = m.with_columns([
+            pl.lit(scheme).alias("scheme"),
+            pl.lit(event).alias("event"),
+        ])
+        frames.append(m.select(SCHEME_EVENT_KM_COLUMNS))
     if not frames:
-        return pd.DataFrame(columns=SCHEME_EVENT_KM_COLUMNS)
-    return pd.concat(frames, ignore_index=True)
+        return pl.DataFrame(schema={c: pl.Float64 for c in SCHEME_EVENT_KM_COLUMNS})
+    return pl.concat(frames, how="diagonal_relaxed")
 
 
 # Raw, complete stage labels from cancer_stage_df.csv.gz's raw CANCER_STAGE
 # column. Mirrors generate_all_non_text_covariates.py:17.
-def _major_stage_labels() -> pd.DataFrame:
+def _major_stage_labels() -> pl.DataFrame:
     """DFCI_MRN -> stage_group (I/II/III/IV) from the raw derived-stage column."""
     mrn_to_stage = load_stage_map()
     if mrn_to_stage is None:
         print("  cancer_stage_df.csv.gz unavailable, no stage data")
-        return pd.DataFrame(columns=["DFCI_MRN", "stage_group"])
-    df = pd.DataFrame({"DFCI_MRN": list(mrn_to_stage.keys()),
+        return pl.DataFrame(schema={"DFCI_MRN": pl.Int64, "stage_group": pl.Utf8})
+    df = pl.DataFrame({"DFCI_MRN": list(mrn_to_stage.keys()),
                        "stage_group": [normalize_stage(v) for v in mrn_to_stage.values()]})
 
-    df = df.dropna(subset=["stage_group"])
-    df = df[df["stage_group"].isin(STAGE_ORDER)].drop_duplicates(subset=["DFCI_MRN"])
-    print("  normalized stage value_counts:\n"
-          + df["stage_group"].value_counts().reindex(STAGE_ORDER).to_string())
+    df = df.drop_nulls(subset=["stage_group"])
+    df = df.filter(pl.col("stage_group").is_in(STAGE_ORDER)).unique(subset=["DFCI_MRN"])
+    counts = df["stage_group"].value_counts()
+    count_map = dict(zip(counts["stage_group"].to_list(), counts["count"].to_list()))
+    summary = "\n".join(f"{s}    {count_map.get(s, 0)}" for s in STAGE_ORDER)
+    print("  normalized stage value_counts:\n" + summary)
     return df
 
 
-def _stage_vs_risk(surv_df: pd.DataFrame) -> pd.DataFrame:
+def _stage_vs_risk(surv_df: pl.DataFrame) -> pl.DataFrame:
     """Patient-level table for the Fig 2E stage-vs-text-risk KM panel.
 
     Cohort = patients with a known major stage AND a death text risk score; this same
     set drives both KM subpanels and both c-indices for an apples-to-apples comparison."""
     m = _merge_risk_with_surv("death", surv_df)
     if m is None:
-        return pd.DataFrame(columns=STAGE_VS_RISK_COLUMNS)
+        return pl.DataFrame(schema={c: pl.Float64 for c in STAGE_VS_RISK_COLUMNS})
     stage_df = _major_stage_labels()
-    m = m.merge(stage_df, on="DFCI_MRN", how="inner")
-    if m.empty:
-        return pd.DataFrame(columns=STAGE_VS_RISK_COLUMNS)
-    m = m.copy()
-    m["stage_ordinal"] = m["stage_group"].map(STAGE_ORDINAL)
-    m["risk_quartile"] = _safe_quantiles(m["text_risk_score"], 4, RISK_QUARTILE_LABELS, "text_risk")
-    return m[STAGE_VS_RISK_COLUMNS]
+    m = m.join(stage_df, on="DFCI_MRN", how="inner")
+    if m.is_empty():
+        return pl.DataFrame(schema={c: pl.Float64 for c in STAGE_VS_RISK_COLUMNS})
+    stage_ordinal_map = STAGE_ORDINAL
+    m = m.with_columns([
+        pl.col("stage_group").replace_strict(stage_ordinal_map, default=None).alias("stage_ordinal"),
+        _safe_quantiles(m["text_risk_score"], 4, RISK_QUARTILE_LABELS, "text_risk").alias("risk_quartile"),
+    ])
+    return m.select(STAGE_VS_RISK_COLUMNS)
 
 
-def _stage_vs_risk_cindex(df: pd.DataFrame) -> pd.DataFrame:
+def _stage_vs_risk_cindex(df: pl.DataFrame) -> pl.DataFrame:
     """Concordance of clinical stage (ordinal) vs text risk score for predicting OS,
     on the shared cohort from _stage_vs_risk. Higher estimate = higher risk for both."""
-    if df.empty:
-        return pd.DataFrame(columns=STAGE_VS_RISK_CINDEX_COLUMNS)
-    event = df["death"].astype(bool).to_numpy()
-    time = df["tt_death"].astype(float).to_numpy()
+    if df.is_empty():
+        return pl.DataFrame(schema={c: pl.Float64 for c in STAGE_VS_RISK_CINDEX_COLUMNS})
+    event = df["death"].cast(pl.Boolean, strict=False).to_numpy()
+    time = df["tt_death"].cast(pl.Float64, strict=False).to_numpy()
     rows = []
     for predictor, estimate in [
-        ("stage", df["stage_ordinal"].astype(float).to_numpy()),
-        ("text_risk", df["text_risk_score"].astype(float).to_numpy()),
+        ("stage", df["stage_ordinal"].cast(pl.Float64, strict=False).to_numpy()),
+        ("text_risk", df["text_risk_score"].cast(pl.Float64, strict=False).to_numpy()),
     ]:
         try:
             cidx = concordance_index_censored(event, time, estimate)[0]
         except (ValueError, ZeroDivisionError) as e:
             print(f"  c-index failed for {predictor}: {e}")
             cidx = float("nan")
-        rows.append({"predictor": predictor, "cindex": cidx, "n": len(df)})
-    return pd.DataFrame(rows, columns=STAGE_VS_RISK_CINDEX_COLUMNS)
+        rows.append({"predictor": predictor, "cindex": cidx, "n": df.height})
+    return pl.DataFrame(rows).select(STAGE_VS_RISK_CINDEX_COLUMNS)
 
 
-def _stage_vs_risk_cindex_by_stage(df: pd.DataFrame) -> pd.DataFrame:
+def _stage_vs_risk_cindex_by_stage(df: pl.DataFrame) -> pl.DataFrame:
     """Concordance of the text risk score within each stage and pooled Stages I-II.
 
     Per-stage analogue of _stage_vs_risk_cindex (which reports one pooled
     cindex for the whole known-stage cohort), matching the per-stage grouping
     of _stage_vs_risk_auc so FigS2 can annotate either metric per stage panel.
     """
-    if df.empty:
-        return pd.DataFrame(columns=STAGE_VS_RISK_AUC_COLUMNS[:1] + ["cindex", "n"])
+    out_cols = STAGE_VS_RISK_AUC_COLUMNS[:1] + ["cindex", "n"]
+    if df.is_empty():
+        return pl.DataFrame(schema={c: pl.Float64 for c in out_cols})
     rows = []
-    groups = list(df.groupby("stage_group"))
-    early_stage = df[df["stage_group"].isin(["I", "II"])]
-    if not early_stage.empty:
+    groups = [(k, g) for (k,), g in df.group_by(["stage_group"], maintain_order=True)]
+    early_stage = df.filter(pl.col("stage_group").is_in(["I", "II"]))
+    if not early_stage.is_empty():
         groups.append(("I-II", early_stage))
     for stage_lbl, sub in groups:
-        event = sub["death"].astype(bool).to_numpy()
-        time = sub["tt_death"].astype(float).to_numpy()
+        event = sub["death"].cast(pl.Boolean, strict=False).to_numpy()
+        time = sub["tt_death"].cast(pl.Float64, strict=False).to_numpy()
         try:
             cidx = concordance_index_censored(
-                event, time, sub["text_risk_score"].astype(float).to_numpy())[0]
+                event, time, sub["text_risk_score"].cast(pl.Float64, strict=False).to_numpy())[0]
         except (ValueError, ZeroDivisionError) as e:
             print(f"  c-index failed for stage {stage_lbl}: {e}")
             cidx = float("nan")
-        rows.append({"stage_group": stage_lbl, "cindex": cidx, "n": len(sub)})
-    return pd.DataFrame(rows, columns=["stage_group", "cindex", "n"])
+        rows.append({"stage_group": stage_lbl, "cindex": cidx, "n": sub.height})
+    return pl.DataFrame(rows).select(out_cols)
 
 
-def _stage_vs_risk_auc(df: pd.DataFrame) -> pd.DataFrame:
+def _stage_vs_risk_auc(df: pl.DataFrame) -> pl.DataFrame:
     """Mean time-dependent AUC within each stage and pooled Stages I-II.
 
     IPCW reference + eval-time grid (5th-95th percentile, 50 points) are fit on the
@@ -698,34 +713,38 @@ def _stage_vs_risk_auc(df: pd.DataFrame) -> pd.DataFrame:
     evaluated per stage subgroup against that shared reference — mirroring the
     project-standard mean-AUC(t) definition used everywhere else in the pipeline.
     """
-    if df.empty:
-        return pd.DataFrame(columns=STAGE_VS_RISK_AUC_COLUMNS)
-    y_ref = Surv.from_arrays(df["death"].astype(bool), df["tt_death"].astype(float))
-    lo, hi = np.percentile(df["tt_death"].astype(float), [5, 95])
+    if df.is_empty():
+        return pl.DataFrame(schema={c: pl.Float64 for c in STAGE_VS_RISK_AUC_COLUMNS})
+    death_arr = df["death"].cast(pl.Boolean, strict=False).to_numpy()
+    tt_death_arr = df["tt_death"].cast(pl.Float64, strict=False).to_numpy()
+    y_ref = Surv.from_arrays(death_arr, tt_death_arr)
+    lo, hi = np.percentile(tt_death_arr, [5, 95])
     base_eval_times = np.linspace(lo, hi, AUC_TIME_GRID_POINTS)
 
     rows = []
-    groups = list(df.groupby("stage_group"))
-    early_stage = df[df["stage_group"].isin(["I", "II"])]
-    if not early_stage.empty:
+    groups = [(k, g) for (k,), g in df.group_by(["stage_group"], maintain_order=True)]
+    early_stage = df.filter(pl.col("stage_group").is_in(["I", "II"]))
+    if not early_stage.is_empty():
         groups.append(("I-II", early_stage))
     for stage_lbl, sub in groups:
-        et = base_eval_times[(base_eval_times > sub["tt_death"].min())
-                             & (base_eval_times < sub["tt_death"].max())]
+        sub_tt = sub["tt_death"].cast(pl.Float64, strict=False).to_numpy()
+        et = base_eval_times[(base_eval_times > sub_tt.min())
+                             & (base_eval_times < sub_tt.max())]
         mean_auc = float("nan")
         if len(et) > 0:
             try:
-                y_test = Surv.from_arrays(sub["death"].astype(bool), sub["tt_death"].astype(float))
+                sub_death = sub["death"].cast(pl.Boolean, strict=False).to_numpy()
+                y_test = Surv.from_arrays(sub_death, sub_tt)
                 mean_auc = cumulative_dynamic_auc(
-                    y_ref, y_test, sub["text_risk_score"].astype(float).to_numpy(), et,
+                    y_ref, y_test, sub["text_risk_score"].cast(pl.Float64, strict=False).to_numpy(), et,
                 )[1]
             except (ValueError, ZeroDivisionError) as e:
                 print(f"  AUC(t) failed for stage {stage_lbl}: {e}")
-        rows.append({"stage_group": stage_lbl, "mean_auc": mean_auc, "n": len(sub)})
-    return pd.DataFrame(rows, columns=STAGE_VS_RISK_AUC_COLUMNS)
+        rows.append({"stage_group": stage_lbl, "mean_auc": mean_auc, "n": sub.height})
+    return pl.DataFrame(rows).select(STAGE_VS_RISK_AUC_COLUMNS)
 
 
-def _within_vs_pan(kind: str) -> pd.DataFrame:
+def _within_vs_pan(kind: str) -> pl.DataFrame:
     """Read a Pipeline-3 pan-vs-within metrics CSV (mean time-dependent AUC + C-index).
 
     Maps the upstream schema to the unified figure schema, keeps the `Overall`
@@ -740,34 +759,36 @@ def _within_vs_pan(kind: str) -> pd.DataFrame:
     fp = os.path.join(RESULTS_PATH, subdir, fname)
     if not os.path.exists(fp):
         print(f"  missing {fp}; skipping within-vs-pan {kind}")
-        return pd.DataFrame(columns=WITHIN_VS_PAN_COLUMNS)
-    df = pd.read_csv(fp)
+        return pl.DataFrame(schema={c: pl.Float64 for c in WITHIN_VS_PAN_COLUMNS})
+    df = pl.read_csv(fp)
     if not {stratum_col, "AUC_PAN", "AUC_WITHIN", "N_HELDOUT"}.issubset(df.columns):
         print(f"  {fp} has no AUC columns — re-run the Pipeline-3 script; skipping {kind}")
-        return pd.DataFrame(columns=WITHIN_VS_PAN_COLUMNS)
+        return pl.DataFrame(schema={c: pl.Float64 for c in WITHIN_VS_PAN_COLUMNS})
     has_cindex = {"CINDEX_PAN", "CINDEX_WITHIN"}.issubset(df.columns)
     if not has_cindex:
         print(f"  {fp} has no CINDEX columns — re-run the Pipeline-3 script for cindex panel")
-    out = pd.DataFrame({
-        "stratum": df[stratum_col].astype(str),
+    out = pl.DataFrame({
+        "stratum": df[stratum_col].cast(pl.Utf8),
         "auc_pan": df["AUC_PAN"],
         "auc_within": df["AUC_WITHIN"],
-        "delta": df["DELTA_AUC_WITHIN_MINUS_PAN"] if "DELTA_AUC_WITHIN_MINUS_PAN" in df
-                 else df["AUC_WITHIN"] - df["AUC_PAN"],
-        "cindex_pan": df["CINDEX_PAN"] if has_cindex else np.nan,
-        "cindex_within": df["CINDEX_WITHIN"] if has_cindex else np.nan,
+        "delta": df["DELTA_AUC_WITHIN_MINUS_PAN"] if "DELTA_AUC_WITHIN_MINUS_PAN" in df.columns
+                 else (df["AUC_WITHIN"] - df["AUC_PAN"]),
+        "cindex_pan": df["CINDEX_PAN"] if has_cindex else pl.Series([None] * df.height, dtype=pl.Float64),
+        "cindex_within": df["CINDEX_WITHIN"] if has_cindex else pl.Series([None] * df.height, dtype=pl.Float64),
         "n_heldout": df["N_HELDOUT"],
     })
-    out["cindex_delta"] = out["cindex_within"] - out["cindex_pan"]
-    out["is_overall"] = out["stratum"] == "Overall"
-    out = out.dropna(subset=["auc_pan", "auc_within"])
-    out = out[out["is_overall"] | (out["n_heldout"] >= 30)]
-    return out[WITHIN_VS_PAN_COLUMNS]
+    out = out.with_columns([
+        (pl.col("cindex_within") - pl.col("cindex_pan")).alias("cindex_delta"),
+        (pl.col("stratum") == "Overall").alias("is_overall"),
+    ])
+    out = out.drop_nulls(subset=["auc_pan", "auc_within"])
+    out = out.filter(pl.col("is_overall") | (pl.col("n_heldout") >= 30))
+    return out.select(WITHIN_VS_PAN_COLUMNS)
 
 
 def main() -> None:
     _initialize_code_lookups()
-    surv_df = pd.read_parquet(os.path.join(SURV_PATH, "death_met_surv_df.parquet"))
+    surv_df = pl.read_parquet(os.path.join(SURV_PATH, "death_met_surv_df.parquet"))
 
     full_cohort_metrics = _full_cohort_metrics()
     _report_lookup_misses()

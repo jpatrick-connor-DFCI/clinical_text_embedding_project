@@ -6,7 +6,7 @@ and assigns a validation level + supporting notes to each hit.
 
 import os
 
-import pandas as pd
+import polars as pl
 
 from data.validation_reference import load_validation_reference
 
@@ -85,17 +85,18 @@ def bootstrap_findings_df(compiled_dir):
             missing.append(path)
             continue
 
-        df = pd.read_csv(path)
+        df = pl.read_csv(path)
         required = {'marker', 'cancer_type', 'cohort', 'ps_model', 'weight_type'}
         missing_cols = sorted(required - set(df.columns))
         if missing_cols:
             raise ValueError(f"{filename} is missing required columns: {missing_cols}")
 
-        cur = df.copy()
-        cur['track'] = track
-        cur['mutation_type'] = cur['marker'].map(get_mutation_type)
-        cur['validation_level'] = 'Unassessed'
-        cur['validation_notes'] = ''
+        cur = df.with_columns(
+            pl.lit(track).alias('track'),
+            pl.col('marker').map_elements(get_mutation_type, return_dtype=pl.Utf8).alias('mutation_type'),
+            pl.lit('Unassessed').alias('validation_level'),
+            pl.lit('').alias('validation_notes'),
+        )
         frames.append(cur)
 
     if missing:
@@ -104,7 +105,7 @@ def bootstrap_findings_df(compiled_dir):
             + "\n".join(missing)
         )
 
-    combined = pd.concat(frames, ignore_index=True, sort=False)
+    combined = pl.concat(frames, how='diagonal_relaxed')
     return combined
 
 
@@ -113,11 +114,11 @@ def load_or_bootstrap_findings_df(compiled_dir, findings_csv):
 
     if os.path.isfile(findings_csv):
         print(f"Loading {findings_csv}")
-        return pd.read_csv(findings_csv)
+        return pl.read_csv(findings_csv)
 
     print(f"{findings_csv} not found; rebuilding from compiled Track 1/2 outputs in {compiled_dir}")
     df = bootstrap_findings_df(compiled_dir)
-    df.to_csv(findings_csv, index=False)
+    df.write_csv(findings_csv)
     print(f"  Bootstrapped findings CSV with {len(df)} rows -> {findings_csv}")
     return df
 
@@ -128,41 +129,47 @@ def validate_findings(df, findings_csv):
     Returns the updated DataFrame.
     """
     # Fix any NaN validation_level from previous runs that wrote 'None' (parsed as NaN by pandas)
-    nan_mask = df['validation_level'].isna() & df['validation_notes'].notna()
-    if nan_mask.sum() > 0:
-        df.loc[nan_mask, 'validation_level'] = 'No Evidence'
-        print(f"  Fixed {nan_mask.sum()} rows with NaN validation_level -> 'No Evidence'")
+    nan_mask = df['validation_level'].is_null() & df['validation_notes'].is_not_null()
+    n_nan = nan_mask.sum()
+    if n_nan > 0:
+        df = df.with_columns(
+            pl.when(nan_mask).then(pl.lit('No Evidence')).otherwise(pl.col('validation_level')).alias('validation_level')
+        )
+        print(f"  Fixed {n_nan} rows with NaN validation_level -> 'No Evidence'")
 
     print(f"  {len(df)} total hits, {(df['validation_level'] == 'Unassessed').sum()} unassessed")
 
     # --- Validate unassessed hits ---
     updated = 0
     still_unassessed = 0
-    for idx, row in df.iterrows():
+    rows = df.to_dicts()
+    for row in rows:
         if row['validation_level'] != 'Unassessed':
             continue
 
         result = validate_hit(row['marker'], row['cancer_type'], row['mutation_type'])
         if result is not None:
-            df.at[idx, 'validation_level'] = result[0]
-            df.at[idx, 'validation_notes'] = result[1]
+            row['validation_level'] = result[0]
+            row['validation_notes'] = result[1]
             updated += 1
         else:
-            df.at[idx, 'validation_level'] = 'No Evidence'
-            df.at[idx, 'validation_notes'] = (
+            row['validation_level'] = 'No Evidence'
+            row['validation_notes'] = (
                 'No published evidence linking this gene-alteration to ICI response '
                 'or immune modulation in this cancer context')
             still_unassessed += 1
+
+    df = pl.DataFrame(rows, schema=df.schema)
 
     print(f"  Updated {updated} hits with literature validation")
     print(f"  {still_unassessed} hits assigned 'No Evidence' (no known ICI relevance)")
 
     # Save updated CSV
-    df.to_csv(findings_csv, index=False)
+    df.write_csv(findings_csv)
     print(f"  Saved updated CSV to {findings_csv}")
 
     # --- Validation summary ---
     print(f"\nValidation level distribution:")
-    print(df['validation_level'].value_counts().to_string())
+    print(df['validation_level'].value_counts())
 
     return df

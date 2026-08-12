@@ -23,7 +23,7 @@ from __future__ import annotations
 import os
 
 import numpy as np
-import pandas as pd
+import polars as pl
 
 from config import BIOMARKER_PATH, DATA_PATH, FEATURE_PATH
 from figures.io import save_figure_data
@@ -93,32 +93,37 @@ FOREST_COLUMNS = [
 ]
 
 
-def _patient_cancer_type() -> pd.DataFrame:
+def _patient_cancer_type() -> pl.DataFrame:
     fp = os.path.join(FEATURE_PATH, "cancer_type_df.csv.gz")
     if not os.path.exists(fp):
-        return pd.DataFrame(columns=["DFCI_MRN", "cancer_type"])
-    cancer = pd.read_csv(fp)
+        return pl.DataFrame(schema={"DFCI_MRN": pl.Int64, "cancer_type": pl.Utf8})
+    cancer = pl.read_csv(fp)
     if "DFCI_MRN" not in cancer.columns:
-        return pd.DataFrame(columns=["DFCI_MRN", "cancer_type"])
+        return pl.DataFrame(schema={"DFCI_MRN": pl.Int64, "cancer_type": pl.Utf8})
     # Prefer the raw label column (added by generate_all_non_text_covariates.py).
     # Falling back to idxmax over drop_first dummies mislabels the dropped
     # reference category (all-zero rows), so only use it when the raw column is
     # absent (legacy files) — and warn so the result is regenerated.
     if "CANCER_TYPE" in cancer.columns:
-        out = cancer[["DFCI_MRN", "CANCER_TYPE"]].copy()
-        out["cancer_type"] = out["CANCER_TYPE"].astype(str)
-        return out[["DFCI_MRN", "cancer_type"]]
+        out = cancer.select(["DFCI_MRN", "CANCER_TYPE"]).with_columns(
+            pl.col("CANCER_TYPE").cast(pl.Utf8).alias("cancer_type")
+        )
+        return out.select(["DFCI_MRN", "cancer_type"])
     type_cols = [c for c in cancer.columns if c.startswith("CANCER_TYPE_")]
     if not type_cols:
-        return pd.DataFrame(columns=["DFCI_MRN", "cancer_type"])
+        return pl.DataFrame(schema={"DFCI_MRN": pl.Int64, "cancer_type": pl.Utf8})
     print("  WARN: cancer_type_df.csv.gz has no raw CANCER_TYPE column; "
           "reference-category patients may be mislabeled. Regenerate covariates.")
-    out = cancer[["DFCI_MRN"] + type_cols].copy()
-    out["cancer_type"] = out[type_cols].idxmax(axis=1).str.replace("CANCER_TYPE_", "", regex=False)
-    return out[["DFCI_MRN", "cancer_type"]]
+    type_matrix = cancer.select(type_cols).to_numpy()
+    argmax_idx = np.argmax(type_matrix, axis=1)
+    cancer_type_vals = [type_cols[i].replace("CANCER_TYPE_", "", 1) for i in argmax_idx]
+    out = cancer.select(["DFCI_MRN"]).with_columns(
+        pl.Series("cancer_type", cancer_type_vals, dtype=pl.Utf8)
+    )
+    return out.select(["DFCI_MRN", "cancer_type"])
 
 
-def _ps_predictions() -> pd.DataFrame:
+def _ps_predictions() -> pl.DataFrame:
     cancer = _patient_cancer_type()
     rows = []
     for ps_model in ("covariates_only", "covariates_plus_embeddings"):
@@ -126,38 +131,44 @@ def _ps_predictions() -> pd.DataFrame:
         if not os.path.exists(fp):
             print(f"  missing {fp}")
             continue
-        d = pd.read_csv(fp)
+        d = pl.read_csv(fp)
         required = {"DFCI_MRN", "model_probs", "ground_truth"}
         if not required.issubset(d.columns):
             print(f"  skipping {fp}: missing {sorted(required - set(d.columns))}")
             continue
-        d = d[["DFCI_MRN", "model_probs", "ground_truth"]].copy()
-        d["ps_model"] = ps_model
-        d["cohort"] = COHORT
-        if not cancer.empty:
-            d = d.merge(cancer, on="DFCI_MRN", how="left")
+        d = d.select(["DFCI_MRN", "model_probs", "ground_truth"])
+        d = d.with_columns([
+            pl.lit(ps_model).alias("ps_model"),
+            pl.lit(COHORT).alias("cohort"),
+        ])
+        if not cancer.is_empty():
+            d = d.join(cancer, on="DFCI_MRN", how="left")
         else:
-            d["cancer_type"] = pd.NA
-        rows.append(d.reindex(columns=PS_PREDICTION_COLUMNS))
+            d = d.with_columns(pl.lit(None, dtype=pl.Utf8).alias("cancer_type"))
+        missing_cols = [c for c in PS_PREDICTION_COLUMNS if c not in d.columns]
+        if missing_cols:
+            d = d.with_columns([pl.lit(None).alias(c) for c in missing_cols])
+        rows.append(d.select(PS_PREDICTION_COLUMNS))
     if not rows:
-        return pd.DataFrame(columns=PS_PREDICTION_COLUMNS)
-    return pd.concat(rows, ignore_index=True)
+        return pl.DataFrame(schema={c: pl.Float64 for c in PS_PREDICTION_COLUMNS})
+    return pl.concat(rows, how="diagonal_relaxed")
 
 
-def _robust_hits() -> pd.DataFrame:
+def _robust_hits() -> pl.DataFrame:
     fp = os.path.join(COMPILED_DIR, "track2_all_significant_hits.csv")
     if not os.path.exists(fp):
         print(f"  missing {fp}")
-        return pd.DataFrame(columns=ROBUST_COLUMNS)
+        return pl.DataFrame(schema={c: pl.Float64 for c in ROBUST_COLUMNS})
     try:
-        hits = pd.read_csv(fp)
-    except pd.errors.EmptyDataError:
-        return pd.DataFrame(columns=ROBUST_COLUMNS)
-    if hits.empty:
-        return pd.DataFrame(columns=ROBUST_COLUMNS)
-    hits["spec"] = (hits["cohort"].astype(str) + "|" +
-                    hits["ps_model"].astype(str) + "|" +
-                    hits["weight_type"].astype(str))
+        hits = pl.read_csv(fp)
+    except pl.exceptions.NoDataError:
+        return pl.DataFrame(schema={c: pl.Float64 for c in ROBUST_COLUMNS})
+    if hits.is_empty():
+        return pl.DataFrame(schema={c: pl.Float64 for c in ROBUST_COLUMNS})
+    hits = hits.with_columns(
+        (pl.col("cohort").cast(pl.Utf8) + "|" + pl.col("ps_model").cast(pl.Utf8)
+         + "|" + pl.col("weight_type").cast(pl.Utf8)).alias("spec")
+    )
 
     # Geometric mean for HR aggregation: HRs are multiplicative, so the
     # arithmetic mean over-weights large HRs. Drop pathological HRs (<=0, inf,
@@ -165,71 +176,81 @@ def _robust_hits() -> pd.DataFrame:
     # separation row can't dominate the geometric mean.
     EXTREME = 50.0
 
-    def _is_clean(s: pd.Series) -> pd.Series:
-        s = pd.to_numeric(s, errors="coerce")
-        return s.gt(0) & np.isfinite(s) & s.between(1 / EXTREME, EXTREME)
+    def _is_clean(arr: np.ndarray) -> np.ndarray:
+        with np.errstate(invalid="ignore"):
+            return (arr > 0) & np.isfinite(arr) & (arr >= 1 / EXTREME) & (arr <= EXTREME)
 
-    def _clean_geomean(s: pd.Series) -> float:
-        s = pd.to_numeric(s, errors="coerce")
-        s = s[_is_clean(s)]
-        if s.empty:
+    def _clean_geomean(arr: np.ndarray) -> float:
+        clean = arr[_is_clean(arr)]
+        if clean.size == 0:
             return float("nan")
-        return float(np.exp(np.log(s).mean()))
+        return float(np.exp(np.log(clean).mean()))
 
-    def _clean_direction(s: pd.Series) -> bool:
-        s = pd.to_numeric(s, errors="coerce")
-        s = s[_is_clean(s)]
-        if s.empty:
+    def _clean_direction(arr: np.ndarray) -> bool:
+        clean = arr[_is_clean(arr)]
+        if clean.size == 0:
             return False
-        return bool((s > 1).all() or (s < 1).all())
+        return bool((clean > 1).all() or (clean < 1).all())
 
-    def _n_clean_specs(s: pd.Series) -> int:
+    def _n_clean_specs(arr: np.ndarray) -> int:
         # Count only specs whose HR survives the cleaning filter, so n_specs
         # matches what actually contributed to mean_HR / direction_consistent.
-        return int(_is_clean(s).sum())
+        return int(_is_clean(arr).sum())
 
-    grp = (hits.groupby(["marker", "cancer_type"])
-                .agg(n_specs=("HR_markerxICI", _n_clean_specs),
-                     mean_HR=("HR_markerxICI", _clean_geomean),
-                     direction_consistent=("HR_markerxICI", _clean_direction))
-                .reset_index())
-    robust = grp[(grp["n_specs"] >= 2) & grp["direction_consistent"]].copy()
+    hr_vals = hits["HR_markerxICI"].cast(pl.Float64, strict=False).to_numpy()
+    hits = hits.with_columns(pl.Series("_hr_clean", hr_vals))
+    grp_rows = []
+    for (marker, cancer_type), sub in hits.group_by(["marker", "cancer_type"], maintain_order=True):
+        arr = sub["_hr_clean"].to_numpy()
+        grp_rows.append({
+            "marker": marker, "cancer_type": cancer_type,
+            "n_specs": _n_clean_specs(arr), "mean_HR": _clean_geomean(arr),
+            "direction_consistent": _clean_direction(arr),
+        })
+    grp = pl.DataFrame(grp_rows)
+    robust = grp.filter((pl.col("n_specs") >= 2) & pl.col("direction_consistent"))
     cols = ["marker", "cancer_type", "spec", "HR_markerxICI",
             "CI95_marker_ICI_low", "CI95_marker_ICI_high", "p_markerxICI"]
     cols = [c for c in cols if c in hits.columns]
-    out = (hits.merge(robust[["marker", "cancer_type"]],
-                       on=["marker", "cancer_type"], how="inner")
-                [cols + ["cohort", "ps_model", "weight_type"]]
-                .merge(robust, on=["marker", "cancer_type"], how="left"))
+    out = hits.join(robust.select(["marker", "cancer_type"]), on=["marker", "cancer_type"], how="inner")
+    out = out.select(cols + ["cohort", "ps_model", "weight_type"])
+    out = out.join(robust, on=["marker", "cancer_type"], how="left")
     # Denominator for the survivorship-aware panel B annotation: markers significant
     # in >=1 spec (the universe these robust hits were filtered from).
-    out["n_significant_markers"] = hits[["marker", "cancer_type"]].drop_duplicates().shape[0]
-    return out.reindex(columns=ROBUST_COLUMNS)
+    n_sig = hits.select(["marker", "cancer_type"]).unique().height
+    out = out.with_columns(pl.lit(n_sig).alias("n_significant_markers"))
+    missing_cols = [c for c in ROBUST_COLUMNS if c not in out.columns]
+    if missing_cols:
+        out = out.with_columns([pl.lit(None).alias(c) for c in missing_cols])
+    return out.select(ROBUST_COLUMNS)
 
 
-def _km_top_hit() -> tuple[pd.DataFrame, pd.DataFrame]:
+def _km_top_hit() -> tuple[pl.DataFrame, pl.DataFrame]:
     t2_fp = os.path.join(COMPILED_DIR, "track2_all_significant_hits.csv")
     if not os.path.exists(t2_fp):
-        return pd.DataFrame(columns=KM_COLUMNS), pd.DataFrame(columns=TOP_HIT_META_COLUMNS)
+        return (pl.DataFrame(schema={c: pl.Float64 for c in KM_COLUMNS}),
+                pl.DataFrame(schema={c: pl.Float64 for c in TOP_HIT_META_COLUMNS}))
     try:
-        hits = pd.read_csv(t2_fp)
-    except pd.errors.EmptyDataError:
-        return pd.DataFrame(columns=KM_COLUMNS), pd.DataFrame(columns=TOP_HIT_META_COLUMNS)
-    if hits.empty:
-        return pd.DataFrame(columns=KM_COLUMNS), pd.DataFrame(columns=TOP_HIT_META_COLUMNS)
+        hits = pl.read_csv(t2_fp)
+    except pl.exceptions.NoDataError:
+        return (pl.DataFrame(schema={c: pl.Float64 for c in KM_COLUMNS}),
+                pl.DataFrame(schema={c: pl.Float64 for c in TOP_HIT_META_COLUMNS}))
+    if hits.is_empty():
+        return (pl.DataFrame(schema={c: pl.Float64 for c in KM_COLUMNS}),
+                pl.DataFrame(schema={c: pl.Float64 for c in TOP_HIT_META_COLUMNS}))
     # Restrict "top hit" to the primary spec so panel D shows what the methods
     # section claims is the primary analysis, not the most-extreme p-value
     # across all sensitivity specifications.
-    primary = hits[
-        (hits["ps_model"] == PRIMARY_PS_MODEL)
-        & (hits["weight_type"].str.upper() == TRACK2_WEIGHT.upper())
-        & (hits["cohort"] == COHORT)
-    ]
-    if primary.empty:
+    primary = hits.filter(
+        (pl.col("ps_model") == PRIMARY_PS_MODEL)
+        & (pl.col("weight_type").str.to_uppercase() == TRACK2_WEIGHT.upper())
+        & (pl.col("cohort") == COHORT)
+    )
+    if primary.is_empty():
         print(f"  no hits in primary spec ({COHORT}, {PRIMARY_PS_MODEL}, {TRACK2_WEIGHT}); "
               "falling back to overall best p")
         primary = hits
-    top = primary.sort_values("p_markerxICI").iloc[0]
+    top = primary.sort("p_markerxICI").row(0, named=True)
     marker = top["marker"]
     cancer = top["cancer_type"]
     cohort = top["cohort"]
@@ -239,25 +260,26 @@ def _km_top_hit() -> tuple[pd.DataFrame, pd.DataFrame]:
     iptw_fp = os.path.join(BIOMARKER_PATH, f"IPTW_df_{cohort}_{ps_model}.csv.gz")
     if not os.path.exists(iptw_fp):
         print(f"  missing {iptw_fp}")
-        return pd.DataFrame(columns=KM_COLUMNS), pd.DataFrame(columns=TOP_HIT_META_COLUMNS)
-    iptw = pd.read_csv(iptw_fp)
+        return (pl.DataFrame(schema={c: pl.Float64 for c in KM_COLUMNS}),
+                pl.DataFrame(schema={c: pl.Float64 for c in TOP_HIT_META_COLUMNS}))
+    iptw = pl.read_csv(iptw_fp)
     cancer_col = f"CANCER_TYPE_{cancer}"
     if cancer != "pan_cancer" and cancer_col in iptw.columns:
-        iptw = iptw[iptw[cancer_col] == 1]
-    iptw = iptw.dropna(subset=[marker, "PX_on_ICI", "tt_death", "death"])
-    iptw = iptw[iptw["tt_death"] > 0]
-    km = iptw[["DFCI_MRN", marker, "PX_on_ICI", "death", "tt_death"]].rename(
-        columns={marker: "marker_value"}
+        iptw = iptw.filter(pl.col(cancer_col) == 1)
+    iptw = iptw.drop_nulls(subset=[marker, "PX_on_ICI", "tt_death", "death"])
+    iptw = iptw.filter(pl.col("tt_death") > 0)
+    km = iptw.select(["DFCI_MRN", marker, "PX_on_ICI", "death", "tt_death"]).rename(
+        {marker: "marker_value"}
     )
-    meta = pd.DataFrame([{
+    meta = pl.DataFrame([{
         "marker": marker, "cancer": cancer, "cohort": cohort, "ps_model": ps_model,
         "weight_type": weight_type,
     }])
     return km, meta
 
 
-def _select_km_example_hits(t1_hits: pd.DataFrame, t2_hits: pd.DataFrame,
-                             max_examples: int = 3) -> pd.DataFrame:
+def _select_km_example_hits(t1_hits: pl.DataFrame, t2_hits: pl.DataFrame,
+                             max_examples: int = 3) -> pl.DataFrame:
     """Return one row per (marker, cancer, cohort) in HEADLINE_KM_PANELS, in order.
 
     Tries Track 2 first (so the KM title can carry the interaction HR), falls
@@ -270,20 +292,20 @@ def _select_km_example_hits(t1_hits: pd.DataFrame, t2_hits: pd.DataFrame,
     """
     chosen = []
 
-    def _best(sub: pd.DataFrame, p_col: str) -> pd.Series | None:
-        primary = sub[(sub["ps_model"] == PRIMARY_PS_MODEL)
-                      & (sub["weight_type"].str.upper() == TRACK2_WEIGHT.upper())]
-        if primary.empty:
-            primary = sub.sort_values(p_col)
-        return primary.iloc[0] if not primary.empty else None
+    def _best(sub: pl.DataFrame, p_col: str) -> dict | None:
+        primary = sub.filter((pl.col("ps_model") == PRIMARY_PS_MODEL)
+                              & (pl.col("weight_type").str.to_uppercase() == TRACK2_WEIGHT.upper()))
+        if primary.is_empty():
+            primary = sub.sort(p_col)
+        return primary.row(0, named=True) if not primary.is_empty() else None
 
     for gene, cancer, cohort, mut in HEADLINE_KM_PANELS:
         marker = f"{gene}_{mut}"
         # Try Track 2 first (interaction HR is the headline number for fig5D)
-        t2_sub = t2_hits[(t2_hits["marker"] == marker)
-                          & (t2_hits["cancer_type"] == cancer)
-                          & (t2_hits["cohort"] == cohort)]
-        t2_row = _best(t2_sub, "p_markerxICI") if not t2_sub.empty else None
+        t2_sub = t2_hits.filter((pl.col("marker") == marker)
+                                 & (pl.col("cancer_type") == cancer)
+                                 & (pl.col("cohort") == cohort))
+        t2_row = _best(t2_sub, "p_markerxICI") if not t2_sub.is_empty() else None
         if t2_row is not None:
             chosen.append({
                 "marker":     t2_row["marker"],
@@ -298,10 +320,10 @@ def _select_km_example_hits(t1_hits: pd.DataFrame, t2_hits: pd.DataFrame,
             continue
 
         # Fall back to Track 1 (prognostic-within-ICI HR)
-        t1_sub = t1_hits[(t1_hits["marker"] == marker)
-                          & (t1_hits["cancer_type"] == cancer)
-                          & (t1_hits["cohort"] == cohort)]
-        t1_row = _best(t1_sub, "p_marker") if not t1_sub.empty else None
+        t1_sub = t1_hits.filter((pl.col("marker") == marker)
+                                 & (pl.col("cancer_type") == cancer)
+                                 & (pl.col("cohort") == cohort))
+        t1_row = _best(t1_sub, "p_marker") if not t1_sub.is_empty() else None
         if t1_row is not None:
             chosen.append({
                 "marker":     t1_row["marker"],
@@ -318,9 +340,10 @@ def _select_km_example_hits(t1_hits: pd.DataFrame, t2_hits: pd.DataFrame,
         print(f"  KM headline {marker}/{cancer}/{cohort}: no compiled hit; skipping")
 
     if not chosen:
-        return pd.DataFrame(columns=["marker","cancer_type","cohort","ps_model",
-                                      "weight_type","track","hr","hr_label"])
-    return pd.DataFrame(chosen)[:max_examples]
+        return pl.DataFrame(schema={c: pl.Float64 for c in
+                                     ["marker","cancer_type","cohort","ps_model",
+                                      "weight_type","track","hr","hr_label"]})
+    return pl.DataFrame(chosen)[:max_examples]
 
 
 # ---------------------------------------------------------------------------
@@ -342,19 +365,19 @@ def _load_validation_lookup() -> dict[tuple[str, str, str], tuple[str, str]]:
         fp = os.path.join(COMPILED_DIR, name)
         if os.path.exists(fp):
             try:
-                d = pd.read_csv(fp)
-            except (pd.errors.EmptyDataError, OSError) as e:
+                d = pl.read_csv(fp)
+            except (pl.exceptions.NoDataError, OSError) as e:
                 print(f"  validation CSV present but unreadable ({e}); no annotation")
                 return {}
             cols = {"gene", "cancer_type", "cohort", "validation_level"}
             if not cols.issubset(d.columns):
                 return {}
-            d = d.dropna(subset=["validation_level"])
-            d = d.drop_duplicates(["gene", "cancer_type", "cohort"], keep="first")
+            d = d.drop_nulls(subset=["validation_level"])
+            d = d.unique(subset=["gene", "cancer_type", "cohort"], keep="first")
             return {
                 (r["gene"], r["cancer_type"], r["cohort"]):
                     (r["validation_level"], r.get("validation_notes", ""))
-                for _, r in d.iterrows()
+                for r in d.iter_rows(named=True)
             }
     return {}
 
@@ -368,61 +391,61 @@ def _narrative_role(t1_robust: bool, t2_robust: bool, validation: str) -> str:
     return "Lower-confidence"
 
 
-def _track1_row(t1: pd.DataFrame, marker: str, cancer: str, cohort: str) -> dict | None:
+def _track1_row(t1: pl.DataFrame, marker: str, cancer: str, cohort: str) -> dict | None:
     """Primary-spec Track-1 effect (HR + CI95 + p + n_pos + n_specs)."""
-    sub = t1[(t1["marker"] == marker) & (t1["cancer_type"] == cancer)
-             & (t1["cohort"] == cohort)]
-    if sub.empty:
+    sub = t1.filter((pl.col("marker") == marker) & (pl.col("cancer_type") == cancer)
+                     & (pl.col("cohort") == cohort))
+    if sub.is_empty():
         return None
-    primary = sub[(sub["ps_model"] == PRIMARY_PS_MODEL)
-                  & (sub["weight_type"].str.upper() == "ATE")]
-    if primary.empty:
-        primary = sub.sort_values("p_marker").head(1)
-    r = primary.iloc[0]
+    primary = sub.filter((pl.col("ps_model") == PRIMARY_PS_MODEL)
+                          & (pl.col("weight_type").str.to_uppercase() == "ATE"))
+    if primary.is_empty():
+        primary = sub.sort("p_marker").head(1)
+    r = primary.row(0, named=True)
     return {
         "HR":       float(r["HR_marker"]),
         "CI95_low": float(r["CI95_marker_low"]),
         "CI95_high": float(r["CI95_marker_high"]),
         "p_value":  float(r["p_marker"]),
         "n_pos":    int(r["n_marker_pos"]),
-        "n_specs":  int(len(sub)),
+        "n_specs":  int(sub.height),
     }
 
 
-def _track2_row(t2: pd.DataFrame, marker: str, cancer: str, cohort: str) -> dict | None:
+def _track2_row(t2: pl.DataFrame, marker: str, cancer: str, cohort: str) -> dict | None:
     """Primary-spec Track-2 interaction estimate, with the real Wald CI95.
 
     `CI95_markerxICI_low`/`_high` are the Wald interval for the interaction term
     itself (run_IPTW_analysis._fit_track2_marker: se_mx = sqrt(V[mx, mx])), not
     the inter-spec min/max range this used to plot.
     """
-    sub = t2[(t2["marker"] == marker) & (t2["cancer_type"] == cancer)
-             & (t2["cohort"] == cohort)]
-    if sub.empty:
+    sub = t2.filter((pl.col("marker") == marker) & (pl.col("cancer_type") == cancer)
+                     & (pl.col("cohort") == cohort))
+    if sub.is_empty():
         return None
-    primary = sub[(sub["ps_model"] == PRIMARY_PS_MODEL)
-                  & (sub["weight_type"].str.upper() == TRACK2_WEIGHT.upper())]
-    if primary.empty:
-        primary = sub.sort_values("p_markerxICI").head(1)
-    r = primary.iloc[0]
+    primary = sub.filter((pl.col("ps_model") == PRIMARY_PS_MODEL)
+                          & (pl.col("weight_type").str.to_uppercase() == TRACK2_WEIGHT.upper()))
+    if primary.is_empty():
+        primary = sub.sort("p_markerxICI").head(1)
+    r = primary.row(0, named=True)
     return {
         "HR":       float(r["HR_markerxICI"]),
         "CI95_low": float(r["CI95_markerxICI_low"]),
         "CI95_high": float(r["CI95_markerxICI_high"]),
         "p_value":  float(r["p_markerxICI"]),
         "n_pos":    int(r.get("n_ICI_pos", 0) or 0),
-        "n_specs":  int(len(sub)),
+        "n_specs":  int(sub.height),
     }
 
 
-def _forest_headline() -> pd.DataFrame:
+def _forest_headline() -> pl.DataFrame:
     t1_fp = os.path.join(COMPILED_DIR, "track1_all_significant_hits.csv")
     t2_fp = os.path.join(COMPILED_DIR, "track2_all_significant_hits.csv")
     if not (os.path.exists(t1_fp) and os.path.exists(t2_fp)):
         print(f"  missing T1 or T2 compiled hits at {COMPILED_DIR}; forest empty")
-        return pd.DataFrame(columns=FOREST_COLUMNS)
-    t1 = pd.read_csv(t1_fp)
-    t2 = pd.read_csv(t2_fp)
+        return pl.DataFrame(schema={c: pl.Float64 for c in FOREST_COLUMNS})
+    t1 = pl.read_csv(t1_fp)
+    t2 = pl.read_csv(t2_fp)
     validation = _load_validation_lookup()
 
     rows = []
@@ -441,54 +464,56 @@ def _forest_headline() -> pd.DataFrame:
             rows.append({**base, "track": "T1_prognostic_in_ICI", **t1_row})
         if t2_row is not None:
             rows.append({**base, "track": "T2_predictive_of_ICI", **t2_row})
-    return pd.DataFrame(rows, columns=FOREST_COLUMNS)
+    if not rows:
+        return pl.DataFrame(schema={c: pl.Float64 for c in FOREST_COLUMNS})
+    return pl.DataFrame(rows).select(FOREST_COLUMNS)
 
 
-def _km_examples() -> pd.DataFrame:
+def _km_examples() -> pl.DataFrame:
     t1_fp = os.path.join(COMPILED_DIR, "track1_all_significant_hits.csv")
     t2_fp = os.path.join(COMPILED_DIR, "track2_all_significant_hits.csv")
     if not os.path.exists(t2_fp):
         print(f"  missing {t2_fp}; cannot build KM examples")
-        return pd.DataFrame(columns=KM_EXAMPLE_COLUMNS)
+        return pl.DataFrame(schema={c: pl.Float64 for c in KM_EXAMPLE_COLUMNS})
     try:
-        t2_hits = pd.read_csv(t2_fp)
-    except pd.errors.EmptyDataError:
-        t2_hits = pd.DataFrame()
+        t2_hits = pl.read_csv(t2_fp)
+    except pl.exceptions.NoDataError:
+        t2_hits = pl.DataFrame()
     try:
-        t1_hits = pd.read_csv(t1_fp) if os.path.exists(t1_fp) else pd.DataFrame()
-    except pd.errors.EmptyDataError:
-        t1_hits = pd.DataFrame()
-    if t2_hits.empty and t1_hits.empty:
-        return pd.DataFrame(columns=KM_EXAMPLE_COLUMNS)
+        t1_hits = pl.read_csv(t1_fp) if os.path.exists(t1_fp) else pl.DataFrame()
+    except pl.exceptions.NoDataError:
+        t1_hits = pl.DataFrame()
+    if t2_hits.is_empty() and t1_hits.is_empty():
+        return pl.DataFrame(schema={c: pl.Float64 for c in KM_EXAMPLE_COLUMNS})
 
     examples = _select_km_example_hits(t1_hits, t2_hits)
-    if examples.empty:
-        return pd.DataFrame(columns=KM_EXAMPLE_COLUMNS)
+    if examples.is_empty():
+        return pl.DataFrame(schema={c: pl.Float64 for c in KM_EXAMPLE_COLUMNS})
 
     frames = []
-    for i, row in enumerate(examples.itertuples(index=False), start=1):
-        marker = getattr(row, "marker")
-        cancer = getattr(row, "cancer_type")
-        cohort = getattr(row, "cohort")
-        ps_model = getattr(row, "ps_model")
-        hr = float(getattr(row, "hr"))
-        hr_label = getattr(row, "hr_label")
-        track = int(getattr(row, "track"))
+    for i, row in enumerate(examples.iter_rows(named=True), start=1):
+        marker = row["marker"]
+        cancer = row["cancer_type"]
+        cohort = row["cohort"]
+        ps_model = row["ps_model"]
+        hr = float(row["hr"])
+        hr_label = row["hr_label"]
+        track = int(row["track"])
         iptw_fp = os.path.join(BIOMARKER_PATH, f"IPTW_df_{cohort}_{ps_model}.csv.gz")
         if not os.path.exists(iptw_fp):
             print(f"  missing {iptw_fp}")
             continue
-        iptw = pd.read_csv(iptw_fp)
+        iptw = pl.read_csv(iptw_fp)
         cancer_col = f"CANCER_TYPE_{cancer}"
         if cancer != "pan_cancer" and cancer_col in iptw.columns:
-            iptw = iptw[iptw[cancer_col] == 1]
+            iptw = iptw.filter(pl.col(cancer_col) == 1)
         required = [marker, "PX_on_ICI", "tt_death", "death"]
         if not set(required).issubset(iptw.columns):
             print(f"  skipping KM example {marker}/{cancer}: missing required columns")
             continue
-        cur = iptw.dropna(subset=required).copy()
-        cur = cur[cur["tt_death"] > 0]
-        if cur.empty:
+        cur = iptw.drop_nulls(subset=required)
+        cur = cur.filter(pl.col("tt_death") > 0)
+        if cur.is_empty():
             continue
         # Track 2 (interaction) → ICI Benefit / ICI Harm; Track 1 fallback is
         # a prognostic-within-ICI story, so title differently.
@@ -498,20 +523,22 @@ def _km_examples() -> pd.DataFrame:
         else:
             direction = "Prognostic (lower risk)" if hr < 1 else "Prognostic (higher risk)"
             title = f"{marker} — {direction} within ICI"
-        cur = cur[["DFCI_MRN", marker, "PX_on_ICI", "death", "tt_death"]].rename(
-            columns={marker: "marker_value"}
+        cur = cur.select(["DFCI_MRN", marker, "PX_on_ICI", "death", "tt_death"]).rename(
+            {marker: "marker_value"}
         )
-        cur["example_id"] = i
-        cur["title"] = title
-        cur["marker"] = marker
-        cur["cancer"] = cancer
-        cur["hr"] = hr
-        cur["hr_label"] = hr_label
-        cur["track"] = track
+        cur = cur.with_columns([
+            pl.lit(i).alias("example_id"),
+            pl.lit(title).alias("title"),
+            pl.lit(marker).alias("marker"),
+            pl.lit(cancer).alias("cancer"),
+            pl.lit(hr).alias("hr"),
+            pl.lit(hr_label).alias("hr_label"),
+            pl.lit(track).alias("track"),
+        ])
         frames.append(cur)
     if not frames:
-        return pd.DataFrame(columns=KM_EXAMPLE_COLUMNS)
-    out = pd.concat(frames, ignore_index=True)
+        return pl.DataFrame(schema={c: pl.Float64 for c in KM_EXAMPLE_COLUMNS})
+    out = pl.concat(frames, how="diagonal_relaxed")
     # Preserve forward-compat schema (Track 1 rows carry extra columns)
     return out
 
@@ -533,7 +560,7 @@ def _smd(x: np.ndarray, treat: np.ndarray, w: np.ndarray | None = None) -> float
     return float((mt - mc) / denom) if denom > 0 else 0.0
 
 
-def _love_smd() -> pd.DataFrame:
+def _love_smd() -> pl.DataFrame:
     """Covariate balance (SMD) before vs after IPTW for the primary spec, for the love plot.
 
     Recomputes stabilized ATE weights from the held-out propensity (ICI_prediction) so the panel
@@ -542,24 +569,24 @@ def _love_smd() -> pd.DataFrame:
     fp = os.path.join(BIOMARKER_PATH, f"IPTW_df_{COHORT}_{PRIMARY_PS_MODEL}.csv.gz")
     if not os.path.exists(fp):
         print(f"  no IPTW df at {fp}; emitting empty love-plot data")
-        return pd.DataFrame(columns=LOVE_SMD_COLUMNS)
-    df = pd.read_csv(fp)
+        return pl.DataFrame(schema={c: pl.Float64 for c in LOVE_SMD_COLUMNS})
+    df = pl.read_csv(fp)
     if not {"PX_on_ICI", "ICI_prediction"}.issubset(df.columns):
         print("  IPTW df missing PX_on_ICI/ICI_prediction; emitting empty love-plot data")
-        return pd.DataFrame(columns=LOVE_SMD_COLUMNS)
+        return pl.DataFrame(schema={c: pl.Float64 for c in LOVE_SMD_COLUMNS})
 
     # Rows without a propensity/treatment value can't be weighted — drop them so the
     # weighted SMDs don't collapse to NaN.
-    df = df.dropna(subset=["PX_on_ICI", "ICI_prediction"])
-    if df.empty:
-        return pd.DataFrame(columns=LOVE_SMD_COLUMNS)
+    df = df.drop_nulls(subset=["PX_on_ICI", "ICI_prediction"])
+    if df.is_empty():
+        return pl.DataFrame(schema={c: pl.Float64 for c in LOVE_SMD_COLUMNS})
 
     base = [c for c in ("GENDER", "AGE_AT_TREATMENTSTART") if c in df.columns]
     prefixed = [c for c in df.columns
                 if c.startswith(("LINE_", "CANCER_TYPE_", "PANEL_VERSION_"))]
     covars = base + prefixed
     if not covars:
-        return pd.DataFrame(columns=LOVE_SMD_COLUMNS)
+        return pl.DataFrame(schema={c: pl.Float64 for c in LOVE_SMD_COLUMNS})
 
     treat = df["PX_on_ICI"].to_numpy()
     ps = df["ICI_prediction"].clip(1e-6, 1 - 1e-6).to_numpy()
@@ -570,7 +597,7 @@ def _love_smd() -> pd.DataFrame:
 
     rows = []
     for cov in covars:
-        x = pd.to_numeric(df[cov], errors="coerce").to_numpy(dtype=float)
+        x = df[cov].cast(pl.Float64, strict=False).to_numpy()
         if np.isnan(x).any():
             continue
         rows.append({
@@ -578,14 +605,14 @@ def _love_smd() -> pd.DataFrame:
             "smd_unweighted": _smd(x, treat),
             "smd_weighted": _smd(x, treat, w),
         })
-    out = pd.DataFrame(rows, columns=LOVE_SMD_COLUMNS)
-    if out.empty:
-        return out
+    if not rows:
+        return pl.DataFrame(schema={c: pl.Float64 for c in LOVE_SMD_COLUMNS})
+    out = pl.DataFrame(rows).select(LOVE_SMD_COLUMNS)
     # Keep demographics + the most-imbalanced covariates for a readable love plot
-    out["_abs"] = out["smd_unweighted"].abs()
-    keep_base = out[out["covariate"].isin(base)]
-    keep_top = out[~out["covariate"].isin(base)].nlargest(LOVE_TOP_N, "_abs")
-    return pd.concat([keep_base, keep_top]).drop(columns="_abs").reset_index(drop=True)
+    out = out.with_columns(pl.col("smd_unweighted").abs().alias("_abs"))
+    keep_base = out.filter(pl.col("covariate").is_in(base))
+    keep_top = out.filter(~pl.col("covariate").is_in(base)).sort("_abs", descending=True).head(LOVE_TOP_N)
+    return pl.concat([keep_base, keep_top], how="diagonal_relaxed").drop("_abs")
 
 
 def main() -> None:

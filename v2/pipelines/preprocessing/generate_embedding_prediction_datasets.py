@@ -17,6 +17,7 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
+import polars as pl
 import zstandard as zstd
 from tqdm import tqdm
 
@@ -59,7 +60,7 @@ _to_icd10_level_4 = to_icd10_level_4
 
 
 def _normalize_phecode(code: str) -> Optional[str]:
-    if pd.isna(code):
+    if code is None:
         return None
     code = str(code).strip()
     code = re.sub(r"[^0-9.]", "", code)
@@ -78,7 +79,7 @@ def _normalize_phecode(code: str) -> Optional[str]:
     return code.lstrip('0') or '0'
 
 
-def _resolve_column(df: pd.DataFrame, expected: str) -> str:
+def _resolve_column(df: pl.DataFrame, expected: str) -> str:
     col_map = {col.strip().lower(): col for col in df.columns}
     if expected not in col_map:
         raise ValueError(f"Expected column '{expected}' not found. Available columns: {list(df.columns)}")
@@ -148,7 +149,7 @@ def _is_excluded_phecode(code: str) -> bool:
 
 
 def _filter_endpoint_events_by_min_post_baseline_count(
-    cohort_df: pd.DataFrame,
+    cohort_df: pl.DataFrame,
     endpoint_events: list[str],
     min_events: int = 100,
 ) -> list[str]:
@@ -158,13 +159,15 @@ def _filter_endpoint_events_by_min_post_baseline_count(
         if event not in cohort_df.columns or tt_col not in cohort_df.columns:
             continue
 
-        post_baseline_events = ((cohort_df[event] == 1) & (cohort_df[tt_col] > 0)).sum()
-        if int(post_baseline_events) >= min_events:
+        post_baseline_events = cohort_df.filter(
+            (pl.col(event) == 1) & (pl.col(tt_col) > 0)
+        ).height
+        if post_baseline_events >= min_events:
             kept_events.append(event)
     return kept_events
 
 
-def _load_shared_inputs(anchor: str = DEFAULT_ANCHOR) -> tuple[pd.DataFrame, pd.DataFrame, np.ndarray, pd.DataFrame]:
+def _load_shared_inputs(anchor: str = DEFAULT_ANCHOR) -> tuple[pl.DataFrame, pl.DataFrame, np.ndarray, pd.DataFrame]:
     """Load and anchor-restrict shared inputs. `base_cohort_df` is filtered to
     `eligible_<anchor>` rows (drops patients not at risk at the chosen t=0 —
     the "exclude" half of "re-anchor and exclude") and gets a `tt_death`
@@ -174,34 +177,42 @@ def _load_shared_inputs(anchor: str = DEFAULT_ANCHOR) -> tuple[pd.DataFrame, pd.
     `START_DT` relative to the anchor's date column rather than trusting the
     treatment-anchor-locked value baked in by extract_ICD_times.py."""
     ensure_anchor(anchor)
-    base_cohort_df = pd.read_parquet(os.path.join(SURV_PATH, 'cohort_df.parquet'))[BASE_INPUT_COLS].copy()
+    base_cohort_df = pl.read_parquet(os.path.join(SURV_PATH, 'cohort_df.parquet')).select(BASE_INPUT_COLS)
 
     eligible_col = f'eligible_{anchor}'
-    base_cohort_df = base_cohort_df.loc[base_cohort_df[eligible_col]].reset_index(drop=True)
-    base_cohort_df['tt_death'] = base_cohort_df[f'tt_death_{anchor}']
+    base_cohort_df = base_cohort_df.filter(pl.col(eligible_col))
+    base_cohort_df = base_cohort_df.with_columns(pl.col(f'tt_death_{anchor}').alias('tt_death'))
 
     anchor_date_col = date_col(anchor)
     mrn_anchor_dict = dict(
-        zip(base_cohort_df['DFCI_MRN'], pd.to_datetime(base_cohort_df[anchor_date_col], errors='coerce'))
+        zip(
+            base_cohort_df['DFCI_MRN'].to_list(),
+            pd.to_datetime(base_cohort_df[anchor_date_col].to_pandas(), errors='coerce'),
+        )
     )
 
-    split_ehr_icd_subset = pd.read_parquet(os.path.join(SURV_PATH, 'timestamped_icd_info.parquet'))
-    split_ehr_icd_subset = split_ehr_icd_subset.loc[
-        split_ehr_icd_subset['DFCI_MRN'].isin(set(base_cohort_df['DFCI_MRN']))
-    ].copy()
-    icd_start_dt = pd.to_datetime(split_ehr_icd_subset['START_DT'], errors='coerce')
-    icd_anchor_dt = split_ehr_icd_subset['DFCI_MRN'].map(mrn_anchor_dict)
-    split_ehr_icd_subset['TIME_TO_ICD'] = (icd_start_dt - icd_anchor_dt).dt.days
+    split_ehr_icd_subset = pl.read_parquet(os.path.join(SURV_PATH, 'timestamped_icd_info.parquet'))
+    cohort_mrn_set = set(base_cohort_df['DFCI_MRN'].to_list())
+    split_ehr_icd_subset = split_ehr_icd_subset.filter(pl.col('DFCI_MRN').is_in(cohort_mrn_set))
+
+    icd_start_dt = pd.to_datetime(split_ehr_icd_subset['START_DT'].to_pandas(), errors='coerce')
+    icd_anchor_dt = split_ehr_icd_subset['DFCI_MRN'].to_pandas().map(mrn_anchor_dict)
+    time_to_icd = (icd_start_dt - icd_anchor_dt).dt.days
+    split_ehr_icd_subset = split_ehr_icd_subset.with_columns(
+        pl.Series('TIME_TO_ICD', time_to_icd.to_numpy())
+    )
 
     with open(os.path.join(NOTES_PATH, 'full_clinical_notes_embeddings_as_array.npy.zst'), 'rb') as f:
         embeddings_data = np.load(io.BytesIO(zstd.decompress(f.read())))
     embeddings_data = embeddings_data.astype(np.float32)
+    # generate_survival_embedding_df / pool_embedding_series_vectorized (v2/survival) remain
+    # pandas-only, so notes_meta is kept as pandas at this boundary.
     notes_meta = pd.read_parquet(os.path.join(NOTES_PATH, 'full_clinical_notes_embeddings_metadata.parquet'))
     return base_cohort_df, split_ehr_icd_subset, embeddings_data, notes_meta
 
 
 def _prefilter_events_by_min_count(
-    event_data: pd.DataFrame,
+    event_data: pl.DataFrame,
     cohort_mrns: set,
     event_col: str,
     time_col: str,
@@ -211,10 +222,11 @@ def _prefilter_events_by_min_count(
     """Fast pre-filter: keep only codes with >= min_events unique patients
     in the cohort who have a post-baseline (time > 0) occurrence."""
     # restrict to cohort and post-baseline
-    mask = event_data['DFCI_MRN'].isin(cohort_mrns) & (event_data[time_col] > 0)
-    counts = event_data.loc[mask].drop_duplicates(
-        subset=['DFCI_MRN', event_col]
-    )[event_col].value_counts()
+    filtered = event_data.filter(
+        pl.col('DFCI_MRN').is_in(cohort_mrns) & (pl.col(time_col) > 0)
+    ).unique(subset=['DFCI_MRN', event_col])
+    counts_df = filtered[event_col].value_counts()
+    counts = dict(zip(counts_df[event_col].to_list(), counts_df['count'].to_list())) if filtered.height else {}
     kept = [e for e in events_to_analyze if counts.get(e, 0) >= min_events]
     n_dropped = len(events_to_analyze) - len(kept)
     print(f"  Pre-filter: {len(kept)}/{len(events_to_analyze)} codes have >= {min_events} post-baseline events ({n_dropped} dropped)")
@@ -222,7 +234,7 @@ def _prefilter_events_by_min_count(
 
 
 def _prefilter_events_by_prevalence(
-    event_data: pd.DataFrame,
+    event_data: pl.DataFrame,
     cohort_mrns: set,
     event_col: str,
     events_to_analyze: list[str],
@@ -232,10 +244,9 @@ def _prefilter_events_by_prevalence(
     (any time, pre- or post-baseline)."""
     cohort_size = len(cohort_mrns)
     min_patients = max(1, int(min_prevalence * cohort_size))
-    mask = event_data['DFCI_MRN'].isin(cohort_mrns)
-    counts = event_data.loc[mask].drop_duplicates(
-        subset=['DFCI_MRN', event_col]
-    )[event_col].value_counts()
+    filtered = event_data.filter(pl.col('DFCI_MRN').is_in(cohort_mrns)).unique(subset=['DFCI_MRN', event_col])
+    counts_df = filtered[event_col].value_counts()
+    counts = dict(zip(counts_df[event_col].to_list(), counts_df['count'].to_list())) if filtered.height else {}
     kept = [e for e in events_to_analyze if counts.get(e, 0) >= min_patients]
     n_dropped = len(events_to_analyze) - len(kept)
     print(f"  Prevalence filter (>={min_prevalence:.1%}, n>={min_patients}): {len(kept)}/{len(events_to_analyze)} codes ({n_dropped} dropped)")
@@ -243,72 +254,93 @@ def _prefilter_events_by_prevalence(
 
 
 def _map_events_to_columns(
-    cohort_df: pd.DataFrame,
-    event_data: pd.DataFrame,
+    cohort_df: pl.DataFrame,
+    event_data: pl.DataFrame,
     events_to_analyze: list[str],
     event_col: str,
     time_col: str,
     progress_desc: str,
-) -> pd.DataFrame:
-    mapped_cols: dict[str, pd.Series] = {}
+) -> pl.DataFrame:
+    """`map_time_to_event` (v2/survival, pandas-only) returns Series aligned
+    positionally with the pandas view of `cohort_df` passed in (same row
+    order, same length, no independent filter/sort) — so building result
+    columns from those Series and attaching them back via `with_columns` on
+    the same `cohort_df` is a safe positional operation, not an
+    index-alignment join."""
+    cohort_pd = cohort_df.to_pandas()
+    new_cols = {}
     for event in tqdm(events_to_analyze, desc=progress_desc):
-        event_data_sub = event_data.loc[event_data[event_col] == event]
+        event_data_sub = event_data.filter(pl.col(event_col) == event).to_pandas()
         tt_series, event_series = map_time_to_event(
-            event_data_sub, cohort_df, 'DFCI_MRN', event, time_col
+            event_data_sub, cohort_pd, 'DFCI_MRN', event, time_col
         )
-        mapped_cols[f'tt_{event}'] = tt_series
-        mapped_cols[event] = event_series
-    return pd.DataFrame(mapped_cols, index=cohort_df.index)
+        new_cols[f'tt_{event}'] = tt_series.to_numpy()
+        new_cols[event] = event_series.to_numpy()
+    return cohort_df.with_columns([pl.Series(name, values) for name, values in new_cols.items()])
 
 
-def _add_metastatic_events(cohort_df: pd.DataFrame, anchor: str = DEFAULT_ANCHOR) -> tuple[pd.DataFrame, list[str]]:
+def _add_metastatic_events(cohort_df: pl.DataFrame, anchor: str = DEFAULT_ANCHOR) -> tuple[pl.DataFrame, list[str]]:
     dfs_to_concat = [
-        pd.read_csv(os.path.join(PROCESSED_DATA_PATH, f'clinical_to_{site}_met.csv'))
-        .loc[lambda df: df['event'] == 1, ['dfci_mrn', 'date', 'type']]
+        pl.read_csv(os.path.join(PROCESSED_DATA_PATH, f'clinical_to_{site}_met.csv'))
+        .filter(pl.col('event') == 1)
+        .select(['dfci_mrn', 'date', 'type'])
         for site in MET_SITES
     ]
-    met_date_df = pd.concat(dfs_to_concat, ignore_index=True)
-    met_date_df.rename(columns={'dfci_mrn': 'DFCI_MRN', 'date': 'MET_DATE', 'type': 'MET_LOCATION'}, inplace=True)
+    met_date_df = pl.concat(dfs_to_concat, how='vertical')
+    met_date_df = met_date_df.rename({'dfci_mrn': 'DFCI_MRN', 'date': 'MET_DATE', 'type': 'MET_LOCATION'})
 
     anchor_date_col = date_col(anchor)
-    met_date_df = met_date_df.loc[met_date_df['DFCI_MRN'].isin(cohort_df['DFCI_MRN'])].copy()
-    mrn_anchor_dict = dict(zip(cohort_df['DFCI_MRN'], pd.to_datetime(cohort_df[anchor_date_col], errors='coerce')))
-    met_date_df[anchor_date_col] = met_date_df['DFCI_MRN'].map(mrn_anchor_dict)
-    met_date_df['MET_DATE'] = pd.to_datetime(met_date_df['MET_DATE'].astype(str).str.split(' ').str[0], errors='coerce')
-    met_date_df['TIME_TO_MET'] = (met_date_df['MET_DATE'] - met_date_df[anchor_date_col]).dt.days
-    met_date_df = met_date_df.dropna(subset=['TIME_TO_MET'])
+    cohort_mrn_set = set(cohort_df['DFCI_MRN'].to_list())
+    met_date_df = met_date_df.filter(pl.col('DFCI_MRN').is_in(cohort_mrn_set))
+
+    mrn_anchor_dict = dict(
+        zip(
+            cohort_df['DFCI_MRN'].to_list(),
+            pd.to_datetime(cohort_df[anchor_date_col].to_pandas(), errors='coerce'),
+        )
+    )
+    met_date_pd = met_date_df.to_pandas()
+    met_date_pd[anchor_date_col] = met_date_pd['DFCI_MRN'].map(mrn_anchor_dict)
+    met_date_pd['MET_DATE'] = pd.to_datetime(met_date_pd['MET_DATE'].astype(str).str.split(' ').str[0], errors='coerce')
+    met_date_pd['TIME_TO_MET'] = (met_date_pd['MET_DATE'] - met_date_pd[anchor_date_col]).dt.days
+    met_date_pd = met_date_pd.dropna(subset=['TIME_TO_MET'])
     # Matches the ICD3/ICD4/phecode paths below (e.g. `icd_data_base['TIME_TO_ICD'] > 0`):
     # a met event recorded before the anchor date is not a valid post-baseline event.
-    met_date_df = met_date_df.loc[met_date_df['TIME_TO_MET'] > 0]
+    met_date_pd = met_date_pd.loc[met_date_pd['TIME_TO_MET'] > 0]
+    met_date_df = pl.from_pandas(met_date_pd)
 
     met_events_added = []
-    met_event_cols: dict[str, pd.Series] = {}
-    for met_loc in sorted(met_date_df['MET_LOCATION'].dropna().unique()):
+    cohort_pd = cohort_df.to_pandas()
+    new_cols = {}
+    for met_loc in sorted(v for v in met_date_df['MET_LOCATION'].unique().to_list() if v is not None):
         # Emit the 'M' suffix at write time (e.g. 'brain' -> 'brainM') so the
         # event name matches what survival/preprocessing.py and
         # slurm_array_utils.py already expect, instead of patching it in
         # downstream consumers.
         event_name = f'{met_loc}M'
-        cur_met_data_sub = met_date_df.loc[met_date_df['MET_LOCATION'] == met_loc]
+        cur_met_data_sub = met_date_df.filter(pl.col('MET_LOCATION') == met_loc).to_pandas()
         tt_series, event_series = map_time_to_event(
-            cur_met_data_sub, cohort_df, 'DFCI_MRN', met_loc, 'TIME_TO_MET'
+            cur_met_data_sub, cohort_pd, 'DFCI_MRN', met_loc, 'TIME_TO_MET'
         )
-        met_event_cols[f'tt_{event_name}'] = tt_series
-        met_event_cols[event_name] = event_series
+        new_cols[f'tt_{event_name}'] = tt_series.to_numpy()
+        new_cols[event_name] = event_series.to_numpy()
         met_events_added.append(event_name)
 
-    if met_event_cols:
-        cohort_df = pd.concat([cohort_df, pd.DataFrame(met_event_cols, index=cohort_df.index)], axis=1)
+    if new_cols:
+        # Same positional safety as `_map_events_to_columns`: Series come from
+        # `map_time_to_event(..., cohort_pd, ...)`, aligned row-for-row with
+        # `cohort_df` as passed in (no independent reorder/filter in between).
+        cohort_df = cohort_df.with_columns([pl.Series(name, values) for name, values in new_cols.items()])
 
     return cohort_df, met_events_added
 
 
 def _write_outputs(
-    cohort_df: pd.DataFrame,
+    cohort_df: pl.DataFrame,
     endpoint_events: list[str],
     surv_filename: str,
     embedding_filename: str,
-    pooled_embedding_df: pd.DataFrame,
+    pooled_embedding_df: pl.DataFrame,
 ) -> None:
     event_cols = [event for event in endpoint_events if event in cohort_df.columns]
     event_cols = _dedupe_in_order(event_cols)
@@ -316,24 +348,24 @@ def _write_outputs(
 
     # Always include core survival events (death, vte) so downstream scripts can use them
     core_cols = [c for c in CORE_EVENT_COLS if c in cohort_df.columns]
-    events_data_sub = cohort_df[BASE_OUTPUT_COLS + core_cols + event_cols + tt_event_cols]
-    events_data_sub.to_parquet(os.path.join(SURV_PATH, surv_filename), index=False)
+    events_data_sub = cohort_df.select(BASE_OUTPUT_COLS + core_cols + event_cols + tt_event_cols)
+    events_data_sub.write_parquet(os.path.join(SURV_PATH, surv_filename))
 
-    monthly_data = events_data_sub.merge(pooled_embedding_df, on='DFCI_MRN', how='left')
+    monthly_data = events_data_sub.join(pooled_embedding_df, on='DFCI_MRN', how='left')
     embedding_cols = [col for col in pooled_embedding_df.columns if col != 'DFCI_MRN']
-    monthly_data = monthly_data.dropna(subset=embedding_cols)
-    monthly_data.to_parquet(os.path.join(SURV_PATH, embedding_filename), index=False)
+    monthly_data = monthly_data.drop_nulls(subset=embedding_cols)
+    monthly_data.write_parquet(os.path.join(SURV_PATH, embedding_filename))
 
 
 def _write_death_met_outputs(
-    base_cohort_df: pd.DataFrame,
-    pooled_embedding_df: pd.DataFrame,
+    base_cohort_df: pl.DataFrame,
+    pooled_embedding_df: pl.DataFrame,
     surv_filename: str = 'death_met_surv_df.parquet',
     embedding_filename: str = 'death_met_embedding_prediction_df.parquet',
     min_events: int = 100,
     anchor: str = DEFAULT_ANCHOR,
 ) -> None:
-    cohort_df = base_cohort_df.copy()
+    cohort_df = base_cohort_df.clone()
     cohort_df, met_events_added = _add_metastatic_events(cohort_df, anchor=anchor)
 
     met_events_added = _filter_endpoint_events_by_min_post_baseline_count(
@@ -345,13 +377,13 @@ def _write_death_met_outputs(
     tt_event_cols = [f'tt_{event}' for event in event_cols]
 
     core_cols = [c for c in CORE_EVENT_COLS if c in cohort_df.columns and c not in event_cols and c not in tt_event_cols]
-    events_data_sub = cohort_df[BASE_OUTPUT_COLS + core_cols + event_cols + tt_event_cols]
-    events_data_sub.to_parquet(os.path.join(SURV_PATH, surv_filename), index=False)
+    events_data_sub = cohort_df.select(BASE_OUTPUT_COLS + core_cols + event_cols + tt_event_cols)
+    events_data_sub.write_parquet(os.path.join(SURV_PATH, surv_filename))
 
-    monthly_data = events_data_sub.merge(pooled_embedding_df, on='DFCI_MRN', how='left')
+    monthly_data = events_data_sub.join(pooled_embedding_df, on='DFCI_MRN', how='left')
     embedding_cols = [col for col in pooled_embedding_df.columns if col != 'DFCI_MRN']
-    monthly_data = monthly_data.dropna(subset=embedding_cols)
-    monthly_data.to_parquet(os.path.join(SURV_PATH, embedding_filename), index=False)
+    monthly_data = monthly_data.drop_nulls(subset=embedding_cols)
+    monthly_data.write_parquet(os.path.join(SURV_PATH, embedding_filename))
 
 
 def main() -> None:
@@ -385,6 +417,7 @@ def main() -> None:
     )
     if pooled_embedding_df.empty:
         raise ValueError("No patients have complete pre-anchor embeddings for all note types.")
+    pooled_embedding_df = pl.from_pandas(pooled_embedding_df)
 
     # =========================
     # SHARED DEATH + MET DATASET
@@ -400,36 +433,41 @@ def main() -> None:
     # =========================
     # SHARED ICD SETUP
     # =========================
-    cohort_mrns = set(base_cohort_df['DFCI_MRN'])
+    cohort_mrns = set(base_cohort_df['DFCI_MRN'].to_list())
 
-    icd_data_base = split_ehr_icd_subset.copy()
-    icd_data_base['ICD10_LEVEL_3_CD'] = icd_data_base['DIAGNOSIS_ICD10_CD'].map(_to_icd10_level_3)
-    icd_data_base['ICD10_LEVEL_4_CD'] = icd_data_base['DIAGNOSIS_ICD10_CD'].map(_to_icd10_level_4)
-    icd_data_base = icd_data_base.dropna(subset=['ICD10_LEVEL_3_CD']).copy()
-    icd_data_base = icd_data_base.loc[~icd_data_base['ICD10_LEVEL_3_CD'].map(_is_excluded_icd10)].copy()
-    icd_data_base['START_DT'] = pd.to_datetime(icd_data_base['START_DT'], errors='coerce')
+    icd_data_base = split_ehr_icd_subset.clone()
+    icd_data_base = icd_data_base.with_columns([
+        pl.col('DIAGNOSIS_ICD10_CD').map_elements(_to_icd10_level_3, return_dtype=pl.Utf8).alias('ICD10_LEVEL_3_CD'),
+        pl.col('DIAGNOSIS_ICD10_CD').map_elements(_to_icd10_level_4, return_dtype=pl.Utf8).alias('ICD10_LEVEL_4_CD'),
+    ])
+    icd_data_base = icd_data_base.drop_nulls(subset=['ICD10_LEVEL_3_CD'])
+    icd_data_base = icd_data_base.filter(
+        ~pl.col('ICD10_LEVEL_3_CD').map_elements(_is_excluded_icd10, return_dtype=pl.Boolean)
+    )
+    start_dt_pd = pd.to_datetime(icd_data_base['START_DT'].to_pandas(), errors='coerce')
+    icd_data_base = icd_data_base.with_columns(pl.Series('START_DT', start_dt_pd))
 
     # =========================
     # ICD-10 LEVEL 3 DATASET (first post-treatment instance)
     # =========================
-    icd3_codes_raw = _dedupe_in_order(icd_data_base['ICD10_LEVEL_3_CD'].tolist())
+    icd3_codes_raw = _dedupe_in_order(icd_data_base['ICD10_LEVEL_3_CD'].to_list())
     icd3_codes = _prefilter_events_by_prevalence(
         icd_data_base, cohort_mrns, 'ICD10_LEVEL_3_CD', icd3_codes_raw, min_prevalence=0.01
     )
     print(f"  Level-3 ICD codes (>=1% prevalence): {len(icd3_codes)}")
 
-    pd.Series(sorted(icd3_codes), name='ICD10_LEVEL_3_CD').to_csv(
-        os.path.join(CODE_PATH, 'allowed_icd3_post_codes.csv'), index=False
+    pl.DataFrame({'ICD10_LEVEL_3_CD': sorted(icd3_codes)}).write_csv(
+        os.path.join(CODE_PATH, 'allowed_icd3_post_codes.csv')
     )
 
-    cohort_df = base_cohort_df.copy()
-    icd3_data = icd_data_base.loc[icd_data_base['TIME_TO_ICD'] > 0].copy()
+    cohort_df = base_cohort_df.clone()
+    icd3_data = icd_data_base.filter(pl.col('TIME_TO_ICD') > 0)
     icd3_data = (
         icd3_data
-        .sort_values(['DFCI_MRN', 'ICD10_LEVEL_3_CD', 'START_DT'])
-        .drop_duplicates(subset=['DFCI_MRN', 'ICD10_LEVEL_3_CD'], keep='first')
+        .sort(['DFCI_MRN', 'ICD10_LEVEL_3_CD', 'START_DT'])
+        .unique(subset=['DFCI_MRN', 'ICD10_LEVEL_3_CD'], keep='first')
     )
-    icd3_event_cols = _map_events_to_columns(
+    cohort_df = _map_events_to_columns(
         cohort_df=cohort_df,
         event_data=icd3_data,
         events_to_analyze=icd3_codes,
@@ -437,7 +475,6 @@ def main() -> None:
         time_col='TIME_TO_ICD',
         progress_desc='Generating level-3 ICD events (first_post_treatment)',
     )
-    cohort_df = pd.concat([cohort_df, icd3_event_cols], axis=1)
     kept = _filter_endpoint_events_by_min_post_baseline_count(cohort_df, icd3_codes, min_events=100)
     _write_outputs(
         cohort_df=cohort_df,
@@ -450,25 +487,25 @@ def main() -> None:
     # =========================
     # ICD-10 LEVEL 4 DATASET (first post-treatment instance)
     # =========================
-    icd4_data_base = icd_data_base.dropna(subset=['ICD10_LEVEL_4_CD']).copy()
-    icd4_codes_raw = _dedupe_in_order(icd4_data_base['ICD10_LEVEL_4_CD'].tolist())
+    icd4_data_base = icd_data_base.drop_nulls(subset=['ICD10_LEVEL_4_CD'])
+    icd4_codes_raw = _dedupe_in_order(icd4_data_base['ICD10_LEVEL_4_CD'].to_list())
     icd4_codes = _prefilter_events_by_prevalence(
         icd4_data_base, cohort_mrns, 'ICD10_LEVEL_4_CD', icd4_codes_raw, min_prevalence=0.01
     )
     print(f"  Level-4 ICD codes (>=1% prevalence): {len(icd4_codes)}")
 
-    pd.Series(sorted(icd4_codes), name='ICD10_LEVEL_4_CD').to_csv(
-        os.path.join(CODE_PATH, 'allowed_icd4_post_codes.csv'), index=False
+    pl.DataFrame({'ICD10_LEVEL_4_CD': sorted(icd4_codes)}).write_csv(
+        os.path.join(CODE_PATH, 'allowed_icd4_post_codes.csv')
     )
 
-    cohort_df = base_cohort_df.copy()
-    icd4_data = icd4_data_base.loc[icd4_data_base['TIME_TO_ICD'] > 0].copy()
+    cohort_df = base_cohort_df.clone()
+    icd4_data = icd4_data_base.filter(pl.col('TIME_TO_ICD') > 0)
     icd4_data = (
         icd4_data
-        .sort_values(['DFCI_MRN', 'ICD10_LEVEL_4_CD', 'START_DT'])
-        .drop_duplicates(subset=['DFCI_MRN', 'ICD10_LEVEL_4_CD'], keep='first')
+        .sort(['DFCI_MRN', 'ICD10_LEVEL_4_CD', 'START_DT'])
+        .unique(subset=['DFCI_MRN', 'ICD10_LEVEL_4_CD'], keep='first')
     )
-    icd4_event_cols = _map_events_to_columns(
+    cohort_df = _map_events_to_columns(
         cohort_df=cohort_df,
         event_data=icd4_data,
         events_to_analyze=icd4_codes,
@@ -476,7 +513,6 @@ def main() -> None:
         time_col='TIME_TO_ICD',
         progress_desc='Generating level-4 ICD events (first_post_treatment)',
     )
-    cohort_df = pd.concat([cohort_df, icd4_event_cols], axis=1)
     kept = _filter_endpoint_events_by_min_post_baseline_count(cohort_df, icd4_codes, min_events=100)
     _write_outputs(
         cohort_df=cohort_df,
@@ -490,38 +526,43 @@ def main() -> None:
     # PHECODE DATASET (first post-treatment instance)
     # =========================
     mapping_file = os.path.join(CODE_PATH, 'icd10_to_phecode_mapping.csv')
-    mapping_df = pd.read_csv(mapping_file)
+    mapping_df = pl.read_csv(mapping_file)
     mapping_icd_col = _resolve_column(mapping_df, 'icd10_code')
     mapping_phecode_col = _resolve_column(mapping_df, 'phecode')
-    mapping_df['ICD10_NORM'] = mapping_df[mapping_icd_col].map(_normalize_icd10_undotted)
-    mapping_df['PHECODE'] = mapping_df[mapping_phecode_col].map(_normalize_phecode)
-    mapping_df = mapping_df.dropna(subset=['ICD10_NORM', 'PHECODE']).drop_duplicates(subset=['ICD10_NORM', 'PHECODE'])
+    mapping_df = mapping_df.with_columns([
+        pl.col(mapping_icd_col).map_elements(_normalize_icd10_undotted, return_dtype=pl.Utf8).alias('ICD10_NORM'),
+        pl.col(mapping_phecode_col).map_elements(_normalize_phecode, return_dtype=pl.Utf8).alias('PHECODE'),
+    ])
+    mapping_df = mapping_df.drop_nulls(subset=['ICD10_NORM', 'PHECODE']).unique(subset=['ICD10_NORM', 'PHECODE'])
 
-    phe_data = split_ehr_icd_subset.copy()
-    phe_data['ICD10_NORM'] = phe_data['DIAGNOSIS_ICD10_CD'].map(_normalize_icd10_undotted)
-    phe_data = phe_data.dropna(subset=['ICD10_NORM'])
-    phe_data = phe_data.merge(mapping_df[['ICD10_NORM', 'PHECODE']], on='ICD10_NORM', how='inner')
-    phe_data['START_DT'] = pd.to_datetime(phe_data['START_DT'], errors='coerce')
-    phe_data = phe_data.loc[~phe_data['PHECODE'].map(_is_excluded_phecode)].copy()
+    phe_data = split_ehr_icd_subset.clone()
+    phe_data = phe_data.with_columns(
+        pl.col('DIAGNOSIS_ICD10_CD').map_elements(_normalize_icd10_undotted, return_dtype=pl.Utf8).alias('ICD10_NORM')
+    )
+    phe_data = phe_data.drop_nulls(subset=['ICD10_NORM'])
+    phe_data = phe_data.join(mapping_df.select(['ICD10_NORM', 'PHECODE']), on='ICD10_NORM', how='inner')
+    start_dt_pd = pd.to_datetime(phe_data['START_DT'].to_pandas(), errors='coerce')
+    phe_data = phe_data.with_columns(pl.Series('START_DT', start_dt_pd))
+    phe_data = phe_data.filter(~pl.col('PHECODE').map_elements(_is_excluded_phecode, return_dtype=pl.Boolean))
 
-    phecode_codes_raw = _dedupe_in_order(phe_data['PHECODE'].dropna().tolist())
+    phecode_codes_raw = _dedupe_in_order(phe_data['PHECODE'].drop_nulls().to_list())
     phecode_codes = _prefilter_events_by_prevalence(
         phe_data, cohort_mrns, 'PHECODE', phecode_codes_raw, min_prevalence=0.01
     )
     print(f"  Phecode codes (>=1% prevalence): {len(phecode_codes)}")
 
-    pd.Series(sorted(phecode_codes), name='PHECODE').to_csv(
-        os.path.join(CODE_PATH, 'allowed_phecode_post_codes.csv'), index=False
+    pl.DataFrame({'PHECODE': sorted(phecode_codes)}).write_csv(
+        os.path.join(CODE_PATH, 'allowed_phecode_post_codes.csv')
     )
 
-    cohort_df = base_cohort_df.copy()
-    phecode_data = phe_data.loc[phe_data['TIME_TO_ICD'] > 0].copy()
+    cohort_df = base_cohort_df.clone()
+    phecode_data = phe_data.filter(pl.col('TIME_TO_ICD') > 0)
     phecode_data = (
         phecode_data
-        .sort_values(['DFCI_MRN', 'PHECODE', 'START_DT'])
-        .drop_duplicates(subset=['DFCI_MRN', 'PHECODE'], keep='first')
+        .sort(['DFCI_MRN', 'PHECODE', 'START_DT'])
+        .unique(subset=['DFCI_MRN', 'PHECODE'], keep='first')
     )
-    phecode_event_cols = _map_events_to_columns(
+    cohort_df = _map_events_to_columns(
         cohort_df=cohort_df,
         event_data=phecode_data,
         events_to_analyze=phecode_codes,
@@ -529,7 +570,6 @@ def main() -> None:
         time_col='TIME_TO_ICD',
         progress_desc='Generating phecode events (first_post_treatment)',
     )
-    cohort_df = pd.concat([cohort_df, phecode_event_cols], axis=1)
     kept = _filter_endpoint_events_by_min_post_baseline_count(cohort_df, phecode_codes, min_events=100)
     _write_outputs(
         cohort_df=cohort_df,
