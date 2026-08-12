@@ -431,7 +431,10 @@ def main() -> None:
         decay_param=0.01,
     )
     n_any_text = len(pooled_embedding_df)
-    pooled_embedding_df = filter_finite_rows(pooled_embedding_df, pooled_embedding_df.columns)
+    pooled_feature_cols = [c for c in pooled_embedding_df.columns if c != 'DFCI_MRN']
+    pooled_embedding_df = filter_finite_rows(
+        pooled_embedding_df.drop_nulls('DFCI_MRN'), pooled_feature_cols
+    )
     print(
         "  Complete-case text cohort (Clinician + Imaging + Pathology): "
         f"{len(pooled_embedding_df)}/{n_any_text} patients retained"

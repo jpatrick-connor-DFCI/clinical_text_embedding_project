@@ -76,7 +76,10 @@ def main() -> None:
                 note_types=note_types, note_timing_col="NOTE_TIME_REL_PRED_START_DT",
                 max_note_window=-buffer, pool_fx=pool_fx, decay_param=0.01, continuous_window=False)
 
-            embedding_vals_pl = filter_finite_rows(embedding_vals, embedding_vals.columns)
+            embedding_cols = [c for c in embedding_vals.columns if c != 'DFCI_MRN']
+            embedding_vals_pl = filter_finite_rows(
+                embedding_vals.drop_nulls('DFCI_MRN'), embedding_cols
+            )
             full_dataset = cohort_df.join(embedding_vals_pl, on='DFCI_MRN')
             full_dataset.write_csv(
                 os.path.join(buffer_path, f'ICI_prediction_df_w_{buffer}_day_buffer.csv.gz'),

@@ -289,24 +289,19 @@ def pool_embedding_series_vectorized(meta_df: pl.DataFrame, embedding_array: np.
         if note_type in year_adj_cols:
             year_adjustments[note_type][idx] = (group['NOTE_YEAR'] < 2015).to_numpy().mean()
 
-    # Build final DataFrame
-    df_columns = ['DFCI_MRN']
+    # Build the frame column-by-column so MRNs do not force the numeric arrays
+    # through a single NumPy object matrix.  The old concatenate path inferred
+    # every column as Polars Object when DFCI_MRN was object-typed, which then
+    # made otherwise-numeric embedding columns impossible to cast or validate.
+    output_columns: dict[str, object] = {'DFCI_MRN': unique_mrns}
     for nt in year_adj_cols:
         if nt in year_adjustments:
-            df_columns.append(f'PERCENT_{nt.upper()}_NOTES_PRE_2015')
+            output_columns[f'PERCENT_{nt.upper()}_NOTES_PRE_2015'] = year_adjustments[nt][:, 0]
     for nt in note_types:
-        df_columns += [f'{nt.upper()}_EMBEDDING_{i}' for i in range(embed_dim)]
+        for i in range(embed_dim):
+            output_columns[f'{nt.upper()}_EMBEDDING_{i}'] = pooled_embeddings[nt][:, i]
 
-    unique_mrns_arr = np.array(unique_mrns, dtype=object).reshape(-1, 1)
-    data_matrix = [unique_mrns_arr]
-    for nt in year_adj_cols:
-        if nt in year_adjustments:
-            data_matrix.append(year_adjustments[nt])
-    for nt in note_types:
-        data_matrix.append(pooled_embeddings[nt])
-
-    pooled_df = pl.DataFrame(np.concatenate(data_matrix, axis=1), schema=df_columns, orient="row")
-    return pooled_df
+    return pl.DataFrame(output_columns)
 
 def generate_survival_embedding_df(notes_meta: pl.DataFrame, survival_df: pl.DataFrame | None, embedding_array: np.ndarray,
                                    note_types: list[str], note_timing_col: str = 'NOTE_TIME_REL_FIRST_TREATMENT_START',

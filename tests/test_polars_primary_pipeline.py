@@ -17,6 +17,7 @@ if str(V2_ROOT) not in sys.path:
 from pipelines.training.slurm_array_utils import filter_event_rows  # noqa: E402
 from shared.polars_utils import filter_finite_rows, finite_or_zero  # noqa: E402
 from survival.cox_models.base import scale_model_data  # noqa: E402
+from survival.preprocessing import pool_embedding_series_vectorized  # noqa: E402
 
 
 class PolarsPrimaryPipelineTests(unittest.TestCase):
@@ -65,6 +66,35 @@ class PolarsPrimaryPipelineTests(unittest.TestCase):
         )["positive"].to_list()
 
         self.assertEqual(marker_positive, [True, False, False, False, False])
+
+    def test_pooled_embedding_frame_does_not_infer_object_feature_columns(self) -> None:
+        metadata = pl.DataFrame(
+            {
+                "DFCI_MRN": [101, 101],
+                "NOTE_TYPE": ["Clinician", "Clinician"],
+                "NOTE_DATETIME": ["2020-01-01", "2021-01-01"],
+                "NOTE_TIME": [-20, -10],
+                "EMBEDDING_INDEX": [0, 1],
+            }
+        )
+        embeddings = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
+
+        result = pool_embedding_series_vectorized(
+            metadata,
+            embeddings,
+            note_types=["Clinician"],
+            note_timing_col="NOTE_TIME",
+            pool_fx={"Clinician": "mean"},
+            year_adj_cols=[],
+        )
+
+        self.assertEqual(result.schema["DFCI_MRN"], pl.Int64)
+        self.assertTrue(result.schema["CLINICIAN_EMBEDDING_0"].is_float())
+        self.assertTrue(result.schema["CLINICIAN_EMBEDDING_1"].is_float())
+        filtered = filter_finite_rows(
+            result, ["CLINICIAN_EMBEDDING_0", "CLINICIAN_EMBEDDING_1"]
+        )
+        self.assertEqual(filtered.height, 1)
 
 
 if __name__ == "__main__":
