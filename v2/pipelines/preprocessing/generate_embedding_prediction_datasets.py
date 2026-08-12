@@ -16,7 +16,6 @@ import re
 from typing import Optional
 
 import numpy as np
-import pandas as pd
 import polars as pl
 import zstandard as zstd
 from tqdm import tqdm
@@ -167,7 +166,16 @@ def _filter_endpoint_events_by_min_post_baseline_count(
     return kept_events
 
 
-def _load_shared_inputs(anchor: str = DEFAULT_ANCHOR) -> tuple[pl.DataFrame, pl.DataFrame, np.ndarray, pd.DataFrame]:
+def _to_datetime(expr: pl.Expr, dtype: pl.DataType) -> pl.Expr:
+    """Parse a column to Datetime whether it's stored as a date string or
+    already a temporal dtype (mirrors `pd.to_datetime(..., errors='coerce')`:
+    unparseable values become null rather than raising)."""
+    if dtype == pl.Utf8:
+        return expr.str.to_datetime(strict=False)
+    return expr.cast(pl.Datetime)
+
+
+def _load_shared_inputs(anchor: str = DEFAULT_ANCHOR) -> tuple[pl.DataFrame, pl.DataFrame, np.ndarray, pl.DataFrame]:
     """Load and anchor-restrict shared inputs. `base_cohort_df` is filtered to
     `eligible_<anchor>` rows (drops patients not at risk at the chosen t=0 —
     the "exclude" half of "re-anchor and exclude") and gets a `tt_death`
@@ -184,30 +192,35 @@ def _load_shared_inputs(anchor: str = DEFAULT_ANCHOR) -> tuple[pl.DataFrame, pl.
     base_cohort_df = base_cohort_df.with_columns(pl.col(f'tt_death_{anchor}').alias('tt_death'))
 
     anchor_date_col = date_col(anchor)
+    base_cohort_df = base_cohort_df.with_columns(
+        _to_datetime(pl.col(anchor_date_col), base_cohort_df.schema[anchor_date_col]).alias(f'_{anchor_date_col}_dt')
+    )
     mrn_anchor_dict = dict(
         zip(
             base_cohort_df['DFCI_MRN'].to_list(),
-            pd.to_datetime(base_cohort_df[anchor_date_col].to_pandas(), errors='coerce'),
+            base_cohort_df[f'_{anchor_date_col}_dt'].to_list(),
         )
     )
+    base_cohort_df = base_cohort_df.drop(f'_{anchor_date_col}_dt')
 
     split_ehr_icd_subset = pl.read_parquet(os.path.join(SURV_PATH, 'timestamped_icd_info.parquet'))
     cohort_mrn_set = set(base_cohort_df['DFCI_MRN'].to_list())
     split_ehr_icd_subset = split_ehr_icd_subset.filter(pl.col('DFCI_MRN').is_in(cohort_mrn_set))
 
-    icd_start_dt = pd.to_datetime(split_ehr_icd_subset['START_DT'].to_pandas(), errors='coerce')
-    icd_anchor_dt = split_ehr_icd_subset['DFCI_MRN'].to_pandas().map(mrn_anchor_dict)
-    time_to_icd = (icd_start_dt - icd_anchor_dt).dt.days
     split_ehr_icd_subset = split_ehr_icd_subset.with_columns(
-        pl.Series('TIME_TO_ICD', time_to_icd.to_numpy())
+        _to_datetime(pl.col('START_DT'), split_ehr_icd_subset.schema['START_DT']).alias('START_DT')
+    )
+    icd_anchor_dt = pl.Series(
+        [mrn_anchor_dict.get(mrn) for mrn in split_ehr_icd_subset['DFCI_MRN'].to_list()]
+    ).cast(pl.Datetime)
+    split_ehr_icd_subset = split_ehr_icd_subset.with_columns(
+        (pl.col('START_DT') - icd_anchor_dt).dt.total_days().alias('TIME_TO_ICD')
     )
 
     with open(os.path.join(NOTES_PATH, 'full_clinical_notes_embeddings_as_array.npy.zst'), 'rb') as f:
         embeddings_data = np.load(io.BytesIO(zstd.decompress(f.read())))
     embeddings_data = embeddings_data.astype(np.float32)
-    # generate_survival_embedding_df / pool_embedding_series_vectorized (v2/survival) remain
-    # pandas-only, so notes_meta is kept as pandas at this boundary.
-    notes_meta = pd.read_parquet(os.path.join(NOTES_PATH, 'full_clinical_notes_embeddings_metadata.parquet'))
+    notes_meta = pl.read_parquet(os.path.join(NOTES_PATH, 'full_clinical_notes_embeddings_metadata.parquet'))
     return base_cohort_df, split_ehr_icd_subset, embeddings_data, notes_meta
 
 
@@ -261,22 +274,20 @@ def _map_events_to_columns(
     time_col: str,
     progress_desc: str,
 ) -> pl.DataFrame:
-    """`map_time_to_event` (v2/survival, pandas-only) returns Series aligned
-    positionally with the pandas view of `cohort_df` passed in (same row
-    order, same length, no independent filter/sort) — so building result
-    columns from those Series and attaching them back via `with_columns` on
-    the same `cohort_df` is a safe positional operation, not an
-    index-alignment join."""
-    cohort_pd = cohort_df.to_pandas()
+    """`map_time_to_event` (v2/survival, polars-native) returns Series aligned
+    positionally with `cohort_df` as passed in (same row order, same length,
+    no independent filter/sort) — so building result columns from those
+    Series and attaching them back via `with_columns` on the same `cohort_df`
+    is a safe positional operation, not an index-alignment join."""
     new_cols = {}
     for event in tqdm(events_to_analyze, desc=progress_desc):
-        event_data_sub = event_data.filter(pl.col(event_col) == event).to_pandas()
+        event_data_sub = event_data.filter(pl.col(event_col) == event)
         tt_series, event_series = map_time_to_event(
-            event_data_sub, cohort_pd, 'DFCI_MRN', event, time_col
+            event_data_sub, cohort_df, 'DFCI_MRN', event, time_col
         )
-        new_cols[f'tt_{event}'] = tt_series.to_numpy()
-        new_cols[event] = event_series.to_numpy()
-    return cohort_df.with_columns([pl.Series(name, values) for name, values in new_cols.items()])
+        new_cols[f'tt_{event}'] = tt_series
+        new_cols[event] = event_series
+    return cohort_df.with_columns([values.alias(name) for name, values in new_cols.items()])
 
 
 def _add_metastatic_events(cohort_df: pl.DataFrame, anchor: str = DEFAULT_ANCHOR) -> tuple[pl.DataFrame, list[str]]:
@@ -293,24 +304,29 @@ def _add_metastatic_events(cohort_df: pl.DataFrame, anchor: str = DEFAULT_ANCHOR
     cohort_mrn_set = set(cohort_df['DFCI_MRN'].to_list())
     met_date_df = met_date_df.filter(pl.col('DFCI_MRN').is_in(cohort_mrn_set))
 
+    anchor_dt_col = _to_datetime(pl.col(anchor_date_col), cohort_df.schema[anchor_date_col])
     mrn_anchor_dict = dict(
         zip(
             cohort_df['DFCI_MRN'].to_list(),
-            pd.to_datetime(cohort_df[anchor_date_col].to_pandas(), errors='coerce'),
+            cohort_df.select(anchor_dt_col.alias(anchor_date_col))[anchor_date_col].to_list(),
         )
     )
-    met_date_pd = met_date_df.to_pandas()
-    met_date_pd[anchor_date_col] = met_date_pd['DFCI_MRN'].map(mrn_anchor_dict)
-    met_date_pd['MET_DATE'] = pd.to_datetime(met_date_pd['MET_DATE'].astype(str).str.split(' ').str[0], errors='coerce')
-    met_date_pd['TIME_TO_MET'] = (met_date_pd['MET_DATE'] - met_date_pd[anchor_date_col]).dt.days
-    met_date_pd = met_date_pd.dropna(subset=['TIME_TO_MET'])
+    met_date_df = met_date_df.with_columns(
+        pl.Series(
+            anchor_date_col,
+            [mrn_anchor_dict.get(mrn) for mrn in met_date_df['DFCI_MRN'].to_list()],
+        ).cast(pl.Datetime),
+        pl.col('MET_DATE').cast(pl.Utf8).str.split(' ').list.first().str.to_datetime(strict=False),
+    )
+    met_date_df = met_date_df.with_columns(
+        (pl.col('MET_DATE') - pl.col(anchor_date_col)).dt.total_days().alias('TIME_TO_MET')
+    )
+    met_date_df = met_date_df.drop_nulls(subset=['TIME_TO_MET'])
     # Matches the ICD3/ICD4/phecode paths below (e.g. `icd_data_base['TIME_TO_ICD'] > 0`):
     # a met event recorded before the anchor date is not a valid post-baseline event.
-    met_date_pd = met_date_pd.loc[met_date_pd['TIME_TO_MET'] > 0]
-    met_date_df = pl.from_pandas(met_date_pd)
+    met_date_df = met_date_df.filter(pl.col('TIME_TO_MET') > 0)
 
     met_events_added = []
-    cohort_pd = cohort_df.to_pandas()
     new_cols = {}
     for met_loc in sorted(v for v in met_date_df['MET_LOCATION'].unique().to_list() if v is not None):
         # Emit the 'M' suffix at write time (e.g. 'brain' -> 'brainM') so the
@@ -318,9 +334,9 @@ def _add_metastatic_events(cohort_df: pl.DataFrame, anchor: str = DEFAULT_ANCHOR
         # slurm_array_utils.py already expect, instead of patching it in
         # downstream consumers.
         event_name = f'{met_loc}M'
-        cur_met_data_sub = met_date_df.filter(pl.col('MET_LOCATION') == met_loc).to_pandas()
+        cur_met_data_sub = met_date_df.filter(pl.col('MET_LOCATION') == met_loc)
         tt_series, event_series = map_time_to_event(
-            cur_met_data_sub, cohort_pd, 'DFCI_MRN', met_loc, 'TIME_TO_MET'
+            cur_met_data_sub, cohort_df, 'DFCI_MRN', met_loc, 'TIME_TO_MET'
         )
         new_cols[f'tt_{event_name}'] = tt_series.to_numpy()
         new_cols[event_name] = event_series.to_numpy()
@@ -410,14 +426,13 @@ def main() -> None:
         decay_param=0.01,
     )
     n_any_text = len(pooled_embedding_df)
-    pooled_embedding_df = pooled_embedding_df.dropna()
+    pooled_embedding_df = pooled_embedding_df.drop_nulls()
     print(
         "  Complete-case text cohort (Clinician + Imaging + Pathology): "
         f"{len(pooled_embedding_df)}/{n_any_text} patients retained"
     )
-    if pooled_embedding_df.empty:
+    if pooled_embedding_df.is_empty():
         raise ValueError("No patients have complete pre-anchor embeddings for all note types.")
-    pooled_embedding_df = pl.from_pandas(pooled_embedding_df)
 
     # =========================
     # SHARED DEATH + MET DATASET
@@ -444,8 +459,6 @@ def main() -> None:
     icd_data_base = icd_data_base.filter(
         ~pl.col('ICD10_LEVEL_3_CD').map_elements(_is_excluded_icd10, return_dtype=pl.Boolean)
     )
-    start_dt_pd = pd.to_datetime(icd_data_base['START_DT'].to_pandas(), errors='coerce')
-    icd_data_base = icd_data_base.with_columns(pl.Series('START_DT', start_dt_pd))
 
     # =========================
     # ICD-10 LEVEL 3 DATASET (first post-treatment instance)
@@ -541,8 +554,6 @@ def main() -> None:
     )
     phe_data = phe_data.drop_nulls(subset=['ICD10_NORM'])
     phe_data = phe_data.join(mapping_df.select(['ICD10_NORM', 'PHECODE']), on='ICD10_NORM', how='inner')
-    start_dt_pd = pd.to_datetime(phe_data['START_DT'].to_pandas(), errors='coerce')
-    phe_data = phe_data.with_columns(pl.Series('START_DT', start_dt_pd))
     phe_data = phe_data.filter(~pl.col('PHECODE').map_elements(_is_excluded_phecode, return_dtype=pl.Boolean))
 
     phecode_codes_raw = _dedupe_in_order(phe_data['PHECODE'].drop_nulls().to_list())

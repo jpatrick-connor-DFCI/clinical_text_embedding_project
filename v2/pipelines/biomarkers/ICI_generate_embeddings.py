@@ -9,7 +9,6 @@ train propensity models on the generated data.
 
 import os
 
-import pandas as pd
 import polars as pl
 from tqdm import tqdm
 
@@ -56,12 +55,19 @@ def main() -> None:
             buffer_path = os.path.join(EMBEDDING_DATA_PATH, f'w_{buffer}_day_buffer/')
             os.makedirs(buffer_path, exist_ok=True)
 
-            cohort_treatment_dates = cohort_df.select(['DFCI_MRN', 'treatment_start_date']).to_pandas()
-            notes_meta_sub = (
-                notes_meta[notes_meta['DFCI_MRN'].isin(cohort_df['DFCI_MRN'])]
-                .merge(cohort_treatment_dates, on='DFCI_MRN', how='left')
-                .assign(NOTE_TIME_REL_PRED_START_DT=lambda df: (
-                    pd.to_datetime(df['NOTE_DATETIME']) - pd.to_datetime(df['treatment_start_date'])).dt.days)
+            cohort_treatment_dates = cohort_df.select(['DFCI_MRN', 'treatment_start_date'])
+            cohort_mrn_set = set(cohort_df['DFCI_MRN'].to_list())
+            notes_meta_sub = notes_meta.filter(pl.col('DFCI_MRN').is_in(cohort_mrn_set)).join(
+                cohort_treatment_dates, on='DFCI_MRN', how='left'
+            )
+            note_dt = (
+                pl.col('NOTE_DATETIME').str.to_datetime(strict=False)
+                if notes_meta_sub.schema['NOTE_DATETIME'] == pl.Utf8
+                else pl.col('NOTE_DATETIME').cast(pl.Datetime)
+            )
+            notes_meta_sub = notes_meta_sub.with_columns(
+                (note_dt - pl.col('treatment_start_date').cast(pl.Datetime))
+                .dt.total_days().alias('NOTE_TIME_REL_PRED_START_DT')
             )
 
             embedding_vals = generate_survival_embedding_df(
@@ -69,7 +75,7 @@ def main() -> None:
                 note_types=note_types, note_timing_col="NOTE_TIME_REL_PRED_START_DT",
                 max_note_window=-buffer, pool_fx=pool_fx, decay_param=0.01, continuous_window=False)
 
-            embedding_vals_pl = pl.from_pandas(embedding_vals).drop_nulls()
+            embedding_vals_pl = embedding_vals.drop_nulls()
             full_dataset = cohort_df.join(embedding_vals_pl, on='DFCI_MRN')
             full_dataset.write_csv(
                 os.path.join(buffer_path, f'ICI_prediction_df_w_{buffer}_day_buffer.csv.gz'),

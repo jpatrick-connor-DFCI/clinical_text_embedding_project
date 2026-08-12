@@ -4,7 +4,6 @@ import io
 import os
 
 import numpy as np
-import pandas as pd
 import polars as pl
 import zstandard as zstd
 from tqdm import tqdm
@@ -21,12 +20,12 @@ def main() -> None:
     os.makedirs(trajectory_path, exist_ok=True)
 
     # Load datasets
-    notes_meta = pl.read_parquet(NOTES_PATH + 'full_clinical_notes_embeddings_metadata.parquet').to_pandas()
+    notes_meta = pl.read_parquet(NOTES_PATH + 'full_clinical_notes_embeddings_metadata.parquet')
     with open(NOTES_PATH + 'full_clinical_notes_embeddings_as_array.npy.zst', 'rb') as f:
         embeddings_data = np.load(io.BytesIO(zstd.decompress(f.read())))
     embeddings_data = embeddings_data.astype(np.float32)
-    events_data = pl.read_parquet(SURV_PATH + 'death_met_surv_df.parquet').to_pandas()
-    cancer_type_df = pl.read_csv(os.path.join(FEATURE_PATH, 'cancer_type_df.csv.gz')).to_pandas()
+    events_data = pl.read_parquet(SURV_PATH + 'death_met_surv_df.parquet')
+    cancer_type_df = pl.read_csv(os.path.join(FEATURE_PATH, 'cancer_type_df.csv.gz'))
 
     event = 'death'
     alphas_to_test = np.logspace(-5, 0, 25)
@@ -38,8 +37,8 @@ def main() -> None:
     full_prediction_df = (generate_survival_embedding_df(notes_meta, events_data, embeddings_data,
                                                          note_types=note_types, pool_fx={key: 'time_decay_mean' for key in note_types},
                                                          decay_param=decay_param, max_note_window=0)
-                              .merge(cancer_type_df, on='DFCI_MRN').dropna())
-    full_prediction_df = full_prediction_df.loc[full_prediction_df[f'tt_{event}'] > 0]
+                              .join(cancer_type_df, on='DFCI_MRN').drop_nulls())
+    full_prediction_df = full_prediction_df.filter(pl.col(f'tt_{event}') > 0)
 
     # Define model columns
     base_vars = ['GENDER', 'AGE_AT_TREATMENTSTART']
@@ -57,49 +56,55 @@ def main() -> None:
         l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}',
         max_iter=3000, verbose=5)
 
-    opt_l1_ratio, opt_alpha = embed_val_results.sort_values(by='mean_auc(t)', ascending=False).iloc[0][['l1_ratio', 'alpha']]
+    opt_row = embed_val_results.sort('mean_auc(t)', descending=True).row(0, named=True)
+    opt_l1_ratio, opt_alpha = opt_row['l1_ratio'], opt_row['alpha']
 
     ## Generate monthly data frames
     months_to_test = [i * 3 for i in range(1, 21)]
 
-    cohort_mrns = full_prediction_df['DFCI_MRN'].unique().tolist()
-    trajectory_predictions_df = pd.DataFrame({'DFCI_MRN': cohort_mrns} | {f'plus_{month_adj}_months_data': [np.nan for _ in range(len(cohort_mrns))] for month_adj in months_to_test})
+    cohort_mrns = full_prediction_df['DFCI_MRN'].unique().to_list()
+    trajectory_predictions_df = pl.DataFrame(
+        {'DFCI_MRN': cohort_mrns} |
+        {f'plus_{month_adj}_months_data': [np.nan for _ in range(len(cohort_mrns))] for month_adj in months_to_test}
+    )
 
     risk_scores = get_heldout_risk_scores_CoxPH(full_prediction_df, base_vars + type_cols, continuous_vars, embed_cols,
                                                 event_col=event, tstop_col=f'tt_{event}', id_col='DFCI_MRN', penalized=True,
                                                 l1_ratio=opt_l1_ratio, alpha=opt_alpha, max_iter=3000, verbose=5)
 
-    trajectory_predictions_df['plus_0_months_data'] = (trajectory_predictions_df['DFCI_MRN']
-                                                       .map(dict(zip(risk_scores['DFCI_MRN'], risk_scores['risk_score'])) |
-                                                                     {mrn: np.nan for mrn in cohort_mrns
-                                                                      if mrn not in risk_scores['DFCI_MRN'].unique()}))
+    risk_map = dict(zip(risk_scores['DFCI_MRN'].to_list(), risk_scores['risk_score'].to_list()))
+    trajectory_predictions_df = trajectory_predictions_df.with_columns(
+        pl.col('DFCI_MRN').replace_strict(risk_map, default=np.nan).alias('plus_0_months_data')
+    )
 
     prev_mrns = cohort_mrns
     failed_landmarks = []
     for month_adj in tqdm(months_to_test):
-        notes_meta_copy = notes_meta.loc[notes_meta['DFCI_MRN'].isin(prev_mrns)].copy()
-        events_data_copy = events_data.loc[events_data['DFCI_MRN'].isin(prev_mrns)].copy()
+        notes_meta_copy = notes_meta.filter(pl.col('DFCI_MRN').is_in(prev_mrns))
+        events_data_copy = events_data.filter(pl.col('DFCI_MRN').is_in(prev_mrns))
         monthly_data = (generate_survival_embedding_df(notes_meta_copy, events_data_copy, embeddings_data, note_types=note_types,
                                                       pool_fx={key: 'time_decay_mean' for key in note_types}, decay_param=decay_param,
-                                                      max_note_window=month_adj * 30)[['DFCI_MRN', event, f'tt_{event}'] + base_vars + embed_cols]
-                        .merge(cancer_type_df, on='DFCI_MRN').dropna())
-        monthly_data = monthly_data.loc[monthly_data[f'tt_{event}'] > 0]
+                                                      max_note_window=month_adj * 30)
+                        .select(['DFCI_MRN', event, f'tt_{event}'] + base_vars + embed_cols)
+                        .join(cancer_type_df, on='DFCI_MRN').drop_nulls())
+        monthly_data = monthly_data.filter(pl.col(f'tt_{event}') > 0)
 
         try:
             risk_scores = get_heldout_risk_scores_CoxPH(monthly_data, base_vars + type_cols, continuous_vars, embed_cols,
                                                         event_col=event, tstop_col=f'tt_{event}', id_col='DFCI_MRN', penalized=True,
                                                         l1_ratio=opt_l1_ratio, alpha=opt_alpha, max_iter=3000, verbose=0)
-            trajectory_predictions_df[f'plus_{month_adj}_months_data'] = (trajectory_predictions_df['DFCI_MRN']
-                                                                          .map(dict(zip(risk_scores['DFCI_MRN'], risk_scores['risk_score'])) |
-                                                                               {mrn: np.nan for mrn in cohort_mrns if mrn not in risk_scores['DFCI_MRN'].unique()}))
-            prev_mrns = risk_scores['DFCI_MRN'].unique()
+            risk_map = dict(zip(risk_scores['DFCI_MRN'].to_list(), risk_scores['risk_score'].to_list()))
+            trajectory_predictions_df = trajectory_predictions_df.with_columns(
+                pl.col('DFCI_MRN').replace_strict(risk_map, default=np.nan).alias(f'plus_{month_adj}_months_data')
+            )
+            prev_mrns = risk_scores['DFCI_MRN'].unique().to_list()
 
         except Exception as exc:
             print(f"Trajectory landmark {month_adj} months failed: {exc}")
             failed_landmarks.append((month_adj, str(exc)))
             continue
 
-    pl.from_pandas(trajectory_predictions_df).write_csv(
+    trajectory_predictions_df.write_csv(
         os.path.join(trajectory_path, f'survival_trajectories_w_decay_param_{decay_param}.csv'))
     if failed_landmarks:
         failed_months = ", ".join(str(month) for month, _ in failed_landmarks)
