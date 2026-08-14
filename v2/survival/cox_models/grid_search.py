@@ -8,6 +8,7 @@ one of two extracted, previously-nested execution paths — ``_run_grid_no_pca``
 original function body.
 """
 
+import json
 import os
 import shutil
 import time
@@ -258,10 +259,10 @@ def _run_grid_no_pca(
                 float(np.nanmean(fold_aucs[:, ai])),
                 np.nan,  # mean_ibs: not computed in CV, same as mean_c_index above; always NaN here
                 float(np.mean(fold_times)),
-                fold_times.tolist(),
-                fold_errors.tolist(),  # fold_error_flags: one bool per fold for this whole l1-path, identical across every alpha row -- a single alpha's failure marks the entire path, not just that row
+                json.dumps(fold_times.tolist()),
+                json.dumps(fold_errors.tolist()),  # fold_error_flags: one bool per fold for this whole l1-path, identical across every alpha row -- a single alpha's failure marks the entire path, not just that row
                 float(np.mean(fold_errors)),  # error_rate: same per-l1-path (not per-alpha) caveat as fold_error_flags above
-                [0] * len(folds),
+                json.dumps([0] * len(folds)),
                 int(np.sum(~np.isnan(fold_aucs[:, ai]))),  # n_folds_contributing: per-alpha count behind mean_auc(t); no minimum enforced, a 1-fold mean is a valid winner
             ])
         return rows
@@ -468,10 +469,10 @@ def _run_grid_with_pca(
                     float(np.nanmean(fold_aucs[:, ai])),
                     np.nan,  # mean_ibs: not computed in CV, always NaN here
                     float(np.mean(fold_times)),
-                    fold_times.tolist(),
-                    fold_errors.tolist(),  # fold_error_flags: per-l1-path, identical across every alpha row
+                    json.dumps(fold_times.tolist()),
+                    json.dumps(fold_errors.tolist()),  # fold_error_flags: per-l1-path, identical across every alpha row
                     float(np.mean(fold_errors)),  # error_rate: per-l1-path, not per-alpha
-                    [0] * len(fold_meta),
+                    json.dumps([0] * len(fold_meta)),
                     int(np.sum(~np.isnan(fold_aucs[:, ai]))),  # n_folds_contributing: see no-PCA path's comment
                 ])
             return rows
