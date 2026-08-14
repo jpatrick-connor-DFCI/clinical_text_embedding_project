@@ -18,6 +18,7 @@ from pipelines.training.slurm_array_utils import (
     _get_n_jobs,
     build_full_prediction_df,
     filter_event_rows,
+    parse_float_list,
     validate_cox_inputs,
 )
 
@@ -39,6 +40,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--anchor", default=DEFAULT_ANCHOR, choices=sorted(ANCHORS.keys()))
     parser.add_argument("--n-jobs", type=int, default=None)
     parser.add_argument("--max-iter", type=int, default=1000)
+    parser.add_argument("--n-splits", type=int, default=5)
+    parser.add_argument("--alphas", type=parse_float_list, default=DEFAULT_ALPHAS)
+    parser.add_argument("--l1-ratios", type=parse_float_list, default=DEFAULT_L1_RATIOS)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--backend", default="threading", choices=["threading", "loky"])
     return parser.parse_args()
@@ -111,11 +115,12 @@ def main() -> None:
             base_vars + type_cols,
             [anchor_age_col] + embed_cols,
             embed_cols,
-            DEFAULT_L1_RATIOS,
-            DEFAULT_ALPHAS,
+            args.l1_ratios,
+            args.alphas,
             event_col=args.event,
             tstop_col=f"tt_{args.event}",
             max_iter=args.max_iter,
+            n_splits=args.n_splits,
             n_jobs=n_jobs,
             backend=args.backend,
         )
@@ -134,6 +139,7 @@ def main() -> None:
             event_col=args.event,
             tstop_col=f"tt_{args.event}",
             max_iter=args.max_iter,
+            n_splits=args.n_splits,
         )
         base_results.filter(pl.col("eval_data") == "test_data").drop("eval_data").write_csv(base_test_fp)
         base_results.filter(pl.col("eval_data") == "cv_data").drop("eval_data").write_csv(base_val_fp)

@@ -16,6 +16,17 @@ DEFAULT_ALPHAS = np.logspace(-5, 0, 25).tolist()
 DEFAULT_L1_RATIOS = [0.5, 1.0]
 
 
+def parse_float_list(value: str) -> list[float]:
+    """Parse a comma-separated CLI list, used by lightweight smoke runs."""
+    try:
+        values = [float(item) for item in value.split(",") if item.strip()]
+    except ValueError as exc:
+        raise ValueError(f"Expected comma-separated numbers, got {value!r}") from exc
+    if not values:
+        raise ValueError("Expected at least one number")
+    return values
+
+
 @functools.cache
 def _get_common_feature_mrns() -> set:
     """Return the intersection of patient MRNs across all feature files.
