@@ -51,14 +51,16 @@ def _first_treatment_dates() -> pl.DataFrame:
 
 
 def _sequencing_dates() -> pl.DataFrame:
-    """Per-MRN earliest genomic-specimen date: min(SAMPLE_COLLECTION_DT,
-    TEST_ORDER_DT, REPORT_DT), taking the earliest specimen per MRN. This is
-    a time origin for the sequencing anchor, not the treatment-proximate
-    sample `build_somatic_data_df` selects — it must NOT inherit that
-    function's `days_from_sequencing_to_first_treatment >= 0` filter."""
+    """Per-MRN earliest genomic report date.
+
+    Somatic results are not available at specimen collection or test order.
+    Using the earliest of those timestamps made the sequencing arm start
+    before its defining features were observable.  REPORT_DT is therefore
+    the availability timestamp and the only valid sequencing anchor.
+    """
     genomic_spec = ps.load_genomic_specimen(exclude_rapidheme=True)
     genomic_spec = genomic_spec.with_columns(
-        pl.min_horizontal([ps.SAMPLE_COLLECTION_DT, ps.TEST_ORDER_DT, ps.REPORT_DT]).alias("sequencing_date")
+        pl.col(ps.REPORT_DT).alias("sequencing_date")
     ).drop_nulls(subset=["sequencing_date"])
 
     earliest_per_patient = (
@@ -118,16 +120,30 @@ def main() -> None:
 
     first_treatment_df = _first_treatment_dates()
     attrition["patients_with_first_treatment_date"] = first_treatment_df.height
+    sequencing_df = _sequencing_dates()
+    attrition["patients_with_sequencing_date"] = sequencing_df.height
 
     treatment_mrns = first_treatment_df["DFCI_MRN"]
-
     mrns_with_pre_index_note = _pre_index_note_mrns(
         treatment_mrns, first_treatment_df, "first_treatment_date"
     )
     attrition["patients_with_pre_index_note"] = len(mrns_with_pre_index_note)
 
-    cohort_df = first_treatment_df.filter(pl.col("DFCI_MRN").is_in(list(mrns_with_pre_index_note)))
-    attrition["cohort_after_treatment_and_note_filter"] = cohort_df.height
+    sequencing_mrns = sequencing_df["DFCI_MRN"]
+    mrns_with_pre_seq_note = _pre_index_note_mrns(
+        sequencing_mrns, sequencing_df, "sequencing_date"
+    )
+    attrition["patients_with_pre_sequencing_note"] = len(mrns_with_pre_seq_note)
+
+    # Build the union before applying anchor-specific eligibility.  Starting
+    # from treated patients made eventual treatment a future inclusion
+    # criterion for the sequencing arm.
+    candidate_mrns = sorted(set(treatment_mrns.to_list()) | set(sequencing_mrns.to_list()))
+    cohort_df = (
+        pl.DataFrame({"DFCI_MRN": candidate_mrns}, schema={"DFCI_MRN": pl.Int64})
+        .join(first_treatment_df, on="DFCI_MRN", how="left")
+        .join(sequencing_df, on="DFCI_MRN", how="left")
+    )
 
     status_df = _patient_status()
     cohort_df = cohort_df.join(status_df, on="DFCI_MRN", how="left")
@@ -151,17 +167,12 @@ def main() -> None:
     )
     cohort_df = cohort_df.with_columns(
         (pl.col("_follow_up_end_date") - pl.col("first_treatment_date")).dt.total_days().alias("tt_death"),
+        (pl.col("_follow_up_end_date") - pl.col("sequencing_date")).dt.total_days().alias("tt_death_sequencing"),
     )
     cohort_df = cohort_df.drop("_follow_up_end_date")
 
-    # Guard 1: drop patients whose tt_death <= 0 (nonpositive/undefined follow-up).
-    n_before_tt_guard = cohort_df.height
-    cohort_df = cohort_df.filter(pl.col("tt_death") > 0)
-    attrition["dropped_nonpositive_tt_death"] = n_before_tt_guard - cohort_df.height
-
-    # Guard 2: cross-check against MEDICATION_AFTER_DEATH_QC.parquet and drop any
-    # patient whose first_treatment_date is after their death_date.
-    n_before_death_guard = cohort_df.height
+    # Audit medication records after death; anchor-specific eligibility below
+    # excludes invalid treatment anchors without removing sequencing-only rows.
     try:
         qc_df = ps.load_medication_after_death_qc()
         qc_mrns = set(qc_df[ps.MRN].to_list())
@@ -169,15 +180,8 @@ def main() -> None:
     except FileNotFoundError:
         attrition["mrns_flagged_in_medication_after_death_qc"] = 0
 
-    cohort_df = cohort_df.filter(
-        pl.col("death_date").is_null() | (pl.col("first_treatment_date") <= pl.col("death_date"))
-    )
-    attrition["dropped_post_mortem_index_date"] = n_before_death_guard - cohort_df.height
-
-    attrition["final_cohort_size"] = cohort_df.height
-
-    # tt_death / AGE_AT_TREATMENTSTART are kept as-is (aliases of the
-    # treatment-anchor values) so nothing downstream breaks.
+    # tt_death / AGE_AT_TREATMENTSTART remain treatment-anchor aliases for
+    # backwards compatibility; they may be null on sequencing-only rows.
     cohort_df = cohort_df.with_columns(
         pl.col("tt_death").alias("tt_death_treatment"),
         (
@@ -185,31 +189,19 @@ def main() -> None:
             & pl.col("DFCI_MRN").is_in(list(mrns_with_pre_index_note))
             & (pl.col("tt_death") > 0)
             & (pl.col("death_date").is_null() | (pl.col("first_treatment_date") <= pl.col("death_date")))
-        ).alias("eligible_treatment"),
+        ).fill_null(False).alias("eligible_treatment"),
     )
 
     # === Sequencing anchor ===
-    seq_attrition: dict[str, int] = {}
-    sequencing_df = _sequencing_dates()
-    seq_attrition["patients_with_sequencing_date"] = sequencing_df.height
-
-    cohort_df = cohort_df.join(sequencing_df, on="DFCI_MRN", how="left")
-
-    mrns_with_seq_date = set(sequencing_df["DFCI_MRN"].to_list())
-    mrns_with_pre_seq_note = _pre_index_note_mrns(
-        pl.Series(sorted(mrns_with_seq_date)), sequencing_df, "sequencing_date"
-    )
-    seq_attrition["patients_with_pre_sequencing_note"] = len(mrns_with_pre_seq_note)
-
+    seq_attrition: dict[str, int] = {
+        "patients_with_sequencing_date": sequencing_df.height,
+        "patients_with_pre_sequencing_note": len(mrns_with_pre_seq_note),
+    }
     cohort_df = cohort_df.with_columns(
         (
             (pl.col("sequencing_date") - pl.col(ps.BIRTH_DT)).dt.total_days() / 365.2425
         ).alias("AGE_AT_SEQUENCING"),
-        pl.coalesce(["death_date", "last_contact_date"]).alias("_follow_up_end_date_seq"),
     )
-    cohort_df = cohort_df.with_columns(
-        (pl.col("_follow_up_end_date_seq") - pl.col("sequencing_date")).dt.total_days().alias("tt_death_sequencing"),
-    ).drop("_follow_up_end_date_seq")
 
     cohort_df = cohort_df.with_columns(
         (
@@ -217,7 +209,7 @@ def main() -> None:
             & pl.col("DFCI_MRN").is_in(list(mrns_with_pre_seq_note))
             & (pl.col("tt_death_sequencing") > 0)
             & (pl.col("death_date").is_null() | (pl.col("sequencing_date") <= pl.col("death_date")))
-        ).alias("eligible_sequencing"),
+        ).fill_null(False).alias("eligible_sequencing"),
     )
 
     seq_attrition["eligible_sequencing_count"] = int(cohort_df["eligible_sequencing"].sum())
@@ -226,6 +218,10 @@ def main() -> None:
         (cohort_df["eligible_treatment"] & cohort_df["eligible_sequencing"]).sum()
     )
     attrition["sequencing_anchor"] = seq_attrition
+
+    # Rows eligible for neither analysis are not part of the modeled cohort.
+    cohort_df = cohort_df.filter(pl.col("eligible_treatment") | pl.col("eligible_sequencing"))
+    attrition["final_union_cohort_size"] = cohort_df.height
 
     cohort_out = cohort_df.select(
         [

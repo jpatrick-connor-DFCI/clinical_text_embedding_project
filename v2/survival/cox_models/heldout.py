@@ -40,7 +40,7 @@ def fit_predict_external_CoxPH(
     tstop_col: str,
     l1_ratio: float,
     alpha: float,
-    max_iter: int = 10000,
+    max_iter: int = 2500,
     pca_config: dict[str, tuple[list[str], int]] | None = None,
     pca_iterated_power: int = 1,
 ) -> np.ndarray:
@@ -100,7 +100,7 @@ def get_heldout_risk_scores_CoxPH(
     id_col: str = "DFCI_MRN",
     n_splits: int = 5,
     n_jobs: int = -1,
-    max_iter: int = 10000,
+    max_iter: int = 2500,
     penalized: bool = False,
     l1_ratio: float = 0.5,
     alpha: float = 1.0,
@@ -158,6 +158,7 @@ def get_heldout_risk_scores_CoxPH(
         splits = list(cv.split(X, strat_labels))  # materialize once
 
     out_risk = np.full(X.shape[0], np.nan, dtype=np.float64)
+    out_fold = np.full(X.shape[0], -1, dtype=np.int32)
 
     # ---- Parallel backend ----
     parallel_ctx = (
@@ -213,10 +214,12 @@ def get_heldout_risk_scores_CoxPH(
 
         for test_idx, preds in outs:
             out_risk[test_idx] = preds
+        for fold_i, (_train_idx, test_idx) in enumerate(splits):
+            out_fold[test_idx] = fold_i
 
         if id_col in df.columns:
-            return pl.DataFrame({id_col: df[id_col].to_numpy(), "risk_score": out_risk})
-        return pl.DataFrame({"index": np.arange(df.height), "risk_score": out_risk})
+            return pl.DataFrame({id_col: df[id_col].to_numpy(), "outer_fold": out_fold, "risk_score": out_risk})
+        return pl.DataFrame({"index": np.arange(df.height), "outer_fold": out_fold, "risk_score": out_risk})
 
     # ==========================================================================================
     # Path B: PCA present => PRECOMPUTE + MEMMAP transformed X
@@ -319,13 +322,106 @@ def get_heldout_risk_scores_CoxPH(
 
         for test_idx, preds in outs:
             out_risk[test_idx] = preds
+        for fold_i, (_train_idx, test_idx) in enumerate(splits):
+            out_fold[test_idx] = fold_i
 
         if id_col in df.columns:
-            return pl.DataFrame({id_col: df[id_col].to_numpy(), "risk_score": out_risk})
-        return pl.DataFrame({"index": np.arange(df.height), "risk_score": out_risk})
+            return pl.DataFrame({id_col: df[id_col].to_numpy(), "outer_fold": out_fold, "risk_score": out_risk})
+        return pl.DataFrame({"index": np.arange(df.height), "outer_fold": out_fold, "risk_score": out_risk})
 
     finally:
         try:
             shutil.rmtree(fold_dir)
         except Exception:
             pass
+
+
+def get_nested_heldout_risk_scores_CoxPH(
+    df: pl.DataFrame,
+    base_cols: list[str],
+    continuous_vars: list[str],
+    penalized_cols: list[str],
+    l1_ratios: list[float],
+    alphas_to_test: list[float],
+    *,
+    pca_config: dict[str, tuple[list[str], int]] | None = None,
+    event_col: str = "event",
+    tstop_col: str = "tstop",
+    id_col: str = "DFCI_MRN",
+    n_splits: int = 5,
+    max_iter: int = 2500,
+    n_jobs: int = -1,
+    backend: str = "threading",
+    primary_metric: str = "mean_auc(t)",
+) -> pl.DataFrame:
+    """Nested-CV risk scores with tuning isolated inside each outer fold.
+
+    The previous workflow selected one hyperparameter pair on the full cohort
+    and then called the OOF scorer, allowing every patient's outcome to affect
+    the pair used for that patient's prediction.  Here each outer-test patient
+    is completely absent from both tuning and fitting.
+    """
+    from .grid_search import run_grid_CoxPH_parallel
+
+    if primary_metric not in {"mean_auc(t)", "mean_c_index"}:
+        raise ValueError("primary_metric must be 'mean_auc(t)' or 'mean_c_index'")
+    labels = df[event_col].cast(pl.Int64).to_numpy()
+    outer = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=1234)
+    splits = list(outer.split(np.arange(df.height), labels))
+    scores = np.full(df.height, np.nan, dtype=np.float64)
+    fold_ids = np.full(df.height, -1, dtype=np.int32)
+    chosen_l1 = np.full(df.height, np.nan, dtype=np.float64)
+    chosen_alpha = np.full(df.height, np.nan, dtype=np.float64)
+
+    for fold_i, (train_idx, test_idx) in enumerate(splits):
+        train_df = df[train_idx.tolist()]
+        test_df = df[test_idx.tolist()]
+        # The inner grid's own test partition is not used for tuning; only its
+        # CV result table determines the hyperparameters.
+        _inner_test, inner_val, _model = run_grid_CoxPH_parallel(
+            train_df,
+            base_cols,
+            continuous_vars,
+            penalized_cols,
+            l1_ratios,
+            alphas_to_test,
+            pca_config=pca_config,
+            event_col=event_col,
+            tstop_col=tstop_col,
+            max_iter=max_iter,
+            n_splits=n_splits,
+            n_jobs=n_jobs,
+            backend=backend,
+        )
+        best = (
+            inner_val.filter(pl.col(primary_metric).is_finite())
+            .sort(primary_metric, descending=True)
+            .row(0, named=True)
+        )
+        l1_ratio = float(best["l1_ratio"])
+        alpha = float(best["alpha"])
+        scores[test_idx] = fit_predict_external_CoxPH(
+            train_df,
+            test_df,
+            base_cols,
+            continuous_vars,
+            penalized_cols,
+            event_col=event_col,
+            tstop_col=tstop_col,
+            l1_ratio=l1_ratio,
+            alpha=alpha,
+            max_iter=max_iter,
+            pca_config=pca_config,
+        )
+        fold_ids[test_idx] = fold_i
+        chosen_l1[test_idx] = l1_ratio
+        chosen_alpha[test_idx] = alpha
+
+    ids = df[id_col].to_numpy() if id_col in df.columns else np.arange(df.height)
+    return pl.DataFrame({
+        id_col if id_col in df.columns else "index": ids,
+        "outer_fold": fold_ids,
+        "selected_l1_ratio": chosen_l1,
+        "selected_alpha": chosen_alpha,
+        "risk_score": scores,
+    })

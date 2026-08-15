@@ -1,14 +1,17 @@
-"""Build two ICI vs never-ICI cohorts for biomarker analysis.
+"""Build two first-line ICI initiation cohorts for biomarker analysis.
 
 Cohort 1 (first_line_unmatched):
-  - ICI patients whose first ICI was at line 1
-  - Never-ICI controls whose max line of therapy was 1
+  - All patients observed at line 1
+  - Exposure is whether line 1 contains ICI
   - No 1:1 matching — all eligible patients included
 
-Cohort 2 (line_matched_1to3):
-  - ICI patients whose first ICI was at line 1, 2, or 3
-  - Never-ICI controls whose max line was 1, 2, or 3
-  - 1:1 exact matching on (cancer_type, line_category) without replacement
+Cohort 2 (first_line_matched):
+  - The same first-line new-user population
+  - 1:1 exact matching on cancer type without replacement
+
+Neither cohort conditions control eligibility on eventual ICI receipt or on
+the maximum line a patient later reaches.  Those post-landmark definitions
+were a source of immortal-time/selection leakage in the former design.
 
 Usage:
   python -m pipelines.biomarkers.build_line_matched_cohort
@@ -107,6 +110,35 @@ def build_line_start_dates(med_lines_df: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def build_first_line_new_user_df(
+    med_lines_df: pl.DataFrame,
+    cohort_mrns: set,
+    cancer_type_map: dict,
+    line_start_dates: pl.DataFrame,
+) -> pl.DataFrame:
+    """Define exposure at line 1 without consulting later treatment history."""
+    first_line = (
+        med_lines_df.filter(
+            pl.col('DFCI_MRN').is_in(cohort_mrns) & (pl.col('LINE') == 1)
+        )
+        .group_by('DFCI_MRN')
+        .agg(pl.col('HAS_ICI').max().cast(pl.Int64).alias('PX_on_ICI'))
+        .with_columns(
+            pl.lit(1).cast(pl.Int64).alias('line_category'),
+            pl.col('DFCI_MRN').replace_strict(cancer_type_map, default=None).alias('cancer_type'),
+        )
+        .drop_nulls(subset=['cancer_type'])
+    )
+    _assert_one_to_one(
+        first_line, line_start_dates.rename({'LINE': 'line_category'}),
+        ['DFCI_MRN', 'line_category'],
+    )
+    return first_line.join(
+        line_start_dates.rename({'LINE': 'line_category'}),
+        on=['DFCI_MRN', 'line_category'], how='inner',
+    )
+
+
 def main() -> None:
     random.seed(42)
     np.random.seed(42)
@@ -122,12 +154,8 @@ def main() -> None:
     )
     cohort_mrns = set(surv_df['DFCI_MRN'].unique().to_list())
 
-    io_start_df = pl.read_csv(IO_START_FILE).rename({'MRN': 'DFCI_MRN'})
-    ici_mrns = set(io_start_df['DFCI_MRN'].unique().to_list())
-
     med_lines_df = pl.read_csv(MED_LINES_FILE).rename({'MRN': 'DFCI_MRN'})
     line_start_dates = build_line_start_dates(med_lines_df)
-    treated_mrns = set(line_start_dates['DFCI_MRN'].unique().to_list())
 
     cancer_type_df = pl.read_csv(os.path.join(FEATURE_PATH, 'cancer_type_df.csv.gz'))
     if 'CANCER_TYPE' not in cancer_type_df.columns:
@@ -138,65 +166,11 @@ def main() -> None:
     cancer_type_df = cancer_type_df.with_columns(pl.col('CANCER_TYPE').alias('cancer_type'))
     cancer_type_map = dict(zip(cancer_type_df['DFCI_MRN'].to_list(), cancer_type_df['cancer_type'].to_list()))
 
-    # === Determine ICI line for ICI patients ===
-    # ICI line = the earliest LINE where HAS_ICI == 1 for patients in IO_START
-    ici_lines = (
-        med_lines_df.filter(
-            (pl.col('DFCI_MRN').is_in(ici_mrns & cohort_mrns)) &
-            (pl.col('HAS_ICI') == 1)
-        )
-        .group_by('DFCI_MRN')
-        .agg(pl.col('LINE').min().alias('ici_line'))
+    # First-line new-user design.  Exposure is defined using only the regimen
+    # at the landmark itself; later treatment choices never affect membership.
+    first_line = build_first_line_new_user_df(
+        med_lines_df, cohort_mrns, cancer_type_map, line_start_dates,
     )
-    ici_lines = ici_lines.with_columns(
-        pl.col('ici_line').cast(pl.Int64),
-        pl.lit(1).alias('PX_on_ICI'),
-    ).with_columns(pl.col('ici_line').alias('line_category'))
-    _assert_one_to_one(ici_lines, line_start_dates.rename({'LINE': 'ici_line'}), ['DFCI_MRN', 'ici_line'])
-    ici_lines = ici_lines.join(
-        line_start_dates.rename({'LINE': 'ici_line'}),
-        on=['DFCI_MRN', 'ici_line'], how='inner',
-    )
-
-    # === Determine lines of therapy for never-ICI patients ===
-    never_ici_mrns = (cohort_mrns & treated_mrns) - ici_mrns
-
-    # Max line per control (used for cohort 1 as a covariate, and to determine
-    # which lines a control is eligible for in cohort 2 matching)
-    control_max_lines = (
-        med_lines_df.filter(pl.col('DFCI_MRN').is_in(never_ici_mrns))
-        .group_by('DFCI_MRN')
-        .agg(pl.col('LINE').max().alias('max_line'))
-    )
-    # For cohort 1, only controls whose observed maximum line is one are eligible.
-    control_lines = control_max_lines.with_columns(
-        pl.col('max_line').cast(pl.Int64),
-        pl.lit(0).alias('PX_on_ICI'),
-    ).with_columns(pl.col('max_line').alias('line_category'))
-    _assert_one_to_one(control_lines, line_start_dates.rename({'LINE': 'line_category'}), ['DFCI_MRN', 'line_category'])
-    control_lines = control_lines.join(
-        line_start_dates.rename({'LINE': 'line_category'}),
-        on=['DFCI_MRN', 'line_category'], how='inner',
-    )
-
-    # === Add cancer type ===
-    ici_lines = ici_lines.with_columns(
-        pl.col('DFCI_MRN').replace_strict(cancer_type_map, default=None).alias('cancer_type')
-    )
-    control_lines = control_lines.with_columns(
-        pl.col('DFCI_MRN').replace_strict(cancer_type_map, default=None).alias('cancer_type')
-    )
-
-    # Drop patients without cancer type mapping
-    ici_lines = ici_lines.drop_nulls(subset=['cancer_type'])
-    control_lines = control_lines.drop_nulls(subset=['cancer_type'])
-
-    print(f"ICI patients with line + cancer type: {len(ici_lines)}")
-    print(f"Never-ICI controls with line + cancer type: {len(control_lines)}")
-    print(f"\nICI line_category distribution:")
-    print(ici_lines['line_category'].value_counts().sort('line_category'))
-    print(f"\nControl line_category distribution:")
-    print(control_lines['line_category'].value_counts().sort('line_category'))
 
     # === Add first_treatment_date for downstream use ===
     surv_dates = (surv_df.select(['DFCI_MRN', 'first_treatment_date'])
@@ -208,18 +182,13 @@ def main() -> None:
     ]
 
     # ================================================================
-    # Cohort 1: First-line ICI vs never-ICI patients who only reached line 1.
+    # Cohort 1: all first-line initiators, without future-history restrictions.
     # ================================================================
     print("\n" + "=" * 60)
-    print("Cohort 1: First-line ICI vs line-1-only never-ICI, unmatched")
+    print("Cohort 1: First-line ICI vs non-ICI initiators, unmatched")
     print("=" * 60)
 
-    ici_line1 = ici_lines.filter(pl.col('line_category') == 1)
-    control_line1_only = control_lines.filter(pl.col('max_line') == 1)
-
-    cohort1 = pl.concat(
-        [ici_line1.select(output_cols), control_line1_only.select(output_cols)]
-    )
+    cohort1 = first_line.select(output_cols)
     _assert_one_to_one(cohort1, surv_dates, ['DFCI_MRN'])
     cohort1 = cohort1.join(surv_dates, on='DFCI_MRN', how='inner')
 
@@ -235,41 +204,16 @@ def main() -> None:
     print(f"  Saved to {os.path.join(MATCHED_COHORT_PATH, 'matched_cohort_cohort1.csv.gz')}")
 
     # ================================================================
-    # Cohort 2: Lines 1-3, 1:1 matched on (cancer_type, line_category)
-    # A control with max_line=3 is eligible at lines 1, 2, and 3.
-    # Each control patient can only be used once across all strata.
+    # Cohort 2: 1:1 matched first-line new users.
     # ================================================================
     print("\n" + "=" * 60)
-    print("Cohort 2: Lines 1-3, 1:1 matched")
+    print("Cohort 2: First-line ICI vs non-ICI, 1:1 matched")
     print("=" * 60)
 
-    ici_1to3 = ici_lines.filter(pl.col('line_category').is_in([1, 2, 3]))
-
-    # Expand controls: each control is eligible at every line up to their max_line (capped at 3)
-    ctrl_expanded_rows = []
-    for row in control_max_lines.iter_rows(named=True):
-        max_l = min(int(row['max_line']), 3)
-        for line in range(1, max_l + 1):
-            ctrl_expanded_rows.append({
-                'DFCI_MRN': row['DFCI_MRN'],
-                'line_category': line,
-                'PX_on_ICI': 0,
-            })
-    ctrl_expanded = pl.DataFrame(ctrl_expanded_rows)
-    ctrl_expanded = ctrl_expanded.join(
-        line_start_dates.rename({'LINE': 'line_category'}),
-        on=['DFCI_MRN', 'line_category'], how='inner',
+    cohort2 = match_cohort_1to1(
+        first_line.filter(pl.col('PX_on_ICI') == 1),
+        first_line.filter(pl.col('PX_on_ICI') == 0),
     )
-    ctrl_expanded = ctrl_expanded.with_columns(
-        pl.col('DFCI_MRN').replace_strict(cancer_type_map, default=None).alias('cancer_type')
-    )
-    ctrl_expanded = ctrl_expanded.drop_nulls(subset=['cancer_type'])
-
-    print(f"Eligible ICI (lines 1-3): {len(ici_1to3)}")
-    print(f"Eligible control-line slots: {len(ctrl_expanded)} "
-          f"({ctrl_expanded['DFCI_MRN'].n_unique()} unique controls)")
-
-    cohort2 = match_cohort_1to1(ici_1to3, ctrl_expanded)
 
     if cohort2.is_empty():
         print("\nCohort 2: No matched patients.")
@@ -279,13 +223,7 @@ def main() -> None:
         cohort2 = cohort2.join(surv_dates, on='DFCI_MRN', how='inner')
         shift = (cohort2['treatment_start_date'] - cohort2['first_treatment_date']).dt.total_days()
         if (shift < 0).any():
-            raise ValueError("Found a line-specific treatment date before first treatment.")
-        later_line = cohort2['line_category'] > 1
-        if later_line.any() and not (shift.filter(later_line) > 0).any():
-            raise ValueError(
-                "All line-2/3 landmarks equal first treatment; MED_START_DT does not "
-                "provide valid line-specific timing."
-            )
+            raise ValueError("Found a first-line treatment date before the cohort anchor.")
 
         n_ici = int(cohort2['PX_on_ICI'].sum())
         n_ctrl = len(cohort2) - n_ici

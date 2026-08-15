@@ -1,9 +1,8 @@
 """Generate 5-fold held-out risk scores for the full-cohort text and base models.
 
-Consumes the CV grid (`text_val.csv`) produced by `run_full_cohort_event.py`
-to pick best hyperparameters for the text model. The base model is unpenalized
-(no hyperparameters needed). Outputs per-patient risk scores so the two models
-can be compared on the same cohort (e.g. stratified KM curves).
+Uses nested CV for the penalized text model so each patient's outer-fold score
+is produced with hyperparameters selected without that patient's outcome. The
+base model is unpenalized. Outputs per-patient risk scores and outer-fold IDs.
 """
 
 import argparse
@@ -16,13 +15,15 @@ import polars as pl
 from anchors import ANCHORS, DEFAULT_ANCHOR, age_col
 from config import SURV_PATH
 from schemes import SCHEMES, get_output_dir
-from survival import get_heldout_risk_scores_CoxPH
+from survival import get_heldout_risk_scores_CoxPH, get_nested_heldout_risk_scores_CoxPH
 
 from pipelines.training.slurm_array_utils import (
     _get_n_jobs,
+    DEFAULT_ALPHAS,
+    DEFAULT_L1_RATIOS,
     build_full_prediction_df,
     filter_event_rows,
-    get_best_hparams,
+    parse_float_list,
     validate_cox_inputs,
 )
 
@@ -45,7 +46,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--event", required=True)
     parser.add_argument("--anchor", default=DEFAULT_ANCHOR, choices=sorted(ANCHORS.keys()))
     parser.add_argument("--n-jobs", type=int, default=None)
-    parser.add_argument("--max-iter", type=int, default=1000)
+    parser.add_argument("--max-iter", type=int, default=2500)
+    parser.add_argument("--n-splits", type=int, default=5)
+    parser.add_argument("--alphas", type=parse_float_list, default=DEFAULT_ALPHAS)
+    parser.add_argument("--l1-ratios", type=parse_float_list, default=DEFAULT_L1_RATIOS)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--backend", default="threading", choices=["threading", "loky"])
     return parser.parse_args()
@@ -67,15 +71,6 @@ def main() -> None:
     if not run_text and not run_base:
         print(f"[skip] Existing risk scores found for {args.scheme}:{args.event}")
         return
-
-    # Training outputs we depend on
-    train_dir = os.path.join(get_output_dir(args.scheme, "full_cohort", args.anchor), args.event)
-    text_val_fp = os.path.join(train_dir, "text_val.csv")
-    if run_text and not os.path.exists(text_val_fp):
-        reason = f"Missing training CV output {text_val_fp}; run run_full_cohort_event.py first"
-        print(f"[skip-data] {args.scheme}:{args.event} — {reason}")
-        _write_skip_report(args.scheme, args.event, run_type, reason)
-        raise RuntimeError(reason)
 
     # Build cohort identically to training
     full_prediction_df, type_cols, embed_cols, events = build_full_prediction_df(args.scheme, args.anchor)
@@ -122,19 +117,18 @@ def main() -> None:
     n_jobs = _get_n_jobs(args.n_jobs)
 
     if run_text:
-        text_l1, text_alpha = get_best_hparams(text_val_fp)
         t0 = time.time()
-        text_scores = get_heldout_risk_scores_CoxPH(
+        text_scores = get_nested_heldout_risk_scores_CoxPH(
             event_pred_df,
             base_vars + type_cols,
             [anchor_age_col] + embed_cols,
             embed_cols,
+            args.l1_ratios,
+            args.alphas,
             event_col=args.event,
             tstop_col=f"tt_{args.event}",
             max_iter=args.max_iter,
-            penalized=True,
-            l1_ratio=text_l1,
-            alpha=text_alpha,
+            n_splits=args.n_splits,
             n_jobs=n_jobs,
             backend=args.backend,
         ).rename({"risk_score": "text_risk_score"})
@@ -154,6 +148,7 @@ def main() -> None:
             tstop_col=f"tt_{args.event}",
             max_iter=args.max_iter,
             penalized=False,
+            n_splits=args.n_splits,
             n_jobs=n_jobs,
             backend=args.backend,
         ).rename({"risk_score": "base_risk_score"})

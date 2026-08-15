@@ -1,13 +1,15 @@
 """Slurm Array Utils script for model training workflows."""
 
 import functools
+import gzip
+import io
 import os
 from typing import Any
 
 import numpy as np
 import polars as pl
 
-from anchors import DEFAULT_ANCHOR, age_col
+from anchors import DEFAULT_ANCHOR, age_col, anchor_suffix
 from config import FEATURE_PATH
 from schemes import load_embedding_prediction_df
 from shared.polars_utils import finite_or_zero
@@ -27,8 +29,22 @@ def parse_float_list(value: str) -> list[float]:
     return values
 
 
+def write_ipcw_reference_csv(df: pl.DataFrame, path: str) -> None:
+    """Write compact IPCW audit rows as a gzip-compressed CSV."""
+    buffer = io.StringIO()
+    df.write_csv(buffer)
+    with gzip.open(path, "wt", encoding="utf-8", newline="") as handle:
+        handle.write(buffer.getvalue())
+
+
+def _feature_file(filename: str, anchor: str) -> str:
+    """Return an anchor-routed feature path; treatment keeps legacy names."""
+    stem, ext = filename.split(".csv", 1)
+    return os.path.join(FEATURE_PATH, f"{stem}{anchor_suffix(anchor)}.csv{ext}")
+
+
 @functools.cache
-def _get_common_feature_mrns() -> set:
+def _get_common_feature_mrns(anchor: str = DEFAULT_ANCHOR) -> set:
     """Return the intersection of patient MRNs across all feature files.
 
     Used by load_feature_modalities_df to enforce a cohort-agnostic comparison:
@@ -52,12 +68,11 @@ def _get_common_feature_mrns() -> set:
     reuse the same computed set instead of re-reading from disk. Callers must not mutate the
     returned set in place — it is the cached object itself, not a copy.
     """
-    somatic_mrns = set(pl.read_csv(os.path.join(FEATURE_PATH, "complete_somatic_data_df.csv.gz"), columns=["DFCI_MRN"])["DFCI_MRN"])
+    somatic_mrns = set(pl.read_csv(_feature_file("complete_somatic_data_df.csv.gz", anchor), columns=["DFCI_MRN"])["DFCI_MRN"])
     prs_mrns = set(pl.read_csv(os.path.join(FEATURE_PATH, "complete_germline_data_df.csv.gz"), columns=["DFCI_MRN"])["DFCI_MRN"])
-    stage_mrns = set(pl.read_csv(os.path.join(FEATURE_PATH, "cancer_stage_df.csv.gz"), columns=["DFCI_MRN"])["DFCI_MRN"])
+    stage_mrns = set(pl.read_csv(_feature_file("cancer_stage_df.csv.gz", anchor), columns=["DFCI_MRN"])["DFCI_MRN"])
     treatment_mrns = set(
-        pl.read_csv(os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv.gz"), columns=["DFCI_MRN", "treatment_line"])
-        .filter(pl.col("treatment_line") == 1)["DFCI_MRN"]
+        pl.read_csv(_feature_file("categorical_treatment_data_by_line.csv.gz", anchor), columns=["DFCI_MRN"])["DFCI_MRN"]
     )
     common = somatic_mrns & prs_mrns & stage_mrns & treatment_mrns
     print(f"  Common feature cohort: {len(common)} patients (intersection of all modality files)")
@@ -70,8 +85,8 @@ def _get_n_jobs(default: int | None = None) -> int:
     return int(os.getenv("SLURM_CPUS_PER_TASK", "1"))
 
 
-def load_cancer_type_df() -> tuple[pl.DataFrame, list[str]]:
-    cancer_type_df = pl.read_csv(os.path.join(FEATURE_PATH, "cancer_type_df.csv.gz"))
+def load_cancer_type_df(anchor: str = DEFAULT_ANCHOR) -> tuple[pl.DataFrame, list[str]]:
+    cancer_type_df = pl.read_csv(_feature_file("cancer_type_df.csv.gz", anchor))
     type_cols = [col for col in cancer_type_df.columns if col.startswith("CANCER_TYPE_")]
     return cancer_type_df, type_cols
 
@@ -84,7 +99,7 @@ def build_full_prediction_df(
     scheme: str, anchor: str = DEFAULT_ANCHOR
 ) -> tuple[pl.DataFrame, list[str], list[str], list[str]]:
     emb_df = load_embedding_prediction_df(scheme, anchor)
-    cancer_type_df, type_cols = load_cancer_type_df()
+    cancer_type_df, type_cols = load_cancer_type_df(anchor)
     full_prediction_df = emb_df.join(cancer_type_df.select(["DFCI_MRN"] + type_cols), on="DFCI_MRN")
     embed_cols = [col for col in full_prediction_df.columns if ("EMBEDDING" in col or "2015" in col)]
     events = get_events_from_df(full_prediction_df)
@@ -125,19 +140,11 @@ def load_feature_modalities_df(
     modality separately (same rows, same per-modality column values) and can be looped
     in-process over all seven `modality_cfg` entries.
 
-    `metburden` only supports the treatment anchor today — see the ANCHOR
-    LIMITATION note on build_met_burden_df in generate_all_non_text_covariates.py.
+    Every temporal feature file is anchor-routed; treatment keeps the legacy
+    filename while sequencing uses the anchors.anchor_suffix convention.
     """
-    if anchor != "treatment" and modality in ("metburden", "all"):
-        raise ValueError(
-            f"modality '{modality}' includes metburden, which is only valid under the "
-            f"treatment anchor (got anchor='{anchor}'). met_burden_df.csv.gz is not "
-            "anchor-suffixed and would silently leak sequencing-to-treatment-interval "
-            "information under a non-treatment anchor."
-        )
-
     emb_df = load_embedding_prediction_df(scheme, anchor)
-    cancer_type_df = pl.read_csv(os.path.join(FEATURE_PATH, "cancer_type_df.csv.gz"))
+    cancer_type_df = pl.read_csv(_feature_file("cancer_type_df.csv.gz", anchor))
     type_cols = [col for col in cancer_type_df.columns if col.startswith("CANCER_TYPE_")]
     embed_cols = [col for col in emb_df.columns if ("EMBEDDING" in col or "2015" in col)]
 
@@ -148,11 +155,11 @@ def load_feature_modalities_df(
     )
 
     # Load only what is needed
-    mrn_stage_df = pl.read_csv(os.path.join(FEATURE_PATH, "cancer_stage_df.csv.gz")) if "stage" in _to_load else None
-    somatic_df = pl.read_csv(os.path.join(FEATURE_PATH, "complete_somatic_data_df.csv.gz")) if "somatic" in _to_load else None
+    mrn_stage_df = pl.read_csv(_feature_file("cancer_stage_df.csv.gz", anchor)) if "stage" in _to_load else None
+    somatic_df = pl.read_csv(_feature_file("complete_somatic_data_df.csv.gz", anchor)) if "somatic" in _to_load else None
     prs_df = pl.read_csv(os.path.join(FEATURE_PATH, "complete_germline_data_df.csv.gz")) if "prs" in _to_load else None
-    treatment_df = pl.read_csv(os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv.gz")) if "treatment" in _to_load else None
-    met_burden_df = pl.read_csv(os.path.join(FEATURE_PATH, "met_burden_df.csv.gz")) if "metburden" in _to_load else None
+    treatment_df = pl.read_csv(_feature_file("categorical_treatment_data_by_line.csv.gz", anchor)) if "treatment" in _to_load else None
+    met_burden_df = pl.read_csv(_feature_file("met_burden_df.csv.gz", anchor)) if "metburden" in _to_load else None
 
     stage_cols = [col for col in mrn_stage_df.columns if col.startswith("CANCER_STAGE_")] if mrn_stage_df is not None else []
     somatic_cols = [col for col in somatic_df.columns if col.endswith(('_AMP', '_DEL', '_SNV', '_SV', '_FUSION'))] if somatic_df is not None else []
@@ -165,7 +172,7 @@ def load_feature_modalities_df(
     # (cohort-agnostic comparison). Only bare modality=None (used elsewhere for the original,
     # cohort-unrestricted behaviour) skips this.
     if modality is not None:
-        common_mrns = _get_common_feature_mrns()
+        common_mrns = _get_common_feature_mrns(anchor)
         emb_df = emb_df.filter(pl.col("DFCI_MRN").is_in(common_mrns))
 
     # Base merge: embedding + cancer type (always needed)
@@ -177,7 +184,7 @@ def load_feature_modalities_df(
         full_prediction_df = full_prediction_df.join(prs_df.select(["DFCI_MRN"] + prs_cols), on="DFCI_MRN")
     if treatment_df is not None:
         full_prediction_df = full_prediction_df.join(
-            treatment_df.filter(pl.col("treatment_line") == 1).select(["DFCI_MRN"] + treatment_cols),
+            treatment_df.select(["DFCI_MRN"] + treatment_cols),
             on="DFCI_MRN",
         )
     if mrn_stage_df is not None:
@@ -232,7 +239,7 @@ def load_feature_modalities_df(
             # coefficients read as "deviation from the additive-count effect",
             # not standalone site effects. See build_met_burden_df's docstring
             # for the LEAKAGE WARNING re: the *M outcome events — the
-            # concordant site indicator is dropped per-event in
+            # concordant indicator and its count contribution are removed per-event in
             # run_feature_comp_task.py, not here (this cfg is shared across events).
             "continuous_vars": [anchor_age_col, "N_MET_SITES"],
             "penalized_cols": met_site_cols,
@@ -362,5 +369,6 @@ __all__ = [
     "get_events_from_df",
     "load_feature_modalities_df",
     "parse_manifest_line",
+    "write_ipcw_reference_csv",
     "validate_cox_inputs",
 ]

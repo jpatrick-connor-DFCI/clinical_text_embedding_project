@@ -30,9 +30,10 @@ Writes to FIGURE_DATA_DIR:
                                     risk score for OS, including pooled I-II; FigS2 annotation)
 - fig2_stage_vs_risk_auc.csv        stage_group, mean_auc, n   (within-stratum AUC(t) of text
                                     risk score for OS, including pooled I-II; FigS2 annotation)
-- fig2_scheme_delta_topk.csv        category, rank, scheme, event, event_lbl, text_cindex,
-                                    base_cindex, delta   (top-3 events per category by largest
-                                    positive delta C-index (text - base); category in
+- fig2_scheme_delta_topk_{cindex,auc}.csv
+                                    category, rank, scheme, event, event_lbl, metric,
+                                    text_value, base_value, delta (top-3 events per category by
+                                    the selected positive metric delta; category in
                                     {mets, ICD10, phecodes} — mets = death_met minus the literal
                                     "death" event, ICD10 = icd3_post + icd4_post pooled,
                                     phecodes = phecode_post. Categories with fewer than 3
@@ -42,10 +43,11 @@ Writes to FIGURE_DATA_DIR:
                                     selection. Cross-scheme dedup: an ICD10 event and a phecode event
                                     with any shared mapping never both appear — ICD10 is ranked first,
                                     so the phecode is skipped for its next-best-delta event.)
-- fig2_scheme_event_km.csv          category, scheme, event, event_lbl, DFCI_MRN, text_risk_score,
+- fig2_scheme_event_km_{cindex,auc}.csv
+                                    category, scheme, event, event_lbl, DFCI_MRN, text_risk_score,
                                     base_risk_score, event_flag, tt, text_tertile, base_tertile
                                     (held-out risk scores + survival for the events selected in
-                                    fig2_scheme_delta_topk.csv, merged from each scheme's
+                                    matching metric-specific top-k CSV, merged from each scheme's
                                     full_cohort_risk_scores/<event>/ output; events missing
                                     risk-score files are skipped)
 """
@@ -335,7 +337,8 @@ def _report_lookup_misses() -> None:
 CATEGORY_ORDER = ["mets", "ICD10", "phecodes"]
 TOPK_PER_CATEGORY = 3
 SCHEME_DELTA_TOPK_COLUMNS = [
-    "category", "rank", "scheme", "event", "event_lbl", "text_cindex", "base_cindex", "delta",
+    "category", "rank", "scheme", "event", "event_lbl", "metric",
+    "text_value", "base_value", "delta",
 ]
 SCHEME_EVENT_KM_COLUMNS = [
     "category", "scheme", "event", "event_lbl", "DFCI_MRN",
@@ -434,7 +437,7 @@ KM_TERTILE_COLUMNS = [
 ]
 STAGE_VS_RISK_COLUMNS = [
     "DFCI_MRN", "tt_death", "death", "text_risk_score",
-    "stage_group", "stage_ordinal", "risk_quartile",
+    "outer_fold", "stage_group", "stage_ordinal", "risk_quartile",
 ]
 STAGE_VS_RISK_CINDEX_COLUMNS = ["predictor", "cindex", "n"]
 STAGE_VS_RISK_AUC_COLUMNS = ["stage_group", "mean_auc", "n"]
@@ -469,6 +472,41 @@ def _full_cohort_metrics() -> pl.DataFrame:
     if not rows:
         return pl.DataFrame(schema={c: pl.Float64 for c in FULL_COHORT_METRIC_COLUMNS})
     return pl.DataFrame(rows).select(FULL_COHORT_METRIC_COLUMNS)
+
+
+def _full_cohort_validation_metrics() -> pl.DataFrame:
+    """Training/CV-only metrics used for endpoint selection.
+
+    Test metrics remain the reported performance estimates, but must never
+    choose which endpoints receive top-hit follow-up.  The text row is the
+    AUC-selected hyperparameter row; base_val contains the aggregate CV row.
+    """
+    rows = []
+    for scheme in SCHEMES:
+        for ev in list_trained_events(scheme):
+            d = full_cohort_event_dir(scheme, ev)
+            try:
+                text_val = pl.read_csv(os.path.join(d, "text_val.csv"))
+                text = (
+                    text_val.filter(pl.col("mean_auc(t)").is_finite())
+                    .sort("mean_auc(t)", descending=True)
+                    .row(0, named=True)
+                )
+                base = pl.read_csv(os.path.join(d, "base_val.csv")).row(0, named=True)
+            except (FileNotFoundError, KeyError, IndexError, pl.exceptions.OutOfBoundsError):
+                continue
+            rows.append({
+                "scheme": scheme, "event": ev, "event_lbl": _event_label(scheme, ev),
+                "phecode_id": _event_phecode(scheme, ev),
+                "phecode_ids": ";".join(sorted(_event_phecodes(scheme, ev))),
+                "top_hit_eligible": _top_hit_eligible(scheme, ev),
+                "text_cindex": text["mean_c_index"], "base_cindex": base["mean_c_index"],
+                "text_auc": text["mean_auc(t)"], "base_auc": base["mean_auc(t)"],
+            })
+    return (
+        pl.DataFrame(rows).select(FULL_COHORT_METRIC_COLUMNS)
+        if rows else pl.DataFrame(schema={c: pl.Float64 for c in FULL_COHORT_METRIC_COLUMNS})
+    )
 
 
 def _merge_risk_with_surv(
@@ -526,9 +564,14 @@ def _km_tertiles(surv_df: pl.DataFrame) -> pl.DataFrame:
     return m.select(KM_TERTILE_COLUMNS)
 
 
-def _scheme_delta_topk(metrics: pl.DataFrame, k: int = TOPK_PER_CATEGORY) -> pl.DataFrame:
-    """Top-k events per category (mets/ICD10/phecodes) by largest *positive* delta C-index
-    (text - base). Events with delta <= 0 are excluded — a "top" event is never a
+def _scheme_delta_topk(
+    metrics: pl.DataFrame, metric: str = "cindex", k: int = TOPK_PER_CATEGORY
+) -> pl.DataFrame:
+    """Top-k events per category by largest positive text-minus-base metric delta.
+
+    ``metric`` is ``cindex`` or ``auc``; both use the same eligibility and
+    cross-scheme deduplication rules. Events with text-minus-base delta <= 0 are
+    excluded — a "top" event is never a
     net-negative one. Social-determinant outcomes are not eligible for highlighting.
     Categories with fewer than k eligible positive-delta events yield fewer rows.
 
@@ -539,6 +582,9 @@ def _scheme_delta_topk(metrics: pl.DataFrame, k: int = TOPK_PER_CATEGORY) -> pl.
     of the next-best-delta phecode event."""
     if metrics.is_empty():
         return pl.DataFrame(schema={c: pl.Float64 for c in SCHEME_DELTA_TOPK_COLUMNS})
+    if metric not in {"cindex", "auc"}:
+        raise ValueError("metric must be 'cindex' or 'auc'")
+    text_col, base_col = f"text_{metric}", f"base_{metric}"
     d = metrics
     d = d.with_columns(
         pl.Series("category",
@@ -549,7 +595,7 @@ def _scheme_delta_topk(metrics: pl.DataFrame, k: int = TOPK_PER_CATEGORY) -> pl.
             pl.Series("phecode_id",
                        [_event_phecode(s, e) for s, e in zip(d["scheme"].to_list(), d["event"].to_list())])
         )
-    d = d.with_columns((pl.col("text_cindex") - pl.col("base_cindex")).alias("delta"))
+    d = d.with_columns((pl.col(text_col) - pl.col(base_col)).alias("delta"))
     d = filter_finite_rows(d.drop_nulls(subset=["category"]), ["delta"])
     eligible = [_top_hit_eligible(scheme, event)
                 for scheme, event in zip(d["scheme"].to_list(), d["event"].to_list())]
@@ -571,8 +617,8 @@ def _scheme_delta_topk(metrics: pl.DataFrame, k: int = TOPK_PER_CATEGORY) -> pl.
         for rank, r in enumerate(selected, start=1):
             rows.append({
                 "category": category, "rank": rank, "scheme": r["scheme"], "event": r["event"],
-                "event_lbl": r["event_lbl"], "text_cindex": r["text_cindex"],
-                "base_cindex": r["base_cindex"], "delta": r["delta"],
+                "event_lbl": r["event_lbl"], "metric": metric,
+                "text_value": r[text_col], "base_value": r[base_col], "delta": r["delta"],
             })
     if not rows:
         return pl.DataFrame(schema={c: pl.Float64 for c in SCHEME_DELTA_TOPK_COLUMNS})
@@ -581,7 +627,7 @@ def _scheme_delta_topk(metrics: pl.DataFrame, k: int = TOPK_PER_CATEGORY) -> pl.
 
 def _scheme_event_km(topk: pl.DataFrame) -> pl.DataFrame:
     """Patient-level held-out text/base risk scores + survival for the events selected in
-    fig2_scheme_delta_topk.csv, one row per (event, patient). Events whose held-out
+    the metric-specific top-k CSV, one row per (event, patient). Events whose held-out
     risk-score files don't yet exist on disk (run_full_cohort_risk_scores.py not yet run
     for that scheme/event) are skipped with a printed note rather than raising."""
     if topk.is_empty():
@@ -717,11 +763,8 @@ def _stage_vs_risk_auc(df: pl.DataFrame) -> pl.DataFrame:
     """
     if df.is_empty():
         return pl.DataFrame(schema={c: pl.Float64 for c in STAGE_VS_RISK_AUC_COLUMNS})
-    death_arr = df["death"].cast(pl.Boolean, strict=False).to_numpy()
-    tt_death_arr = df["tt_death"].cast(pl.Float64, strict=False).to_numpy()
-    y_ref = Surv.from_arrays(death_arr, tt_death_arr)
-    lo, hi = np.percentile(tt_death_arr, [5, 95])
-    base_eval_times = np.linspace(lo, hi, AUC_TIME_GRID_POINTS)
+    if "outer_fold" not in df.columns:
+        raise ValueError("Risk scores predate nested CV; regenerate files with outer_fold metadata")
 
     rows = []
     groups = [(k, g) for (k,), g in df.group_by(["stage_group"], maintain_order=True)]
@@ -729,19 +772,30 @@ def _stage_vs_risk_auc(df: pl.DataFrame) -> pl.DataFrame:
     if not early_stage.is_empty():
         groups.append(("I-II", early_stage))
     for stage_lbl, sub in groups:
-        sub_tt = sub["tt_death"].cast(pl.Float64, strict=False).to_numpy()
-        et = base_eval_times[(base_eval_times > sub_tt.min())
-                             & (base_eval_times < sub_tt.max())]
-        mean_auc = float("nan")
-        if len(et) > 0:
+        fold_aucs, fold_weights = [], []
+        for fold in sub["outer_fold"].unique().sort().to_list():
+            fold_eval = sub.filter(pl.col("outer_fold") == fold)
+            fold_ref = df.filter(pl.col("outer_fold") != fold)
+            sub_tt = fold_eval["tt_death"].cast(pl.Float64, strict=False).to_numpy()
+            ref_tt = fold_ref["tt_death"].cast(pl.Float64, strict=False).to_numpy()
+            lo, hi = np.percentile(ref_tt, [5, 95])
+            et = np.linspace(lo, hi, AUC_TIME_GRID_POINTS)
+            et = et[(et > sub_tt.min()) & (et < sub_tt.max())]
+            if len(et) == 0:
+                continue
             try:
-                sub_death = sub["death"].cast(pl.Boolean, strict=False).to_numpy()
+                sub_death = fold_eval["death"].cast(pl.Boolean, strict=False).to_numpy()
                 y_test = Surv.from_arrays(sub_death, sub_tt)
-                mean_auc = cumulative_dynamic_auc(
-                    y_ref, y_test, sub["text_risk_score"].cast(pl.Float64, strict=False).to_numpy(), et,
-                )[1]
+                y_ref = Surv.from_arrays(
+                    fold_ref["death"].cast(pl.Boolean, strict=False).to_numpy(), ref_tt
+                )
+                fold_aucs.append(float(cumulative_dynamic_auc(
+                    y_ref, y_test, fold_eval["text_risk_score"].cast(pl.Float64, strict=False).to_numpy(), et,
+                )[1]))
+                fold_weights.append(fold_eval.height)
             except (ValueError, ZeroDivisionError) as e:
                 print(f"  AUC(t) failed for stage {stage_lbl}: {e}")
+        mean_auc = float(np.average(fold_aucs, weights=fold_weights)) if fold_aucs else float("nan")
         rows.append({"stage_group": stage_lbl, "mean_auc": mean_auc, "n": sub.height})
     return pl.DataFrame(rows).select(STAGE_VS_RISK_AUC_COLUMNS)
 
@@ -793,6 +847,7 @@ def main() -> None:
     surv_df = pl.read_parquet(os.path.join(SURV_PATH, "death_met_surv_df.parquet"))
 
     full_cohort_metrics = _full_cohort_metrics()
+    validation_metrics = _full_cohort_validation_metrics()
     _report_lookup_misses()
     save_figure_data(full_cohort_metrics, "fig2_full_cohort_metrics.csv")
     save_figure_data(_within_vs_pan("cancer"), "fig2_within_vs_pan_cancer.csv")
@@ -806,9 +861,13 @@ def main() -> None:
                       "fig2_stage_vs_risk_cindex_by_stage.csv")
     save_figure_data(_stage_vs_risk_auc(stage_vs_risk_df), "fig2_stage_vs_risk_auc.csv")
 
-    scheme_delta_topk = _scheme_delta_topk(full_cohort_metrics)
-    save_figure_data(scheme_delta_topk, "fig2_scheme_delta_topk.csv")
-    save_figure_data(_scheme_event_km(scheme_delta_topk), "fig2_scheme_event_km.csv")
+    for metric in ("cindex", "auc"):
+        scheme_delta_topk = _scheme_delta_topk(validation_metrics, metric=metric)
+        save_figure_data(scheme_delta_topk, f"fig2_scheme_delta_topk_{metric}.csv")
+        save_figure_data(
+            _scheme_event_km(scheme_delta_topk),
+            f"fig2_scheme_event_km_{metric}.csv",
+        )
 
 
 if __name__ == "__main__":

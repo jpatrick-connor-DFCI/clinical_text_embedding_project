@@ -14,7 +14,10 @@ from pipelines.training.slurm_array_utils import (
 )
 
 MODALITIES = ["stage", "treatment", "somatic", "prs", "text", "metburden"]
-FULL_COHORT_FILES = ["text_test.csv", "text_val.csv", "base_test.csv", "base_val.csv"]
+FULL_COHORT_FILES = [
+    "text_test.csv", "text_val.csv", "text_ipcw_reference.csv.gz",
+    "base_test.csv", "base_val.csv", "base_ipcw_reference.csv.gz",
+]
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parents[2] / "slurm" / "slurm_manifests"
 
 
@@ -29,7 +32,7 @@ def _event_has_enough_cases(pred_df, event: str, min_events: int = MIN_EVENTS_FO
 
 
 def _full_cohort_complete(scheme: str, event: str, anchor: str) -> bool:
-    """Check if all 4 full-cohort result CSVs exist for a scheme/event."""
+    """Check if full-cohort metrics and AUC/IPCW audit CSVs exist."""
     out_dir = os.path.join(get_output_dir(scheme, "full_cohort", anchor), event)
     return all(os.path.exists(os.path.join(out_dir, f)) for f in FULL_COHORT_FILES)
 
@@ -44,6 +47,9 @@ def _feature_comp_complete(scheme: str, event: str, anchor: str) -> bool:
         os.path.exists(os.path.join(out_dir, f"{mod}_{split}.csv"))
         for mod in MODALITIES
         for split in ("test", "val")
+    ) and all(
+        os.path.exists(os.path.join(out_dir, f"{mod}_ipcw_reference.csv.gz"))
+        for mod in MODALITIES
     )
     risk_done = all(
         os.path.exists(os.path.join(risk_dir, f"{mod}_risk_scores.csv"))

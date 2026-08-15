@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 from config import FEATURE_PATH, NOTES_PATH, SURV_PATH
 from schemes import scheme_results_dir
-from survival import generate_survival_embedding_df, get_heldout_risk_scores_CoxPH, run_grid_CoxPH_parallel
+from survival import generate_survival_embedding_df, get_nested_heldout_risk_scores_CoxPH
 from shared.polars_utils import filter_finite_rows
 
 
@@ -52,17 +52,6 @@ def main() -> None:
     continuous_vars = ['AGE_AT_TREATMENTSTART'] + embed_cols
     type_cols = [c for c in full_prediction_df.columns if c.startswith('CANCER_TYPE_')]
 
-    ## Train the baseline cancer model
-    _, embed_val_results, pan_cancer_model = run_grid_CoxPH_parallel(
-        full_prediction_df, base_vars + type_cols, continuous_vars, embed_cols,
-        l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}',
-        max_iter=3000, verbose=5)
-
-    opt_row = filter_finite_rows(embed_val_results, ['mean_auc(t)']).sort(
-        'mean_auc(t)', descending=True
-    ).row(0, named=True)
-    opt_l1_ratio, opt_alpha = opt_row['l1_ratio'], opt_row['alpha']
-
     ## Generate monthly data frames
     months_to_test = [i * 3 for i in range(1, 21)]
 
@@ -72,37 +61,66 @@ def main() -> None:
         {f'plus_{month_adj}_months_data': [np.nan for _ in range(len(cohort_mrns))] for month_adj in months_to_test}
     )
 
-    risk_scores = get_heldout_risk_scores_CoxPH(full_prediction_df, base_vars + type_cols, continuous_vars, embed_cols,
-                                                event_col=event, tstop_col=f'tt_{event}', id_col='DFCI_MRN', penalized=True,
-                                                l1_ratio=opt_l1_ratio, alpha=opt_alpha, max_iter=3000, verbose=5)
+    risk_scores = get_nested_heldout_risk_scores_CoxPH(
+        full_prediction_df, base_vars + type_cols, continuous_vars, embed_cols,
+        l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}',
+        id_col='DFCI_MRN', max_iter=3000,
+    )
 
     risk_map = dict(zip(risk_scores['DFCI_MRN'].to_list(), risk_scores['risk_score'].to_list()))
     trajectory_predictions_df = trajectory_predictions_df.with_columns(
         pl.col('DFCI_MRN').replace_strict(risk_map, default=np.nan).alias('plus_0_months_data')
     )
 
-    prev_mrns = cohort_mrns
+    # Landmark eligibility is defined on the ORIGINAL, unshifted event times.
+    # generate_survival_embedding_df shifts every tt_* column back by the
+    # landmark, so a post-shift `tt_death > 0` filter is not a statement about
+    # who was at risk at the landmark -- and chaining the survivors of one
+    # landmark into the next (the old `prev_mrns`) compounded that into a
+    # progressively survivor-enriched cohort, making AUCs non-comparable across
+    # the x-axis of the trajectory figure.  Each landmark is now drawn
+    # independently from the full baseline cohort.
+    baseline_tt = dict(
+        zip(events_data['DFCI_MRN'].to_list(), events_data[f'tt_{event}'].to_list())
+    )
+
     failed_landmarks = []
+    landmark_sizes = []
     for month_adj in tqdm(months_to_test):
-        notes_meta_copy = notes_meta.filter(pl.col('DFCI_MRN').is_in(prev_mrns))
-        events_data_copy = events_data.filter(pl.col('DFCI_MRN').is_in(prev_mrns))
+        landmark_day = month_adj * 30
+        # At risk at the landmark: still under follow-up strictly beyond it.
+        eligible_mrns = [
+            mrn for mrn in cohort_mrns
+            if baseline_tt.get(mrn) is not None and baseline_tt[mrn] > landmark_day
+        ]
+        landmark_sizes.append((month_adj, len(eligible_mrns)))
+        if not eligible_mrns:
+            print(f"Trajectory landmark {month_adj} months: no patients at risk, skipping")
+            failed_landmarks.append((month_adj, "no patients at risk at landmark"))
+            continue
+
+        notes_meta_copy = notes_meta.filter(pl.col('DFCI_MRN').is_in(eligible_mrns))
+        events_data_copy = events_data.filter(pl.col('DFCI_MRN').is_in(eligible_mrns))
         monthly_data = (generate_survival_embedding_df(notes_meta_copy, events_data_copy, embeddings_data, note_types=note_types,
                                                       pool_fx={key: 'time_decay_mean' for key in note_types}, decay_param=decay_param,
-                                                      max_note_window=month_adj * 30)
+                                                      max_note_window=landmark_day)
                         .select(['DFCI_MRN', event, f'tt_{event}'] + base_vars + embed_cols)
                         .join(cancer_type_df, on='DFCI_MRN'))
         numeric_cols = [c for c, dtype in monthly_data.schema.items() if dtype.is_numeric()]
-        monthly_data = filter_finite_rows(monthly_data, numeric_cols).filter(pl.col(f'tt_{event}') > 0)
+        # Every row already satisfies tt > 0 post-shift by construction of
+        # `eligible_mrns`; this only drops rows with missing embeddings/covariates.
+        monthly_data = filter_finite_rows(monthly_data, numeric_cols)
 
         try:
-            risk_scores = get_heldout_risk_scores_CoxPH(monthly_data, base_vars + type_cols, continuous_vars, embed_cols,
-                                                        event_col=event, tstop_col=f'tt_{event}', id_col='DFCI_MRN', penalized=True,
-                                                        l1_ratio=opt_l1_ratio, alpha=opt_alpha, max_iter=3000, verbose=0)
+            risk_scores = get_nested_heldout_risk_scores_CoxPH(
+                monthly_data, base_vars + type_cols, continuous_vars, embed_cols,
+                l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}',
+                id_col='DFCI_MRN', max_iter=3000,
+            )
             risk_map = dict(zip(risk_scores['DFCI_MRN'].to_list(), risk_scores['risk_score'].to_list()))
             trajectory_predictions_df = trajectory_predictions_df.with_columns(
                 pl.col('DFCI_MRN').replace_strict(risk_map, default=np.nan).alias(f'plus_{month_adj}_months_data')
             )
-            prev_mrns = risk_scores['DFCI_MRN'].unique().to_list()
 
         except Exception as exc:
             print(f"Trajectory landmark {month_adj} months failed: {exc}")
@@ -111,6 +129,18 @@ def main() -> None:
 
     trajectory_predictions_df.write_csv(
         os.path.join(trajectory_path, f'survival_trajectories_w_decay_param_{decay_param}.csv'))
+
+    # The at-risk count now declines for an explicit, auditable reason, so record
+    # it next to the scores: any comparison of AUC across landmarks has to be read
+    # against the denominator each landmark was computed on.
+    pl.DataFrame(
+        {
+            'months': [m for m, _ in landmark_sizes],
+            'n_at_risk': [n for _, n in landmark_sizes],
+        }
+    ).write_csv(
+        os.path.join(trajectory_path, f'landmark_risk_sets_w_decay_param_{decay_param}.csv'))
+
     if failed_landmarks:
         failed_months = ", ".join(str(month) for month, _ in failed_landmarks)
         raise RuntimeError(f"Trajectory generation failed at month landmarks: {failed_months}")

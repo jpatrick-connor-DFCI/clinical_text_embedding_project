@@ -13,11 +13,12 @@ note-regex derived), not the GENOMIC_SPECIMEN/CAREG placeholders used
 previously.
 """
 
+import argparse
 import os
 
 import polars as pl
 
-from anchors import DEFAULT_ANCHOR, date_col
+from anchors import ANCHORS, DEFAULT_ANCHOR, anchor_suffix, date_col
 from config import FEATURE_PATH, MED_CLASSES_FILE, PRS_MATRIX_FILE, PROFILE_PATH, SURV_PATH
 try:
     from data.schema import assert_schema
@@ -32,32 +33,38 @@ def _load_cohort_df() -> pl.DataFrame:
     return pl.read_parquet(os.path.join(SURV_PATH, "cohort_df.parquet"))
 
 
-def build_cancer_type_df(cohort_df: pl.DataFrame) -> pl.DataFrame:
-    """CANCER_TYPE from the compiled CANCER_TYPE.parquet's CANCER_GROUP column
-    (genomics-first, ICD-fallback; see PROFILE_data_processing/
-    CANCER_ANNOTATIONS_PLAN.md), restricted to the cohort and renamed to the
-    existing CANCER_TYPE column contract."""
-    cohort_mrns = cohort_df.get_column("DFCI_MRN").unique().to_list()
+def _pre_anchor_registry(cohort_df: pl.DataFrame, anchor: str) -> pl.DataFrame:
+    """Registry rows whose diagnosis was observable by the active anchor."""
+    anchor_col = date_col(anchor)
+    return (
+        ps.load_careg(columns=[ps.MRN, ps.DIAGNOSIS_DT, ps.SITE_CD, ps.BEST_AJCC_STAGE_CD])
+        .join(cohort_df.select([ps.MRN, anchor_col]), on=ps.MRN, how="inner")
+        .filter(
+            pl.col(ps.DIAGNOSIS_DT).is_not_null()
+            & pl.col(anchor_col).is_not_null()
+            & (pl.col(ps.DIAGNOSIS_DT) <= pl.col(anchor_col))
+        )
+    )
 
+
+def build_cancer_type_df(cohort_df: pl.DataFrame, anchor: str = DEFAULT_ANCHOR) -> pl.DataFrame:
+    """Anchor-safe cancer site from the latest pre-anchor registry record.
+
+    The former compiled genomics-first label had no provenance timestamp and
+    could incorporate a specimen or ICD assignment recorded after time zero.
+    Registry SITE_CD plus DIAGNOSIS_DT provides an auditable baseline feature.
+    """
     cancer_type = (
-        ps.load_cancer_type()
-        .select([ps.MRN, pl.col(ps.CANCER_GROUP).alias("CANCER_TYPE")])
-        .filter(pl.col(ps.MRN).is_in(cohort_mrns))
-        .drop_nulls()
+        _pre_anchor_registry(cohort_df, anchor)
+        .drop_nulls(ps.SITE_CD)
+        .sort([ps.MRN, ps.DIAGNOSIS_DT], descending=[False, True])
+        .group_by(ps.MRN, maintain_order=True)
+        .agg(pl.col(ps.SITE_CD).first().cast(pl.String).alias("CANCER_TYPE"))
     )
 
-    frequent_types = (
-        cancer_type.group_by("CANCER_TYPE").len()
-        .filter(pl.col("len") >= 500)
-        .get_column("CANCER_TYPE")
-        .to_list()
-    )
-    cancer_type_df = cancer_type.with_columns(
-        pl.when(pl.col("CANCER_TYPE").is_in(frequent_types))
-        .then(pl.col("CANCER_TYPE"))
-        .otherwise(pl.lit("OTHER"))
-        .alias("CANCER_TYPE")
-    )
+    # SITE_CD has a bounded registry vocabulary, so no cohort-derived rarity
+    # threshold is needed.  Avoid learning a category map from future test rows.
+    cancer_type_df = cancer_type
     # Preserve the raw (collapsed) label alongside the dummies. `drop_first=True`
     # removes the reference category's column, so patients in that category are
     # all-zero across CANCER_TYPE_* and would be mislabeled by a downstream idxmax.
@@ -70,22 +77,14 @@ def build_cancer_type_df(cohort_df: pl.DataFrame) -> pl.DataFrame:
     return cancer_type_df.hstack(cancer_type_dummies)
 
 
-def build_cancer_stage_df() -> pl.DataFrame:
-    """CANCER_STAGE from the compiled CANCER_STAGE.parquet's STAGE column
-    (note-regex derived, earliest note observation per patient; see
-    PROFILE_data_processing/CANCER_ANNOTATIONS_PLAN.md), normalized via
-    shared.stages.normalize_stage() to collapse to I/II/III/IV (in-situ
-    stage 0 normalizes to None and is dropped, matching the prior sentinel
-    handling). Also emits the raw CANCER_STAGE string column so figure prep no
-    longer needs a drop_first reconstruction fallback, and load_stage_map()
-    can read this file directly. Note-regex derived rather than registry
-    derived (CANCER_STAGE_REGISTRY.parquet) to match the two independent
-    sources' intended default; registry stage remains available via
-    ps.load_cancer_stage(registry=True) if needed."""
+def build_cancer_stage_df(cohort_df: pl.DataFrame, anchor: str = DEFAULT_ANCHOR) -> pl.DataFrame:
+    """Latest normalized registry stage observed on or before the anchor."""
     note_stage = (
-        ps.load_cancer_stage(registry=False)
-        .select([ps.MRN, ps.STAGE])
-        .rename({ps.MRN: "DFCI_MRN"})
+        _pre_anchor_registry(cohort_df, anchor)
+        .drop_nulls(ps.BEST_AJCC_STAGE_CD)
+        .sort([ps.MRN, ps.DIAGNOSIS_DT], descending=[False, True])
+        .group_by(ps.MRN, maintain_order=True)
+        .agg(pl.col(ps.BEST_AJCC_STAGE_CD).first().alias(ps.STAGE))
     )
     note_stage = note_stage.with_columns(
         pl.col(ps.STAGE).map_elements(normalize_stage, return_dtype=pl.String).alias("CANCER_STAGE")
@@ -96,30 +95,25 @@ def build_cancer_stage_df() -> pl.DataFrame:
     return note_stage.hstack(stage_dummies)
 
 
-def build_somatic_data_df(cohort_df: pl.DataFrame) -> pl.DataFrame:
+def build_somatic_data_df(cohort_df: pl.DataFrame, anchor: str = DEFAULT_ANCHOR) -> pl.DataFrame:
     """SOMATIC_WIDE_BY_SAMPLE.parquet joined to GENOMIC_SPECIMEN on the 3-column
-    key (never UNIQUE_SAMPLE_ID). Sequencing date = min(SAMPLE_COLLECTION_DT,
-    TEST_ORDER_DT, REPORT_DT); keep days_from_sequencing_to_first_treatment
-    >= 0; pick the argmin per patient. TEST_TYPE != RAPIDHEME_CLINICAL."""
+    key (never UNIQUE_SAMPLE_ID). A result is eligible only when REPORT_DT is
+    on or before the active anchor; the most recently available report is used.
+    TEST_TYPE != RAPIDHEME_CLINICAL."""
     cohort_mrns = cohort_df.get_column("DFCI_MRN").unique().to_list()
-    tstart_df = cohort_df.select(["DFCI_MRN", "first_treatment_date"])
+    anchor_col = date_col(anchor)
+    anchor_df = cohort_df.select(["DFCI_MRN", anchor_col])
 
     genomic_spec = ps.load_genomic_specimen(exclude_rapidheme=True)
     genomic_spec = genomic_spec.filter(pl.col(ps.MRN).is_in(cohort_mrns))
 
-    genomic_spec = genomic_spec.with_columns(
-        pl.min_horizontal([ps.SAMPLE_COLLECTION_DT, ps.TEST_ORDER_DT, ps.REPORT_DT]).alias("SEQUENCING_DT")
-    ).drop_nulls(subset=["SEQUENCING_DT"])
-
-    genomic_spec = genomic_spec.join(tstart_df, on="DFCI_MRN", how="inner")
-    genomic_spec = genomic_spec.with_columns(
-        (pl.col("first_treatment_date") - pl.col("SEQUENCING_DT")).dt.total_days().alias(
-            "days_from_sequencing_to_first_treatment"
-        )
-    ).filter(pl.col("days_from_sequencing_to_first_treatment") >= 0)
+    genomic_spec = genomic_spec.drop_nulls(subset=[ps.REPORT_DT])
+    genomic_spec = genomic_spec.join(anchor_df, on="DFCI_MRN", how="inner").filter(
+        pl.col(ps.REPORT_DT) <= pl.col(anchor_col)
+    )
 
     selected_sample = (
-        genomic_spec.sort(["DFCI_MRN", "days_from_sequencing_to_first_treatment"])
+        genomic_spec.sort(["DFCI_MRN", ps.REPORT_DT], descending=[False, True])
         .group_by("DFCI_MRN", maintain_order=True)
         .agg(pl.all().first())
     )
@@ -182,20 +176,48 @@ def build_germline_data_df(cohort_df: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def build_treatment_by_line_df() -> pl.DataFrame:
-    """Build from the unpivoted MEDICATIONS_SUMMARY long frame; slot order
-    gives treatment_line (1-7) directly. Maps MED_NCI_PREFERRED_NM through
-    MED_CLASSES_FILE to PX_on_* dummies. Drops the MED_LINES_FILE dependency
-    and the cumcount() that silently overrode the source's own LINE column."""
+def build_treatment_by_line_df(
+    cohort_df: pl.DataFrame, anchor: str = DEFAULT_ANCHOR
+) -> pl.DataFrame:
+    """Patient-level treatment classes started on or before the anchor."""
     med_classes = pl.read_csv(MED_CLASSES_FILE).unique("MED_NAME", keep="last")
     long = ps.unpivot_medications_summary().rename({"SLOT": "treatment_line", "DRUG": "MED_NAME"})
-    return (
+    anchor_col = date_col(anchor)
+    long = (
         long.sort(["DFCI_MRN", "START_DT"])
         .join(med_classes, on="MED_NAME", how="left")
+        .join(cohort_df.select(["DFCI_MRN", anchor_col]), on="DFCI_MRN", how="inner")
+        .filter(pl.col("START_DT") <= pl.col(anchor_col))
         .with_columns(pl.col("MOA_Category").fill_null("OTHER").alias("PX_on"))
         .to_dummies(columns="PX_on")
         .rename({"START_DT": "treatment_start_date"})
     )
+    px_cols = [c for c in long.columns if c.startswith("PX_on_")]
+    aggregated = long.group_by("DFCI_MRN").agg(
+        # Preserve the legacy one-row-per-patient, treatment_line==1 contract
+        # consumed by figures/trajectory code.  The row now represents the
+        # complete anchor-observable treatment history.
+        pl.lit(1).alias("treatment_line"),
+        pl.col("treatment_start_date").max(),
+        *[pl.col(c).max().alias(c) for c in px_cols],
+    )
+    # Absence of pre-anchor treatment is a real zero, not missingness.  This is
+    # especially important at sequencing, where requiring a treatment row
+    # would condition the comparison cohort on subsequent treatment uptake.
+    return (
+        cohort_df.filter(pl.col(anchor_col).is_not_null())
+        .select("DFCI_MRN").unique()
+        .join(aggregated, on="DFCI_MRN", how="left")
+        .with_columns(
+            pl.col("treatment_line").fill_null(1).cast(pl.Int64),
+            *[pl.col(c).fill_null(0).cast(pl.Int64) for c in px_cols],
+        )
+    )
+
+
+def _feature_path(filename: str, anchor: str) -> str:
+    stem, ext = filename.split(".csv", 1)
+    return os.path.join(FEATURE_PATH, f"{stem}{anchor_suffix(anchor)}.csv{ext}")
 
 
 def build_met_burden_df(cohort_df: pl.DataFrame, anchor: str = DEFAULT_ANCHOR) -> pl.DataFrame:
@@ -213,19 +235,11 @@ def build_met_burden_df(cohort_df: pl.DataFrame, anchor: str = DEFAULT_ANCHOR) -
     LEAKAGE WARNING: MET_SITE_{site} describes the same anatomy as the
     death_met scheme's `{site}M` outcome events, observed through a
     different instrument (ICD coding vs. the external clinical_to_{site}_met
-    extraction). Training code must drop the concordant site indicator per
-    event - see the per-event exclusion in run_feature_comp_task.py.
+    extraction). Training code removes both the concordant indicator and its
+    contribution to the aggregate count for that event.
 
-    ANCHOR LIMITATION: only the treatment anchor is validated. Under the
-    sequencing anchor, treatment-anchored met burden would include the
-    sequencing-to-treatment interval (sequencing generally precedes
-    treatment; see build_somatic_data_df's
-    days_from_sequencing_to_first_treatment >= 0 filter), which leaks
-    post-anchor information. `main()` only calls this with the default
-    anchor; a sequencing arm needs a routed, anchor-suffixed output file
-    (see anchors.anchor_suffix / _suffixed in
-    generate_embedding_prediction_datasets.py), not just passing anchor
-    through as-is.
+    The output is routed per anchor, so sequencing recomputes the ICD window
+    relative to sequencing and writes an anchor-suffixed file.
     """
     cohort_mrns = cohort_df.get_column("DFCI_MRN").unique().to_list()
     anchor_date_col = date_col(anchor)
@@ -277,22 +291,26 @@ def build_met_burden_df(cohort_df: pl.DataFrame, anchor: str = DEFAULT_ANCHOR) -
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--anchor", choices=sorted(ANCHORS), default=DEFAULT_ANCHOR)
+    args = parser.parse_args()
+    anchor = args.anchor
     os.makedirs(FEATURE_PATH, exist_ok=True)
 
     cohort_df = _load_cohort_df()
 
-    cancer_type_df = build_cancer_type_df(cohort_df)
+    cancer_type_df = build_cancer_type_df(cohort_df, anchor)
     assert_schema(cancer_type_df, "cancer_type_df", required_cols=["DFCI_MRN", "CANCER_TYPE"], key_col="DFCI_MRN")
-    cancer_type_df.write_csv(os.path.join(FEATURE_PATH, 'cancer_type_df.csv.gz'), compression="gzip")
+    cancer_type_df.write_csv(_feature_path('cancer_type_df.csv.gz', anchor), compression="gzip")
 
-    cancer_stage_df = build_cancer_stage_df()
+    cancer_stage_df = build_cancer_stage_df(cohort_df, anchor)
     assert_schema(cancer_stage_df, "cancer_stage_df", required_cols=["DFCI_MRN", "CANCER_STAGE"], key_col="DFCI_MRN")
-    cancer_stage_df.write_csv(os.path.join(FEATURE_PATH, 'cancer_stage_df.csv.gz'), compression="gzip")
+    cancer_stage_df.write_csv(_feature_path('cancer_stage_df.csv.gz', anchor), compression="gzip")
 
-    complete_somatic_data_df = build_somatic_data_df(cohort_df)
+    complete_somatic_data_df = build_somatic_data_df(cohort_df, anchor)
     assert_schema(complete_somatic_data_df, "complete_somatic_data_df", required_cols=["DFCI_MRN"], key_col="DFCI_MRN")
     complete_somatic_data_df.write_csv(
-        os.path.join(FEATURE_PATH, 'complete_somatic_data_df.csv.gz'), compression="gzip"
+        _feature_path('complete_somatic_data_df.csv.gz', anchor), compression="gzip"
     )
 
     complete_germline_data_df = build_germline_data_df(cohort_df)
@@ -307,25 +325,25 @@ def main() -> None:
         os.path.join(FEATURE_PATH, 'complete_germline_data_df.csv.gz'), compression="gzip"
     )
 
-    categorical_treatment_data_by_line = build_treatment_by_line_df()
+    categorical_treatment_data_by_line = build_treatment_by_line_df(cohort_df, anchor)
     assert_schema(
         categorical_treatment_data_by_line,
         "categorical_treatment_data_by_line",
         required_cols=["DFCI_MRN", "treatment_line"],
-        key_col=None,
+        key_col="DFCI_MRN",
     )
     categorical_treatment_data_by_line.write_csv(
-        os.path.join(FEATURE_PATH, 'categorical_treatment_data_by_line.csv.gz'), compression="gzip"
+        _feature_path('categorical_treatment_data_by_line.csv.gz', anchor), compression="gzip"
     )
 
-    met_burden_df = build_met_burden_df(cohort_df)
+    met_burden_df = build_met_burden_df(cohort_df, anchor)
     assert_schema(
         met_burden_df,
         "met_burden_df",
         required_cols=["DFCI_MRN", "N_MET_SITES"] + [f"MET_SITE_{s}" for s in MET_SITE_GROUPS],
         key_col="DFCI_MRN",
     )
-    met_burden_df.write_csv(os.path.join(FEATURE_PATH, 'met_burden_df.csv.gz'), compression="gzip")
+    met_burden_df.write_csv(_feature_path('met_burden_df.csv.gz', anchor), compression="gzip")
 
 
 if __name__ == "__main__":

@@ -355,12 +355,9 @@ build_fig2e <- function(metric = METRIC) {
 
 
 # ============================================================================
-# Combined Δ C-index barplot (Mets / ICD10 events, grouped by code type) +
-# top-event KM panels. C-index only — this panel does not follow the
-# MANUSCRIPT_METRIC switch; the underlying fig2_scheme_delta_topk.csv /
-# fig2_scheme_event_km.csv are always ranked by delta C-index (text - base),
-# largest positive delta only (a "top" event is never a net-negative one; see
-# prep_figure_2.py::_scheme_delta_topk).
+# Combined metric-delta barplot (Mets / ICD10 events, grouped by code type) +
+# top-event KM panels. Ranking follows MANUSCRIPT_METRIC and reads the matching
+# cindex/auc prep outputs.
 # ============================================================================
 SCHEME_CATEGORY_TITLES <- c(mets = "Mets", ICD10 = "ICD10")
 
@@ -378,14 +375,14 @@ build_scheme_delta_bars <- function(topk) {
            row_key = factor(paste(category, event_lbl, sep = "|"),
                             levels = paste(category, event_lbl, sep = "|")))
   d_long <- d %>%
-    select(category, row_key, event_lbl, text = text_cindex, base = base_cindex) %>%
-    pivot_longer(c(text, base), names_to = "model", values_to = "cindex") %>%
+    select(category, row_key, event_lbl, text = text_value, base = base_value) %>%
+    pivot_longer(c(text, base), names_to = "model", values_to = "metric_value") %>%
     mutate(model = factor(model, levels = c("text", "base")))
-  lo <- max(0, min(d_long$cindex, na.rm = TRUE) - 0.05)
+  lo <- max(0, min(d_long$metric_value, na.rm = TRUE) - 0.05)
 
-  ggplot(d_long, aes(row_key, cindex, fill = model)) +
+  ggplot(d_long, aes(row_key, metric_value, fill = model)) +
     geom_col(position = position_dodge(width = 0.7), width = 0.6, color = "white") +
-    geom_text(aes(label = sprintf("%.3f", cindex)),
+    geom_text(aes(label = sprintf("%.3f", metric_value)),
               position = position_dodge(width = 0.7),
               vjust = -0.4, size = MANUSCRIPT_SMALL_TEXT_SIZE) +
     scale_x_discrete(
@@ -397,7 +394,8 @@ build_scheme_delta_bars <- function(topk) {
     coord_cartesian(ylim = c(lo, NA)) +
     facet_grid(. ~ category, scales = "free_x", space = "free_x",
               labeller = labeller(category = SCHEME_CATEGORY_TITLES)) +
-    labs(x = NULL, y = "C-index", title = "Top Events by Δ C-index, by Code Type") +
+    labs(x = NULL, y = metric_label(METRIC),
+         title = sprintf("Top Events by Δ %s, by Code Type", metric_label(METRIC))) +
     theme_manuscript() +
     theme(panel.grid.major.y = element_line(color = "grey90"),
           legend.position = "top",
@@ -424,16 +422,16 @@ metrics <- load_figure_data("fig2_full_cohort_metrics.csv")
 # Panels A/B only: drop the single ICD10 Level 3 event whose delta performance (text - base)
 # is a large negative outlier. It compresses the scatter/violin scale and is not
 # representative of the scheme; removed here so it doesn't distort both panels.
-# Always determined from C-index (regardless of the active METRIC) so the same
-# event is excluded from both the C-index and AUC(t) renderings — trimming
-# identically instead of letting AUC(t) pick its own (possibly different) outlier.
+# Determine the outlier using the active metric.
 if (nrow(metrics) > 0 && any(metrics$scheme == "icd3_post")) {
-  .delta <- metrics[["text_cindex"]] - metrics[["base_cindex"]]
+  .text_col <- if (METRIC == "cindex") "text_cindex" else "text_auc"
+  .base_col <- if (METRIC == "cindex") "base_cindex" else "base_auc"
+  .delta <- metrics[[.text_col]] - metrics[[.base_col]]
   .icd3  <- metrics$scheme == "icd3_post"
   .out   <- which(.icd3 & .delta == min(.delta[.icd3], na.rm = TRUE))
   if (length(.out)) {
-    message(sprintf("fig2 A/B: dropping ICD10 (Level 3) outlier '%s' (delta cindex = %.3f), applied to both metrics",
-                    metrics$event[.out[1]], .delta[.out[1]]))
+    message(sprintf("fig2 A/B: dropping ICD10 (Level 3) outlier '%s' (delta %s = %.3f)",
+                    metrics$event[.out[1]], METRIC, .delta[.out[1]]))
     metrics <- metrics[-.out[1], , drop = FALSE]
   }
 }
@@ -447,9 +445,9 @@ e_panels <- build_fig2e()
 p2_stage <- e_panels$stage                 # F: survival by cancer stage
 p2_quart <- e_panels$quartile              # G: survival by text risk-score quartile
 
-# Per-scheme Δ C-index barplots + top-1 event KM (C-index only, no metric suffix).
-scheme_topk <- load_figure_data("fig2_scheme_delta_topk.csv")
-scheme_km   <- load_figure_data("fig2_scheme_event_km.csv")
+# Per-scheme metric-delta barplots + top-1 event KM.
+scheme_topk <- load_figure_data(paste0("fig2_scheme_delta_topk_", METRIC, ".csv"))
+scheme_km   <- load_figure_data(paste0("fig2_scheme_event_km_", METRIC, ".csv"))
 
 p2_bars <- build_scheme_delta_bars(scheme_topk)
 
@@ -465,7 +463,7 @@ save_panel(p2_wt, paste0("fig2d", .tag), group = "figure2", width = 9.6, height 
 save_panel(p2d,       paste0("fig2e", .tag), group = "figure2", width = 5.6, height = 4.6)
 save_panel(p2_stage,  paste0("fig2f", .tag), group = "figure2", width = 5.6, height = 4.6)
 save_panel(p2_quart,  paste0("fig2g", .tag), group = "figure2", width = 5.6, height = 4.6)
-save_panel(p2_bars,         "fig2h", group = "figure2", width = 9.6, height = 5.2)
-save_panel(p2_km_mets1,     "fig2k", group = "figure2", width = 5.6, height = 4.6)
-save_panel(p2_km_icd1,      "fig2l", group = "figure2", width = 5.6, height = 4.6)
-save_panel(p2_km_phecodes1, "fig2m", group = "figure2", width = 5.6, height = 4.6)
+save_panel(p2_bars, paste0("fig2h", .tag), group = "figure2", width = 9.6, height = 5.2)
+save_panel(p2_km_mets1, paste0("fig2k", .tag), group = "figure2", width = 5.6, height = 4.6)
+save_panel(p2_km_icd1, paste0("fig2l", .tag), group = "figure2", width = 5.6, height = 4.6)
+save_panel(p2_km_phecodes1, paste0("fig2m", .tag), group = "figure2", width = 5.6, height = 4.6)

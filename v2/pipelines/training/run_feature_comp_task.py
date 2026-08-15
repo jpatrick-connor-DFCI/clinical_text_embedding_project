@@ -12,7 +12,7 @@ from anchors import ANCHORS, DEFAULT_ANCHOR, age_col
 from config import SURV_PATH
 from schemes import SCHEMES, get_output_dir
 from shared.icd10 import MET_SITE_GROUPS
-from survival import get_heldout_risk_scores_CoxPH, run_grid_CoxPH_parallel
+from survival import get_nested_heldout_risk_scores_CoxPH, run_grid_CoxPH_parallel
 
 from pipelines.training.slurm_array_utils import (
     DEFAULT_ALPHAS,
@@ -23,6 +23,7 @@ from pipelines.training.slurm_array_utils import (
     load_feature_modalities_df,
     parse_float_list,
     validate_cox_inputs,
+    write_ipcw_reference_csv,
 )
 
 SKIP_REPORT_DIR = os.path.join(SURV_PATH, "results", "skipped_events")
@@ -50,7 +51,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--anchor", default=DEFAULT_ANCHOR, choices=sorted(ANCHORS.keys()))
     parser.add_argument("--n-jobs", type=int, default=None)
-    parser.add_argument("--max-iter", type=int, default=1000)
+    parser.add_argument("--max-iter", type=int, default=2500)
     parser.add_argument("--n-splits", type=int, default=5)
     parser.add_argument("--alphas", type=parse_float_list, default=DEFAULT_ALPHAS)
     parser.add_argument("--l1-ratios", type=parse_float_list, default=DEFAULT_L1_RATIOS)
@@ -80,10 +81,11 @@ def _run_one_modality(
     os.makedirs(out_dir, exist_ok=True)
     test_fp = os.path.join(out_dir, f"{modality}_test.csv")
     val_fp = os.path.join(out_dir, f"{modality}_val.csv")
+    ipcw_fp = os.path.join(out_dir, f"{modality}_ipcw_reference.csv.gz")
     risk_dir = os.path.join(get_output_dir(args.scheme, "feature_comps", args.anchor), "..", "held_out_risk_scores", args.event)
     risk_dir = os.path.normpath(risk_dir)
     risk_fp = os.path.join(risk_dir, f"{modality}_risk_scores.csv")
-    grid_done = os.path.exists(test_fp) and os.path.exists(val_fp)
+    grid_done = os.path.exists(test_fp) and os.path.exists(val_fp) and os.path.exists(ipcw_fp)
     risk_done = os.path.exists(risk_fp)
     if (not args.overwrite) and grid_done and risk_done:
         print(f"[skip] Existing outputs found for {args.scheme}:{args.event}:{modality}")
@@ -114,6 +116,18 @@ def _run_one_modality(
         # contributes at most 1 to it.
         concordant_col = f"MET_SITE_{args.event[:-1]}"
         cfg["penalized_cols"] = [c for c in cfg["penalized_cols"] if c != concordant_col]
+        # The aggregate count also contained the concordant anatomy.  Replace
+        # it with a count of other metastatic sites so no version of the
+        # outcome site's baseline proxy remains in the design matrix.
+        event_pred_df = event_pred_df.with_columns(
+            (pl.col("N_MET_SITES") - pl.col(concordant_col))
+            .clip(lower_bound=0)
+            .alias("N_OTHER_MET_SITES")
+        )
+        cfg["continuous_vars"] = [
+            "N_OTHER_MET_SITES" if c == "N_MET_SITES" else c
+            for c in cfg["continuous_vars"]
+        ]
     all_feature_cols = base_vars + type_cols + cfg["continuous_vars"] + cfg["penalized_cols"]
     # deduplicate while preserving order
     seen = set()
@@ -155,7 +169,7 @@ def _run_one_modality(
         val_df = pl.read_csv(val_fp)
     else:
         t0 = time.time()
-        test_df, val_df, _ = run_grid_CoxPH_parallel(
+        test_df, val_df, _, ipcw_df = run_grid_CoxPH_parallel(
             event_pred_df,
             base_vars + type_cols,
             cfg["continuous_vars"],
@@ -169,36 +183,31 @@ def _run_one_modality(
             n_splits=args.n_splits,
             n_jobs=n_jobs,
             backend=args.backend,
+            return_audit=True,
         )
         test_df.write_csv(test_fp)
         val_df.write_csv(val_fp)
+        write_ipcw_reference_csv(
+            ipcw_df, ipcw_fp
+        )
         print(f"[time] {label} grid search: {(time.time() - t0) / 60:.1f}m")
 
-    # --- Generate held-out risk scores using best hyperparams ---
+    # --- Generate nested held-out risk scores (tuning inside each outer fold) ---
     os.makedirs(risk_dir, exist_ok=True)
 
-    best_row = (
-        val_df.filter(pl.col("mean_auc(t)").is_finite())
-        .sort("mean_auc(t)", descending=True)
-        .row(0, named=True)
-    )
-    best_l1 = float(best_row["l1_ratio"])
-    best_alpha = float(best_row["alpha"])
-
     t1 = time.time()
-    risk_scores = get_heldout_risk_scores_CoxPH(
+    risk_scores = get_nested_heldout_risk_scores_CoxPH(
         event_pred_df,
         base_vars + type_cols,
         cfg["continuous_vars"],
         cfg["penalized_cols"],
+        args.l1_ratios,
+        args.alphas,
         pca_config=cfg["pca_config"],
         event_col=args.event,
         tstop_col=f"tt_{args.event}",
         max_iter=args.max_iter,
         n_splits=args.n_splits,
-        penalized=True,
-        l1_ratio=best_l1,
-        alpha=best_alpha,
         n_jobs=n_jobs,
         backend=args.backend,
     ).rename({"risk_score": f"{modality}_risk_score"})

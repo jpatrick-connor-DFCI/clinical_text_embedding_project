@@ -334,11 +334,10 @@ def _add_metastatic_events(cohort_df: pl.DataFrame, anchor: str = DEFAULT_ANCHOR
     met_events_added = []
     new_cols = {}
     for met_loc in sorted(v for v in met_date_df['MET_LOCATION'].unique().to_list() if v is not None):
-        # Emit the 'M' suffix at write time (e.g. 'brain' -> 'brainM') so the
-        # event name matches what survival/preprocessing.py and
-        # slurm_array_utils.py already expect, instead of patching it in
-        # downstream consumers.
-        event_name = f'{met_loc}M'
+        # Preserve the upstream `type` value verbatim, matching the original
+        # v1 preprocessing. These values already carry the `M` suffix (for
+        # example, `brainM`); appending another suffix would emit `brainMM`.
+        event_name = str(met_loc)
         cur_met_data_sub = met_date_df.filter(pl.col('MET_LOCATION') == met_loc)
         tt_series, event_series = map_time_to_event(
             cur_met_data_sub, cohort_df, 'DFCI_MRN', met_loc, 'TIME_TO_MET'

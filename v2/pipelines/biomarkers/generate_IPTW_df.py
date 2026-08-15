@@ -1,4 +1,4 @@
-"""Generate IPTW dataset for biomarker analysis (ICI vs never-ICI).
+"""Generate IPTW dataset for biomarker analysis (first-line ICI vs non-ICI).
 
 Builds on cohort-specific propensity scores from ICI_LRs.py.
 Cohort 2: line_category dummy-coded (LINE_2, LINE_3; line 1 as reference).

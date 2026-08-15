@@ -17,12 +17,12 @@ source("R/config.R")
 # Metric switch — lets a single plot script render two parallel figure sets,
 # one scored by Harrell's C-index, one by mean time-dependent AUC(t). Set the
 # MANUSCRIPT_METRIC env var to "cindex" or "auc" before sourcing/Rscript-ing a
-# plot_figure_*.R script; defaults to "cindex" for interactive/unset use.
+# plot_figure_*.R script; defaults to "auc" for interactive/unset use.
 # ----------------------------------------------------------------------------
-METRIC <- tolower(Sys.getenv("MANUSCRIPT_METRIC", unset = "cindex"))
+METRIC <- tolower(Sys.getenv("MANUSCRIPT_METRIC", unset = "auc"))
 if (!METRIC %in% c("cindex", "auc")) {
-  warning(sprintf("Unrecognized MANUSCRIPT_METRIC=%s; falling back to 'cindex'", METRIC))
-  METRIC <- "cindex"
+  warning(sprintf("Unrecognized MANUSCRIPT_METRIC=%s; falling back to 'auc'", METRIC))
+  METRIC <- "auc"
 }
 
 # Human-readable label for the active metric ("C-index" / "Mean AUC(t)").

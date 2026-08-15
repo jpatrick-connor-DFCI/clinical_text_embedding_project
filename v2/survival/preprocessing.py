@@ -124,12 +124,26 @@ def map_time_to_event(df_events: pl.DataFrame, df_all: pl.DataFrame, mrn_col: st
             - Series mapping MRNs to time-to-event.
             - Series mapping MRNs to event indicator (1=event, 0=censored).
     """
-    # Patients with observed events
-    mrns_with_event = set(df_events[mrn_col].unique().to_list())
+    # An event is observable only while the patient is under follow-up.  Source
+    # tables can contain late backfills or erroneous post-death records; those
+    # must not turn a censored patient into a case after their censoring time.
+    censor_lookup = df_all.select([mrn_col, censor_time_col])
+    eligible_events = (
+        df_events.join(censor_lookup, on=mrn_col, how="inner")
+        .filter(
+            pl.col(time_col).is_not_null()
+            & (pl.col(time_col) > 0)
+            & pl.col(censor_time_col).is_not_null()
+            & (pl.col(time_col) <= pl.col(censor_time_col))
+        )
+    )
+
+    # Patients with observed, in-follow-up events
+    mrns_with_event = set(eligible_events[mrn_col].unique().to_list())
 
     # Time to event for observed events
     tt_events = (
-        df_events.group_by(mrn_col).agg(pl.col(time_col).min().alias('_tt'))
+        eligible_events.group_by(mrn_col).agg(pl.col(time_col).min().alias('_tt'))
     )
     tt_dict = dict(zip(tt_events[mrn_col].to_list(), tt_events['_tt'].to_list()))
     event_dict = {mrn: 1 for mrn in mrns_with_event}
@@ -157,6 +171,9 @@ def find_continuous_records_to_analyze(notes_meta: pl.DataFrame, note_timing_col
         notes_meta (pl.DataFrame): Metadata for notes, must include 'DFCI_MRN' and note timing column.
         note_timing_col (str, optional): Column representing time relative to treatment start. Defaults to 'NOTE_TIME_REL_FIRST_TREATMENT_START'.
         gap_threshold (int, optional): Maximum allowed gap (in days) between consecutive notes in a segment. Defaults to 2*365.
+        max_note_window (int, optional): Landmark time. Notes at or after this
+            time are dropped and the remaining times are re-centred so the
+            landmark becomes the new origin. Defaults to 0.
 
     Returns:
         pl.DataFrame: Subset of notes_meta containing only continuous records within allowed windows.
@@ -168,6 +185,12 @@ def find_continuous_records_to_analyze(notes_meta: pl.DataFrame, note_timing_col
     )
     notes_within_window = notes_within_window.with_row_index('_row_id')
     rows_to_include = []
+
+    # Times above were re-centred on `max_note_window`, so the landmark now sits
+    # at 0 in this frame.  Both the window test and the guard below compare
+    # against this name rather than a bare literal, so the two cannot drift
+    # apart if the re-centring above ever changes.
+    recentred_origin = 0
 
     # Process each patient separately
     for mrn_val in notes_within_window['DFCI_MRN'].unique().to_list():
@@ -192,7 +215,7 @@ def find_continuous_records_to_analyze(notes_meta: pl.DataFrame, note_timing_col
         # Choose the last valid window within bounds
         chosen_window = None
         for lbound, ubound in idx_series:
-            if ubound <= 0:
+            if ubound <= recentred_origin:
                 chosen_window = (lbound, ubound)
 
         if chosen_window is not None:
@@ -206,10 +229,11 @@ def find_continuous_records_to_analyze(notes_meta: pl.DataFrame, note_timing_col
     # Sanity check to ensure no notes exceed allowed window
     if not notes_within_window.is_empty():
         max_time = notes_within_window[note_timing_col].max()
-        if max_time > 0:
+        if max_time > recentred_origin:
             raise ValueError(
-                f'Found note with time {max_time} > max_note_window {0}. '
-                'Check your NOTE_TIME_REL_FIRST_TREATMENT_START values.'
+                f'Found note at re-centred time {max_time} > {recentred_origin} '
+                f'(landmark max_note_window={max_note_window}). '
+                f'Check your {note_timing_col} values.'
             )
 
     return notes_within_window

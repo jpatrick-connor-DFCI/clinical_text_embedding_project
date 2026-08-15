@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 
+import numpy as np
 import polars as pl
 from sksurv.metrics import concordance_index_censored, cumulative_dynamic_auc
 from sksurv.util import Surv
@@ -52,7 +53,11 @@ def _eval_times(tt: pl.Series) -> pl.Series:
 
 
 def _score_predictor(
-    event_flag: pl.Series, tt: pl.Series, risk_score: pl.Series,
+    evaluation_df: pl.DataFrame,
+    reference_df: pl.DataFrame,
+    event_col: str,
+    time_col: str,
+    score_col: str,
 ) -> tuple[float, float]:
     """(cindex, mean_auc) for a risk score on (event, time).
 
@@ -61,23 +66,43 @@ def _score_predictor(
     — only the CV-time text_test.csv/base_test.csv files (used by
     _natural_cohort_metrics) have it. The intersection-cohort rows leave ibs NaN.
     """
-    event_arr = event_flag.cast(pl.Boolean).to_numpy()
-    time_arr = tt.cast(pl.Float64).to_numpy()
-    score_arr = risk_score.cast(pl.Float64).to_numpy()
+    event_arr = evaluation_df[event_col].cast(pl.Boolean).to_numpy()
+    time_arr = evaluation_df[time_col].cast(pl.Float64).to_numpy()
+    score_arr = evaluation_df[score_col].cast(pl.Float64).to_numpy()
     try:
         cindex = concordance_index_censored(event_arr, time_arr, score_arr)[0]
     except (ValueError, ZeroDivisionError):
         cindex = float("nan")
 
-    y = Surv.from_arrays(event_arr, time_arr)
-    et = _eval_times(tt)
-    et = et.filter((et > time_arr.min()) & (et < time_arr.max())).to_numpy()
-    mean_auc = float("nan")
-    if len(et) > 0:
+    if "outer_fold" not in evaluation_df.columns or "outer_fold" not in reference_df.columns:
+        raise ValueError("Risk scores predate nested CV; regenerate files with outer_fold metadata")
+    fold_aucs, fold_weights = [], []
+    for fold in evaluation_df["outer_fold"].unique().sort().to_list():
+        fold_eval = evaluation_df.filter(pl.col("outer_fold") == fold)
+        fold_ref = reference_df.filter(pl.col("outer_fold") != fold)
+        if fold_eval.is_empty() or fold_ref.is_empty():
+            continue
+        eval_time = fold_eval[time_col].cast(pl.Float64).to_numpy()
+        ref_time = fold_ref[time_col].cast(pl.Float64).to_numpy()
+        lo, hi = np.percentile(ref_time, [5, 95])
+        et = np.linspace(lo, hi, AUC_TIME_GRID_POINTS)
+        et = et[(et > eval_time.min()) & (et < eval_time.max())]
+        if len(et) == 0:
+            continue
         try:
-            mean_auc = cumulative_dynamic_auc(y, y, score_arr, et)[1]
+            y_ref = Surv.from_arrays(
+                fold_ref[event_col].cast(pl.Boolean).to_numpy(), ref_time
+            )
+            y_eval = Surv.from_arrays(
+                fold_eval[event_col].cast(pl.Boolean).to_numpy(), eval_time
+            )
+            fold_aucs.append(float(cumulative_dynamic_auc(
+                y_ref, y_eval, fold_eval[score_col].to_numpy(), et
+            )[1]))
+            fold_weights.append(fold_eval.height)
         except (ValueError, ZeroDivisionError):
             pass
+    mean_auc = float(np.average(fold_aucs, weights=fold_weights)) if fold_aucs else float("nan")
     return cindex, mean_auc
 
 
@@ -147,13 +172,16 @@ def _intersection_cohort_metrics(anchor: str, intersection_mrns: dict[str, froze
             surv_cols = ["DFCI_MRN", event, f"tt_{event}"]
             for model, fp in (("text", text_fp), ("base", base_fp)):
                 risk_df = pl.read_csv(fp)
-                merged = risk_df.join(event_df.select(surv_cols), on="DFCI_MRN")
+                reference = risk_df.join(
+                    filter_event_rows(pred_df, event).select(surv_cols), on="DFCI_MRN"
+                )
+                merged = reference.filter(pl.col("DFCI_MRN").is_in(mrns))
                 score_col = "text_risk_score" if "text_risk_score" in merged.columns else "base_risk_score"
                 merged = filter_finite_rows(merged, [score_col, event, f"tt_{event}"])
                 if merged.is_empty():
                     continue
                 cindex, mean_auc = _score_predictor(
-                    merged[event], merged[f"tt_{event}"], merged[score_col],
+                    merged, reference, event, f"tt_{event}", score_col,
                 )
                 rows.append({
                     "anchor": anchor, "scheme": scheme, "event": event, "model": model,

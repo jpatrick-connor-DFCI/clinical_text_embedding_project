@@ -15,7 +15,7 @@ from tqdm import tqdm
 from config import FEATURE_PATH, RESULTS_PATH
 from schemes import load_embedding_prediction_df
 from survival import (RunCheckpoint, dataframe_fingerprint,
-                      fit_predict_external_CoxPH, get_heldout_risk_scores_CoxPH,
+                      fit_predict_external_CoxPH, get_nested_heldout_risk_scores_CoxPH,
                       run_grid_CoxPH_parallel)
 from shared.polars_utils import filter_finite_rows
 
@@ -60,26 +60,26 @@ def main() -> None:
     # Embedding features
     embed_cols = [c for c in full_df.columns if ('EMBEDDING' in c or '2015' in c)]
 
-    # Collapse rare cancer types
-    cancer_type_counts = full_df['CANCER_TYPE'].value_counts()
-    types_to_keep = set(
-        cancer_type_counts.filter(pl.col('count') >= MIN_STRATUM_N)['CANCER_TYPE'].to_list()
-    )
-    full_df = full_df.with_columns(
-        pl.when(pl.col('CANCER_TYPE').is_in(types_to_keep))
-        .then(pl.col('CANCER_TYPE'))
-        .otherwise(pl.lit('OTHER'))
-        .alias('CANCER_TYPE')
-    )
-    # Preserve the raw stratum label before drop-first encoding. Driving the
-    # within-cancer loop from dummy columns omits whichever category becomes
-    # the reference level.
-    full_df = full_df.with_columns(pl.col('CANCER_TYPE').alias('STRATUM_CANCER_TYPE'))
-
     # === Train/held-out split (75% train, 25% held-out evaluation) ===
     held_mrns = set(full_df['DFCI_MRN'].sample(fraction=0.25, seed=1234).to_list())
     train_df = full_df.filter(~pl.col('DFCI_MRN').is_in(held_mrns))
     held_df  = full_df.filter( pl.col('DFCI_MRN').is_in(held_mrns))
+
+    # Learn the rarity map on training data only, then apply it unchanged to
+    # held-out patients.  Held-out category frequencies cannot shape features.
+    cancer_type_counts = train_df['CANCER_TYPE'].value_counts()
+    types_to_keep = set(
+        cancer_type_counts.filter(pl.col('count') >= MIN_STRATUM_N)['CANCER_TYPE'].to_list()
+    )
+    def _collapse_types(frame):
+        return frame.with_columns(
+            pl.when(pl.col('CANCER_TYPE').is_in(types_to_keep))
+            .then(pl.col('CANCER_TYPE'))
+            .otherwise(pl.lit('OTHER'))
+            .alias('CANCER_TYPE')
+        ).with_columns(pl.col('CANCER_TYPE').alias('STRATUM_CANCER_TYPE'))
+    train_df = _collapse_types(train_df)
+    held_df = _collapse_types(held_df)
 
     # === One-hot encode cancer type ===
     train_df = train_df.to_dummies(columns=['CANCER_TYPE'], drop_first=True)
@@ -91,7 +91,7 @@ def main() -> None:
             held_df = held_df.with_columns(pl.lit(0).alias(c))
     for c in set(held_df.columns) - set(train_df.columns):
         if c.startswith('CANCER_TYPE_'):
-            train_df = train_df.with_columns(pl.lit(0).alias(c))
+            held_df = held_df.drop(c)
 
     # Ensure consistent column order
     held_df = held_df.select(train_df.columns)
@@ -187,10 +187,10 @@ def main() -> None:
         ).row(0, named=True)
         matched_l1, matched_alpha = best_row['l1_ratio'], best_row['alpha']
         trained_matched_pan = (
-            get_heldout_risk_scores_CoxPH(
+            get_nested_heldout_risk_scores_CoxPH(
                 matched_pan_train, base_vars + type_cols, continuous_vars, embed_cols,
-                event_col=event, tstop_col=f'tt_{event}', penalized=True, max_iter=3000,
-                l1_ratio=matched_l1, alpha=matched_alpha, backend="threading")
+                l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}',
+                max_iter=3000, backend="threading")
             .rename({'risk_score': 'pan_cancer_risk_score'})
         )
         trained_matched_pan = trained_matched_pan.with_columns(pl.lit(cancer_type).alias('STRATUM'))
@@ -250,10 +250,10 @@ def main() -> None:
             'mean_auc(t)', descending=True
         ).row(0, named=True)
         best_l1, best_alpha = best_row['l1_ratio'], best_row['alpha']
-        trained_sub = get_heldout_risk_scores_CoxPH(
+        trained_sub = get_nested_heldout_risk_scores_CoxPH(
             sub_df, base_vars, continuous_vars, embed_cols,
-            event_col=event, tstop_col=f'tt_{event}', penalized=True, max_iter=3000,
-            l1_ratio=best_l1, alpha=best_alpha, backend="threading"
+            l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}',
+            max_iter=3000, backend="threading"
         ).rename({'risk_score': 'within_cancer_risk_score'})
         trained_sub = trained_sub.with_columns(pl.lit(cancer_type).alias('STRATUM'))
 

@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import sys
 import unittest
+from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import polars as pl
@@ -19,6 +21,17 @@ from pipelines.training.slurm_array_utils import filter_event_rows  # noqa: E402
 from shared.polars_utils import filter_finite_rows, finite_or_zero  # noqa: E402
 from survival.cox_models.base import scale_model_data  # noqa: E402
 from survival.preprocessing import pool_embedding_series_vectorized  # noqa: E402
+from survival.preprocessing import map_time_to_event  # noqa: E402
+from pipelines.preprocessing.generate_all_non_text_covariates import (  # noqa: E402
+    build_cancer_stage_df,
+    build_cancer_type_df,
+    build_somatic_data_df,
+)
+from pipelines.preprocessing.build_cohort import _sequencing_dates  # noqa: E402
+from pipelines.biomarkers.build_line_matched_cohort import (  # noqa: E402
+    build_first_line_new_user_df,
+    build_line_start_dates,
+)
 
 
 class PolarsPrimaryPipelineTests(unittest.TestCase):
@@ -114,6 +127,98 @@ class PolarsPrimaryPipelineTests(unittest.TestCase):
             result, ["CLINICIAN_EMBEDDING_0", "CLINICIAN_EMBEDDING_1"]
         )
         self.assertEqual(filtered.height, 1)
+
+    def test_events_after_censoring_are_not_cases(self) -> None:
+        cohort = pl.DataFrame({"DFCI_MRN": [1, 2], "tt_death": [100.0, 100.0]})
+        events = pl.DataFrame({
+            "DFCI_MRN": [1, 2], "TIME_TO_EVENT": [80.0, 120.0],
+        })
+
+        tt, status = map_time_to_event(
+            events, cohort, "DFCI_MRN", "endpoint", "TIME_TO_EVENT"
+        )
+
+        self.assertEqual(tt.to_list(), [80.0, 100.0])
+        self.assertEqual(status.to_list(), [1, 0])
+
+    def test_registry_features_use_only_pre_anchor_records(self) -> None:
+        cohort = pl.DataFrame({
+            "DFCI_MRN": [1, 2],
+            "first_treatment_date": [date(2020, 1, 1), date(2020, 1, 1)],
+        })
+        registry = pl.DataFrame({
+            "DFCI_MRN": [1, 1, 2],
+            "DIAGNOSIS_DT": [date(2019, 1, 1), date(2021, 1, 1), date(2021, 1, 1)],
+            "SITE_CD": ["SAFE", "FUTURE", "FUTURE_ONLY"],
+            "BEST_AJCC_STAGE_CD": ["2", "4", "4"],
+        })
+        with patch(
+            "pipelines.preprocessing.generate_all_non_text_covariates.ps.load_careg",
+            return_value=registry,
+        ):
+            cancer_type = build_cancer_type_df(cohort)
+            stage = build_cancer_stage_df(cohort)
+
+        self.assertEqual(cancer_type["DFCI_MRN"].to_list(), [1])
+        self.assertEqual(cancer_type["CANCER_TYPE"].to_list(), ["SAFE"])
+        self.assertEqual(stage["DFCI_MRN"].to_list(), [1])
+        self.assertEqual(stage["CANCER_STAGE"].to_list(), ["II"])
+
+    def test_somatic_features_require_report_by_anchor(self) -> None:
+        cohort = pl.DataFrame({
+            "DFCI_MRN": [1], "first_treatment_date": [date(2020, 1, 1)],
+        })
+        specimens = pl.DataFrame({
+            "DFCI_MRN": [1, 1],
+            "SAMPLE_ACCESSION_NBR": ["pre", "post"],
+            "TEST_TYPE": ["PANEL", "PANEL"],
+            "REPORT_DT": [date(2019, 12, 1), date(2020, 2, 1)],
+        })
+        somatic = pl.DataFrame({
+            "DFCI_MRN": [1, 1],
+            "SAMPLE_ACCESSION_NBR": ["pre", "post"],
+            "TEST_TYPE": ["PANEL", "PANEL"],
+            "TP53_SNV": [0, 1],
+        })
+        target = "pipelines.preprocessing.generate_all_non_text_covariates.ps"
+        with patch(f"{target}.load_genomic_specimen", return_value=specimens), patch(
+            f"{target}.load_somatic_wide", return_value=somatic
+        ):
+            result = build_somatic_data_df(cohort)
+
+        self.assertEqual(result["SAMPLE_ACCESSION_NBR"].to_list(), ["pre"])
+        self.assertEqual(result["TP53_SNV"].to_list(), [0])
+
+    def test_sequencing_anchor_is_first_report_not_collection_or_order(self) -> None:
+        specimens = pl.DataFrame({
+            "DFCI_MRN": [1, 1],
+            "SAMPLE_COLLECTION_DT": [date(2018, 1, 1), date(2019, 1, 1)],
+            "TEST_ORDER_DT": [date(2018, 2, 1), date(2019, 2, 1)],
+            "REPORT_DT": [date(2020, 3, 1), date(2020, 1, 1)],
+        })
+        with patch(
+            "pipelines.preprocessing.build_cohort.ps.load_genomic_specimen",
+            return_value=specimens,
+        ):
+            result = _sequencing_dates()
+
+        self.assertEqual(result["sequencing_date"].to_list(), [date(2020, 1, 1)])
+
+    def test_ici_control_status_does_not_depend_on_later_ici(self) -> None:
+        medications = pl.DataFrame({
+            "DFCI_MRN": [1, 1, 2],
+            "LINE": [1, 2, 1],
+            "HAS_ICI": [0, 1, 1],
+            "MED_START_DT": ["2020-01-01", "2021-01-01", "2020-01-01"],
+        })
+        starts = build_line_start_dates(medications)
+        result = build_first_line_new_user_df(
+            medications, {1, 2}, {1: "A", 2: "A"}, starts
+        ).sort("DFCI_MRN")
+
+        # Patient 1 later receives ICI, but remains an unexposed line-1
+        # initiator because future treatment is not consulted.
+        self.assertEqual(result["PX_on_ICI"].to_list(), [0, 1])
 
 
 if __name__ == "__main__":

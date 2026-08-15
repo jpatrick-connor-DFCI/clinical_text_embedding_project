@@ -20,6 +20,7 @@ from pipelines.training.slurm_array_utils import (
     filter_event_rows,
     parse_float_list,
     validate_cox_inputs,
+    write_ipcw_reference_csv,
 )
 
 SKIP_REPORT_DIR = os.path.join(SURV_PATH, "results", "skipped_events")
@@ -39,7 +40,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--event", required=True)
     parser.add_argument("--anchor", default=DEFAULT_ANCHOR, choices=sorted(ANCHORS.keys()))
     parser.add_argument("--n-jobs", type=int, default=None)
-    parser.add_argument("--max-iter", type=int, default=1000)
+    parser.add_argument("--max-iter", type=int, default=2500)
     parser.add_argument("--n-splits", type=int, default=5)
     parser.add_argument("--alphas", type=parse_float_list, default=DEFAULT_ALPHAS)
     parser.add_argument("--l1-ratios", type=parse_float_list, default=DEFAULT_L1_RATIOS)
@@ -66,8 +67,10 @@ def main() -> None:
     text_val_fp = os.path.join(out_dir, "text_val.csv")
     base_test_fp = os.path.join(out_dir, "base_test.csv")
     base_val_fp = os.path.join(out_dir, "base_val.csv")
-    run_text = args.overwrite or not (os.path.exists(text_test_fp) and os.path.exists(text_val_fp))
-    run_base = args.overwrite or not (os.path.exists(base_test_fp) and os.path.exists(base_val_fp))
+    text_ipcw_fp = os.path.join(out_dir, "text_ipcw_reference.csv.gz")
+    base_ipcw_fp = os.path.join(out_dir, "base_ipcw_reference.csv.gz")
+    run_text = args.overwrite or not all(map(os.path.exists, [text_test_fp, text_val_fp, text_ipcw_fp]))
+    run_base = args.overwrite or not all(map(os.path.exists, [base_test_fp, base_val_fp, base_ipcw_fp]))
     if not run_text and not run_base:
         print(f"[skip] Existing outputs found for {args.scheme}:{args.event}")
         return
@@ -110,7 +113,7 @@ def main() -> None:
 
     if run_text:
         t0 = time.time()
-        text_test, text_val, _ = run_grid_CoxPH_parallel(
+        text_test, text_val, _, text_ipcw = run_grid_CoxPH_parallel(
             event_pred_df,
             base_vars + type_cols,
             [anchor_age_col] + embed_cols,
@@ -123,16 +126,18 @@ def main() -> None:
             n_splits=args.n_splits,
             n_jobs=n_jobs,
             backend=args.backend,
+            return_audit=True,
         )
         text_test.write_csv(text_test_fp)
         text_val.write_csv(text_val_fp)
+        write_ipcw_reference_csv(text_ipcw, text_ipcw_fp)
         print(f"[time] {label} text model: {(time.time() - t0) / 60:.1f}m")
     else:
         print(f"[skip] {label} text model already exists")
 
     if run_base:
         t0 = time.time()
-        base_results = run_base_CoxPH(
+        base_results, base_ipcw = run_base_CoxPH(
             event_pred_df,
             base_vars + type_cols,
             [anchor_age_col],
@@ -140,9 +145,11 @@ def main() -> None:
             tstop_col=f"tt_{args.event}",
             max_iter=args.max_iter,
             n_splits=args.n_splits,
+            return_audit=True,
         )
         base_results.filter(pl.col("eval_data") == "test_data").drop("eval_data").write_csv(base_test_fp)
         base_results.filter(pl.col("eval_data") == "cv_data").drop("eval_data").write_csv(base_val_fp)
+        write_ipcw_reference_csv(base_ipcw, base_ipcw_fp)
         print(f"[time] {label} base model: {(time.time() - t0) / 60:.1f}m")
     else:
         print(f"[skip] {label} base model already exists")

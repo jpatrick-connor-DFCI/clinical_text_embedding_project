@@ -25,8 +25,8 @@ script reads the CSVs written by the Python prep tier and builds every panel as 
 ggplot object, saving each one individually (both PNG and PDF) — there is no composed
 multi-panel figure.
 
-All figures render scored by Harrell's **C-index** only (`MANUSCRIPT_METRIC="cindex"`, see
-`R/figure_utils.R::METRIC`) — mean time-dependent AUC(t) rendering is disabled.
+Metric-aware figures render twice: once using mean time-dependent AUC(t), the primary metric,
+and once using Harrell's C-index. Metric-invariant figures render once.
 
 - **Prep tier**: [06_generate_figure_data.ipynb](06_generate_figure_data.ipynb) (Python kernel) — run first.
 - **One-time R package bootstrap** (any host with R):
@@ -50,30 +50,33 @@ cat("R version: ", R.version.string, "\n", sep = "")
 ```
 
 ```{r render-plots}
-PLOT_SCRIPTS <- c(
+METRIC_INVARIANT_SCRIPTS <- c(
   "plot_figure_0.R",
   "plot_figure_1.R",
-  "plot_figure_2.R",
-  "plot_figure_2_supp.R",
-  "plot_figure_2_supp_events.R",
-  "plot_figure_2_supp_anchor.R",
-  "plot_figure_3.R",
   "plot_figure_4.R",
   "plot_figure_4_supp.R",
   "plot_figure_5.R"
 )
 
-# MANUSCRIPT_METRIC pins every script to Harrell's C-index (see
-# R/figure_utils.R::METRIC) — mean AUC(t) rendering is disabled.
-Sys.setenv(MANUSCRIPT_METRIC = "cindex")
+METRIC_SCRIPTS <- c(
+  "plot_figure_2.R",
+  "plot_figure_2_supp.R",
+  "plot_figure_2_supp_events.R",
+  "plot_figure_2_supp_anchor.R",
+  "plot_figure_3.R"
+)
 
-run_plot <- function(script) {
-  cat("\n=== ", script, " ===\n", sep = "")
+run_plot <- function(script, metric = NULL) {
+  if (is.null(metric)) Sys.unsetenv("MANUSCRIPT_METRIC") else Sys.setenv(MANUSCRIPT_METRIC = metric)
+  cat("\n=== ", script, if (is.null(metric)) "" else paste0(" [", metric, "]"), " ===\n", sep = "")
   env <- new.env(parent = globalenv())
   sys.source(file.path(R_DIR, script), envir = env)
 }
 
-for (s in PLOT_SCRIPTS) run_plot(s)
+for (s in METRIC_INVARIANT_SCRIPTS) run_plot(s)
+for (metric in c("auc", "cindex")) {
+  for (s in METRIC_SCRIPTS) run_plot(s, metric)
+}
 
 Sys.unsetenv("MANUSCRIPT_METRIC")
 

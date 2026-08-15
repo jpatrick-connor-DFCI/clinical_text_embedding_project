@@ -1,14 +1,11 @@
 # Render Figure 2 supplement: remaining per-event held-out-risk KM panels
-# (ranks 2-3 of each category) for the Δ C-index top-3 events shown in Figure 2 H-M.
+# (ranks 2-3 of each category) for the active metric's top-3 events.
 #
 # Figure 2 itself shows only the rank-1 (largest positive Δ C-index) event's KM
 # curve per category (mets / ICD10 / phecodes); this supplement shows the
 # rank-2 and rank-3 events for each category as a 3x2 grid.
 #
-# C-index only — this script does not honor MANUSCRIPT_METRIC; it always reads
-# fig2_scheme_delta_topk.csv / fig2_scheme_event_km.csv (ranked by delta
-# C-index, largest positive delta only) and produces a single un-suffixed
-# output.
+# Ranking and output names follow MANUSCRIPT_METRIC=cindex|auc.
 
 suppressPackageStartupMessages({
   library(ggplot2); library(patchwork); library(dplyr)
@@ -83,8 +80,8 @@ build_event_km_panel <- function(km_data, topk, category, rank_n) {
 # ============================================================================
 # Compose supplementary figure: 3x2 grid, rows = category, cols = rank2/rank3
 # ============================================================================
-topk    <- load_figure_data("fig2_scheme_delta_topk.csv")
-km_data <- load_figure_data("fig2_scheme_event_km.csv")
+topk    <- load_figure_data(paste0("fig2_scheme_delta_topk_", METRIC, ".csv"))
+km_data <- load_figure_data(paste0("fig2_scheme_event_km_", METRIC, ".csv"))
 
 pS_mets2     <- build_event_km_panel(km_data, topk, "mets", 2)
 pS_mets3     <- build_event_km_panel(km_data, topk, "mets", 3)
@@ -93,9 +90,10 @@ pS_icd3      <- build_event_km_panel(km_data, topk, "ICD10", 3)
 pS_phecodes2 <- build_event_km_panel(km_data, topk, "phecodes", 2)
 pS_phecodes3 <- build_event_km_panel(km_data, topk, "phecodes", 3)
 
-save_panel(pS_mets2,     "figS_scheme_km_mets2", group = "figure2", width = 5.6, height = 4.6)
-save_panel(pS_mets3,     "figS_scheme_km_mets3", group = "figure2", width = 5.6, height = 4.6)
-save_panel(pS_icd2,      "figS_scheme_km_icd2", group = "figure2", width = 5.6, height = 4.6)
-save_panel(pS_icd3,      "figS_scheme_km_icd3", group = "figure2", width = 5.6, height = 4.6)
-save_panel(pS_phecodes2, "figS_scheme_km_phecodes2", group = "figure2", width = 5.6, height = 4.6)
-save_panel(pS_phecodes3, "figS_scheme_km_phecodes3", group = "figure2", width = 5.6, height = 4.6)
+.tag <- metric_tag(METRIC)
+save_panel(pS_mets2, paste0("figS_scheme_km_mets2", .tag), group = "figure2", width = 5.6, height = 4.6)
+save_panel(pS_mets3, paste0("figS_scheme_km_mets3", .tag), group = "figure2", width = 5.6, height = 4.6)
+save_panel(pS_icd2, paste0("figS_scheme_km_icd2", .tag), group = "figure2", width = 5.6, height = 4.6)
+save_panel(pS_icd3, paste0("figS_scheme_km_icd3", .tag), group = "figure2", width = 5.6, height = 4.6)
+save_panel(pS_phecodes2, paste0("figS_scheme_km_phecodes2", .tag), group = "figure2", width = 5.6, height = 4.6)
+save_panel(pS_phecodes3, paste0("figS_scheme_km_phecodes3", .tag), group = "figure2", width = 5.6, height = 4.6)

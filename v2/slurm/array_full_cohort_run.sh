@@ -119,7 +119,7 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
     --event "$EVENT" \
     --anchor "$ANCHOR" \
     --n-jobs "${SLURM_CPUS_PER_TASK:-1}" \
-    --max-iter "${COXNET_MAX_ITER:-5000}" \
+    --max-iter "${COXNET_MAX_ITER:-2500}" \
     --backend "${COXNET_BACKEND:-threading}" \
     ${OVERWRITE_FLAG[@]+"${OVERWRITE_FLAG[@]}"}; then
     echo "[error] row ${LINE_NUM} failed: scheme=${SCHEME}, event=${EVENT}"

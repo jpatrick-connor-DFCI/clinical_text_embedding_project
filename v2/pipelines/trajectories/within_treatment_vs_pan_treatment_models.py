@@ -15,7 +15,7 @@ from tqdm import tqdm
 from config import FEATURE_PATH, RESULTS_PATH
 from schemes import load_embedding_prediction_df
 from survival import (RunCheckpoint, dataframe_fingerprint,
-                      fit_predict_external_CoxPH, get_heldout_risk_scores_CoxPH,
+                      fit_predict_external_CoxPH, get_nested_heldout_risk_scores_CoxPH,
                       run_grid_CoxPH_parallel)
 from shared.polars_utils import filter_finite_rows
 
@@ -51,16 +51,6 @@ def main() -> None:
     _emb_mrns = set(time_decayed_events_df['DFCI_MRN'].unique().to_list())
     cancer_type_sub = cancer_type_df.filter(pl.col('DFCI_MRN').is_in(_emb_mrns))
 
-    cancer_type_counts = cancer_type_sub['CANCER_TYPE'].value_counts()
-    types_to_keep = set(cancer_type_counts.filter(pl.col('count') >= 500)['CANCER_TYPE'].to_list())
-    cancer_type_sub = cancer_type_sub.with_columns(
-        pl.when(pl.col('CANCER_TYPE').is_in(types_to_keep))
-        .then(pl.col('CANCER_TYPE'))
-        .otherwise(pl.lit('OTHER'))
-        .alias('CANCER_TYPE')
-    )
-    cancer_type_sub = cancer_type_sub.to_dummies(columns=['CANCER_TYPE'], drop_first=True)
-
     # First-line treatment class per patient, derived from the same one-hot source Figure 1 uses
     # (categorical_treatment_data_by_line.csv.gz: DFCI_MRN, treatment_line, PX_on_<class> dummies).
     # Take the first line (treatment_line == 1) and assign each patient the single present class.
@@ -77,22 +67,12 @@ def main() -> None:
     treatment_df = tx1.select(['DFCI_MRN', 'TREATMENT_CLASSIFICATION']).unique(subset='DFCI_MRN')
     treatment_types = treatment_df['TREATMENT_CLASSIFICATION'].unique().to_list()
 
-    # Per-class patient counts within the embedding cohort. These gate WHICH classes get a within-model
-    # (and therefore a size-matched pan-treatment comparator; see _fit_matched_pan below).
-    _cohort_mrns = set(time_decayed_events_df['DFCI_MRN'].unique().to_list())
-    treatment_counts = (treatment_df.filter(pl.col('DFCI_MRN').is_in(_cohort_mrns))['TREATMENT_CLASSIFICATION']
-                         .value_counts())
-    within_eligible = set(
-        treatment_counts.filter(pl.col('count') >= MIN_STRATUM_N)['TREATMENT_CLASSIFICATION'].to_list()
-    )
-
     # Merge embeddings + cancer types + events
     full_df = (time_decayed_events_df
                .join(treatment_df, on='DFCI_MRN', how='inner')
                .join(cancer_type_sub, on='DFCI_MRN', how='inner'))
 
     # === Feature definitions ===
-    base_vars = ['GENDER', 'AGE_AT_TREATMENTSTART'] + [col for col in full_df.columns if 'CANCER_TYPE' in col]
     event = 'death'
 
     # Find all time-to-event columns
@@ -106,6 +86,32 @@ def main() -> None:
     held_mrns = set(full_df['DFCI_MRN'].sample(fraction=0.25, seed=1234).to_list())
     train_df = full_df.filter(~pl.col('DFCI_MRN').is_in(held_mrns))
     held_df  = full_df.filter( pl.col('DFCI_MRN').is_in(held_mrns))
+
+    cancer_type_counts = train_df['CANCER_TYPE'].value_counts()
+    types_to_keep = set(
+        cancer_type_counts.filter(pl.col('count') >= 500)['CANCER_TYPE'].to_list()
+    )
+    def _encode_cancer_type(frame):
+        return frame.with_columns(
+            pl.when(pl.col('CANCER_TYPE').is_in(types_to_keep))
+            .then(pl.col('CANCER_TYPE')).otherwise(pl.lit('OTHER')).alias('CANCER_TYPE')
+        ).to_dummies(columns=['CANCER_TYPE'], drop_first=True)
+    train_df = _encode_cancer_type(train_df)
+    held_df = _encode_cancer_type(held_df)
+    for c in set(train_df.columns) - set(held_df.columns):
+        if c.startswith('CANCER_TYPE_'):
+            held_df = held_df.with_columns(pl.lit(0).alias(c))
+    for c in set(held_df.columns) - set(train_df.columns):
+        if c.startswith('CANCER_TYPE_'):
+            held_df = held_df.drop(c)
+
+    base_vars = ['GENDER', 'AGE_AT_TREATMENTSTART'] + [
+        col for col in train_df.columns if col.startswith('CANCER_TYPE_')
+    ]
+    treatment_counts = train_df['TREATMENT_CLASSIFICATION'].value_counts()
+    within_eligible = set(
+        treatment_counts.filter(pl.col('count') >= MIN_STRATUM_N)['TREATMENT_CLASSIFICATION'].to_list()
+    )
 
     # Ensure consistent column order
     held_df = held_df.select(train_df.columns)
@@ -185,10 +191,10 @@ def main() -> None:
         ).row(0, named=True)
         matched_l1, matched_alpha = _best['l1_ratio'], _best['alpha']
         trained_matched_pan = (
-            get_heldout_risk_scores_CoxPH(
+            get_nested_heldout_risk_scores_CoxPH(
                 matched_pan_train, base_vars, continuous_vars, embed_cols,
-                event_col=event, tstop_col=f'tt_{event}', penalized=True, max_iter=3000,
-                l1_ratio=matched_l1, alpha=matched_alpha, backend="threading")
+                l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}',
+                max_iter=3000, backend="threading")
             .rename({'risk_score': 'pan_treatment_risk_score'})
         )
         trained_matched_pan = trained_matched_pan.with_columns(pl.lit(treatment).alias('STRATUM'))
@@ -250,10 +256,10 @@ def main() -> None:
             'mean_auc(t)', descending=True
         ).row(0, named=True)
         best_l1, best_alpha = _best['l1_ratio'], _best['alpha']
-        trained_sub = get_heldout_risk_scores_CoxPH(
+        trained_sub = get_nested_heldout_risk_scores_CoxPH(
             sub_df, base_vars, continuous_vars, embed_cols,
-            event_col=event, tstop_col=f'tt_{event}', penalized=True, max_iter=3000,
-            l1_ratio=best_l1, alpha=best_alpha, backend="threading"
+            l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}',
+            max_iter=3000, backend="threading"
         ).rename({'risk_score': 'within_treatment_risk_score'})
         trained_sub = trained_sub.with_columns(pl.lit(treatment).alias('STRATUM'))
 

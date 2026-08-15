@@ -20,7 +20,7 @@ import polars as pl
 from sklearn.model_selection import train_test_split, StratifiedKFold
 
 from sksurv.linear_model import CoxnetSurvivalAnalysis
-from sksurv.metrics import cumulative_dynamic_auc
+from sksurv.metrics import concordance_index_censored, cumulative_dynamic_auc
 
 from ._common import (
     _SUPPRESSED_WARNINGS,
@@ -37,6 +37,28 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _json_array(values) -> str:
+    """Compact, standards-compliant JSON for a numeric array of any shape."""
+    array = np.asarray(values)
+    payload = (
+        np.where(np.isfinite(array), array, None).tolist()
+        if np.issubdtype(array.dtype, np.number)
+        else array.tolist()
+    )
+    return json.dumps(payload, separators=(",", ":"))
+
+
+def _ipcw_reference_row(eval_data: str, fold: int | None, ids, y) -> dict:
+    """One normalized audit row describing an IPCW reference population."""
+    return {
+        "eval_data": eval_data,
+        "fold": fold,
+        "reference_ids": json.dumps(np.asarray(ids).tolist(), separators=(",", ":")),
+        "reference_events": _json_array(y["Status"].astype(int)),
+        "reference_times": _json_array(y["Survival_in_days"]),
+    }
+
+
 # ==========================================
 # Grid search (rewritten with your edits)
 # ==========================================
@@ -51,7 +73,7 @@ def run_grid_CoxPH_parallel(
     pca_config: dict[str, tuple[list[str], int]] | None = None,
     event_col: str = "event",
     tstop_col: str = "tstop",
-    max_iter: int = 10000,
+    max_iter: int = 2500,
     n_splits: int = 5,
     time_evals: tuple[int, int] = (5, 95),
     n_jobs: int = -1,
@@ -62,7 +84,9 @@ def run_grid_CoxPH_parallel(
     pre_dispatch: int | str = "2*n_jobs",
     batch_size: int | str = "auto",
     parallel_axis: str = "auto",    # "auto", "l1", or "fold"
-) -> tuple[pl.DataFrame, pl.DataFrame, object]:
+    id_col: str = "DFCI_MRN",
+    return_audit: bool = False,
+):
     """
     Auto-switch behavior:
       - If pca_config is None or {}, runs the NO-memmap in-RAM path (fastest for dense text).
@@ -127,6 +151,8 @@ def run_grid_CoxPH_parallel(
         X_test = X_full[idx_test]
         y_train_val = y_struct[idx_train_val]
         y_test = y_struct[idx_test]
+        ids = df[id_col].to_numpy() if id_col in df.columns else np.arange(df.height)
+        ids_train_val = ids[idx_train_val]
 
         # ---- CV ----
         event_int_np = df[event_col].cast(pl.Int64).to_numpy()
@@ -137,6 +163,15 @@ def run_grid_CoxPH_parallel(
     # ---- Evaluation time points ----
     lower, upper = np.percentile(y_train_val["Survival_in_days"], [time_evals[0], time_evals[1]])
     eval_times = np.linspace(lower, upper, 50) if lower != upper else np.array([lower], dtype=float)
+
+    ipcw_reference_df = None
+    if return_audit:
+        ipcw_rows = [_ipcw_reference_row("test", None, ids_train_val, y_train_val)]
+        ipcw_rows.extend(
+            _ipcw_reference_row("cv", fold_i, ids_train_val[tr], y_train_val[tr])
+            for fold_i, (tr, _va) in enumerate(folds)
+        )
+        ipcw_reference_df = pl.DataFrame(ipcw_rows)
 
     # ---- penalty once if no PCA; recomputed per fold if PCA changes columns ----
     penalty_no_pca = np.fromiter((0.0 if c in base_col_set else 1.0 for c in all_cols), dtype=np.float32)
@@ -156,19 +191,21 @@ def run_grid_CoxPH_parallel(
         parallel_axis_eff = parallel_axis
 
     if not use_memmap:
-        return _run_grid_no_pca(
+        result = _run_grid_no_pca(
             X_train_val, X_test, y_train_val, y_test, folds,
             all_cols, continuous_vars, alphas_to_test, l1_ratios,
             max_iter, eval_times, penalty_no_pca,
             parallel_ctx, parallel_axis_eff, n_jobs, verbose, pre_dispatch, batch_size,
         )
+        return (*result, ipcw_reference_df) if return_audit else result
 
-    return _run_grid_with_pca(
+    result = _run_grid_with_pca(
         X_train_val, X_test, y_train_val, y_test, folds,
         all_cols, continuous_vars, base_col_set, pca_config, pca_iterated_power,
         alphas_to_test, l1_ratios, max_iter, eval_times,
         parallel_ctx, parallel_axis_eff, n_jobs, verbose, pre_dispatch, batch_size,
     )
+    return (*result, ipcw_reference_df) if return_audit else result
 
 
 # ==========================================================================================
@@ -186,6 +223,8 @@ def _run_grid_no_pca(
 
     def _evaluate_fold_no_pca(fi: int, tr: np.ndarray, va: np.ndarray, l1_ratio: float):
         fold_auc = np.full(n_alphas, np.nan)
+        fold_cindex = np.full(n_alphas, np.nan)
+        fold_auc_curves = np.full((n_alphas, len(eval_times)), np.nan)
         start = time.time()
         error_flag = False
 
@@ -214,17 +253,23 @@ def _run_grid_no_pca(
                         penalty_factor=penalty_no_pca,
                     )
                     m.fit(X_tr, y_tr)
-                    _, fold_auc[ai] = cumulative_dynamic_auc(
-                        y_tr, y_va, m.predict(X_va), eval_times
+                    predictions = m.predict(X_va)
+                    fold_auc_curves[ai], fold_auc[ai] = cumulative_dynamic_auc(
+                        y_tr, y_va, predictions, eval_times
                     )
+                    fold_cindex[ai] = concordance_index_censored(
+                        y_va["Status"], y_va["Survival_in_days"], predictions
+                    )[0]
                 except Exception as e:
                     logger.debug("Grid CV fold %d, alpha=%.2e, l1=%.2f failed: %s", fi, a, l1_ratio, e)
                     error_flag = True
 
-        return fi, fold_auc, time.time() - start, error_flag
+        return fi, fold_auc, fold_cindex, fold_auc_curves, time.time() - start, error_flag
 
     def evaluate_l1_path_no_pca(l1_ratio: float):
         fold_aucs = np.full((len(folds), n_alphas), np.nan)
+        fold_cindices = np.full((len(folds), n_alphas), np.nan)
+        fold_auc_curves = np.full((len(folds), n_alphas, len(eval_times)), np.nan)
         fold_times = np.zeros(len(folds))
         fold_errors = np.zeros(len(folds), dtype=bool)
 
@@ -245,8 +290,10 @@ def _run_grid_no_pca(
                 for fi, (tr, va) in enumerate(folds)
             ]
 
-        for fi, fold_auc, fold_time, error_flag in fold_results:
+        for fi, fold_auc, fold_cindex, fold_curves, fold_time, error_flag in fold_results:
             fold_aucs[fi, :] = fold_auc
+            fold_cindices[fi, :] = fold_cindex
+            fold_auc_curves[fi, :, :] = fold_curves
             fold_times[fi] = fold_time
             fold_errors[fi] = error_flag
 
@@ -255,7 +302,7 @@ def _run_grid_no_pca(
             rows.append([
                 float(l1_ratio),
                 float(alpha),
-                np.nan,  # mean_c_index: not computed in CV (only AUC is); always NaN here, see evaluate_surv_model for the *_test.csv path where it is computed
+                float(np.nanmean(fold_cindices[:, ai])),
                 float(np.nanmean(fold_aucs[:, ai])),
                 np.nan,  # mean_ibs: not computed in CV, same as mean_c_index above; always NaN here
                 float(np.mean(fold_times)),
@@ -264,6 +311,9 @@ def _run_grid_no_pca(
                 float(np.mean(fold_errors)),  # error_rate: same per-l1-path (not per-alpha) caveat as fold_error_flags above
                 json.dumps([0] * len(folds)),
                 int(np.sum(~np.isnan(fold_aucs[:, ai]))),  # n_folds_contributing: per-alpha count behind mean_auc(t); no minimum enforced, a 1-fold mean is a valid winner
+                _json_array(eval_times),
+                _json_array(fold_auc_curves[:, ai, :]),
+                _json_array(fold_cindices[:, ai]),
             ])
         return rows
 
@@ -296,6 +346,9 @@ def _run_grid_no_pca(
             "error_rate",
             "fold_warning_counts",
             "n_folds_contributing",
+            "auc_eval_times",
+            "fold_auc_curves",
+            "fold_c_indices",
         ],
         orient="row",
     )
@@ -326,12 +379,19 @@ def _run_grid_no_pca(
             penalty_factor=penalty_no_pca,
         )
         final_model.fit(X_trval_scaled, y_train_val)
-        mean_auc, ibs, cidx = evaluate_surv_model(final_model, X_test_scaled, y_train_val, y_test, eval_times)
+        mean_auc, ibs, cidx, auc_curve = evaluate_surv_model(
+            final_model, X_test_scaled, y_train_val, y_test, eval_times,
+            return_auc_curve=True,
+        )
     except Exception as e:
         logger.warning("Grid search final model (no PCA) failed: %s", e)
         final_model, mean_auc, ibs, cidx = None, np.nan, np.nan, np.nan
+        auc_curve = np.full(len(eval_times), np.nan)
 
-    test_df = pl.DataFrame({"mean_auc(t)": [mean_auc], "mean_ibs": [ibs], "mean_c_index": [cidx]})
+    test_df = pl.DataFrame({
+        "mean_auc(t)": [mean_auc], "mean_ibs": [ibs], "mean_c_index": [cidx],
+        "auc_eval_times": [_json_array(eval_times)], "auc_curve": [_json_array(auc_curve)],
+    })
     return test_df, cv_results_df, final_model
 
 
@@ -403,6 +463,8 @@ def _run_grid_with_pca(
 
         def _evaluate_fold_with_pca(fi: int, meta: dict, l1_ratio: float):
             fold_auc = np.full(n_alphas_b, np.nan)
+            fold_cindex = np.full(n_alphas_b, np.nan)
+            fold_auc_curves = np.full((n_alphas_b, len(eval_times)), np.nan)
             start = time.time()
             error_flag = False
 
@@ -424,17 +486,23 @@ def _run_grid_with_pca(
                             penalty_factor=penalty,
                         )
                         m.fit(X_tr_np, y_tr)
-                        _, fold_auc[ai] = cumulative_dynamic_auc(
-                            y_tr, y_va, m.predict(X_va_np), eval_times
+                        predictions = m.predict(X_va_np)
+                        fold_auc_curves[ai], fold_auc[ai] = cumulative_dynamic_auc(
+                            y_tr, y_va, predictions, eval_times
                         )
+                        fold_cindex[ai] = concordance_index_censored(
+                            y_va["Status"], y_va["Survival_in_days"], predictions
+                        )[0]
                     except Exception as e:
                         logger.debug("Grid CV fold %d (PCA), alpha=%.2e, l1=%.2f failed: %s", fi, a, l1_ratio, e)
                         error_flag = True
 
-            return fi, fold_auc, time.time() - start, error_flag
+            return fi, fold_auc, fold_cindex, fold_auc_curves, time.time() - start, error_flag
 
         def evaluate_l1_path_with_pca(l1_ratio: float):
             fold_aucs = np.full((len(fold_meta), n_alphas_b), np.nan)
+            fold_cindices = np.full((len(fold_meta), n_alphas_b), np.nan)
+            fold_auc_curves = np.full((len(fold_meta), n_alphas_b, len(eval_times)), np.nan)
             fold_times = np.zeros(len(fold_meta))
             fold_errors = np.zeros(len(fold_meta), dtype=bool)
 
@@ -455,8 +523,10 @@ def _run_grid_with_pca(
                     for fi, meta in enumerate(fold_meta)
                 ]
 
-            for fi, fold_auc, fold_time, error_flag in fold_results:
+            for fi, fold_auc, fold_cindex, fold_curves, fold_time, error_flag in fold_results:
                 fold_aucs[fi, :] = fold_auc
+                fold_cindices[fi, :] = fold_cindex
+                fold_auc_curves[fi, :, :] = fold_curves
                 fold_times[fi] = fold_time
                 fold_errors[fi] = error_flag
 
@@ -465,7 +535,7 @@ def _run_grid_with_pca(
                 rows.append([
                     float(l1_ratio),
                     float(alpha),
-                    np.nan,  # mean_c_index: not computed in CV, always NaN here (see no-PCA path's comment)
+                    float(np.nanmean(fold_cindices[:, ai])),
                     float(np.nanmean(fold_aucs[:, ai])),
                     np.nan,  # mean_ibs: not computed in CV, always NaN here
                     float(np.mean(fold_times)),
@@ -474,6 +544,9 @@ def _run_grid_with_pca(
                     float(np.mean(fold_errors)),  # error_rate: per-l1-path, not per-alpha
                     json.dumps([0] * len(fold_meta)),
                     int(np.sum(~np.isnan(fold_aucs[:, ai]))),  # n_folds_contributing: see no-PCA path's comment
+                    _json_array(eval_times),
+                    _json_array(fold_auc_curves[:, ai, :]),
+                    _json_array(fold_cindices[:, ai]),
                 ])
             return rows
 
@@ -506,6 +579,9 @@ def _run_grid_with_pca(
                 "error_rate",
                 "fold_warning_counts",
                 "n_folds_contributing",
+                "auc_eval_times",
+                "fold_auc_curves",
+                "fold_c_indices",
             ],
             orient="row",
         )
@@ -552,12 +628,19 @@ def _run_grid_with_pca(
                 penalty_factor=penalty_final,
             )
             final_model.fit(X_trval, y_train_val)
-            mean_auc, ibs, cidx = evaluate_surv_model(final_model, X_te, y_train_val, y_test, eval_times)
+            mean_auc, ibs, cidx, auc_curve = evaluate_surv_model(
+                final_model, X_te, y_train_val, y_test, eval_times,
+                return_auc_curve=True,
+            )
         except Exception as e:
             logger.warning("Grid search final model (PCA) failed: %s", e)
             final_model, mean_auc, ibs, cidx = None, np.nan, np.nan, np.nan
+            auc_curve = np.full(len(eval_times), np.nan)
 
-        test_df = pl.DataFrame({"mean_auc(t)": [mean_auc], "mean_ibs": [ibs], "mean_c_index": [cidx]})
+        test_df = pl.DataFrame({
+            "mean_auc(t)": [mean_auc], "mean_ibs": [ibs], "mean_c_index": [cidx],
+            "auc_eval_times": [_json_array(eval_times)], "auc_curve": [_json_array(auc_curve)],
+        })
         return test_df, cv_results_df, final_model
 
     finally:

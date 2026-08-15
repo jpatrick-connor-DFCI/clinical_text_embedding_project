@@ -46,7 +46,15 @@ def _make_surv_array(event: np.ndarray, time: np.ndarray) -> np.ndarray:
     return y
 
 
-def evaluate_surv_model(surv_model, X_eval, y_train, y_eval, eval_times: np.ndarray) -> tuple[float, float, float]:
+def evaluate_surv_model(
+    surv_model,
+    X_eval,
+    y_train,
+    y_eval,
+    eval_times: np.ndarray,
+    *,
+    return_auc_curve: bool = False,
+):
     """
     Evaluate a survival model on test/validation data.
 
@@ -63,19 +71,24 @@ def evaluate_surv_model(surv_model, X_eval, y_train, y_eval, eval_times: np.ndar
         eval_times (np.ndarray): Times at which to compute AUC and Brier score.
 
     Returns:
-        tuple[float, float, float]: mean_auc_t, ibs, c_index. Returns NaN on failure.
+        ``(mean_auc_t, ibs, c_index)`` by default. When ``return_auc_curve`` is
+        true, appends the time-specific AUC array. Returns NaN values on failure.
     """
     try:
         chf_funcs = surv_model.predict_cumulative_hazard_function(X_eval, return_array=False)
         risk_scores = np.vstack([chf(eval_times) for chf in chf_funcs])
         surv_probs = np.exp(-risk_scores)  # S(t) = exp(-H(t)); IBS requires survival probs in [0,1]
-        _, mean_auc_t = cumulative_dynamic_auc(y_train, y_eval, risk_scores, eval_times)
+        auc_curve, mean_auc_t = cumulative_dynamic_auc(y_train, y_eval, risk_scores, eval_times)
         ibs = integrated_brier_score(y_train, y_eval, surv_probs, eval_times)
         c_index = surv_model.score(X_eval, y_eval)
     except Exception as e:
         logger.warning("evaluate_surv_model failed: %s", e)
         mean_auc_t, ibs, c_index = np.nan, np.nan, np.nan
-    return mean_auc_t, ibs, c_index
+        auc_curve = np.full(len(eval_times), np.nan, dtype=float)
+    result = (mean_auc_t, ibs, c_index)
+    if return_auc_curve:
+        return (*result, np.asarray(auc_curve, dtype=float))
+    return result
 
 
 # =========================
