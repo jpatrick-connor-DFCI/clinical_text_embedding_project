@@ -19,7 +19,12 @@ V2_ROOT = Path(__file__).resolve().parents[1] / "v2"
 if str(V2_ROOT) not in sys.path:
     sys.path.insert(0, str(V2_ROOT))
 
-from pipelines.training.slurm_array_utils import write_ipcw_reference_csv  # noqa: E402
+from pipelines.training.slurm_array_utils import (  # noqa: E402
+    DEFAULT_ALPHAS,
+    DEFAULT_LOW_ALPHAS,
+    adaptive_low_alphas_for,
+    write_ipcw_reference_csv,
+)
 from survival.cox_models.base import run_base_CoxPH  # noqa: E402
 from survival.cox_models.grid_search import run_grid_CoxPH_parallel  # noqa: E402
 from survival.cox_models.heldout import get_nested_heldout_risk_scores_CoxPH  # noqa: E402
@@ -39,6 +44,31 @@ def _survival_frame(n: int = 160) -> pl.DataFrame:
 
 
 class EvaluationAuditTests(unittest.TestCase):
+    def test_default_alpha_grid_has_conditional_low_refinement(self) -> None:
+        self.assertEqual(len(DEFAULT_ALPHAS), 10)
+        self.assertEqual(len(DEFAULT_LOW_ALPHAS), 5)
+        self.assertAlmostEqual(min(DEFAULT_ALPHAS), 1e-4)
+        self.assertAlmostEqual(max(DEFAULT_ALPHAS), 1.0)
+        self.assertTrue(all(1e-5 <= alpha < 1e-4 for alpha in DEFAULT_LOW_ALPHAS))
+        self.assertEqual(adaptive_low_alphas_for(DEFAULT_ALPHAS), DEFAULT_LOW_ALPHAS)
+        self.assertIsNone(adaptive_low_alphas_for([0.01]))
+
+    def test_grid_appends_low_refinement_when_primary_winner_is_boundary(self) -> None:
+        _test_df, val_df, _model = run_grid_CoxPH_parallel(
+            _survival_frame(),
+            base_cols=[],
+            continuous_vars=["x"],
+            penalized_cols=["x"],
+            l1_ratios=[0.5],
+            alphas_to_test=[0.01],
+            adaptive_low_alphas=[0.001],
+            n_splits=2,
+            n_jobs=1,
+            max_iter=100,
+        )
+
+        self.assertEqual(set(val_df["alpha"]), {0.01, 0.001})
+
     def test_penalized_grid_persists_auc_curves_and_ipcw_populations(self) -> None:
         progress_output = io.StringIO()
         with redirect_stdout(progress_output):

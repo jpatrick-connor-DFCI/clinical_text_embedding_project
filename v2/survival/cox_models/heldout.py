@@ -353,6 +353,7 @@ def get_nested_heldout_risk_scores_CoxPH(
     n_jobs: int = -1,
     backend: str = "threading",
     primary_metric: str = "mean_auc(t)",
+    adaptive_low_alphas: list[float] | None = None,
 ) -> pl.DataFrame:
     """Nested-CV risk scores with tuning isolated inside each outer fold.
 
@@ -392,6 +393,7 @@ def get_nested_heldout_risk_scores_CoxPH(
             n_splits=n_splits,
             n_jobs=n_jobs,
             backend=backend,
+            adaptive_low_alphas=adaptive_low_alphas,
         )
         best = (
             inner_val.filter(pl.col(primary_metric).is_finite())

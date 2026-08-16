@@ -17,6 +17,7 @@ from survival import get_nested_heldout_risk_scores_CoxPH, run_grid_CoxPH_parall
 from pipelines.training.slurm_array_utils import (
     DEFAULT_ALPHAS,
     DEFAULT_L1_RATIOS,
+    adaptive_low_alphas_for,
     _get_n_jobs,
     filter_event_rows,
     get_events_from_df,
@@ -184,6 +185,7 @@ def _run_one_modality(
             n_jobs=n_jobs,
             backend=args.backend,
             return_audit=True,
+            adaptive_low_alphas=adaptive_low_alphas_for(args.alphas),
         )
         test_df.write_csv(test_fp)
         val_df.write_csv(val_fp)
@@ -210,6 +212,7 @@ def _run_one_modality(
         n_splits=args.n_splits,
         n_jobs=n_jobs,
         backend=args.backend,
+        adaptive_low_alphas=adaptive_low_alphas_for(args.alphas),
     ).rename({"risk_score": f"{modality}_risk_score"})
     risk_scores.write_csv(risk_fp)
     print(f"[time] {label} held-out risk: {(time.time() - t1) / 60:.1f}m ({len(risk_scores)} patients)")

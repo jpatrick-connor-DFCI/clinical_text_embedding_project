@@ -121,6 +121,7 @@ def run_grid_CoxPH_parallel(
     id_col: str = "DFCI_MRN",
     return_audit: bool = False,
     show_progress: bool = False,
+    adaptive_low_alphas: list[float] | None = None,
 ):
     """
     Auto-switch behavior:
@@ -225,33 +226,68 @@ def run_grid_CoxPH_parallel(
     else:
         parallel_axis_eff = parallel_axis
 
-    progress = None
-    if show_progress:
-        if backend != "threading":
-            raise ValueError("show_progress=True currently requires backend='threading'")
-        n_combinations = len(folds) * len(l1_ratios) * len(alphas_to_test)
-        progress = _LineProgress(
-            total=n_combinations,
-            display_every=len(alphas_to_test),
-        )
+    if show_progress and backend != "threading":
+        raise ValueError("show_progress=True currently requires backend='threading'")
 
-    if not use_memmap:
-        result = _run_grid_no_pca(
+    def _run_alpha_grid(alpha_grid: list[float]):
+        progress = None
+        if show_progress:
+            n_combinations = len(folds) * len(l1_ratios) * len(alpha_grid)
+            progress = _LineProgress(
+                total=n_combinations,
+                display_every=len(alpha_grid),
+            )
+        if not use_memmap:
+            return _run_grid_no_pca(
+                X_train_val, X_test, y_train_val, y_test, folds,
+                all_cols, continuous_vars, alpha_grid, l1_ratios,
+                max_iter, eval_times, penalty_no_pca,
+                parallel_ctx, parallel_axis_eff, n_jobs, verbose, pre_dispatch, batch_size,
+                progress,
+            )
+        return _run_grid_with_pca(
             X_train_val, X_test, y_train_val, y_test, folds,
-            all_cols, continuous_vars, alphas_to_test, l1_ratios,
-            max_iter, eval_times, penalty_no_pca,
+            all_cols, continuous_vars, base_col_set, pca_config, pca_iterated_power,
+            alpha_grid, l1_ratios, max_iter, eval_times,
             parallel_ctx, parallel_axis_eff, n_jobs, verbose, pre_dispatch, batch_size,
             progress,
         )
-        return (*result, ipcw_reference_df) if return_audit else result
 
-    result = _run_grid_with_pca(
-        X_train_val, X_test, y_train_val, y_test, folds,
-        all_cols, continuous_vars, base_col_set, pca_config, pca_iterated_power,
-        alphas_to_test, l1_ratios, max_iter, eval_times,
-        parallel_ctx, parallel_axis_eff, n_jobs, verbose, pre_dispatch, batch_size,
-        progress,
-    )
+    result = _run_alpha_grid(alphas_to_test)
+
+    if adaptive_low_alphas:
+        primary_best = (
+            result[1].filter(pl.col("mean_auc(t)").is_finite())
+            .sort("mean_auc(t)", descending=True)
+            .row(0, named=True)
+        )
+        lower_boundary = float(np.min(alphas_to_test))
+        if np.isclose(float(primary_best["alpha"]), lower_boundary, rtol=1e-12, atol=0.0):
+            print(
+                f"[CV] Best alpha {lower_boundary:.3e} reached the primary lower boundary; "
+                f"evaluating {len(adaptive_low_alphas)} lower alphas.",
+                flush=True,
+            )
+            try:
+                low_result = _run_alpha_grid(adaptive_low_alphas)
+            except RuntimeError as exc:
+                if not str(exc).startswith("All CV evaluations failed"):
+                    raise
+                print(f"[CV] Low-alpha refinement failed; retaining primary grid: {exc}", flush=True)
+            else:
+                low_best = (
+                    low_result[1].filter(pl.col("mean_auc(t)").is_finite())
+                    .sort("mean_auc(t)", descending=True)
+                    .row(0, named=True)
+                )
+                chosen = (
+                    low_result
+                    if float(low_best["mean_auc(t)"]) > float(primary_best["mean_auc(t)"])
+                    else result
+                )
+                combined_val = pl.concat([result[1], low_result[1]], how="vertical")
+                result = (chosen[0], combined_val, chosen[2])
+
     return (*result, ipcw_reference_df) if return_audit else result
 
 

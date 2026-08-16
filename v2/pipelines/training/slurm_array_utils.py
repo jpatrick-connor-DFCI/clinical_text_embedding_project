@@ -14,8 +14,18 @@ from config import FEATURE_PATH
 from schemes import load_embedding_prediction_df
 from shared.polars_utils import finite_or_zero
 
-DEFAULT_ALPHAS = np.logspace(-5, 0, 15).tolist()
+DEFAULT_ALPHAS = np.logspace(-4, 0, 10).tolist()
+DEFAULT_LOW_ALPHAS = np.logspace(-5, -4, 6).tolist()[:-1]
 DEFAULT_L1_RATIOS = [0.5, 1.0]
+
+
+def adaptive_low_alphas_for(alphas: list[float]) -> list[float] | None:
+    """Return the low-alpha refinement only for the untouched production grid."""
+    values = np.asarray(alphas, dtype=float)
+    defaults = np.asarray(DEFAULT_ALPHAS, dtype=float)
+    if values.shape == defaults.shape and np.allclose(values, defaults, rtol=1e-12, atol=0.0):
+        return DEFAULT_LOW_ALPHAS
+    return None
 
 
 def parse_float_list(value: str) -> list[float]:
@@ -360,7 +370,9 @@ def parse_manifest_line(line: str, expected_fields: int) -> list[str]:
 __all__ = [
     "FEATURE_PATH",
     "DEFAULT_ALPHAS",
+    "DEFAULT_LOW_ALPHAS",
     "DEFAULT_L1_RATIOS",
+    "adaptive_low_alphas_for",
     "_get_n_jobs",
     "_get_common_feature_mrns",
     "build_full_prediction_df",

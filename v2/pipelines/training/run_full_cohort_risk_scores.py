@@ -21,6 +21,7 @@ from pipelines.training.slurm_array_utils import (
     _get_n_jobs,
     DEFAULT_ALPHAS,
     DEFAULT_L1_RATIOS,
+    adaptive_low_alphas_for,
     build_full_prediction_df,
     filter_event_rows,
     parse_float_list,
@@ -131,6 +132,7 @@ def main() -> None:
             n_splits=args.n_splits,
             n_jobs=n_jobs,
             backend=args.backend,
+            adaptive_low_alphas=adaptive_low_alphas_for(args.alphas),
         ).rename({"risk_score": "text_risk_score"})
         text_scores.write_csv(text_risk_fp)
         print(f"[time] {label} text risk: {(time.time() - t0) / 60:.1f}m ({len(text_scores)} patients)")

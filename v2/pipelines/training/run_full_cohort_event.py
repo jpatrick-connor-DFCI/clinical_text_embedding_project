@@ -15,6 +15,7 @@ from survival import run_base_CoxPH, run_grid_CoxPH_parallel
 from pipelines.training.slurm_array_utils import (
     DEFAULT_ALPHAS,
     DEFAULT_L1_RATIOS,
+    adaptive_low_alphas_for,
     _get_n_jobs,
     build_full_prediction_df,
     filter_event_rows,
@@ -129,6 +130,7 @@ def main() -> None:
             backend=args.backend,
             return_audit=True,
             show_progress=args.progress,
+            adaptive_low_alphas=adaptive_low_alphas_for(args.alphas),
         )
         text_test.write_csv(text_test_fp)
         text_val.write_csv(text_val_fp)
