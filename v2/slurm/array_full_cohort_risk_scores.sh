@@ -1,7 +1,6 @@
 #!/bin/bash
 
 #SBATCH --job-name=coxnet_full_risk
-#SBATCH --partition=Normal
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=8G

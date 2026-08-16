@@ -4,7 +4,8 @@
 # Reads the manifest, computes the required array size, and submits the job.
 # Any environment variables accepted by array_full_cohort_run.sh can be
 # forwarded here (PROJECT_ROOT, MANIFEST, ROWS_PER_TASK, OVERWRITE,
-# COXNET_MAX_ITER, COXNET_BACKEND, ANCHOR).
+# COXNET_MAX_ITER, COXNET_BACKEND, ANCHOR, PARTITION). If PARTITION is unset,
+# Slurm uses the cluster/account default partition.
 #
 # Usage:
 #   bash launch_full_cohort.sh
@@ -16,6 +17,11 @@ set -euo pipefail
 
 PROJECT_ROOT="${PROJECT_ROOT:-/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project}"
 ANCHOR="${ANCHOR:-treatment}"
+PARTITION="${PARTITION:-}"
+SBATCH_PARTITION_ARGS=()
+if [[ -n "$PARTITION" ]]; then
+    SBATCH_PARTITION_ARGS=(--partition="$PARTITION")
+fi
 if [[ "$ANCHOR" == "treatment" ]]; then ANCHOR_SUFFIX=""; else ANCHOR_SUFFIX="__${ANCHOR}"; fi
 MANIFEST="${MANIFEST:-$PROJECT_ROOT/v2/slurm/slurm_manifests/full_cohort_tasks${ANCHOR_SUFFIX}.tsv}"
 ROWS_PER_TASK="${ROWS_PER_TASK:-20}"
@@ -46,6 +52,7 @@ echo "Array tasks:   $N_TASKS  (--array=0-${MAX_TASK})"
 # from.
 mkdir -p "$PROJECT_ROOT/v2/slurm/array_full_cohort_run/output" "$PROJECT_ROOT/v2/slurm/array_full_cohort_run/error"
 sbatch \
+    ${SBATCH_PARTITION_ARGS[@]+"${SBATCH_PARTITION_ARGS[@]}"} \
     --array="0-${MAX_TASK}" \
     --output="$PROJECT_ROOT/v2/slurm/array_full_cohort_run/output/%A_%a.out" \
     --error="$PROJECT_ROOT/v2/slurm/array_full_cohort_run/error/%A_%a.err" \

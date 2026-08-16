@@ -4,7 +4,8 @@
 # Reads the manifest, computes the required array size, and submits the job(s).
 # Any environment variables accepted by array_feature_comp.sh can be
 # forwarded here (PROJECT_ROOT, MANIFEST, ROWS_PER_TASK, OVERWRITE,
-# COXNET_MAX_ITER, COXNET_BACKEND, ANCHOR).
+# COXNET_MAX_ITER, COXNET_BACKEND, ANCHOR, PARTITION). If PARTITION is unset,
+# Slurm uses the cluster/account default partition.
 #
 # Resource sizing (Phase-A A0): by default (MODALITY_CLASS=split) this submits TWO array jobs
 # against the same manifest, sized per modality class, each running its modalities one process
@@ -29,6 +30,11 @@ PROJECT_ROOT="${PROJECT_ROOT:-/data/gusev/USERS/jpconnor/code/clinical_text_embe
 ROWS_PER_TASK="${ROWS_PER_TASK:-7}"
 MODALITY_CLASS="${MODALITY_CLASS:-split}"
 ANCHOR="${ANCHOR:-treatment}"
+PARTITION="${PARTITION:-}"
+SBATCH_PARTITION_ARGS=()
+if [[ -n "$PARTITION" ]]; then
+    SBATCH_PARTITION_ARGS=(--partition="$PARTITION")
+fi
 if [[ "$ANCHOR" == "treatment" ]]; then ANCHOR_SUFFIX=""; else ANCHOR_SUFFIX="__${ANCHOR}"; fi
 MANIFEST="${MANIFEST:-$PROJECT_ROOT/v2/slurm/slurm_manifests/feature_comp_tasks${ANCHOR_SUFFIX}.tsv}"
 
@@ -60,6 +66,7 @@ submit_class () {
     local class="$1" cpus="$2" mem="$3"
     echo "Submitting MODALITY_CLASS=${class} (--cpus-per-task=${cpus} --mem=${mem})"
     sbatch \
+        ${SBATCH_PARTITION_ARGS[@]+"${SBATCH_PARTITION_ARGS[@]}"} \
         --array="0-${MAX_TASK}" \
         --cpus-per-task="$cpus" \
         --mem="$mem" \
@@ -74,6 +81,7 @@ if [[ "$MODALITY_CLASS" == "split" ]]; then
     submit_class small 1 4G
 else
     sbatch \
+        ${SBATCH_PARTITION_ARGS[@]+"${SBATCH_PARTITION_ARGS[@]}"} \
         --array="0-${MAX_TASK}" \
         --output="$PROJECT_ROOT/v2/slurm/array_feature_comp/output/%A_%a.out" \
         --error="$PROJECT_ROOT/v2/slurm/array_feature_comp/error/%A_%a.err" \
