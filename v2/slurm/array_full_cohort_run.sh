@@ -1,9 +1,10 @@
 #!/bin/bash
 
 #SBATCH --job-name=coxnet_full_event
+#SBATCH --partition=normal
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=6
-#SBATCH --mem=8G
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=32G
 #SBATCH --time=24:00:00
 #SBATCH --array=0-0%1
 #SBATCH --output=v2/slurm/array_full_cohort_run/output/%A_%a.out
@@ -49,6 +50,9 @@ export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
+
+COXNET_MAX_ITER=${COXNET_MAX_ITER:-1000}
+COXNET_BACKEND=${COXNET_BACKEND:-threading}
 
 mkdir -p slurm/array_full_cohort_run/output slurm/array_full_cohort_run/error
 
@@ -118,8 +122,8 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
     --event "$EVENT" \
     --anchor "$ANCHOR" \
     --n-jobs "${SLURM_CPUS_PER_TASK:-1}" \
-    --max-iter "${COXNET_MAX_ITER:-1000}" \
-    --backend "${COXNET_BACKEND:-threading}" \
+    --max-iter "$COXNET_MAX_ITER" \
+    --backend "$COXNET_BACKEND" \
     ${OVERWRITE_FLAG[@]+"${OVERWRITE_FLAG[@]}"}; then
     echo "[error] row ${LINE_NUM} failed: scheme=${SCHEME}, event=${EVENT}"
     FAILED_ROWS=$((FAILED_ROWS + 1))
