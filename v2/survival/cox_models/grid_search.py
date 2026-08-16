@@ -11,6 +11,7 @@ original function body.
 import json
 import os
 import shutil
+import threading
 import time
 import warnings
 
@@ -35,6 +36,39 @@ from ._common import (
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+class _LineProgress:
+    """Thread-safe, newline-delimited progress bar for piped subprocess output."""
+
+    def __init__(self, total: int, display_every: int) -> None:
+        self.total = max(1, int(total))
+        self.display_every = max(1, int(display_every))
+        self.completed = 0
+        self._last_displayed = 0
+        self._lock = threading.Lock()
+        self._display()
+
+    def _display(self) -> None:
+        width = 30
+        fraction = min(1.0, self.completed / self.total)
+        filled = round(width * fraction)
+        bar = "#" * filled + "-" * (width - filled)
+        print(
+            f"[CV] [{bar}] {self.completed}/{self.total} "
+            f"fold×hyperparameter fits ({fraction:.0%})",
+            flush=True,
+        )
+
+    def update(self) -> None:
+        with self._lock:
+            self.completed = min(self.total, self.completed + 1)
+            if (
+                self.completed == self.total
+                or self.completed - self._last_displayed >= self.display_every
+            ):
+                self._display()
+                self._last_displayed = self.completed
 
 
 def _json_array(values) -> str:
@@ -86,6 +120,7 @@ def run_grid_CoxPH_parallel(
     parallel_axis: str = "auto",    # "auto", "l1", or "fold"
     id_col: str = "DFCI_MRN",
     return_audit: bool = False,
+    show_progress: bool = False,
 ):
     """
     Auto-switch behavior:
@@ -190,12 +225,23 @@ def run_grid_CoxPH_parallel(
     else:
         parallel_axis_eff = parallel_axis
 
+    progress = None
+    if show_progress:
+        if backend != "threading":
+            raise ValueError("show_progress=True currently requires backend='threading'")
+        n_combinations = len(folds) * len(l1_ratios) * len(alphas_to_test)
+        progress = _LineProgress(
+            total=n_combinations,
+            display_every=len(alphas_to_test),
+        )
+
     if not use_memmap:
         result = _run_grid_no_pca(
             X_train_val, X_test, y_train_val, y_test, folds,
             all_cols, continuous_vars, alphas_to_test, l1_ratios,
             max_iter, eval_times, penalty_no_pca,
             parallel_ctx, parallel_axis_eff, n_jobs, verbose, pre_dispatch, batch_size,
+            progress,
         )
         return (*result, ipcw_reference_df) if return_audit else result
 
@@ -204,6 +250,7 @@ def run_grid_CoxPH_parallel(
         all_cols, continuous_vars, base_col_set, pca_config, pca_iterated_power,
         alphas_to_test, l1_ratios, max_iter, eval_times,
         parallel_ctx, parallel_axis_eff, n_jobs, verbose, pre_dispatch, batch_size,
+        progress,
     )
     return (*result, ipcw_reference_df) if return_audit else result
 
@@ -217,6 +264,7 @@ def _run_grid_no_pca(
     all_cols, continuous_vars, alphas_to_test, l1_ratios,
     max_iter, eval_times, penalty_no_pca,
     parallel_ctx, parallel_axis_eff, n_jobs, verbose, pre_dispatch, batch_size,
+    progress,
 ):
     alphas_desc = np.sort(alphas_to_test)[::-1].tolist()
     n_alphas = len(alphas_desc)
@@ -263,6 +311,9 @@ def _run_grid_no_pca(
                 except Exception as e:
                     logger.debug("Grid CV fold %d, alpha=%.2e, l1=%.2f failed: %s", fi, a, l1_ratio, e)
                     error_flag = True
+                finally:
+                    if progress is not None:
+                        progress.update()
 
         return fi, fold_auc, fold_cindex, fold_auc_curves, time.time() - start, error_flag
 
@@ -404,6 +455,7 @@ def _run_grid_with_pca(
     all_cols, continuous_vars, base_col_set, pca_config, pca_iterated_power,
     alphas_to_test, l1_ratios, max_iter, eval_times,
     parallel_ctx, parallel_axis_eff, n_jobs, verbose, pre_dispatch, batch_size,
+    progress,
 ):
     fold_dir = _best_mmap_dir(prefix="coxnet_folds_")
     fold_meta: list[dict] = []
@@ -496,6 +548,9 @@ def _run_grid_with_pca(
                     except Exception as e:
                         logger.debug("Grid CV fold %d (PCA), alpha=%.2e, l1=%.2f failed: %s", fi, a, l1_ratio, e)
                         error_flag = True
+                    finally:
+                        if progress is not None:
+                            progress.update()
 
             return fi, fold_auc, fold_cindex, fold_auc_curves, time.time() - start, error_flag
 

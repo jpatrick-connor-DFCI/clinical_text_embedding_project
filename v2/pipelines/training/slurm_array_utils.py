@@ -14,7 +14,7 @@ from config import FEATURE_PATH
 from schemes import load_embedding_prediction_df
 from shared.polars_utils import finite_or_zero
 
-DEFAULT_ALPHAS = np.logspace(-5, 0, 25).tolist()
+DEFAULT_ALPHAS = np.logspace(-5, 0, 15).tolist()
 DEFAULT_L1_RATIOS = [0.5, 1.0]
 
 

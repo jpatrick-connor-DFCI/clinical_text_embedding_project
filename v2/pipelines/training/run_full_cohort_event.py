@@ -46,6 +46,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--l1-ratios", type=parse_float_list, default=DEFAULT_L1_RATIOS)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--backend", default="threading", choices=["threading", "loky"])
+    parser.add_argument("--progress", action="store_true")
     return parser.parse_args()
 
 
@@ -127,6 +128,7 @@ def main() -> None:
             n_jobs=n_jobs,
             backend=args.backend,
             return_audit=True,
+            show_progress=args.progress,
         )
         text_test.write_csv(text_test_fp)
         text_val.write_csv(text_val_fp)

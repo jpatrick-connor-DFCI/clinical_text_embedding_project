@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import gzip
+import io
 import json
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 import numpy as np
@@ -38,18 +40,24 @@ def _survival_frame(n: int = 160) -> pl.DataFrame:
 
 class EvaluationAuditTests(unittest.TestCase):
     def test_penalized_grid_persists_auc_curves_and_ipcw_populations(self) -> None:
-        test_df, val_df, _model, ipcw_df = run_grid_CoxPH_parallel(
-            _survival_frame(),
-            base_cols=[],
-            continuous_vars=["x"],
-            penalized_cols=["x"],
-            l1_ratios=[0.5],
-            alphas_to_test=[0.001],
-            n_splits=2,
-            n_jobs=1,
-            max_iter=100,
-            return_audit=True,
-        )
+        progress_output = io.StringIO()
+        with redirect_stdout(progress_output):
+            test_df, val_df, _model, ipcw_df = run_grid_CoxPH_parallel(
+                _survival_frame(),
+                base_cols=[],
+                continuous_vars=["x"],
+                penalized_cols=["x"],
+                l1_ratios=[0.5],
+                alphas_to_test=[0.001],
+                n_splits=2,
+                n_jobs=1,
+                max_iter=100,
+                return_audit=True,
+                show_progress=True,
+            )
+
+        self.assertIn("0/2 fold×hyperparameter fits", progress_output.getvalue())
+        self.assertIn("2/2 fold×hyperparameter fits", progress_output.getvalue())
 
         eval_times = json.loads(test_df["auc_eval_times"][0])
         self.assertEqual(len(eval_times), 50)
