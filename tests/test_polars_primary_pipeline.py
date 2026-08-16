@@ -141,26 +141,29 @@ class PolarsPrimaryPipelineTests(unittest.TestCase):
         self.assertEqual(tt.to_list(), [80.0, 100.0])
         self.assertEqual(status.to_list(), [1, 0])
 
-    def test_registry_features_use_only_pre_anchor_records(self) -> None:
-        cohort = pl.DataFrame({
-            "DFCI_MRN": [1, 2],
-            "first_treatment_date": [date(2020, 1, 1), date(2020, 1, 1)],
+    def test_compiled_cancer_type_and_note_stage_sources(self) -> None:
+        cohort = pl.DataFrame({"DFCI_MRN": list(range(1, 502))})
+        cancer_type_source = pl.DataFrame({
+            "DFCI_MRN": list(range(1, 502)) + [999],
+            "CANCER_GROUP": ["SAFE"] * 500 + ["RARE", "OUTSIDE_COHORT"],
         })
-        registry = pl.DataFrame({
-            "DFCI_MRN": [1, 1, 2],
-            "DIAGNOSIS_DT": [date(2019, 1, 1), date(2021, 1, 1), date(2021, 1, 1)],
-            "SITE_CD": ["SAFE", "FUTURE", "FUTURE_ONLY"],
-            "BEST_AJCC_STAGE_CD": ["2", "4", "4"],
+        stage_source = pl.DataFrame({
+            "DFCI_MRN": [1, 2],
+            "STAGE": ["2", "0"],
         })
         with patch(
-            "pipelines.preprocessing.generate_all_non_text_covariates.ps.load_careg",
-            return_value=registry,
+            "pipelines.preprocessing.generate_all_non_text_covariates.ps.load_cancer_type",
+            return_value=cancer_type_source,
+        ), patch(
+            "pipelines.preprocessing.generate_all_non_text_covariates.ps.load_cancer_stage",
+            return_value=stage_source,
         ):
             cancer_type = build_cancer_type_df(cohort)
-            stage = build_cancer_stage_df(cohort)
+            stage = build_cancer_stage_df()
 
-        self.assertEqual(cancer_type["DFCI_MRN"].to_list(), [1])
-        self.assertEqual(cancer_type["CANCER_TYPE"].to_list(), ["SAFE"])
+        self.assertEqual(cancer_type.height, 501)
+        self.assertEqual(cancer_type.filter(pl.col("DFCI_MRN") == 1)["CANCER_TYPE"].item(), "SAFE")
+        self.assertEqual(cancer_type.filter(pl.col("DFCI_MRN") == 501)["CANCER_TYPE"].item(), "OTHER")
         self.assertEqual(stage["DFCI_MRN"].to_list(), [1])
         self.assertEqual(stage["CANCER_STAGE"].to_list(), ["II"])
 

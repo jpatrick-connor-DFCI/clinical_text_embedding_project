@@ -33,38 +33,32 @@ def _load_cohort_df() -> pl.DataFrame:
     return pl.read_parquet(os.path.join(SURV_PATH, "cohort_df.parquet"))
 
 
-def _pre_anchor_registry(cohort_df: pl.DataFrame, anchor: str) -> pl.DataFrame:
-    """Registry rows whose diagnosis was observable by the active anchor."""
-    anchor_col = date_col(anchor)
-    return (
-        ps.load_careg(columns=[ps.MRN, ps.DIAGNOSIS_DT, ps.SITE_CD, ps.BEST_AJCC_STAGE_CD])
-        .join(cohort_df.select([ps.MRN, anchor_col]), on=ps.MRN, how="inner")
-        .filter(
-            pl.col(ps.DIAGNOSIS_DT).is_not_null()
-            & pl.col(anchor_col).is_not_null()
-            & (pl.col(ps.DIAGNOSIS_DT) <= pl.col(anchor_col))
-        )
-    )
+def build_cancer_type_df(cohort_df: pl.DataFrame) -> pl.DataFrame:
+    """CANCER_TYPE from the compiled CANCER_TYPE.parquet's CANCER_GROUP column
+    (genomics-first, ICD-fallback; see PROFILE_data_processing/
+    CANCER_ANNOTATIONS_PLAN.md), restricted to the cohort and renamed to the
+    existing CANCER_TYPE column contract."""
+    cohort_mrns = cohort_df.get_column("DFCI_MRN").unique().to_list()
 
-
-def build_cancer_type_df(cohort_df: pl.DataFrame, anchor: str = DEFAULT_ANCHOR) -> pl.DataFrame:
-    """Anchor-safe cancer site from the latest pre-anchor registry record.
-
-    The former compiled genomics-first label had no provenance timestamp and
-    could incorporate a specimen or ICD assignment recorded after time zero.
-    Registry SITE_CD plus DIAGNOSIS_DT provides an auditable baseline feature.
-    """
     cancer_type = (
-        _pre_anchor_registry(cohort_df, anchor)
-        .drop_nulls(ps.SITE_CD)
-        .sort([ps.MRN, ps.DIAGNOSIS_DT], descending=[False, True])
-        .group_by(ps.MRN, maintain_order=True)
-        .agg(pl.col(ps.SITE_CD).first().cast(pl.String).alias("CANCER_TYPE"))
+        ps.load_cancer_type()
+        .select([ps.MRN, pl.col(ps.CANCER_GROUP).alias("CANCER_TYPE")])
+        .filter(pl.col(ps.MRN).is_in(cohort_mrns))
+        .drop_nulls()
     )
 
-    # SITE_CD has a bounded registry vocabulary, so no cohort-derived rarity
-    # threshold is needed.  Avoid learning a category map from future test rows.
-    cancer_type_df = cancer_type
+    frequent_types = (
+        cancer_type.group_by("CANCER_TYPE").len()
+        .filter(pl.col("len") >= 500)
+        .get_column("CANCER_TYPE")
+        .to_list()
+    )
+    cancer_type_df = cancer_type.with_columns(
+        pl.when(pl.col("CANCER_TYPE").is_in(frequent_types))
+        .then(pl.col("CANCER_TYPE"))
+        .otherwise(pl.lit("OTHER"))
+        .alias("CANCER_TYPE")
+    )
     # Preserve the raw (collapsed) label alongside the dummies. `drop_first=True`
     # removes the reference category's column, so patients in that category are
     # all-zero across CANCER_TYPE_* and would be mislabeled by a downstream idxmax.
@@ -77,14 +71,22 @@ def build_cancer_type_df(cohort_df: pl.DataFrame, anchor: str = DEFAULT_ANCHOR) 
     return cancer_type_df.hstack(cancer_type_dummies)
 
 
-def build_cancer_stage_df(cohort_df: pl.DataFrame, anchor: str = DEFAULT_ANCHOR) -> pl.DataFrame:
-    """Latest normalized registry stage observed on or before the anchor."""
+def build_cancer_stage_df() -> pl.DataFrame:
+    """CANCER_STAGE from the compiled CANCER_STAGE.parquet's STAGE column
+    (note-regex derived, earliest note observation per patient; see
+    PROFILE_data_processing/CANCER_ANNOTATIONS_PLAN.md), normalized via
+    shared.stages.normalize_stage() to collapse to I/II/III/IV (in-situ
+    stage 0 normalizes to None and is dropped, matching the prior sentinel
+    handling). Also emits the raw CANCER_STAGE string column so figure prep no
+    longer needs a drop_first reconstruction fallback, and load_stage_map()
+    can read this file directly. Note-regex derived rather than registry
+    derived (CANCER_STAGE_REGISTRY.parquet) to match the two independent
+    sources' intended default; registry stage remains available via
+    ps.load_cancer_stage(registry=True) if needed."""
     note_stage = (
-        _pre_anchor_registry(cohort_df, anchor)
-        .drop_nulls(ps.BEST_AJCC_STAGE_CD)
-        .sort([ps.MRN, ps.DIAGNOSIS_DT], descending=[False, True])
-        .group_by(ps.MRN, maintain_order=True)
-        .agg(pl.col(ps.BEST_AJCC_STAGE_CD).first().alias(ps.STAGE))
+        ps.load_cancer_stage(registry=False)
+        .select([ps.MRN, ps.STAGE])
+        .rename({ps.MRN: "DFCI_MRN"})
     )
     note_stage = note_stage.with_columns(
         pl.col(ps.STAGE).map_elements(normalize_stage, return_dtype=pl.String).alias("CANCER_STAGE")
@@ -299,11 +301,11 @@ def main() -> None:
 
     cohort_df = _load_cohort_df()
 
-    cancer_type_df = build_cancer_type_df(cohort_df, anchor)
+    cancer_type_df = build_cancer_type_df(cohort_df)
     assert_schema(cancer_type_df, "cancer_type_df", required_cols=["DFCI_MRN", "CANCER_TYPE"], key_col="DFCI_MRN")
     cancer_type_df.write_csv(_feature_path('cancer_type_df.csv.gz', anchor), compression="gzip")
 
-    cancer_stage_df = build_cancer_stage_df(cohort_df, anchor)
+    cancer_stage_df = build_cancer_stage_df()
     assert_schema(cancer_stage_df, "cancer_stage_df", required_cols=["DFCI_MRN", "CANCER_STAGE"], key_col="DFCI_MRN")
     cancer_stage_df.write_csv(_feature_path('cancer_stage_df.csv.gz', anchor), compression="gzip")
 
