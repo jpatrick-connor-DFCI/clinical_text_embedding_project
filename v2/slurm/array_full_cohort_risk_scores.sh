@@ -39,15 +39,15 @@ fi
 cd "$V2_ROOT" || { echo "Failed to cd into $V2_ROOT"; exit 1; }
 export PYTHONPATH="$V2_ROOT"
 
-module load miniforge3 || { echo "Failed to load module miniforge3"; exit 1; }
-eval "$(conda shell.bash hook)"
-conda activate clinical_notes_project || { echo "Failed to activate conda env clinical_notes_project"; exit 1; }
-python -c "import config" 2>/dev/null || { echo "config not importable - check conda env / PYTHONPATH"; exit 1; }
+CONDA_ENV_PREFIX=${CONDA_ENV_PREFIX:-/data/gusev/USERS/jpconnor/conda/envs/clinical_notes_project}
+PYTHON_BIN=${PYTHON_BIN:-$CONDA_ENV_PREFIX/bin/python}
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  echo "Python executable not found: $PYTHON_BIN"
+  exit 1
+fi
+"$PYTHON_BIN" -c "import config" 2>/dev/null || { echo "config not importable - check PYTHON_BIN / PYTHONPATH"; exit 1; }
 
-# Deliberately enabled only here, after the prologue above: module load / conda activate /
-# `eval "$(conda shell.bash hook)"` commonly reference unset variables internally and can
-# behave unpredictably under -u; every step above already has its own explicit failure guard,
-# so nothing upstream of this line silently continues past a failure.
+# Deliberately enabled only after validating the environment and imports above.
 set -euo pipefail
 
 export OMP_NUM_THREADS=1
@@ -119,7 +119,7 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
   mkdir -p "$RESULTS_ROOT/$ANCHOR_SUBDIR/full_cohort_risk_scores/$EVENT"
 
   echo "Running row ${LINE_NUM}: scheme=${SCHEME}, event=${EVENT}, anchor=${ANCHOR}"
-  if ! python -m pipelines.training.run_full_cohort_risk_scores \
+  if ! "$PYTHON_BIN" -m pipelines.training.run_full_cohort_risk_scores \
     --scheme "$SCHEME" \
     --event "$EVENT" \
     --anchor "$ANCHOR" \
@@ -132,7 +132,6 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
   fi
 done
 
-conda deactivate
 if [[ "$FAILED_ROWS" -gt 0 ]]; then
   echo "$FAILED_ROWS manifest row(s) failed"
   exit 1

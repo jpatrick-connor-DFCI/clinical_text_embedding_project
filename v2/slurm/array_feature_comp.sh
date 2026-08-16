@@ -42,15 +42,15 @@ fi
 cd "$V2_ROOT" || { echo "Failed to cd into $V2_ROOT"; exit 1; }
 export PYTHONPATH="$V2_ROOT"
 
-module load miniforge3 || { echo "Failed to load module miniforge3"; exit 1; }
-eval "$(conda shell.bash hook)"
-conda activate clinical_notes_project || { echo "Failed to activate conda env clinical_notes_project"; exit 1; }
-python -c "import config" 2>/dev/null || { echo "config not importable - check conda env / PYTHONPATH"; exit 1; }
+CONDA_ENV_PREFIX=${CONDA_ENV_PREFIX:-/data/gusev/USERS/jpconnor/conda/envs/clinical_notes_project}
+PYTHON_BIN=${PYTHON_BIN:-$CONDA_ENV_PREFIX/bin/python}
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  echo "Python executable not found: $PYTHON_BIN"
+  exit 1
+fi
+"$PYTHON_BIN" -c "import config" 2>/dev/null || { echo "config not importable - check PYTHON_BIN / PYTHONPATH"; exit 1; }
 
-# Deliberately enabled only here, after the prologue above: module load / conda activate /
-# `eval "$(conda shell.bash hook)"` commonly reference unset variables internally and can
-# behave unpredictably under -u; every step above already has its own explicit failure guard,
-# so nothing upstream of this line silently continues past a failure.
+# Deliberately enabled only after validating the environment and imports above.
 set -euo pipefail
 
 export OMP_NUM_THREADS=1
@@ -150,7 +150,7 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
   # one modality failing does not stop the rest). Otherwise (a single manifest-pinned modality,
   # or a big/small resource class) invoke run_feature_comp_task.py once per modality as before.
   if [[ -z "${MANIFEST_MODALITY:-}" && "$MODALITY_CLASS" == "all" ]]; then
-    if ! python -m pipelines.training.run_feature_comp_task \
+    if ! "$PYTHON_BIN" -m pipelines.training.run_feature_comp_task \
       --scheme "$SCHEME" \
       --event "$EVENT" \
       --modality all \
@@ -164,7 +164,7 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
     fi
   else
     for MODALITY in "${MODALITIES[@]}"; do
-      if ! python -m pipelines.training.run_feature_comp_task \
+      if ! "$PYTHON_BIN" -m pipelines.training.run_feature_comp_task \
         --scheme "$SCHEME" \
         --event "$EVENT" \
         --modality "$MODALITY" \
@@ -180,7 +180,6 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
   fi
 done
 
-conda deactivate
 if [[ "$FAILED_ROWS" -gt 0 ]]; then
   echo "$FAILED_ROWS modality run(s) failed"
   exit 1
