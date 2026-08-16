@@ -107,7 +107,7 @@ def run_grid_CoxPH_parallel(
     pca_config: dict[str, tuple[list[str], int]] | None = None,
     event_col: str = "event",
     tstop_col: str = "tstop",
-    max_iter: int = 2500,
+    max_iter: int = 1000,
     n_splits: int = 5,
     time_evals: tuple[int, int] = (5, 95),
     n_jobs: int = -1,

@@ -52,7 +52,7 @@ def scale_model_data(X_train: pl.DataFrame, X_test: pl.DataFrame, continuous_var
 
 def run_base_CoxPH(df: pl.DataFrame, base_cols: list[str], continuous_vars: list[str],
                    event_col: str = 'event', tstop_col: str = 'tstop',
-                   max_iter: int = 2500, n_splits: int = 5,
+                   max_iter: int = 1000, n_splits: int = 5,
                    time_evals: tuple[int, int] = (5, 95),
                    test_size: float = 0.2,
                    ignore_warnings: bool = True,

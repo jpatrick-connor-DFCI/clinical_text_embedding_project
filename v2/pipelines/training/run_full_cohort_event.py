@@ -41,7 +41,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--event", required=True)
     parser.add_argument("--anchor", default=DEFAULT_ANCHOR, choices=sorted(ANCHORS.keys()))
     parser.add_argument("--n-jobs", type=int, default=None)
-    parser.add_argument("--max-iter", type=int, default=2500)
+    parser.add_argument("--max-iter", type=int, default=1000)
     parser.add_argument("--n-splits", type=int, default=5)
     parser.add_argument("--alphas", type=parse_float_list, default=DEFAULT_ALPHAS)
     parser.add_argument("--l1-ratios", type=parse_float_list, default=DEFAULT_L1_RATIOS)
