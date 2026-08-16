@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --job-name=coxnet_full_event
-#SBATCH --partition=normal
+#SBATCH --partition=Normal
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=8G
