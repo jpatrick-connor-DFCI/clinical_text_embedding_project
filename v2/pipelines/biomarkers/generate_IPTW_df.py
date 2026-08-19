@@ -5,6 +5,12 @@ Cohort 2: line_category dummy-coded (LINE_2, LINE_3; line 1 as reference).
 Cohort 1: no line dummies (all ICI patients are first-line; line_category dropped).
 Also includes clinical text embeddings for prognostic score adjustment.
 
+Somatic markers and cancer type are built from PROFILE_DATA in-process rather
+than read from the pre-baked feature CSVs, so the somatic data can be anchored
+at each patient's line-specific landmark (`treatment_start_date`) instead of at
+`first_treatment_date` — a sequencing report issued after the ICI landmark must
+not enter the marker set.
+
 Notebook-ready: loops over all cohort x ps_model combinations automatically.
 """
 
@@ -14,6 +20,10 @@ import random
 import polars as pl
 
 from config import BIOMARKER_PATH, DATA_PATH, SURV_PATH
+from pipelines.preprocessing.generate_all_non_text_covariates import (
+    build_cancer_type_df,
+    build_somatic_data_df,
+)
 from shared.polars_utils import filter_finite_rows
 
 # ============================================================
@@ -35,17 +45,11 @@ def main() -> None:
     tt_death_df = tt_death_df.select(['DFCI_MRN', 'first_treatment_date', 'tt_death', 'death',
                                        'GENDER', 'AGE_AT_TREATMENTSTART'])
 
-    cancer_type_df = pl.read_csv(
-        os.path.join(DATA_PATH, 'clinical_and_genomic_features/cancer_type_df.csv.gz'))
-
-    somatic_df = pl.read_csv(
-        os.path.join(DATA_PATH, 'clinical_and_genomic_features/complete_somatic_data_df.csv.gz'))
-    mutation_tags = ('_SNV', '_SV', '_FUSION', '_DEL', '_AMP')
-    panel_cols = [col for col in somatic_df.columns if col.upper().startswith('PANEL_VERSION')]
-    mutation_cols = [col for col in somatic_df.columns if any(tag in col.upper() for tag in mutation_tags)]
-    somatic_keep_cols = ['DFCI_MRN'] + panel_cols + mutation_cols
-    somatic_keep_cols = list(dict.fromkeys(somatic_keep_cols))
-    somatic_df = somatic_df.select(somatic_keep_cols)
+    # Cancer type is built on the full cohort, not the biomarker subset, so the
+    # >=500-patient OTHER collapse produces the same labels the rest of the
+    # project uses.
+    full_cohort_df = pl.read_parquet(os.path.join(SURV_PATH, 'cohort_df.parquet'))
+    cancer_type_df = build_cancer_type_df(full_cohort_df)
 
     # ============================================================
     # Main loop: iterate over cohort x ps_model combinations
@@ -63,6 +67,26 @@ def main() -> None:
         prediction_times = prediction_times.with_columns(
             pl.col('treatment_start_date').str.to_datetime(strict=False))
         prediction_times = prediction_times.unique(subset='DFCI_MRN', keep='first', maintain_order=True)
+
+        # === Somatic markers, anchored at each patient's line landmark ===
+        # REPORT_DT in GENOMIC_SPECIMEN is a pl.Date, so the landmark is cast to
+        # Date for the `REPORT_DT <= anchor` eligibility filter.
+        landmark = prediction_times.select(
+            'DFCI_MRN', pl.col('treatment_start_date').cast(pl.Date))
+        somatic_df = build_somatic_data_df(landmark, anchor_col='treatment_start_date')
+        mutation_tags = ('_SNV', '_SV', '_FUSION', '_DEL', '_AMP')
+        panel_cols = [col for col in somatic_df.columns if col.upper().startswith('PANEL_VERSION')]
+        if not panel_cols:
+            raise ValueError(
+                "No PANEL_VERSION* column survived build_somatic_data_df; the panel-version "
+                "confounder would be silently dropped. Check GENOMIC_SPECIMEN.parquet's column "
+                f"names. Have: {sorted(somatic_df.columns)[:40]}"
+            )
+        mutation_cols = [col for col in somatic_df.columns if any(tag in col.upper() for tag in mutation_tags)]
+        somatic_keep_cols = list(dict.fromkeys(['DFCI_MRN'] + panel_cols + mutation_cols))
+        somatic_df = somatic_df.select(somatic_keep_cols).unique(subset='DFCI_MRN', keep='first')
+        print(f"  Somatic: {somatic_df.height} patients, {len(mutation_cols)} marker columns "
+              f"(anchored at treatment_start_date)")
 
         # === Load clinical text embeddings (30-day buffer) for prognostic score ===
         EMBED_BUFFER = 30

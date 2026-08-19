@@ -30,8 +30,8 @@ from pipelines.preprocessing.generate_all_non_text_covariates import (  # noqa: 
 from pipelines.preprocessing.build_cohort import _sequencing_dates  # noqa: E402
 from pipelines.biomarkers.build_line_matched_cohort import (  # noqa: E402
     build_first_line_new_user_df,
-    build_line_start_dates,
 )
+from pipelines.biomarkers.profile_lines import derive_lines_of_therapy  # noqa: E402
 
 
 class PolarsPrimaryPipelineTests(unittest.TestCase):
@@ -208,15 +208,20 @@ class PolarsPrimaryPipelineTests(unittest.TestCase):
         self.assertEqual(result["sequencing_date"].to_list(), [date(2020, 1, 1)])
 
     def test_ici_control_status_does_not_depend_on_later_ici(self) -> None:
+        # Lines are derived from PROFILE_DATA medications, so the fixture is now
+        # a drug-level frame rather than a pre-lined one.
         medications = pl.DataFrame({
             "DFCI_MRN": [1, 1, 2],
-            "LINE": [1, 2, 1],
-            "HAS_ICI": [0, 1, 1],
-            "MED_START_DT": ["2020-01-01", "2021-01-01", "2020-01-01"],
+            "DRUG": ["carboplatin", "pembrolizumab", "nivolumab"],
+            "START_DT": [date(2020, 1, 1),
+                         date(2021, 1, 1),
+                         date(2020, 1, 1)],
         })
-        starts = build_line_start_dates(medications)
+        lines = derive_lines_of_therapy(medications)
+        self.assertEqual(lines.sort(["DFCI_MRN", "LINE"])["LINE"].to_list(), [1, 2, 1])
+
         result = build_first_line_new_user_df(
-            medications, {1, 2}, {1: "A", 2: "A"}, starts
+            lines, {1, 2}, {1: "A", 2: "A"}
         ).sort("DFCI_MRN")
 
         # Patient 1 later receives ICI, but remains an unexposed line-1

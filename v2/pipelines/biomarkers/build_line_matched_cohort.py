@@ -13,6 +13,13 @@ Neither cohort conditions control eligibility on eventual ICI receipt or on
 the maximum line a patient later reaches.  Those post-landmark definitions
 were a source of immortal-time/selection leakage in the former design.
 
+Lines of therapy, line start dates, and ICI exposure are derived from
+PROFILE_DATA's MEDICATIONS_SUMMARY.parquet via
+`pipelines.biomarkers.profile_lines`, not from the lab-owned
+ALL_MEDICATION_LINES.csv this module used to read.  Cancer type comes from the
+compiled CANCER_TYPE.parquet through the same `build_cancer_type_df` the
+preprocessing pipeline uses, rather than from its written-out CSV.
+
 Usage:
   python -m pipelines.biomarkers.build_line_matched_cohort
 """
@@ -24,7 +31,11 @@ import random
 import numpy as np
 import polars as pl
 
-from config import FEATURE_PATH, IO_START_FILE, MATCHED_COHORT_PATH, MED_LINES_FILE, SURV_PATH
+from config import MATCHED_COHORT_PATH, SURV_PATH
+from data.schema import assert_schema
+from pipelines.biomarkers.profile_lines import derive_lines_of_therapy
+from pipelines.preprocessing import profile_sources as ps
+from pipelines.preprocessing.generate_all_non_text_covariates import build_cancer_type_df
 
 
 def match_cohort_1to1(cases_df, controls_df):
@@ -86,57 +97,34 @@ def _assert_one_to_one(left, right, on, name="join"):
         raise ValueError(f"{name}: right side is not unique on {on}")
 
 
-def build_line_start_dates(med_lines_df: pl.DataFrame) -> pl.DataFrame:
-    """Return one observed treatment-start date per patient and therapy line."""
-    required = {"DFCI_MRN", "LINE", "MED_START_DT"}
-    missing = required - set(med_lines_df.columns)
-    if missing:
-        raise ValueError(
-            f"{MED_LINES_FILE} is missing line-timing columns: {sorted(missing)}"
-        )
-
-    line_dates = med_lines_df.select(sorted(required))
-    line_dates = line_dates.with_columns(
-        pl.col("LINE").cast(pl.Float64, strict=False),
-        pl.col("MED_START_DT").str.to_datetime(strict=False).alias("treatment_start_date"),
-    )
-    line_dates = line_dates.drop_nulls(
-        subset=["DFCI_MRN", "LINE", "treatment_start_date"]
-    )
-    line_dates = line_dates.with_columns(pl.col("LINE").cast(pl.Int64))
-    return (
-        line_dates.group_by(["DFCI_MRN", "LINE"])
-        .agg(pl.col("treatment_start_date").min())
-    )
-
-
 def build_first_line_new_user_df(
-    med_lines_df: pl.DataFrame,
+    lines_df: pl.DataFrame,
     cohort_mrns: set,
     cancer_type_map: dict,
-    line_start_dates: pl.DataFrame,
 ) -> pl.DataFrame:
-    """Define exposure at line 1 without consulting later treatment history."""
+    """Define exposure at line 1 without consulting later treatment history.
+
+    `lines_df` is `profile_lines.derive_lines_of_therapy()` output, already one
+    row per (DFCI_MRN, LINE) with HAS_ICI and treatment_start_date resolved, so
+    no per-patient collapse is needed here — only the restriction to line 1.
+    """
     first_line = (
-        med_lines_df.filter(
+        lines_df.filter(
             pl.col('DFCI_MRN').is_in(cohort_mrns) & (pl.col('LINE') == 1)
         )
-        .group_by('DFCI_MRN')
-        .agg(pl.col('HAS_ICI').max().cast(pl.Int64).alias('PX_on_ICI'))
-        .with_columns(
+        .select(
+            'DFCI_MRN',
+            pl.col('HAS_ICI').cast(pl.Int64).alias('PX_on_ICI'),
             pl.lit(1).cast(pl.Int64).alias('line_category'),
             pl.col('DFCI_MRN').replace_strict(cancer_type_map, default=None).alias('cancer_type'),
+            pl.col('treatment_start_date').cast(pl.Datetime),
         )
         .drop_nulls(subset=['cancer_type'])
     )
-    _assert_one_to_one(
-        first_line, line_start_dates.rename({'LINE': 'line_category'}),
-        ['DFCI_MRN', 'line_category'],
-    )
-    return first_line.join(
-        line_start_dates.rename({'LINE': 'line_category'}),
-        on=['DFCI_MRN', 'line_category'], how='inner',
-    )
+    # derive_lines_of_therapy() is unique on (DFCI_MRN, LINE) by construction;
+    # this asserts that rather than assuming it.
+    _assert_one_to_one(first_line, first_line, ['DFCI_MRN', 'line_category'])
+    return first_line
 
 
 def main() -> None:
@@ -154,23 +142,36 @@ def main() -> None:
     )
     cohort_mrns = set(surv_df['DFCI_MRN'].unique().to_list())
 
-    med_lines_df = pl.read_csv(MED_LINES_FILE).rename({'MRN': 'DFCI_MRN'})
-    line_start_dates = build_line_start_dates(med_lines_df)
+    # === Lines of therapy from PROFILE_DATA ===
+    med_long = ps.unpivot_medications_summary()
+    lines_df = derive_lines_of_therapy(med_long)
 
-    cancer_type_df = pl.read_csv(os.path.join(FEATURE_PATH, 'cancer_type_df.csv.gz'))
-    if 'CANCER_TYPE' not in cancer_type_df.columns:
-        raise ValueError(
-            "cancer_type_df.csv.gz must contain the raw CANCER_TYPE column; "
-            "reconstructing it from drop-first dummy columns is not valid."
-        )
-    cancer_type_df = cancer_type_df.with_columns(pl.col('CANCER_TYPE').alias('cancer_type'))
-    cancer_type_map = dict(zip(cancer_type_df['DFCI_MRN'].to_list(), cancer_type_df['cancer_type'].to_list()))
+    # === Cancer type from PROFILE_DATA ===
+    # Built on the full cohort, not the biomarker subset, so the >=500-patient
+    # OTHER collapse in build_cancer_type_df produces the same labels the rest
+    # of the project uses.
+    full_cohort_df = pl.read_parquet(os.path.join(SURV_PATH, 'cohort_df.parquet'))
+    cancer_type_df = build_cancer_type_df(full_cohort_df).select(['DFCI_MRN', 'CANCER_TYPE'])
+    cancer_type_map = dict(zip(cancer_type_df['DFCI_MRN'].to_list(),
+                               cancer_type_df['CANCER_TYPE'].to_list()))
 
     # First-line new-user design.  Exposure is defined using only the regimen
     # at the landmark itself; later treatment choices never affect membership.
-    first_line = build_first_line_new_user_df(
-        med_lines_df, cohort_mrns, cancer_type_map, line_start_dates,
-    )
+    first_line = build_first_line_new_user_df(lines_df, cohort_mrns, cancer_type_map)
+
+    # === Coverage funnel ===
+    # A silent drop at any of these steps is the most likely failure mode of the
+    # PROFILE_DATA migration, so report each one explicitly.
+    med_mrns = set(med_long['DFCI_MRN'].unique().to_list())
+    line1_mrns = set(lines_df.filter(pl.col('LINE') == 1)['DFCI_MRN'].unique().to_list())
+    print("\nCoverage funnel:")
+    print(f"  death_met_surv_df patients:          {len(cohort_mrns)}")
+    print(f"  ...with any MEDICATIONS_SUMMARY row: {len(cohort_mrns & med_mrns)}")
+    print(f"  ...with a derived line 1:            {len(cohort_mrns & line1_mrns)}")
+    print(f"  ...with a cancer type (final):       {first_line.height}")
+    print(f"  Derived lines per patient: median="
+          f"{lines_df.group_by('DFCI_MRN').agg(pl.len()).get_column('len').median()}, "
+          f"max={lines_df.group_by('DFCI_MRN').agg(pl.len()).get_column('len').max()}")
 
     # === Add first_treatment_date for downstream use ===
     surv_dates = (surv_df.select(['DFCI_MRN', 'first_treatment_date'])
@@ -191,6 +192,8 @@ def main() -> None:
     cohort1 = first_line.select(output_cols)
     _assert_one_to_one(cohort1, surv_dates, ['DFCI_MRN'])
     cohort1 = cohort1.join(surv_dates, on='DFCI_MRN', how='inner')
+    assert_schema(cohort1, 'matched_cohort_cohort1',
+                  output_cols + ['first_treatment_date'], key_col='DFCI_MRN')
 
     n_ici = int(cohort1['PX_on_ICI'].sum())
     n_ctrl = len(cohort1) - n_ici
@@ -221,6 +224,8 @@ def main() -> None:
         cohort2 = cohort2.select(output_cols)
         _assert_one_to_one(cohort2, surv_dates, ['DFCI_MRN'])
         cohort2 = cohort2.join(surv_dates, on='DFCI_MRN', how='inner')
+        assert_schema(cohort2, 'matched_cohort_cohort2',
+                      output_cols + ['first_treatment_date'], key_col='DFCI_MRN')
         shift = (cohort2['treatment_start_date'] - cohort2['first_treatment_date']).dt.total_days()
         if (shift < 0).any():
             raise ValueError("Found a first-line treatment date before the cohort anchor.")

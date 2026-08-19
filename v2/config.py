@@ -53,11 +53,11 @@ CLINICAL_NOTES_PATH = os.path.join(PROFILE_DATA_PATH, "CLINICAL_NOTES/")
 CANCER_ANNOTATIONS_PATH = os.path.join(PROFILE_DATA_PATH, "CANCER_ANNOTATIONS/")
 
 # --- Third-party inputs, previously inlined mid-file at the point of use ---
-# MED_LINES_FILE: still imported by pipelines/biomarkers/build_line_matched_cohort.py
-# (out of scope for the PROFILE_DATA migration), so kept despite being unused
-# by the migrated preprocessing pipeline.
+# MED_LINES_FILE: audit-only. Lines of therapy and ICI exposure are now derived
+# from PROFILE_DATA by pipelines/biomarkers/profile_lines.py; this file is kept
+# solely as the reference that pipelines/biomarkers/audit_line_derivation.py
+# checks that derivation against. No pipeline stage reads it.
 MED_LINES_FILE = "/data/gusev/USERS/mjsaleh/profile_lines_of_rx/ALL_MEDICATION_LINES.csv"
-IO_START_FILE = "/data/gusev/USERS/mjsaleh/IO_START.csv"
 TREATMENT_FILE = "/data/gusev/USERS/mjsaleh/profile_lines_of_rx/profile_rxlines.csv"
 PRS_MATRIX_FILE = "/data/gusev/USERS/mjsaleh/PRS_PGScatalog/pgs_matrix_with_avg.tsv"
 

@@ -97,13 +97,20 @@ def build_cancer_stage_df() -> pl.DataFrame:
     return note_stage.hstack(stage_dummies)
 
 
-def build_somatic_data_df(cohort_df: pl.DataFrame, anchor: str = DEFAULT_ANCHOR) -> pl.DataFrame:
+def build_somatic_data_df(
+    cohort_df: pl.DataFrame, anchor: str = DEFAULT_ANCHOR, anchor_col: str | None = None
+) -> pl.DataFrame:
     """SOMATIC_WIDE_BY_SAMPLE.parquet joined to GENOMIC_SPECIMEN on the 3-column
     key (never UNIQUE_SAMPLE_ID). A result is eligible only when REPORT_DT is
     on or before the active anchor; the most recently available report is used.
-    TEST_TYPE != RAPIDHEME_CLINICAL."""
+    TEST_TYPE != RAPIDHEME_CLINICAL.
+
+    `anchor_col` overrides the registry's date column for `anchor`, for callers
+    whose landmark is not one of the registered anchors — the biomarker pipeline
+    passes its line-specific `treatment_start_date` so a report issued after the
+    ICI landmark cannot enter the marker set."""
     cohort_mrns = cohort_df.get_column("DFCI_MRN").unique().to_list()
-    anchor_col = date_col(anchor)
+    anchor_col = anchor_col if anchor_col is not None else date_col(anchor)
     anchor_df = cohort_df.select(["DFCI_MRN", anchor_col])
 
     genomic_spec = ps.load_genomic_specimen(exclude_rapidheme=True)
