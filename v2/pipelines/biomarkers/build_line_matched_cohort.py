@@ -9,6 +9,12 @@ Cohort 2 (first_line_matched):
   - The same first-line new-user population
   - 1:1 exact matching on cancer type without replacement
 
+Both cohorts are restricted to patients with a usable somatic profile at their
+line-1 landmark (a non-RAPIDHEME genomic specimen reported on or before that
+date).  Unsequenced patients contribute no marker to a somatic-biomarker
+analysis, and restricting here rather than at the downstream somatic join is
+what keeps cohort 2's 1:1 pairs intact.
+
 Neither cohort conditions control eligibility on eventual ICI receipt or on
 the maximum line a patient later reaches.  Those post-landmark definitions
 were a source of immortal-time/selection leakage in the former design.
@@ -127,6 +133,38 @@ def build_first_line_new_user_df(
     return first_line
 
 
+def sequenced_before_landmark(landmark_df: pl.DataFrame) -> pl.DataFrame:
+    """MRNs with a usable somatic profile at their landmark, one row per patient.
+
+    Eligibility is a non-RAPIDHEME genomic specimen whose REPORT_DT is on or
+    before the patient's line-1 start date — exactly the criterion
+    `build_somatic_data_df` applies when it selects each patient's marker set.
+    Applying it here, before matching, is what keeps the 1:1 pairs intact: a
+    patient without a pre-landmark specimen has no markers and would otherwise
+    be dropped by generate_IPTW_df's somatic inner join *after* being matched,
+    orphaning their partner.
+
+    Args:
+        landmark_df: DFCI_MRN plus `treatment_start_date` (the line-1 landmark).
+
+    Returns:
+        DFCI_MRN and `sequencing_date` (the latest eligible REPORT_DT).
+    """
+    landmark = landmark_df.select(
+        'DFCI_MRN', pl.col('treatment_start_date').cast(pl.Date).alias('_landmark'))
+    specimens = (
+        ps.load_genomic_specimen(exclude_rapidheme=True)
+        .select([ps.MRN, ps.REPORT_DT])
+        .drop_nulls(subset=[ps.REPORT_DT])
+        .join(landmark, on='DFCI_MRN', how='inner')
+        .filter(pl.col(ps.REPORT_DT) <= pl.col('_landmark'))
+    )
+    return (
+        specimens.group_by('DFCI_MRN')
+        .agg(pl.col(ps.REPORT_DT).max().alias('sequencing_date'))
+    )
+
+
 def main() -> None:
     random.seed(42)
     np.random.seed(42)
@@ -140,7 +178,7 @@ def main() -> None:
         if surv_df.schema['first_treatment_date'] == pl.String
         else pl.col('first_treatment_date')
     )
-    cohort_mrns = set(surv_df['DFCI_MRN'].unique().to_list())
+    surv_mrns = set(surv_df['DFCI_MRN'].unique().to_list())
 
     # === Lines of therapy from PROFILE_DATA ===
     med_long = ps.unpivot_medications_summary()
@@ -155,6 +193,16 @@ def main() -> None:
     cancer_type_map = dict(zip(cancer_type_df['DFCI_MRN'].to_list(),
                                cancer_type_df['CANCER_TYPE'].to_list()))
 
+    # === Restrict to sequenced patients ===
+    # This is a somatic-biomarker analysis: a patient with no usable genomic
+    # profile at their landmark contributes no marker and cannot inform any
+    # hypothesis being tested.  The restriction is applied here, before
+    # matching, rather than being left to generate_IPTW_df's somatic join.
+    line1 = lines_df.filter(pl.col('LINE') == 1).select(['DFCI_MRN', 'treatment_start_date'])
+    sequenced = sequenced_before_landmark(line1)
+    sequenced_mrns = set(sequenced['DFCI_MRN'].to_list())
+    cohort_mrns = surv_mrns & sequenced_mrns
+
     # First-line new-user design.  Exposure is defined using only the regimen
     # at the landmark itself; later treatment choices never affect membership.
     first_line = build_first_line_new_user_df(lines_df, cohort_mrns, cancer_type_map)
@@ -165,9 +213,10 @@ def main() -> None:
     med_mrns = set(med_long['DFCI_MRN'].unique().to_list())
     line1_mrns = set(lines_df.filter(pl.col('LINE') == 1)['DFCI_MRN'].unique().to_list())
     print("\nCoverage funnel:")
-    print(f"  death_met_surv_df patients:          {len(cohort_mrns)}")
-    print(f"  ...with any MEDICATIONS_SUMMARY row: {len(cohort_mrns & med_mrns)}")
-    print(f"  ...with a derived line 1:            {len(cohort_mrns & line1_mrns)}")
+    print(f"  death_met_surv_df patients:          {len(surv_mrns)}")
+    print(f"  ...with any MEDICATIONS_SUMMARY row: {len(surv_mrns & med_mrns)}")
+    print(f"  ...with a derived line 1:            {len(surv_mrns & line1_mrns)}")
+    print(f"  ...sequenced on or before line 1:    {len(cohort_mrns)}")
     print(f"  ...with a cancer type (final):       {first_line.height}")
     print(f"  Derived lines per patient: median="
           f"{lines_df.group_by('DFCI_MRN').agg(pl.len()).get_column('len').median()}, "

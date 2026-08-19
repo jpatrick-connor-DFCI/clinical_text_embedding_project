@@ -30,6 +30,7 @@ from pipelines.preprocessing.generate_all_non_text_covariates import (  # noqa: 
 from pipelines.preprocessing.build_cohort import _sequencing_dates  # noqa: E402
 from pipelines.biomarkers.build_line_matched_cohort import (  # noqa: E402
     build_first_line_new_user_df,
+    sequenced_before_landmark,
 )
 from pipelines.biomarkers.profile_lines import derive_lines_of_therapy  # noqa: E402
 
@@ -227,6 +228,29 @@ class PolarsPrimaryPipelineTests(unittest.TestCase):
         # Patient 1 later receives ICI, but remains an unexposed line-1
         # initiator because future treatment is not consulted.
         self.assertEqual(result["PX_on_ICI"].to_list(), [0, 1])
+
+
+    def test_sequencing_eligibility_requires_a_report_at_or_before_the_landmark(self) -> None:
+        landmark = pl.DataFrame({
+            "DFCI_MRN": [1, 2, 3],
+            "treatment_start_date": [date(2020, 1, 1)] * 3,
+        })
+        specimens = pl.DataFrame({
+            "DFCI_MRN": [1, 1, 2, 3],
+            "REPORT_DT": [date(2018, 1, 1), date(2019, 6, 1),   # patient 1: two pre-landmark
+                          date(2020, 1, 1),                      # patient 2: same day, eligible
+                          date(2021, 1, 1)],                     # patient 3: after, ineligible
+            "TEST_TYPE": ["ONCOPANEL"] * 4,
+        })
+        with patch(
+            "pipelines.biomarkers.build_line_matched_cohort.ps.load_genomic_specimen",
+            return_value=specimens,
+        ):
+            result = sequenced_before_landmark(landmark).sort("DFCI_MRN")
+
+        self.assertEqual(result["DFCI_MRN"].to_list(), [1, 2])
+        # The most recent eligible report is the one reported.
+        self.assertEqual(result["sequencing_date"].to_list(), [date(2019, 6, 1), date(2020, 1, 1)])
 
 
 if __name__ == "__main__":
