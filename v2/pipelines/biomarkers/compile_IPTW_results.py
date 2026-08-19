@@ -3,8 +3,8 @@
 Reads per-scheme CSVs from IPTW_runs_*/ directories and produces:
   - track1_all_significant_hits.csv: all FDR-significant Track 1 (ICI-only) results
   - track2_all_significant_hits.csv: all FDR-significant Track 2 (interaction) results
-  - cohort_patient_counts.csv: n_ICI and n_control per cancer type in each cohort
-  - scheme_diagnostics_summary.csv: PS AUC, ESS, SMD summaries per scheme
+  - cohort_patient_counts.parquet: n_ICI and n_control per cancer type in each cohort
+  - scheme_diagnostics_summary.parquet: PS AUC, ESS, SMD summaries per scheme
 
 Each specification (cohort x ps_model x weighting x cancer_type) is reported
 separately. Downstream analysis should evaluate which specifications produce
@@ -203,7 +203,7 @@ def main() -> None:
                 })
 
     cohort_counts = pl.DataFrame(cohort_counts_rows)
-    cohort_counts.write_csv(os.path.join(OUTPUT_DIR, 'cohort_patient_counts.csv.gz'), compression='gzip')
+    cohort_counts.write_parquet(os.path.join(OUTPUT_DIR, 'cohort_patient_counts.parquet'))
     print(f"\nCohort patient counts ({len(cohort_counts)} rows):")
     with pl.Config(tbl_rows=-1):
         print(cohort_counts)
@@ -213,7 +213,7 @@ def main() -> None:
     # ================================================
     if diag_rows:
         diag_df = pl.concat(diag_rows, how='diagonal_relaxed')
-        diag_df.write_csv(os.path.join(OUTPUT_DIR, 'scheme_diagnostics_summary.csv.gz'), compression='gzip')
+        diag_df.write_parquet(os.path.join(OUTPUT_DIR, 'scheme_diagnostics_summary.parquet'))
         print(f"\nDiagnostics summary saved ({len(diag_df)} rows)")
 
     print(f"\nAll outputs saved to {OUTPUT_DIR}")
