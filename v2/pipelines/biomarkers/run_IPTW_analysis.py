@@ -17,9 +17,28 @@ import os
 import random
 import warnings
 
+# === Thread-count caps: MUST be set before polars/numpy are imported ===
+# The marker screens fan out over loky worker processes, and each worker is a
+# fresh interpreter that re-imports polars and builds its own Rayon thread pool.
+# Polars sizes that pool from the machine's core count, not from the SLURM
+# allocation, so `n_jobs` workers x `cores` threads each (plus tokio, jemalloc
+# background, and polars-ooc cleaner threads) overruns RLIMIT_NPROC / the
+# cgroup pid limit and the run dies mid-screen with
+#   PanicException: could not spawn threads: ... Os { code: 11, WouldBlock }
+# Note that panic is a BaseException, so `_safe_fit`'s `except Exception` does
+# not contain it — one exhausted worker kills the whole run.
+#
+# Each worker does one small select + filter and one Cox fit, so intra-worker
+# parallelism buys nothing; all the parallelism that matters is across markers.
+# loky workers inherit this environment at spawn, so setting it here caps them.
+# setdefault, so an explicit shell setting still wins.
+for _var in ("POLARS_MAX_THREADS", "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+             "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+    os.environ.setdefault(_var, "1")
+
 import numpy as np
 import polars as pl
-from joblib import Parallel, delayed
+from joblib import Parallel, delayed, parallel_config
 from lifelines import CoxPHFitter
 from lifelines.exceptions import ConvergenceWarning
 from scipy import stats
@@ -36,7 +55,29 @@ from shared.polars_utils import filter_finite_rows, finite_or_zero
 
 logger = logging.getLogger(__name__)
 
-N_JOBS = int(os.getenv("SLURM_CPUS_PER_TASK", "-1"))
+def _resolve_n_jobs() -> int:
+    """Concrete worker count, never joblib's `-1`.
+
+    `-1` expands to every core the machine reports, which on a shared node is
+    far more than the job was allocated and is what makes the thread budget
+    explode. Prefer the SLURM allocation; fall back to the visible core count
+    capped at MAX_WORKERS_FALLBACK. `IPTW_N_JOBS` overrides both.
+    """
+    for var in ("IPTW_N_JOBS", "SLURM_CPUS_PER_TASK"):
+        raw = os.getenv(var)
+        if raw:
+            try:
+                value = int(raw)
+            except ValueError:
+                logger.warning("%s=%r is not an integer; ignoring", var, raw)
+                continue
+            if value > 0:
+                return value
+    return min(os.cpu_count() or 1, MAX_WORKERS_FALLBACK)
+
+
+MAX_WORKERS_FALLBACK = 16
+N_JOBS = _resolve_n_jobs()
 
 # ============================================================
 # Configuration — edit these to control which combinations to run
@@ -481,9 +522,13 @@ def _run_marker_screen(df, markers, base_vars, weights_col, fit_fn, n_jobs, labe
         except Exception as e:
             return None, (marker, str(e))
 
-    raw = Parallel(n_jobs=n_jobs, backend="loky")(
-        delayed(_safe_fit)(m) for m in tqdm(markers, desc=label)
-    )
+    # inner_max_num_threads is belt-and-braces alongside the module-level env
+    # caps: it re-applies the BLAS/OpenMP limits inside each worker even if the
+    # executor was created before those were set.
+    with parallel_config(backend="loky", n_jobs=n_jobs, inner_max_num_threads=1):
+        raw = Parallel()(
+            delayed(_safe_fit)(m) for m in tqdm(markers, desc=label)
+        )
     results = [r for r, _ in raw if r is not None]
     failed = [f for _, f in raw if f is not None]
     return results, failed
@@ -492,6 +537,13 @@ def _run_marker_screen(df, markers, base_vars, weights_col, fit_fn, n_jobs, labe
 def main() -> None:
     random.seed(42)
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+    logger.info(
+        "Parallelism: n_jobs=%d workers, POLARS_MAX_THREADS=%s, OMP_NUM_THREADS=%s "
+        "(%d cores visible). Total thread budget is roughly n_jobs x threads-per-worker; "
+        "override with IPTW_N_JOBS.",
+        N_JOBS, os.environ.get("POLARS_MAX_THREADS"), os.environ.get("OMP_NUM_THREADS"),
+        os.cpu_count() or 0,
+    )
 
     # ============================================================
     # Main loop: iterate over cohort x ps_model combinations
