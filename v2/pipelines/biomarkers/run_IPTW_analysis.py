@@ -97,6 +97,11 @@ MIN_MARKER_POS_ICI_ONLY = 5
 MIN_EVENTS_PER_MARKER_GROUP = 5   # minimum deaths among marker+ patients
 MIN_MARKERS_TO_TEST = 1
 EXCLUDE_TYPES = {'OTHER', 'CUP'}
+# Cancer-type-specific screens are restricted to these types. `pan_cancer` always
+# runs and is unaffected — it still models every type via its CANCER_TYPE_* dummies,
+# including the ones left out here. Set to None to screen every type that clears
+# the MIN_CANCER_TYPE_N / MIN_PER_ARM_CANCER_TYPE gates instead.
+INCLUDE_TYPES = {'KIDNEY', 'LUNG', 'SKIN'}
 HR_EXTREME_THRESHOLD = 50
 
 
@@ -689,10 +694,24 @@ def main() -> None:
             print(f"  {len(embedding_cols)} embedding columns found for prognostic score")
 
             # === Cancer types to test ===
-            types_to_test = ['pan_cancer'] + [
-                col.replace('CANCER_TYPE_', '') for col in cancer_type_cols
-                if col.replace('CANCER_TYPE_', '') not in EXCLUDE_TYPES
-            ]
+            available_types = {col.replace('CANCER_TYPE_', '') for col in cancer_type_cols}
+            types_to_test = ['pan_cancer'] + sorted(
+                t for t in available_types
+                if t not in EXCLUDE_TYPES
+                and (INCLUDE_TYPES is None or t in INCLUDE_TYPES)
+            )
+            if INCLUDE_TYPES is not None:
+                # A label that matches no dummy column screens nothing, and the run
+                # still finishes clean — the same silent-nothing failure mode the
+                # all-fits-failed guard exists to prevent. Name it instead.
+                missing = sorted(INCLUDE_TYPES - available_types)
+                if missing:
+                    raise ValueError(
+                        f"INCLUDE_TYPES names cancer types with no CANCER_TYPE_* column: "
+                        f"{', '.join(missing)}. Available: {', '.join(sorted(available_types))}."
+                    )
+                print(f"  Cancer-type-specific screens restricted to: "
+                      f"{', '.join(sorted(INCLUDE_TYPES))}")
 
             for cancer_type in types_to_test:
                 print(f"\n{'='*60}")
