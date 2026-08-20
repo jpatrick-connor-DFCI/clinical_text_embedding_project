@@ -11,7 +11,6 @@ Track 2 (full cohort, IPTW-weighted):
 Notebook-ready: loops over all cohort x ps_model combinations automatically.
 """
 
-import gzip
 import logging
 import os
 import random
@@ -52,7 +51,7 @@ from tqdm import tqdm
 from config import BIOMARKER_PATH
 
 from pipelines.biomarkers.biomarker_common import get_mutation_type
-from shared.polars_utils import filter_finite_rows, finite_or_zero
+from shared.polars_utils import filter_finite_rows, finite_or_zero, to_pandas_via_numpy
 
 logger = logging.getLogger(__name__)
 
@@ -161,8 +160,8 @@ def assert_model_covariates_numeric(df, cols, context):
     Every fit funnels through `filter_finite_rows`, which casts with
     strict=False: a string column becomes all-null, fails `is_finite()`, and
     silently drops every row of the model frame. The fit then raises for each
-    marker in turn, `_safe_fit` swallows it, and the screen writes a header-only
-    CSV that is indistinguishable downstream from "no significant hits".
+    marker in turn, `_safe_fit` swallows it, and the screen writes a zero-row
+    parquet that is indistinguishable downstream from "no significant hits".
     Catching it here names the offending column instead.
     """
     offenders = [(c, df.schema[c]) for c in cols
@@ -310,7 +309,7 @@ def _fit_track2_marker(df, marker, base_vars, weights_col):
     # Compute event counts before fitting
     event_counts = get_marker_event_counts(df_fit_pl, marker)
 
-    df_fit = df_fit_pl.to_pandas()
+    df_fit = to_pandas_via_numpy(df_fit_pl)
     mx = f"{marker}_x_ICI"
     df_fit[mx] = df_fit['PX_on_ICI'] * df_fit[marker]
 
@@ -394,8 +393,14 @@ def add_track2_fdr_and_labels(results_df):
     return results_df
 
 
-def _run_track2_screen(type_df, cancer_type, base_vars, biomarker_cols, run_path, n_jobs):
-    """Track 2: screen all markers with within-arm support via the interaction model."""
+def _run_track2_screen(type_df, cancer_type, base_vars, biomarker_cols, n_jobs):
+    """Track 2: screen all markers with within-arm support via the interaction model.
+
+    Returns one tagged frame per weighting, for the caller to stack into the
+    single per-cancer-type results file. FDR is applied inside each weighting
+    before tagging, so the multiple-testing correction stays within its own
+    screen and is not diluted by the other track sharing the file.
+    """
     track2_markers = [
         m for m in biomarker_cols
         if marker_has_within_arm_support(type_df, m, min_pos_per_arm=MIN_MARKER_POS_PER_ARM,
@@ -406,8 +411,9 @@ def _run_track2_screen(type_df, cancer_type, base_vars, biomarker_cols, run_path
 
     if len(track2_markers) < MIN_MARKERS_TO_TEST:
         print(f"  Skipping Track 2: fewer than {MIN_MARKERS_TO_TEST} markers with sufficient support.")
-        return
+        return []
 
+    frames = []
     for spec_name, spec_weights in [('ATE', 'IPTW_ATE'), ('noIPTW', None)]:
         results, failed = _run_marker_screen(
             type_df, track2_markers, base_vars, spec_weights,
@@ -417,8 +423,11 @@ def _run_track2_screen(type_df, cancer_type, base_vars, biomarker_cols, run_path
                   f"First: {failed[0][0]} -> {failed[0][1]}")
         spec_df = pl.DataFrame(results, schema=TRACK2_RESULT_COLS) if results else pl.DataFrame(schema={c: pl.Float64 for c in TRACK2_RESULT_COLS})
         spec_df = add_track2_fdr_and_labels(spec_df)
-        with gzip.open(os.path.join(run_path, f'{cancer_type}_track2_{spec_name}_interaction.csv.gz'), 'wb') as f:
-            spec_df.write_csv(f)
+        frames.append(spec_df.with_columns(
+            pl.lit(2, dtype=pl.Int8).alias('track'),
+            pl.lit(spec_name, dtype=pl.Utf8).alias('weight_type'),
+        ))
+    return frames
 
 
 # =============================================
@@ -446,7 +455,7 @@ def _fit_track1_marker(df, marker, base_vars, weights_col):
     events_pos = int(death[marker_bin].sum())
     events_neg = int(death[~marker_bin].sum())
 
-    df_fit = df_fit_pl.to_pandas()
+    df_fit = to_pandas_via_numpy(df_fit_pl)
     cph = CoxPHFitter(penalizer=0.01)
     cph = fit_cph_log_warnings(cph, df_fit, 'tt_death', 'death',
                                 weights_col=weights_col, robust=True, marker_name=marker)
@@ -492,8 +501,11 @@ def add_track1_fdr(results_df):
     return results_df
 
 
-def _run_track1_screen(type_df, cancer_type, base_vars, biomarker_cols, run_path, n_jobs):
-    """Track 1: screen markers with ICI-only support via the generalizability-weighted model."""
+def _run_track1_screen(type_df, cancer_type, base_vars, biomarker_cols, n_jobs):
+    """Track 1: screen markers with ICI-only support via the generalizability-weighted model.
+
+    Returns one tagged frame per weighting; see `_run_track2_screen`.
+    """
     eps = 1e-6
     ici_only_df = type_df.filter(pl.col('PX_on_ICI') == 1)
 
@@ -517,12 +529,13 @@ def _run_track1_screen(type_df, cancer_type, base_vars, biomarker_cols, run_path
 
     if len(track1_markers) < MIN_MARKERS_TO_TEST:
         print(f"  Skipping Track 1: fewer than {MIN_MARKERS_TO_TEST} markers with sufficient support.")
-        return
+        return []
 
     # ICI-only base vars (no cancer type interaction needed for type-specific,
     # include for pan-cancer)
     ici_base_vars = list(base_vars)
 
+    frames = []
     for spec_name, spec_weights in [('ATE', 'IPTW_GEN'), ('unweighted', None)]:
         results, failed = _run_marker_screen(
             ici_only_df, track1_markers, ici_base_vars, spec_weights,
@@ -532,8 +545,52 @@ def _run_track1_screen(type_df, cancer_type, base_vars, biomarker_cols, run_path
                   f"First: {failed[0][0]} -> {failed[0][1]}")
         spec_df = pl.DataFrame(results, schema=TRACK1_RESULT_COLS) if results else pl.DataFrame(schema={c: pl.Float64 for c in TRACK1_RESULT_COLS})
         spec_df = add_track1_fdr(spec_df)
-        with gzip.open(os.path.join(run_path, f'{cancer_type}_track1_{spec_name}_ICI_only.csv.gz'), 'wb') as f:
-            spec_df.write_csv(f)
+        frames.append(spec_df.with_columns(
+            pl.lit(1, dtype=pl.Int8).alias('track'),
+            pl.lit(spec_name, dtype=pl.Utf8).alias('weight_type'),
+        ))
+    return frames
+
+
+# =============================================
+# Per-cancer-type diagnostics, one long-format file
+# =============================================
+
+DIAGNOSTIC_SECTIONS = ('propensity_score', 'cohort', 'balance_ATE')
+
+
+def _melt_diagnostic(wide, section, key_col=None):
+    """Melt a wide diagnostic frame into (section, key, metric, value) rows.
+
+    The three diagnostics have incompatible widths — one row per treatment arm,
+    one row for the cancer type, one row per covariate — so they share a file
+    in long form rather than as a sparse column union. Values are cast to
+    Float64; every diagnostic here is numeric.
+    """
+    metrics = [c for c in wide.columns if c != key_col]
+    key_expr = (pl.col(key_col).cast(pl.Utf8) if key_col is not None
+                else pl.lit(None, dtype=pl.Utf8))
+    return wide.select(
+        key_expr.alias('key'),
+        *[pl.col(m).cast(pl.Float64) for m in metrics],
+    ).unpivot(
+        index='key', on=metrics, variable_name='metric', value_name='value',
+    ).select(
+        pl.lit(section, dtype=pl.Utf8).alias('section'), 'key', 'metric', 'value',
+    )
+
+
+def read_diagnostic_section(path, section):
+    """Pivot one section of a `{cancer_type}_diagnostics.parquet` back to wide form.
+
+    Consumers that want a specific diagnostic (compile_IPTW_results wants the
+    cohort counts) should go through this rather than re-deriving the unpivot.
+    Returns an empty frame if the section is absent.
+    """
+    long = pl.read_parquet(path).filter(pl.col('section') == section)
+    if long.is_empty():
+        return pl.DataFrame()
+    return long.pivot(on='metric', index='key', values='value')
 
 
 # =============================================
@@ -558,7 +615,7 @@ def _run_marker_screen(df, markers, base_vars, weights_col, fit_fn, n_jobs, labe
     failed = [f for _, f in raw if f is not None]
 
     # A screen where every fit failed is a broken run, not a null result. Left
-    # unchecked it writes a header-only CSV that compile_IPTW_results reads
+    # unchecked it writes a zero-row parquet that compile_IPTW_results reads
     # without complaint and reports as "0 significant hits" — the failure is
     # indistinguishable from a genuine finding of nothing. The usual cause is a
     # non-numeric column in `base_vars`: `filter_finite_rows` casts with
@@ -609,8 +666,8 @@ def main() -> None:
             print(f"{'#'*60}")
 
             # === Load data ===
-            input_file = os.path.join(BIOMARKER_PATH, f'IPTW_df_{SPEC_LABEL}.csv.gz')
-            full_df = pl.read_csv(input_file)
+            input_file = os.path.join(BIOMARKER_PATH, f'IPTW_df_{SPEC_LABEL}.parquet')
+            full_df = pl.read_parquet(input_file)
 
             # === Identify column groups ===
             required_vars = ['DFCI_MRN', 'tt_death', 'death']
@@ -746,8 +803,7 @@ def main() -> None:
                       f"ESS treated={ess_t:.0f}, ESS control={ess_c:.0f}")
 
                 # --- Diagnostics ---
-                diag_path = os.path.join(RUN_PATH, f'{cancer_type}_diagnostics/')
-                os.makedirs(diag_path, exist_ok=True)
+                diag_frames = []
 
                 ps_diag = type_df.select(['PX_on_ICI', 'ICI_prediction']).with_columns(
                     pl.Series('IPTW_ATE', w_ate_trunc)
@@ -762,8 +818,8 @@ def main() -> None:
                     pl.col('ICI_prediction').quantile(0.75).alias('75%'),
                     pl.col('ICI_prediction').max().alias('max'),
                 ]).sort('PX_on_ICI')
-                with gzip.open(os.path.join(diag_path, 'propensity_score_summary.csv.gz'), 'wb') as f:
-                    ps_summary.write_csv(f)
+                diag_frames.append(_melt_diagnostic(
+                    ps_summary, 'propensity_score', key_col='PX_on_ICI'))
 
                 # PS AUC within this cancer type subset
                 ps_auc = roc_auc_score(type_df['PX_on_ICI'].to_numpy(), type_df['ICI_prediction'].to_numpy())
@@ -778,38 +834,58 @@ def main() -> None:
                 print(f"  Cohort: {n_treated} ICI ({events_treated} deaths, {events_treated/max(n_treated,1)*100:.1f}%), "
                       f"{n_control} non-ICI ({events_control} deaths, {events_control/max(n_control,1)*100:.1f}%)")
 
-                with gzip.open(os.path.join(diag_path, 'effective_sample_sizes.csv.gz'), 'wb') as f:
-                    pl.DataFrame([{
-                        'cancer_type': cancer_type,
-                        'N_treated': n_treated, 'N_control': n_control,
-                        'events_treated': events_treated, 'events_control': events_control,
-                        'event_rate_treated': events_treated / max(n_treated, 1),
-                        'event_rate_control': events_control / max(n_control, 1),
-                        'PS_AUC': ps_auc,
-                        'ESS_ATE_treated': ess_t, 'ESS_ATE_control': ess_c,
-                    }]).write_csv(f)
+                diag_frames.append(_melt_diagnostic(pl.DataFrame([{
+                    'N_treated': n_treated, 'N_control': n_control,
+                    'events_treated': events_treated, 'events_control': events_control,
+                    'event_rate_treated': events_treated / max(n_treated, 1),
+                    'event_rate_control': events_control / max(n_control, 1),
+                    'PS_AUC': ps_auc,
+                    'ESS_ATE_treated': ess_t, 'ESS_ATE_control': ess_c,
+                }]), 'cohort'))
 
                 balance_covars = base_covars + line_cols + [
                     c for c in type_df.columns
                     if c.startswith('CANCER_TYPE_') or c.upper().startswith('PANEL_VERSION_')]
                 smd_ate = compute_smd(type_df, balance_covars, weights=w_ate_trunc)
-                with gzip.open(os.path.join(diag_path, 'covariate_balance_smd_ATE.csv.gz'), 'wb') as f:
-                    smd_ate.write_csv(f)
+                diag_frames.append(_melt_diagnostic(
+                    smd_ate, 'balance_ATE', key_col='covariate'))
 
                 # Max SMD check (balance quality indicator)
                 max_smd_ate = float(smd_ate['SMD_weighted'].abs().max())
                 n_imbalanced_ate = int((smd_ate['SMD_weighted'].abs() > 0.1).sum())
                 print(f"  ATE balance: max|SMD|={max_smd_ate:.4f}, {n_imbalanced_ate}/{len(smd_ate)} covariates with |SMD|>0.1")
 
+                pl.concat(diag_frames).with_columns(
+                    pl.lit(cancer_type, dtype=pl.Utf8).alias('cancer_type')
+                ).select('cancer_type', 'section', 'key', 'metric', 'value').write_parquet(
+                    os.path.join(RUN_PATH, f'{cancer_type}_diagnostics.parquet'))
+
                 assert_model_covariates_numeric(
                     type_df, base_vars + ['tt_death', 'death', 'PX_on_ICI'],
                     f"{SPEC_LABEL}/{cancer_type}")
 
                 # === Track 2: full-cohort interaction ===
-                _run_track2_screen(type_df, cancer_type, base_vars, biomarker_cols, RUN_PATH, N_JOBS)
+                frames = _run_track2_screen(type_df, cancer_type, base_vars, biomarker_cols, N_JOBS)
 
                 # === Track 1: ICI-only generalizability-weighted ===
-                _run_track1_screen(type_df, cancer_type, base_vars, biomarker_cols, RUN_PATH, N_JOBS)
+                frames += _run_track1_screen(type_df, cancer_type, base_vars, biomarker_cols, N_JOBS)
+
+                # One results file per cancer type. The two tracks share only
+                # `marker`, `mutation_type` and `extreme_hr_flag`, so the stack is
+                # diagonal: each track's own columns are null on the other's rows.
+                # `track` and `weight_type` identify which screen a row came from.
+                if frames:
+                    results_df = pl.concat(frames, how='diagonal_relaxed')
+                    results_df = results_df.select(
+                        pl.lit(cancer_type, dtype=pl.Utf8).alias('cancer_type'),
+                        'track', 'weight_type',
+                        *[c for c in results_df.columns if c not in ('track', 'weight_type')],
+                    )
+                    results_file = os.path.join(RUN_PATH, f'{cancer_type}_results.parquet')
+                    results_df.write_parquet(results_file)
+                    print(f"  Wrote {results_df.height} result rows to {results_file}")
+                else:
+                    print(f"  No screen ran for {cancer_type}; no results file written.")
 
             print(f"\n[run_IPTW_analysis] Done with {SPEC_LABEL}. Results in {RUN_PATH}")
 

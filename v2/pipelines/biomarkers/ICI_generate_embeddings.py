@@ -44,8 +44,10 @@ def main() -> None:
         os.makedirs(EMBEDDING_DATA_PATH, exist_ok=True)
 
         # === Load matched cohort ===
-        cohort_df = pl.read_csv(os.path.join(MATCHED_COHORT_PATH, f'matched_cohort_{COHORT}.csv.gz'))
-        cohort_df = cohort_df.with_columns(pl.col('treatment_start_date').str.to_datetime())
+        cohort_df = pl.read_parquet(os.path.join(MATCHED_COHORT_PATH, f'matched_cohort_{COHORT}.parquet'))
+        # Parquet round-trips the dtype build_line_matched_cohort wrote, so this is
+        # a no-op cast rather than the string parse the CSV form needed.
+        cohort_df = cohort_df.with_columns(pl.col('treatment_start_date').cast(pl.Datetime))
 
         n_ici = cohort_df['PX_on_ICI'].sum()
         n_ctrl = len(cohort_df) - n_ici
@@ -81,13 +83,12 @@ def main() -> None:
                 embedding_vals.drop_nulls('DFCI_MRN'), embedding_cols
             )
             full_dataset = cohort_df.join(embedding_vals_pl, on='DFCI_MRN')
-            full_dataset.write_csv(
-                os.path.join(buffer_path, f'ICI_prediction_df_w_{buffer}_day_buffer.csv.gz'),
-                compression='gzip')
+            full_dataset.write_parquet(
+                os.path.join(buffer_path, f'ICI_prediction_df_w_{buffer}_day_buffer.parquet'))
 
         # Save prediction times for downstream use
-        cohort_df.select(['DFCI_MRN', 'treatment_start_date', 'PX_on_ICI', 'line_category']).write_csv(
-            os.path.join(EMBEDDING_DATA_PATH, 'prediction_times.csv.gz'), compression='gzip')
+        cohort_df.select(['DFCI_MRN', 'treatment_start_date', 'PX_on_ICI', 'line_category']).write_parquet(
+            os.path.join(EMBEDDING_DATA_PATH, 'prediction_times.parquet'))
 
         print(f"[ICI_generate_embeddings] Done with {COHORT}. Data in {EMBEDDING_DATA_PATH}")
 

@@ -9,8 +9,12 @@ where `cols` is `[tt_death, death, (PX_on_ICI,)] + base_vars + [marker]`.
 single *non-numeric* column anywhere in `base_vars` casts to all-null, fails
 `is_finite()`, and drops every row — for every marker, in every screen. The
 fit then raises, `_safe_fit` catches it, `results` is empty, and the screen
-writes a header-only CSV. `compile_IPTW_results` reads those happily and
+writes a zero-row parquet. `compile_IPTW_results` reads those happily and
 reports 0 significant hits.
+
+Any other per-marker exception ends the same way — a missing pyarrow behind
+`DataFrame.to_pandas()` did exactly this, in every screen including the
+per-cancer-type ones. That is why the trial fits below run uncaught.
 
 This script reproduces that column selection on the saved IPTW_df files and
 reports where the chain breaks. Read-only; takes seconds.
@@ -19,7 +23,6 @@ Usage:
   python -m pipelines.biomarkers.diagnose_iptw_inputs
 """
 
-import gzip
 import os
 import traceback
 
@@ -51,32 +54,32 @@ def _section(title: str) -> None:
 
 def _report_run_dir(spec: str) -> None:
     """Row counts of what the last run actually wrote, not just byte sizes:
-    a gzipped header-only CSV is ~100 bytes, not 0, so `ls -l` looks plausible."""
+    a zero-row parquet still carries a schema and a footer, so it is a couple of
+    kB on disk and `ls -l` looks plausible. Row counts come from the parquet
+    metadata, so this stays cheap on the large result files."""
     run_path = os.path.join(BIOMARKER_PATH, f'IPTW_runs_{spec}/')
     if not os.path.isdir(run_path):
         print(f"  {run_path}: not present")
         return
-    for root, _dirs, files in os.walk(run_path):
-        for name in sorted(f for f in files if f.endswith('.csv.gz')):
-            path = os.path.join(root, name)
-            try:
-                with gzip.open(path, 'rt') as handle:
-                    n_rows = max(sum(1 for _ in handle) - 1, 0)
-            except OSError as exc:
-                print(f"  {os.path.relpath(path, run_path):<60} UNREADABLE: {exc}")
-                continue
-            flag = "  <- EMPTY (header only)" if n_rows == 0 else ""
-            print(f"  {os.path.relpath(path, run_path):<60} {n_rows:>6} rows{flag}")
+    for name in sorted(f for f in os.listdir(run_path) if f.endswith('.parquet')):
+        path = os.path.join(run_path, name)
+        try:
+            n_rows = pl.scan_parquet(path).select(pl.len()).collect().item()
+        except (OSError, pl.exceptions.PolarsError) as exc:
+            print(f"  {name:<60} UNREADABLE: {exc}")
+            continue
+        flag = "  <- EMPTY (no rows)" if n_rows == 0 else ""
+        print(f"  {name:<60} {n_rows:>6} rows{flag}")
 
 
 def _diagnose_spec(spec: str) -> None:
     _section(f"{spec}")
 
-    input_file = os.path.join(BIOMARKER_PATH, f'IPTW_df_{spec}.csv.gz')
+    input_file = os.path.join(BIOMARKER_PATH, f'IPTW_df_{spec}.parquet')
     if not os.path.isfile(input_file):
         print(f"  MISSING INPUT: {input_file}")
         return
-    full_df = pl.read_csv(input_file)
+    full_df = pl.read_parquet(input_file)
     print(f"  IPTW_df: {full_df.height} patients x {full_df.width} columns")
     if full_df.is_empty():
         print("  >>> INPUT IS EMPTY. The break is upstream, in generate_IPTW_df.py.")
@@ -107,12 +110,23 @@ def _diagnose_spec(spec: str) -> None:
     for col, dtype in non_numeric:
         print(f"  {col:<45} {dtype}")
 
-    # pan_cancer base_vars, verbatim from main()
+    # pan_cancer base_vars, verbatim from main()'s prefix-anchored filters.
     type_df, _kept, _merged = merge_rare_cancer_types_into_other(
         full_df.clone(), min_total=MIN_CANCER_TYPE_TOTAL)
-    panel_cols_fit = [c for c in type_df.columns if 'PANEL' in c]
-    ct_cols_fit = [c for c in type_df.columns if 'CANCER_TYPE' in c]
+    panel_cols_fit = [c for c in type_df.columns if c.upper().startswith('PANEL_VERSION_')]
+    ct_cols_fit = [c for c in type_df.columns if c.startswith('CANCER_TYPE_')]
     base_vars = base_covars + line_cols + panel_cols_fit + ct_cols_fit
+
+    # What the superseded substring filters would have added. Reported so a frame
+    # still carrying the raw labels is visible even though they no longer reach a
+    # model — and so this script does not keep flagging a bug that is fixed.
+    swept = sorted(({c for c in type_df.columns if 'CANCER_TYPE' in c or 'PANEL' in c}
+                    - set(panel_cols_fit) - set(ct_cols_fit)))
+    if swept:
+        print(f"\n  Raw label columns present but correctly excluded from base_vars: "
+              f"{', '.join(swept)}")
+        print("  (the superseded `'CANCER_TYPE' in c` / `'PANEL' in c` filters swept these in, "
+              "which emptied every pan-cancer model frame)")
 
     missing = [c for c in base_vars if c not in type_df.columns]
     if missing:
@@ -120,7 +134,7 @@ def _diagnose_spec(spec: str) -> None:
     offenders = [(c, type_df.schema[c]) for c in base_vars
                  if c in type_df.schema and type_df.schema[c] not in NUMERIC]
     print(f"\n  pan_cancer base_vars: {len(base_vars)} columns "
-          f"({len(panel_cols_fit)} matched by the loose 'PANEL' in c test)")
+          f"({len(panel_cols_fit)} panel dummies, {len(ct_cols_fit)} cancer-type dummies)")
     if offenders:
         print("  >>> NON-NUMERIC base_vars — these empty every model frame:")
         for col, dtype in offenders:

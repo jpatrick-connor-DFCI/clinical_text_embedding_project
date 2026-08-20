@@ -126,8 +126,8 @@ def main() -> None:
         for buffer in tqdm(BUFFERS, desc="Training propensity models"):
             buffer_input_path = os.path.join(EMBEDDING_DATA_PATH, f'w_{buffer}_day_buffer/')
 
-            pred_df = pl.read_csv(
-                os.path.join(buffer_input_path, f'ICI_prediction_df_w_{buffer}_day_buffer.csv.gz'))
+            pred_df = pl.read_parquet(
+                os.path.join(buffer_input_path, f'ICI_prediction_df_w_{buffer}_day_buffer.parquet'))
 
             # Embedding feature columns
             embedding_cols = [col for col in pred_df.columns
@@ -197,15 +197,15 @@ def main() -> None:
 
                 label = f"buffer={buffer}, {ps_model}"
                 out_df = train_propensity_cv(common_source_df, features, label)
-                out_df.write_csv(os.path.join(output_path, 'predictions.csv.gz'), compression='gzip')
+                out_df.write_parquet(os.path.join(output_path, 'predictions.parquet'))
 
         # === Plot ROC curves for the 30-day buffer ===
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
         PLOT_BUFFER = 30
 
         for i, ps_model in enumerate(PS_MODELS):
-            pred_path = os.path.join(OUTPUT_BASE, f'{ps_model}_propensity/w_{PLOT_BUFFER}_day_buffer/predictions.csv.gz')
-            pred_df = pl.read_csv(pred_path)
+            pred_path = os.path.join(OUTPUT_BASE, f'{ps_model}_propensity/w_{PLOT_BUFFER}_day_buffer/predictions.parquet')
+            pred_df = pl.read_parquet(pred_path)
 
             auc = roc_auc_score(pred_df['ground_truth'], pred_df['model_probs'])
             fpr, tpr, _ = roc_curve(pred_df['ground_truth'], pred_df['model_probs'])

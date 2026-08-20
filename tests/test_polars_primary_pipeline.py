@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 import unittest
@@ -18,7 +19,11 @@ if str(V2_ROOT) not in sys.path:
     sys.path.insert(0, str(V2_ROOT))
 
 from pipelines.training.slurm_array_utils import filter_event_rows  # noqa: E402
-from shared.polars_utils import filter_finite_rows, finite_or_zero  # noqa: E402
+from shared.polars_utils import (  # noqa: E402
+    filter_finite_rows,
+    finite_or_zero,
+    to_pandas_via_numpy,
+)
 from survival.cox_models.base import scale_model_data  # noqa: E402
 from survival.preprocessing import pool_embedding_series_vectorized  # noqa: E402
 from survival.preprocessing import map_time_to_event  # noqa: E402
@@ -255,3 +260,71 @@ class PolarsPrimaryPipelineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _PyarrowBlocker:
+    """Meta-path finder that makes pyarrow unimportable.
+
+    Uses find_spec, not the legacy find_module/load_module pair, which was
+    removed in Python 3.12 — the cluster runs 3.13.
+    """
+
+    def find_spec(self, name, path=None, target=None):
+        if name == "pyarrow" or name.startswith("pyarrow."):
+            raise ModuleNotFoundError(f"No module named '{name}'")
+        return None
+
+
+@contextlib.contextmanager
+def _pyarrow_unavailable():
+    saved = {name: module for name, module in sys.modules.items()
+             if name == "pyarrow" or name.startswith("pyarrow.")}
+    for name in saved:
+        del sys.modules[name]
+    blocker = _PyarrowBlocker()
+    sys.meta_path.insert(0, blocker)
+    try:
+        yield
+    finally:
+        sys.meta_path.remove(blocker)
+        sys.modules.update(saved)
+
+
+class PolarsToPandasBoundaryTests(unittest.TestCase):
+    """`DataFrame.to_pandas()` converts through Arrow record batches and requires
+    pyarrow, which the cluster environment does not have. Every lifelines fit
+    raised ModuleNotFoundError, `_safe_fit` swallowed it, and each marker screen
+    wrote a header-only CSV that compiled to "0 significant hits"."""
+
+    def _frame(self) -> pl.DataFrame:
+        return pl.DataFrame({
+            "tt_death": [10.5, 20.5, 30.5],
+            "death": [1, 0, 1],
+            "AGE_AT_TREATMENTSTART": [61.2, 74.8, 55.0],
+            "CANCER_TYPE_LUNG": pl.Series([1, 0, 1], dtype=pl.UInt8),
+            "PANEL_VERSION_OP_v3": pl.Series([True, True, False]),
+            "TP53_SNV": pl.Series([0, 1, 1], dtype=pl.Int64),
+        })
+
+    def test_converts_when_pyarrow_is_unavailable(self):
+        with _pyarrow_unavailable():
+            converted = to_pandas_via_numpy(self._frame())
+        self.assertEqual(list(converted.columns), self._frame().columns)
+        self.assertEqual(len(converted), 3)
+        np.testing.assert_allclose(converted["tt_death"].to_numpy(), [10.5, 20.5, 30.5])
+
+    def test_preserves_each_column_dtype(self):
+        """A single df.to_numpy() would upcast the whole frame to one dtype;
+        per-column conversion keeps int, float, uint and bool distinct."""
+        converted = to_pandas_via_numpy(self._frame())
+        kinds = {name: converted[name].to_numpy().dtype.kind for name in converted.columns}
+        self.assertEqual(kinds["tt_death"], "f")
+        self.assertEqual(kinds["death"], "i")
+        self.assertEqual(kinds["CANCER_TYPE_LUNG"], "u")
+        self.assertEqual(kinds["PANEL_VERSION_OP_v3"], "b")
+        self.assertEqual(kinds["TP53_SNV"], "i")
+
+    def test_empty_frame_keeps_its_columns(self):
+        converted = to_pandas_via_numpy(self._frame().clear())
+        self.assertEqual(len(converted), 0)
+        self.assertEqual(list(converted.columns), self._frame().columns)

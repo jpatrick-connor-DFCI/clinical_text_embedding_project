@@ -128,11 +128,11 @@ def _ps_predictions() -> pl.DataFrame:
     cancer = _patient_cancer_type()
     rows = []
     for ps_model in ("covariates_only", "covariates_plus_embeddings"):
-        fp = os.path.join(PS_BASE, f"{ps_model}_propensity/w_{PS_BUFFER}_day_buffer/predictions.csv.gz")
+        fp = os.path.join(PS_BASE, f"{ps_model}_propensity/w_{PS_BUFFER}_day_buffer/predictions.parquet")
         if not os.path.exists(fp):
             print(f"  missing {fp}")
             continue
-        d = pl.read_csv(fp)
+        d = pl.read_parquet(fp)
         required = {"DFCI_MRN", "model_probs", "ground_truth"}
         if not required.issubset(d.columns):
             print(f"  skipping {fp}: missing {sorted(required - set(d.columns))}")
@@ -258,12 +258,12 @@ def _km_top_hit() -> tuple[pl.DataFrame, pl.DataFrame]:
     ps_model = top["ps_model"]
     weight_type = top.get("weight_type", TRACK2_WEIGHT)
     print(f"  top hit: {marker} in {cancer} ({cohort}, {ps_model}, {weight_type})")
-    iptw_fp = os.path.join(BIOMARKER_PATH, f"IPTW_df_{cohort}_{ps_model}.csv.gz")
+    iptw_fp = os.path.join(BIOMARKER_PATH, f"IPTW_df_{cohort}_{ps_model}.parquet")
     if not os.path.exists(iptw_fp):
         print(f"  missing {iptw_fp}")
         return (pl.DataFrame(schema={c: pl.Float64 for c in KM_COLUMNS}),
                 pl.DataFrame(schema={c: pl.Float64 for c in TOP_HIT_META_COLUMNS}))
-    iptw = pl.read_csv(iptw_fp)
+    iptw = pl.read_parquet(iptw_fp)
     cancer_col = f"CANCER_TYPE_{cancer}"
     if cancer != "pan_cancer" and cancer_col in iptw.columns:
         iptw = iptw.filter(pl.col(cancer_col) == 1)
@@ -501,11 +501,11 @@ def _km_examples() -> pl.DataFrame:
         hr = float(row["hr"])
         hr_label = row["hr_label"]
         track = int(row["track"])
-        iptw_fp = os.path.join(BIOMARKER_PATH, f"IPTW_df_{cohort}_{ps_model}.csv.gz")
+        iptw_fp = os.path.join(BIOMARKER_PATH, f"IPTW_df_{cohort}_{ps_model}.parquet")
         if not os.path.exists(iptw_fp):
             print(f"  missing {iptw_fp}")
             continue
-        iptw = pl.read_csv(iptw_fp)
+        iptw = pl.read_parquet(iptw_fp)
         cancer_col = f"CANCER_TYPE_{cancer}"
         if cancer != "pan_cancer" and cancer_col in iptw.columns:
             iptw = iptw.filter(pl.col(cancer_col) == 1)
@@ -567,11 +567,11 @@ def _love_smd() -> pl.DataFrame:
     Recomputes stabilized ATE weights from the held-out propensity (ICI_prediction) so the panel
     is self-contained, mirroring run_IPTW_analysis.compute_smd + the ATE-weight formula.
     """
-    fp = os.path.join(BIOMARKER_PATH, f"IPTW_df_{COHORT}_{PRIMARY_PS_MODEL}.csv.gz")
+    fp = os.path.join(BIOMARKER_PATH, f"IPTW_df_{COHORT}_{PRIMARY_PS_MODEL}.parquet")
     if not os.path.exists(fp):
         print(f"  no IPTW df at {fp}; emitting empty love-plot data")
         return pl.DataFrame(schema={c: pl.Float64 for c in LOVE_SMD_COLUMNS})
-    df = pl.read_csv(fp)
+    df = pl.read_parquet(fp)
     if not {"PX_on_ICI", "ICI_prediction"}.issubset(df.columns):
         print("  IPTW df missing PX_on_ICI/ICI_prediction; emitting empty love-plot data")
         return pl.DataFrame(schema={c: pl.Float64 for c in LOVE_SMD_COLUMNS})

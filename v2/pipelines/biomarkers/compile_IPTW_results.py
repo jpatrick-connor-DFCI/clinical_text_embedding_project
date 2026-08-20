@@ -1,6 +1,8 @@
 """Compile IPTW biomarker results across all cohorts and PS models.
 
-Reads per-scheme CSVs from IPTW_runs_*/ directories and produces:
+Reads per-scheme parquets from IPTW_runs_*/ directories — one
+`{cancer_type}_results.parquet` and one `{cancer_type}_diagnostics.parquet` per
+cancer type — and produces:
   - track1_all_significant_hits.csv: all FDR-significant Track 1 (ICI-only) results
   - track2_all_significant_hits.csv: all FDR-significant Track 2 (interaction) results
   - cohort_patient_counts.parquet: n_ICI and n_control per cancer type in each cohort
@@ -19,6 +21,7 @@ import re
 import polars as pl
 
 from config import BIOMARKER_PATH, MATCHED_COHORT_PATH
+from pipelines.biomarkers.run_IPTW_analysis import read_diagnostic_section
 
 # ============================================================
 # Configuration
@@ -45,7 +48,7 @@ def main() -> None:
             if not os.path.isdir(_run):
                 continue
             for fname in os.listdir(_run):
-                match = re.match(r'(.+)_track[12]_', fname)
+                match = re.match(r'(.+)_results\.parquet$', fname)
                 if match:
                     _cancer_types.add(match.group(1))
     CANCER_TYPES = sorted(_cancer_types)
@@ -67,49 +70,41 @@ def main() -> None:
                 continue
 
             for cancer_type in CANCER_TYPES:
-                # Diagnostics
-                diag_path = os.path.join(run_path, f'{cancer_type}_diagnostics/')
-                ess_file = os.path.join(diag_path, 'effective_sample_sizes.csv.gz')
-                if os.path.isfile(ess_file):
-                    ess = pl.read_csv(ess_file)
-                    ess = ess.with_columns(pl.lit(cohort).alias('cohort'), pl.lit(ps_model).alias('ps_model'))
-                    diag_rows.append(ess)
+                # Diagnostics: one long-format file per cancer type; the cohort
+                # section carries what effective_sample_sizes.parquet used to.
+                diag_file = os.path.join(run_path, f'{cancer_type}_diagnostics.parquet')
+                if os.path.isfile(diag_file):
+                    ess = read_diagnostic_section(diag_file, 'cohort')
+                    if not ess.is_empty():
+                        diag_rows.append(ess.drop('key').with_columns(
+                            pl.lit(cancer_type).alias('cancer_type'),
+                            pl.lit(cohort).alias('cohort'),
+                            pl.lit(ps_model).alias('ps_model'),
+                        ))
 
-                # Track 1
+                # Results: both tracks and all weightings share one file.
+                results_file = os.path.join(run_path, f'{cancer_type}_results.parquet')
+                if not os.path.isfile(results_file):
+                    continue
+                results = pl.read_parquet(results_file).with_columns(
+                    pl.lit(cohort).alias('cohort'),
+                    pl.lit(ps_model).alias('ps_model'),
+                )
+
+                # Track 1: ICI-only. `significant_marker` is null on track 2 rows,
+                # and `== True` drops nulls, so the track filter is belt-and-braces.
                 for weight in TRACK1_WEIGHTS:
-                    fname = f'{cancer_type}_track1_{weight}_ICI_only.csv.gz'
-                    fpath = os.path.join(run_path, fname)
-                    if os.path.isfile(fpath):
-                        df = pl.read_csv(fpath)
-                        if 'significant_marker' not in df.columns:
-                            sig = df.clear()
-                        else:
-                            sig = df.filter(pl.col('significant_marker') == True)
-                        sig = sig.with_columns(
-                            pl.lit(cohort).alias('cohort'),
-                            pl.lit(ps_model).alias('ps_model'),
-                            pl.lit(weight).alias('weight_type'),
-                            pl.lit(cancer_type).alias('cancer_type'),
-                        )
-                        all_t1.append(sig)
+                    rows = results.filter(
+                        (pl.col('track') == 1) & (pl.col('weight_type') == weight))
+                    if 'significant_marker' in rows.columns:
+                        all_t1.append(rows.filter(pl.col('significant_marker') == True))
 
-                # Track 2
+                # Track 2: full-cohort interaction.
                 for weight in TRACK2_WEIGHTS:
-                    fname = f'{cancer_type}_track2_{weight}_interaction.csv.gz'
-                    fpath = os.path.join(run_path, fname)
-                    if os.path.isfile(fpath):
-                        df = pl.read_csv(fpath)
-                        if 'significant_predictive' not in df.columns:
-                            sig = df.clear()
-                        else:
-                            sig = df.filter(pl.col('significant_predictive') == True)
-                        sig = sig.with_columns(
-                            pl.lit(cohort).alias('cohort'),
-                            pl.lit(ps_model).alias('ps_model'),
-                            pl.lit(weight).alias('weight_type'),
-                            pl.lit(cancer_type).alias('cancer_type'),
-                        )
-                        all_t2.append(sig)
+                    rows = results.filter(
+                        (pl.col('track') == 2) & (pl.col('weight_type') == weight))
+                    if 'significant_predictive' in rows.columns:
+                        all_t2.append(rows.filter(pl.col('significant_predictive') == True))
 
     t1 = pl.concat(all_t1, how='diagonal_relaxed') if all_t1 else pl.DataFrame()
     t2 = pl.concat(all_t2, how='diagonal_relaxed') if all_t2 else pl.DataFrame()
@@ -127,11 +122,11 @@ def main() -> None:
 
     for cohort in COHORTS:
         # --- Original matched cohort (before any filtering) ---
-        cohort_file = os.path.join(MATCHED_COHORT_PATH, f'matched_cohort_{cohort}.csv.gz')
+        cohort_file = os.path.join(MATCHED_COHORT_PATH, f'matched_cohort_{cohort}.parquet')
         if not os.path.isfile(cohort_file):
             print(f"  Cohort file not found: {cohort_file}")
             continue
-        cdf = pl.read_csv(cohort_file)
+        cdf = pl.read_parquet(cohort_file)
         ct_col = 'cancer_type' if 'cancer_type' in cdf.columns else 'CANCER_TYPE'
         for ct, grp in cdf.group_by(ct_col):
             ct = ct[0]
@@ -148,11 +143,11 @@ def main() -> None:
 
         # --- IPTW df counts per PS model (after common_source_df filtering) ---
         for ps_model in PS_MODELS:
-            iptw_file = os.path.join(BIOMARKER_PATH, f'IPTW_df_{cohort}_{ps_model}.csv.gz')
+            iptw_file = os.path.join(BIOMARKER_PATH, f'IPTW_df_{cohort}_{ps_model}.parquet')
             if not os.path.isfile(iptw_file):
                 print(f"  IPTW file not found: {iptw_file}")
                 continue
-            idf = pl.read_csv(iptw_file)
+            idf = pl.read_parquet(iptw_file)
             cancer_type_cols = [c for c in idf.columns if c.startswith('CANCER_TYPE_')]
             for ct_c in cancer_type_cols:
                 ct_name = ct_c.replace('CANCER_TYPE_', '')
@@ -186,10 +181,10 @@ def main() -> None:
             if not os.path.isdir(run_path):
                 continue
             for cancer_type in CANCER_TYPES:
-                ess_file = os.path.join(run_path, f'{cancer_type}_diagnostics/effective_sample_sizes.csv.gz')
-                if not os.path.isfile(ess_file):
+                diag_file = os.path.join(run_path, f'{cancer_type}_diagnostics.parquet')
+                if not os.path.isfile(diag_file):
                     continue
-                ess = pl.read_csv(ess_file)
+                ess = read_diagnostic_section(diag_file, 'cohort')
                 if ess.is_empty():
                     continue
                 row = ess.row(0, named=True)

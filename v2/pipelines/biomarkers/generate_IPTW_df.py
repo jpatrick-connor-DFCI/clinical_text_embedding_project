@@ -63,9 +63,11 @@ def main() -> None:
         PRED_DATA_PATH = os.path.join(PRED_BASE, 'prediction_data/')
 
         # === Load prediction times (includes line_category) ===
-        prediction_times = pl.read_csv(os.path.join(PRED_DATA_PATH, 'prediction_times.csv.gz'))
+        prediction_times = pl.read_parquet(os.path.join(PRED_DATA_PATH, 'prediction_times.parquet'))
+        # Parquet preserves the Datetime ICI_generate_embeddings wrote; the cast is
+        # kept as the explicit contract, not as the string parse the CSV form needed.
         prediction_times = prediction_times.with_columns(
-            pl.col('treatment_start_date').str.to_datetime(strict=False))
+            pl.col('treatment_start_date').cast(pl.Datetime))
         prediction_times = prediction_times.unique(subset='DFCI_MRN', keep='first', maintain_order=True)
 
         # === Somatic markers, anchored at each patient's line landmark ===
@@ -91,8 +93,8 @@ def main() -> None:
         # === Load clinical text embeddings (30-day buffer) for prognostic score ===
         EMBED_BUFFER = 30
         embed_file = os.path.join(PRED_DATA_PATH, f'w_{EMBED_BUFFER}_day_buffer/',
-                                  f'ICI_prediction_df_w_{EMBED_BUFFER}_day_buffer.csv.gz')
-        embed_df = pl.read_csv(embed_file)
+                                  f'ICI_prediction_df_w_{EMBED_BUFFER}_day_buffer.parquet')
+        embed_df = pl.read_parquet(embed_file)
         embedding_cols = [c for c in embed_df.columns
                           if ('IMAGING' in c) or ('PATHOLOGY' in c) or ('CLINICIAN' in c)]
         embed_df = embed_df.select(['DFCI_MRN'] + embedding_cols).unique(subset='DFCI_MRN', keep='first', maintain_order=True)
@@ -105,10 +107,10 @@ def main() -> None:
         common_mrns = None
         for PS_MODEL in PS_MODELS:
             PS_PATH = os.path.join(PRED_BASE, f'{PS_MODEL}_propensity/w_30_day_buffer/')
-            preds = pl.read_csv(os.path.join(PS_PATH, 'predictions.csv.gz'))
+            preds = pl.read_parquet(os.path.join(PS_PATH, 'predictions.parquet'))
             required_pred_cols = {'DFCI_MRN', 'ground_truth', 'model_probs'}
             if not required_pred_cols.issubset(set(preds.columns)):
-                raise ValueError(f"predictions.csv must contain columns: {sorted(required_pred_cols)}")
+                raise ValueError(f"predictions.parquet must contain columns: {sorted(required_pred_cols)}")
             preds = preds.select(['DFCI_MRN', 'ground_truth', 'model_probs']).drop_nulls('DFCI_MRN')
             preds = filter_finite_rows(preds, ['ground_truth', 'model_probs'])
             preds = preds.with_columns(pl.col('ground_truth').cast(pl.Int64))
@@ -221,8 +223,8 @@ def main() -> None:
                 pl.col('death').cast(pl.Int64),
             ])
 
-            output_file = os.path.join(BIOMARKER_PATH, f'IPTW_df_{COHORT}_{PS_MODEL}.csv.gz')
-            interaction_ICI_df.write_csv(output_file, compression='gzip')
+            output_file = os.path.join(BIOMARKER_PATH, f'IPTW_df_{COHORT}_{PS_MODEL}.parquet')
+            interaction_ICI_df.write_parquet(output_file)
             print(f"  Saved {interaction_ICI_df.height} patients to {output_file}")
             n_ici = interaction_ICI_df['PX_on_ICI'].sum()
             print(f"  ICI: {n_ici}, "

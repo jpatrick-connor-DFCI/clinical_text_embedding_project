@@ -30,7 +30,6 @@ Usage:
   python -m pipelines.biomarkers.build_line_matched_cohort
 """
 
-import gzip
 import os
 import random
 
@@ -251,9 +250,9 @@ def main() -> None:
     print(cohort1.group_by(['PX_on_ICI', 'cancer_type']).agg(pl.len()).pivot(
         on='cancer_type', index='PX_on_ICI', values='len').fill_null(0))
 
-    with gzip.open(os.path.join(MATCHED_COHORT_PATH, 'matched_cohort_cohort1.csv.gz'), 'wb') as f:
-        cohort1.write_csv(f)
-    print(f"  Saved to {os.path.join(MATCHED_COHORT_PATH, 'matched_cohort_cohort1.csv.gz')}")
+    out_path = os.path.join(MATCHED_COHORT_PATH, 'matched_cohort_cohort1.parquet')
+    cohort1.write_parquet(out_path)
+    print(f"  Saved to {out_path}")
 
     # ================================================================
     # Cohort 2: 1:1 matched first-line new users.
@@ -286,9 +285,9 @@ def main() -> None:
         print(cohort2.group_by(['PX_on_ICI', 'line_category']).agg(pl.len()).pivot(
             on='line_category', index='PX_on_ICI', values='len').fill_null(0))
 
-        with gzip.open(os.path.join(MATCHED_COHORT_PATH, 'matched_cohort_cohort2.csv.gz'), 'wb') as f:
-            cohort2.write_csv(f)
-        print(f"  Saved to {os.path.join(MATCHED_COHORT_PATH, 'matched_cohort_cohort2.csv.gz')}")
+        out_path = os.path.join(MATCHED_COHORT_PATH, 'matched_cohort_cohort2.parquet')
+        cohort2.write_parquet(out_path)
+        print(f"  Saved to {out_path}")
 
 
 if __name__ == "__main__":
