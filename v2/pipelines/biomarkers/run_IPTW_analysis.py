@@ -16,6 +16,7 @@ import logging
 import os
 import random
 import warnings
+from collections import Counter
 
 # === Thread-count caps: MUST be set before polars/numpy are imported ===
 # The marker screens fan out over loky worker processes, and each worker is a
@@ -148,6 +149,30 @@ def merge_rare_cancer_types_into_other(df, min_total=30):
 
     kept = [c for c in (keep_cols + ['CANCER_TYPE_OTHER']) if int(out[c].sum()) > 0]
     return out, kept, rare_cols
+
+
+NUMERIC_DTYPES = (pl.Boolean, pl.Int8, pl.Int16, pl.Int32, pl.Int64,
+                  pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64, pl.Float32, pl.Float64)
+
+
+def assert_model_covariates_numeric(df, cols, context):
+    """Fail fast on a non-numeric model covariate.
+
+    Every fit funnels through `filter_finite_rows`, which casts with
+    strict=False: a string column becomes all-null, fails `is_finite()`, and
+    silently drops every row of the model frame. The fit then raises for each
+    marker in turn, `_safe_fit` swallows it, and the screen writes a header-only
+    CSV that is indistinguishable downstream from "no significant hits".
+    Catching it here names the offending column instead.
+    """
+    offenders = [(c, df.schema[c]) for c in cols
+                 if c in df.schema and df.schema[c] not in NUMERIC_DTYPES]
+    if offenders:
+        detail = ", ".join(f"{c} ({dtype})" for c, dtype in offenders)
+        raise TypeError(
+            f"{context}: non-numeric model covariates would empty every model "
+            f"frame: {detail}. Model covariates must be numeric or dummy-coded."
+        )
 
 
 def marker_has_within_arm_support(df, marker, treat_col='PX_on_ICI',
@@ -531,6 +556,30 @@ def _run_marker_screen(df, markers, base_vars, weights_col, fit_fn, n_jobs, labe
         )
     results = [r for r, _ in raw if r is not None]
     failed = [f for _, f in raw if f is not None]
+
+    # A screen where every fit failed is a broken run, not a null result. Left
+    # unchecked it writes a header-only CSV that compile_IPTW_results reads
+    # without complaint and reports as "0 significant hits" — the failure is
+    # indistinguishable from a genuine finding of nothing. The usual cause is a
+    # non-numeric column in `base_vars`: `filter_finite_rows` casts with
+    # strict=False, so one string column casts to all-null and empties the model
+    # frame for every marker. Fail loudly instead, and name the reasons.
+    if markers and not results:
+        tally = Counter(message for _marker, message in failed)
+        detail = "; ".join(f"{count}x {message}" for message, count in tally.most_common(3))
+        raise RuntimeError(
+            f"{label}: all {len(markers)} marker fits failed, so this screen has no "
+            f"results to write. Distinct errors: {detail}. Run "
+            f"`python -m pipelines.biomarkers.diagnose_iptw_inputs` to see which "
+            f"column empties the model frame."
+        )
+    if failed:
+        tally = Counter(message for _marker, message in failed)
+        logger.warning(
+            "%s: %d/%d fits failed. Most common: %s",
+            label, len(failed), len(markers),
+            "; ".join(f"{count}x {message}" for message, count in tally.most_common(3)),
+        )
     return results, failed
 
 
@@ -600,8 +649,15 @@ def main() -> None:
                     if merged_rare:
                         print(f"  Merged {len(merged_rare)} rare cancer types into OTHER: "
                               + ", ".join(sorted(merged_rare)))
-                    panel_cols_fit = [c for c in type_df.columns if 'PANEL' in c]
-                    ct_cols_fit = [c for c in type_df.columns if 'CANCER_TYPE' in c]
+                    # Anchor on the dummy prefixes, not a loose substring test.
+                    # build_cancer_type_df/build_somatic_data_df deliberately keep
+                    # the raw string label ('CANCER_TYPE', 'PANEL_VERSION') beside
+                    # their dummies; `'CANCER_TYPE' in c` swept that string column
+                    # into base_vars, which emptied every pan-cancer model frame.
+                    panel_cols_fit = [c for c in type_df.columns
+                                      if c.upper().startswith('PANEL_VERSION_')]
+                    ct_cols_fit = [c for c in type_df.columns
+                                   if c.startswith('CANCER_TYPE_')]
                     base_vars = base_covars + line_cols + panel_cols_fit + ct_cols_fit
                 else:
                     ct_col = f'CANCER_TYPE_{cancer_type}'
@@ -626,7 +682,8 @@ def main() -> None:
                         type_df = type_df.with_columns(pl.Series('ICI_prediction', recal_ps))
                         print(f"  Recalibrated PS (mean {ps_before_mean:.3f} -> "
                               f"{float(type_df['ICI_prediction'].mean()):.3f})")
-                    panel_cols_fit = [c for c in type_df.columns if 'PANEL' in c]
+                    panel_cols_fit = [c for c in type_df.columns
+                                      if c.upper().startswith('PANEL_VERSION_')]
                     base_vars = base_covars + line_cols + panel_cols_fit
 
                 if type_df.is_empty():
@@ -743,6 +800,10 @@ def main() -> None:
                 max_smd_ate = float(smd_ate['SMD_weighted'].abs().max())
                 n_imbalanced_ate = int((smd_ate['SMD_weighted'].abs() > 0.1).sum())
                 print(f"  ATE balance: max|SMD|={max_smd_ate:.4f}, {n_imbalanced_ate}/{len(smd_ate)} covariates with |SMD|>0.1")
+
+                assert_model_covariates_numeric(
+                    type_df, base_vars + ['tt_death', 'death', 'PX_on_ICI'],
+                    f"{SPEC_LABEL}/{cancer_type}")
 
                 # === Track 2: full-cohort interaction ===
                 _run_track2_screen(type_df, cancer_type, base_vars, biomarker_cols, RUN_PATH, N_JOBS)
