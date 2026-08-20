@@ -152,7 +152,19 @@ def merge_rare_cancer_types_into_other(df, min_total=30):
     out = out.with_columns(merged_other.cast(pl.Int64).alias('CANCER_TYPE_OTHER'))
 
     kept = [c for c in (keep_cols + ['CANCER_TYPE_OTHER']) if int(out[c].sum()) > 0]
-    return out, kept, rare_cols
+
+    # Drop a reference level. Upstream build_cancer_type_df dummies with
+    # drop_first=True, so what arrives here is already reference-dropped; folding
+    # the rare types back in re-adds CANCER_TYPE_OTHER and restores the complete
+    # partition. Every patient has exactly one cancer type, so a complete set sums
+    # to the all-ones vector and makes the Cox partial-likelihood Hessian singular
+    # -- lifelines then fails *every* fit with "matrix inversion problems", which
+    # reads like a data problem rather than a design-matrix one. OTHER is the
+    # reference because it is the heterogeneous residual category and the one
+    # column this function is guaranteed to have created.
+    reference = 'CANCER_TYPE_OTHER' if 'CANCER_TYPE_OTHER' in kept else (kept[0] if kept else None)
+    kept_for_fit = [c for c in kept if c != reference]
+    return out, kept_for_fit, rare_cols
 
 
 NUMERIC_DTYPES = (pl.Boolean, pl.Int8, pl.Int16, pl.Int32, pl.Int64,
@@ -732,9 +744,15 @@ def main() -> None:
                     # into base_vars, which emptied every pan-cancer model frame.
                     panel_cols_fit = [c for c in type_df.columns
                                       if c.upper().startswith('PANEL_VERSION_')]
-                    ct_cols_fit = [c for c in type_df.columns
-                                   if c.startswith('CANCER_TYPE_')]
+                    # Use the merge's own column list, not a fresh scan of the frame:
+                    # it has the reference level dropped and the all-zero columns
+                    # removed. Re-deriving with startswith() here would put the
+                    # complete dummy partition back into the model and re-create the
+                    # singular Hessian.
+                    ct_cols_fit = pan_ct_cols
                     base_vars = base_covars + line_cols + panel_cols_fit + ct_cols_fit
+                    print(f"  Cancer-type dummies in model: {len(ct_cols_fit)} "
+                          f"(reference level dropped)")
                 else:
                     ct_col = f'CANCER_TYPE_{cancer_type}'
                     if ct_col not in full_df.columns:
