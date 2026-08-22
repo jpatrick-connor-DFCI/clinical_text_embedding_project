@@ -86,7 +86,19 @@ COHORTS = ['cohort1', 'cohort2']
 PS_MODELS = ['covariates_only', 'covariates_plus_embeddings']
 
 # === Constants ===
-MIN_CANCER_TYPE_TOTAL = 30   # for merging rare types into OTHER in pan-cancer
+# Cancer types with fewer than this many patients are folded into
+# CANCER_TYPE_OTHER (the reference level) rather than carrying their own dummy
+# in the pan-cancer model. Aligned with MIN_CANCER_TYPE_N so the "big enough to
+# model on its own" bar is the same whether the type gets its own screen or just
+# its own dummy.
+#
+# This count is taken BEFORE common-support trimming, so it is a necessary but
+# not sufficient guard against a dummy going constant: a type can clear the bar
+# here and still be emptied entirely by the trim if none of its patients have
+# propensity overlap (heme malignancies in a solid-tumor ICI cohort did exactly
+# that -- LEUKEMIA and MYELOMA cleared 30 and were then trimmed to zero rows).
+# The post-trim constant-column drop in main() is what actually closes that hole.
+MIN_CANCER_TYPE_TOTAL = int(os.getenv("IPTW_MIN_CANCER_TYPE_TOTAL", "100"))
 MIN_CANCER_TYPE_N = 100      # minimum total patients to run cancer-type-specific analysis
 MIN_PER_ARM_CANCER_TYPE = 25 # minimum patients in each treatment arm for cancer-type-specific
 COMMON_SUPPORT_PCT = (0.5, 99.5)
@@ -876,6 +888,32 @@ def main() -> None:
                 if type_df.is_empty() or type_df['PX_on_ICI'].n_unique() < 2:
                     print(f"  Skipping: no rows or one group after trimming.")
                     continue
+
+                # Common-support trimming can empty a covariate that was well
+                # populated when base_vars was assembled: a group with no
+                # propensity overlap loses every row, and its dummy becomes an
+                # all-zero column. That is a singular Cox Hessian, and lifelines
+                # fails *every* marker fit in the screen with "matrix inversion
+                # problems" -- an hour of compute to learn the design was never
+                # identifiable. MIN_CANCER_TYPE_TOTAL only bounds the pre-trim
+                # count, so it cannot prevent this; the columns must be rechecked
+                # against the trimmed frame.
+                #
+                # Dropping these is bookkeeping, not a change of estimand: the
+                # patients are already gone from the cohort, removed by the trim
+                # rather than absorbed into the reference level. The cancer-type
+                # reference (CANCER_TYPE_OTHER) was dropped upstream in
+                # merge_rare_cancer_types_into_other, so removing constant
+                # columns here cannot destroy it and what remains stays a proper
+                # reference-dropped set. Applies to PANEL_VERSION_* and LINE_*
+                # too, which are raw prefix scans with no post-trim recheck.
+                constant_after_trim = [c for c in base_vars
+                                       if type_df[c].n_unique() <= 1]
+                if constant_after_trim:
+                    print(f"  Dropping {len(constant_after_trim)} covariate(s) left "
+                          f"constant by common-support trimming: "
+                          f"{', '.join(constant_after_trim)}")
+                    base_vars = [c for c in base_vars if c not in constant_after_trim]
 
                 ps = type_df['ICI_prediction'].clip(eps, 1 - eps).to_numpy()
                 treat_mask = (type_df['PX_on_ICI'] == 1).to_numpy()
