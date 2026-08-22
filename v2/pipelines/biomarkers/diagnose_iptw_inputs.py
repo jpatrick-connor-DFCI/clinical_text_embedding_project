@@ -26,6 +26,7 @@ Usage:
 import os
 import traceback
 
+import numpy as np
 import polars as pl
 
 from config import BIOMARKER_PATH
@@ -163,6 +164,70 @@ def _diagnose_spec(spec: str) -> None:
             pl.col(col).cast(pl.Float64, strict=False).is_finite()).height
         if kept < type_df.height:
             print(f"        {col:<41} keeps {kept}/{type_df.height}")
+
+    # --- Design-matrix rank: the "matrix is singular" failure ---
+    # An empty model frame is not the only way every fit in a screen can fail.
+    # If the base covariates are linearly dependent, the Cox partial-likelihood
+    # Hessian is singular and lifelines raises ConvergenceError identically for
+    # every marker. The raw matrix can be full-rank while the Hessian is not, so
+    # report both the rank deficiency and the near-constant / duplicated columns
+    # that usually cause it.
+    _section(f"{spec}: design-matrix rank on base_vars")
+    fit_cols = ['PX_on_ICI'] + [c for c in base_vars if c in type_df.columns]
+    finite_df = type_df.select(fit_cols).filter(
+        pl.all_horizontal([pl.col(c).cast(pl.Float64, strict=False).is_finite()
+                           for c in fit_cols]))
+    X = finite_df.to_numpy().astype(float)
+    if X.shape[0] == 0:
+        print("  Model frame is empty; rank is undefined (see the section above).")
+    else:
+        rank = np.linalg.matrix_rank(X)
+        print(f"  Design matrix: {X.shape[0]} rows x {X.shape[1]} cols, rank={rank}")
+        if rank < X.shape[1]:
+            print(f"  >>> RANK DEFICIENT by {X.shape[1] - rank}: "
+                  f"the base covariates are linearly dependent.")
+        else:
+            print("  Full column rank (a singular Hessian can still come from "
+                  "separation or near-collinearity below).")
+
+        # Constant columns contribute nothing and can break the Hessian outright.
+        const = [c for i, c in enumerate(fit_cols) if np.ptp(X[:, i]) == 0]
+        if const:
+            print(f"  CONSTANT columns ({len(const)}): {', '.join(const)}")
+
+        # Exactly duplicated / complementary column pairs.
+        dupes = []
+        for i in range(X.shape[1]):
+            for j in range(i + 1, X.shape[1]):
+                if np.array_equal(X[:, i], X[:, j]):
+                    dupes.append(f"{fit_cols[i]} == {fit_cols[j]}")
+                elif np.array_equal(X[:, i], 1 - X[:, j]):
+                    dupes.append(f"{fit_cols[i]} == 1 - {fit_cols[j]}")
+        if dupes:
+            print(f"  DUPLICATED columns: {'; '.join(dupes)}")
+
+        # Groups of dummies summing to a constant vector (a complete partition).
+        dummy_like = [c for i, c in enumerate(fit_cols)
+                      if set(np.unique(X[:, i])).issubset({0.0, 1.0})]
+        for prefix in ('CANCER_TYPE_', 'PANEL_VERSION_', 'LINE_'):
+            grp = [c for c in dummy_like if c.startswith(prefix)]
+            if len(grp) < 2:
+                continue
+            sums = X[:, [fit_cols.index(c) for c in grp]].sum(axis=1)
+            if np.ptp(sums) == 0:
+                print(f"  >>> COMPLETE PARTITION: the {len(grp)} {prefix}* columns "
+                      f"sum to {sums[0]:g} on every row — no reference level.")
+
+        # Near-collinearity, which a plain rank check rounds away.
+        with np.errstate(all='ignore'):
+            sv = np.linalg.svd(X, compute_uv=False)
+        if sv.size and sv[-1] > 0:
+            print(f"  Condition number: {sv[0] / sv[-1]:.3e}"
+                  f"{'   <- severe' if sv[0] / sv[-1] > 1e10 else ''}")
+        tiny = [f"{fit_cols[i]}" for i in range(X.shape[1])
+                if 0 < X[:, i].sum() < 5 and set(np.unique(X[:, i])).issubset({0.0, 1.0})]
+        if tiny:
+            print(f"  Near-empty dummies (<5 positives): {', '.join(tiny)}")
 
     # --- Marker support ---
     _section(f"{spec}: marker support (pan_cancer)")

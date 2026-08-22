@@ -171,6 +171,68 @@ NUMERIC_DTYPES = (pl.Boolean, pl.Int8, pl.Int16, pl.Int32, pl.Int64,
                   pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64, pl.Float32, pl.Float64)
 
 
+def assert_base_design_is_identifiable(df, base_vars, context, weights_col=None):
+    """Fail fast on a rank-deficient or degenerate base design matrix.
+
+    The all-fits-failed guard in `_run_marker_screen` catches this too, but only
+    after every marker has been fitted -- an hour of compute on a pan-cancer
+    screen to learn that the base covariates were never identifiable. The base
+    design does not depend on the marker, so it can be checked once, up front.
+
+    Only structural degeneracies are fatal here: a rank-deficient matrix, a
+    constant column, or a set of dummies forming a complete partition (no
+    reference level) all make the Cox partial-likelihood Hessian singular for
+    every marker. Near-collinearity is merely warned about -- it can still
+    converge, and judging it is the analyst's call.
+    """
+    fit_cols = ['PX_on_ICI'] + [c for c in base_vars if c in df.columns]
+    fit_cols = [c for c in dict.fromkeys(fit_cols) if c in df.columns]
+    if not fit_cols:
+        return
+    finite = df.select(fit_cols).filter(
+        pl.all_horizontal([pl.col(c).cast(pl.Float64, strict=False).is_finite()
+                           for c in fit_cols]))
+    if finite.height == 0:
+        return   # empty frame is assert_model_covariates_numeric's territory
+    X = finite.to_numpy().astype(float)
+
+    problems = []
+    const = [c for i, c in enumerate(fit_cols) if np.ptp(X[:, i]) == 0]
+    if const:
+        problems.append(f"constant column(s): {', '.join(const)}")
+
+    for prefix in ('CANCER_TYPE_', 'PANEL_VERSION_', 'LINE_'):
+        grp = [c for c in fit_cols
+               if c.startswith(prefix)
+               and set(np.unique(X[:, fit_cols.index(c)])).issubset({0.0, 1.0})]
+        if len(grp) < 2:
+            continue
+        sums = X[:, [fit_cols.index(c) for c in grp]].sum(axis=1)
+        if np.ptp(sums) == 0:
+            problems.append(
+                f"the {len(grp)} {prefix}* dummies sum to {sums[0]:g} on every row "
+                f"(complete partition -- no reference level)")
+
+    rank = np.linalg.matrix_rank(X)
+    if rank < X.shape[1]:
+        problems.append(f"rank {rank} < {X.shape[1]} columns (linearly dependent)")
+
+    if problems:
+        raise ValueError(
+            f"{context}: base design matrix is not identifiable, so every Cox fit "
+            f"in this screen would fail with 'matrix inversion problems'. "
+            + "; ".join(problems)
+            + ". Run `python -m pipelines.biomarkers.diagnose_iptw_inputs` for the "
+              "full rank report."
+        )
+
+    with np.errstate(all='ignore'):
+        sv = np.linalg.svd(X, compute_uv=False)
+    if sv.size and sv[-1] > 0 and sv[0] / sv[-1] > 1e10:
+        logger.warning("%s: base design is near-collinear (condition number %.2e); "
+                       "fits may converge poorly.", context, sv[0] / sv[-1])
+
+
 def assert_model_covariates_numeric(df, cols, context):
     """Fail fast on a non-numeric model covariate.
 
@@ -900,6 +962,12 @@ def main() -> None:
                 assert_model_covariates_numeric(
                     type_df, base_vars + ['tt_death', 'death', 'PX_on_ICI'],
                     f"{SPEC_LABEL}/{cancer_type}")
+
+                # Checked once here rather than discovered 1492 fits later: the
+                # base design is marker-independent, so if it is singular every
+                # fit in both screens is already doomed.
+                assert_base_design_is_identifiable(
+                    type_df, base_vars, f"{SPEC_LABEL}/{cancer_type}")
 
                 # === Track 2: full-cohort interaction ===
                 frames = _run_track2_screen(type_df, cancer_type, base_vars, biomarker_cols, N_JOBS)

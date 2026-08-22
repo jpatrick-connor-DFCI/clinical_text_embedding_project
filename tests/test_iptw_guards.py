@@ -142,3 +142,67 @@ def test_merge_rare_is_safe_when_every_type_is_rare():
     labels = ["A"] * 5 + ["B"] * 4
     out, kept, rare = merge_rare_cancer_types_into_other(_cancer_frame(labels), min_total=30)
     assert kept == []
+
+
+# ---------------------------------------------------------------------------
+# assert_base_design_is_identifiable: catch a singular design before fitting.
+#
+# The all-fits-failed guard catches this too, but only after every marker has
+# been fitted -- ~1h of compute on a pan-cancer screen. The base design is
+# marker-independent, so it is checked once up front.
+# ---------------------------------------------------------------------------
+
+def _design(n=400, seed=0, n_types=4, keep_types=3, extra=None):
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    ct = rng.integers(0, n_types, n)
+    d = {
+        "PX_on_ICI": rng.integers(0, 2, n).astype(float),
+        "AGE_AT_TREATMENTSTART": rng.normal(60, 10, n),
+        "GENDER": rng.integers(0, 2, n).astype(float),
+    }
+    for i in range(keep_types):
+        d[f"CANCER_TYPE_{i}"] = (ct == i).astype(float)
+    if extra:
+        d.update(extra(d, n, rng))
+    return pl.DataFrame(d)
+
+
+def _base_vars(df):
+    return [c for c in df.columns if c != "PX_on_ICI"]
+
+
+def test_healthy_design_passes():
+    from pipelines.biomarkers.run_IPTW_analysis import assert_base_design_is_identifiable
+    df = _design()
+    assert_base_design_is_identifiable(df, _base_vars(df), "spec/pan_cancer")
+
+
+def test_complete_dummy_partition_is_rejected():
+    """The bug that failed all 1492 pan-cancer fits: no reference level."""
+    from pipelines.biomarkers.run_IPTW_analysis import assert_base_design_is_identifiable
+    df = _design(keep_types=4)          # all 4 types -> sums to 1 on every row
+    with pytest.raises(ValueError, match="complete partition"):
+        assert_base_design_is_identifiable(df, _base_vars(df), "spec/pan_cancer")
+
+
+def test_constant_column_is_rejected():
+    import numpy as np
+    from pipelines.biomarkers.run_IPTW_analysis import assert_base_design_is_identifiable
+    df = _design(extra=lambda d, n, rng: {"PANEL_VERSION_X": np.ones(n)})
+    with pytest.raises(ValueError, match="constant column"):
+        assert_base_design_is_identifiable(df, _base_vars(df), "spec/pan_cancer")
+
+
+def test_rank_deficient_design_is_rejected():
+    from pipelines.biomarkers.run_IPTW_analysis import assert_base_design_is_identifiable
+    df = _design(extra=lambda d, n, rng: {"DUP": d["GENDER"].copy()})
+    with pytest.raises(ValueError, match="linearly dependent"):
+        assert_base_design_is_identifiable(df, _base_vars(df), "spec/pan_cancer")
+
+
+def test_empty_model_frame_defers_to_the_numeric_guard():
+    """An all-null covariate is the other guard's job; this one must not crash."""
+    from pipelines.biomarkers.run_IPTW_analysis import assert_base_design_is_identifiable
+    df = pl.DataFrame({"PX_on_ICI": [1.0, 0.0], "GENDER": [float("nan")] * 2})
+    assert_base_design_is_identifiable(df, ["GENDER"], "spec/empty")
