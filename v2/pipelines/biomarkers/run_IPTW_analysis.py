@@ -116,29 +116,69 @@ EXCLUDE_TYPES = {'OTHER', 'CUP'}
 INCLUDE_TYPES = {'KIDNEY', 'LUNG', 'SKIN'}
 HR_EXTREME_THRESHOLD = 50
 
-# === Smoke-test toggle: subsample the marker list ===
+# === Smoke-test toggle: cap how many markers are screened ===
 # A full pan-cancer screen is ~1500 markers x 4 screens and runs for hours, which
-# is a slow way to find out that a path is broken. Set IPTW_MARKER_FRACTION to a
-# fraction in (0, 1] to screen a random subset instead, so a structural failure
-# (singular design, missing dependency, unwritable output) surfaces in minutes.
+# is a slow way to find out that a path is broken. Set IPTW_MAX_MARKERS to screen
+# at most that many markers, so a structural failure (singular design, missing
+# dependency, unwritable output) surfaces in minutes.
 #
-# Sampling is seeded off random.seed(42) in main(), so the same fraction always
-# picks the same markers -- a smoke run is reproducible and can be compared
-# against a previous one. Selection happens once per spec, before the cancer-type
-# loop, so every cancer type screens the SAME marker subset; sampling inside the
-# loop would make per-type results incomparable.
+# A count rather than a fraction because the cost that matters is the number of
+# Cox fits, and that is what a count fixes directly: total fits are roughly
+# markers x 2 tracks x 2 weightings x cancer types, regardless of how many
+# markers the input happens to carry. IPTW_MARKER_FRACTION is still honoured as
+# a fraction of the marker list; when both are set the smaller cap wins.
 #
-# RESULTS FROM A SUBSAMPLED RUN ARE NOT VALID. FDR is computed within mutation
-# type over whatever is screened, so a subset changes every q-value -- it is not
-# a subset of the full run's hits. Output goes to a _smoke suffixed directory so
-# a test run can never overwrite real results (see RUN_PATH in main()).
+# Sampling is seeded off random.seed(42) in main(), so the same cap always picks
+# the same markers -- a smoke run is reproducible and comparable to a previous
+# one. Selection happens once per spec, before the cancer-type loop, so every
+# cancer type screens the SAME marker subset; sampling inside the loop would make
+# per-type results incomparable.
+#
+# RESULTS FROM A CAPPED RUN ARE NOT VALID. FDR is computed within mutation type
+# over whatever is screened, so a subset changes every q-value -- it is not a
+# subset of the full run's hits. Output goes to a _smoke suffixed directory so a
+# test run can never overwrite real results (see RUN_PATH in main()).
+def _read_positive_int(var):
+    raw = os.getenv(var)
+    if raw is None or raw == "":
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(f"{var} must be a positive integer, got {raw!r}.") from None
+    if value < 1:
+        raise ValueError(f"{var} must be >= 1, got {value}.")
+    return value
+
+
+MAX_MARKERS = _read_positive_int("IPTW_MAX_MARKERS")
+
 MARKER_FRACTION = float(os.getenv("IPTW_MARKER_FRACTION", "1.0"))
 if not 0.0 < MARKER_FRACTION <= 1.0:
     raise ValueError(
         f"IPTW_MARKER_FRACTION must be in (0, 1], got {MARKER_FRACTION}. "
         f"Unset it (or set 1.0) to screen every marker."
     )
-IS_SMOKE_RUN = MARKER_FRACTION < 1.0
+
+IS_SMOKE_RUN = MAX_MARKERS is not None or MARKER_FRACTION < 1.0
+
+
+def resolve_marker_subset(markers):
+    """Markers to screen, honouring IPTW_MAX_MARKERS / IPTW_MARKER_FRACTION.
+
+    Returns the full list unchanged when neither is set. `sorted` before sampling
+    makes the draw depend only on the seed and not on parquet column order, so
+    the same cap picks the same markers across regenerated inputs.
+    """
+    if not IS_SMOKE_RUN or not markers:
+        return markers
+    n = len(markers)
+    if MARKER_FRACTION < 1.0:
+        n = max(1, round(len(markers) * MARKER_FRACTION))
+    if MAX_MARKERS is not None:
+        n = min(n, MAX_MARKERS)
+    n = min(n, len(markers))
+    return sorted(random.sample(sorted(markers), n))
 
 
 # =============================================
@@ -805,16 +845,14 @@ def main() -> None:
             ]
 
             # Smoke-test subsample. Done once here, before the cancer-type loop,
-            # so every type screens the same markers. `sorted` before `sample`
-            # makes the draw depend only on the seed and not on parquet column
-            # order, so the subset is stable across regenerated inputs.
+            # so every cancer type screens the same markers.
             if IS_SMOKE_RUN:
                 n_total = len(biomarker_cols)
-                n_sampled = max(1, round(n_total * MARKER_FRACTION))
-                biomarker_cols = sorted(
-                    random.sample(sorted(biomarker_cols), n_sampled))
-                print(f"  *** SMOKE RUN: IPTW_MARKER_FRACTION={MARKER_FRACTION} -> "
-                      f"screening {n_sampled} of {n_total} markers. "
+                biomarker_cols = resolve_marker_subset(biomarker_cols)
+                cap = (f"IPTW_MAX_MARKERS={MAX_MARKERS}" if MAX_MARKERS is not None
+                       else f"IPTW_MARKER_FRACTION={MARKER_FRACTION}")
+                print(f"  *** SMOKE RUN: {cap} -> screening "
+                      f"{len(biomarker_cols)} of {n_total} markers. "
                       f"Results are NOT valid (FDR is computed over the subset); "
                       f"writing to a _smoke directory. ***")
 
