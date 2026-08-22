@@ -131,11 +131,19 @@ def _diagnose_spec(spec: str) -> None:
     for col, dtype in non_numeric:
         print(f"  {col:<45} {dtype}")
 
-    # pan_cancer base_vars, verbatim from main()'s prefix-anchored filters.
-    type_df, _kept, _merged = merge_rare_cancer_types_into_other(
+    # pan_cancer base_vars, matching main(). The cancer-type dummies MUST come
+    # from the merge's own returned list, not a fresh startswith() scan of the
+    # frame: merge_rare_cancer_types_into_other leaves the reference level
+    # (CANCER_TYPE_OTHER, all-zero once the rare types are folded in) *in* the
+    # returned frame but *out* of its column list. Re-scanning puts the complete
+    # dummy partition back, which is singular by construction -- so the
+    # diagnostic reported a rank deficiency and failed every trial fit that
+    # main() itself never hits. Fixing this is what the pipeline's own comment
+    # at the ct_cols_fit assignment in main() warns about.
+    type_df, pan_ct_cols, _merged = merge_rare_cancer_types_into_other(
         full_df.clone(), min_total=MIN_CANCER_TYPE_TOTAL)
     panel_cols_fit = [c for c in type_df.columns if c.upper().startswith('PANEL_VERSION_')]
-    ct_cols_fit = [c for c in type_df.columns if c.startswith('CANCER_TYPE_')]
+    ct_cols_fit = pan_ct_cols
     base_vars = base_covars + line_cols + panel_cols_fit + ct_cols_fit
 
     # What the superseded substring filters would have added. Reported so a frame
