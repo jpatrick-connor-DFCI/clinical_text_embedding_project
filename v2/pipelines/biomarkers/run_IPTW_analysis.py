@@ -247,7 +247,8 @@ NUMERIC_DTYPES = (pl.Boolean, pl.Int8, pl.Int16, pl.Int32, pl.Int64,
                   pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64, pl.Float32, pl.Float64)
 
 
-def assert_base_design_is_identifiable(df, base_vars, context, weights_col=None):
+def assert_base_design_is_identifiable(df, base_vars, context, weights_col=None,
+                                       treat_col='PX_on_ICI'):
     """Fail fast on a rank-deficient or degenerate base design matrix.
 
     The all-fits-failed guard in `_run_marker_screen` catches this too, but only
@@ -260,8 +261,13 @@ def assert_base_design_is_identifiable(df, base_vars, context, weights_col=None)
     reference level) all make the Cox partial-likelihood Hessian singular for
     every marker. Near-collinearity is merely warned about -- it can still
     converge, and judging it is the analyst's call.
+
+    `treat_col` is part of the Track 2 design but not Track 1's, which fits the
+    ICI arm alone -- there the column is constant by construction and must be
+    left out, or this guard reports its own scaffolding as the defect. Pass
+    treat_col=None for a screen that does not model treatment.
     """
-    fit_cols = ['PX_on_ICI'] + [c for c in base_vars if c in df.columns]
+    fit_cols = ([treat_col] if treat_col else []) + [c for c in base_vars if c in df.columns]
     fit_cols = [c for c in dict.fromkeys(fit_cols) if c in df.columns]
     if not fit_cols:
         return
@@ -686,9 +692,27 @@ def _run_track1_screen(type_df, cancer_type, base_vars, biomarker_cols, n_jobs):
         print(f"  Skipping Track 1: fewer than {MIN_MARKERS_TO_TEST} markers with sufficient support.")
         return []
 
-    # ICI-only base vars (no cancer type interaction needed for type-specific,
-    # include for pan-cancer)
-    ici_base_vars = list(base_vars)
+    # ICI-only base vars. `base_vars` was filtered for constant columns against
+    # the FULL cohort, but this screen fits `ici_only_df` -- a covariate can vary
+    # across the cohort and still be constant within the ICI arm alone. A cancer
+    # type or line-of-therapy that no ICI patient has goes all-zero here, which
+    # makes the Cox Hessian singular for every marker.
+    #
+    # That failure is quieter than the Track 2 one: lifelines does not always
+    # raise on it, so `_safe_fit` records a "success" carrying null/NaN
+    # coefficients, the all-fits-failed guard never trips, and the screen writes
+    # rows whose beta/p are null. Recompute against the frame actually being fit.
+    ici_base_vars = [c for c in base_vars if ici_only_df[c].n_unique() > 1]
+    dropped_ici = [c for c in base_vars if c not in ici_base_vars]
+    if dropped_ici:
+        print(f"  Track 1: dropping {len(dropped_ici)} covariate(s) constant within "
+              f"the ICI arm: {', '.join(dropped_ici)}")
+
+    # Fail fast if what remains is still not identifiable, rather than writing a
+    # screen full of null coefficients.
+    assert_base_design_is_identifiable(
+        ici_only_df, ici_base_vars, f"Track 1 {cancer_type} (ICI-only)",
+        treat_col=None)
 
     frames = []
     for spec_name, spec_weights in [('ATE', 'IPTW_GEN'), ('unweighted', None)]:
@@ -792,6 +816,31 @@ def _run_marker_screen(df, markers, base_vars, weights_col, fit_fn, n_jobs, labe
             label, len(failed), len(markers),
             "; ".join(f"{count}x {message}" for message, count in tally.most_common(3)),
         )
+
+    # A fit that returns non-finite coefficients is a failure that did not raise.
+    # lifelines can converge onto a degenerate design (a covariate constant on the
+    # frame actually being fit) and hand back NaN betas rather than erroring, so
+    # `_safe_fit` records it as a success and the all-failed guard above never
+    # trips. The screen then writes rows whose beta/p are null, which reads
+    # downstream as "tested, not significant" -- the same silent-nothing failure
+    # in a different disguise. Check the effect estimate the screen exists to
+    # produce, and fail if none of them is usable.
+    if results:
+        beta_key = next((k for k in ('beta_marker', 'beta_markerxICI')
+                         if k in results[0]), None)
+        if beta_key is not None:
+            n_null = sum(1 for r in results if not np.isfinite(r.get(beta_key, np.nan)))
+            if n_null == len(results):
+                raise RuntimeError(
+                    f"{label}: all {len(results)} fits returned a non-finite "
+                    f"{beta_key}, so this screen has no usable estimates. The fits "
+                    f"did not raise -- the design is degenerate on the frame being "
+                    f"fit (a covariate constant within this screen's subset). Run "
+                    f"`python -m pipelines.biomarkers.diagnose_iptw_inputs`."
+                )
+            if n_null:
+                logger.warning("%s: %d/%d fits returned a non-finite %s.",
+                               label, n_null, len(results), beta_key)
     return results, failed
 
 

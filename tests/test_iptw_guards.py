@@ -206,3 +206,71 @@ def test_empty_model_frame_defers_to_the_numeric_guard():
     from pipelines.biomarkers.run_IPTW_analysis import assert_base_design_is_identifiable
     df = pl.DataFrame({"PX_on_ICI": [1.0, 0.0], "GENDER": [float("nan")] * 2})
     assert_base_design_is_identifiable(df, ["GENDER"], "spec/empty")
+
+
+# ---------------------------------------------------------------------------
+# Track 1 fits the ICI arm alone, so its design must be checked against that
+# subset. A covariate can vary across the full cohort and still be constant
+# within the ICI arm -- the full-cohort constant-column drop in main() cannot
+# see it. That produced a screen of null coefficients rather than an error,
+# because lifelines converged onto the degenerate design without raising.
+# ---------------------------------------------------------------------------
+
+def _cohort_with_non_ici_only_covariate():
+    """CANCER_TYPE_SARCOMA and LINE_2 exist only among non-ICI patients."""
+    return pl.DataFrame({
+        "PX_on_ICI":             [1, 1, 1, 1, 0, 0, 0, 0],
+        "GENDER":                [0, 1, 0, 1, 0, 1, 0, 1],
+        "AGE_AT_TREATMENTSTART": [60.0, 55.0, 70.0, 65.0, 62.0, 58.0, 71.0, 66.0],
+        "CANCER_TYPE_LUNG":      [1, 1, 0, 0, 1, 0, 1, 0],
+        "CANCER_TYPE_SARCOMA":   [0, 0, 0, 0, 1, 1, 1, 1],
+        "LINE_2":                [0, 0, 0, 0, 1, 1, 0, 0],
+    })
+
+
+_BASE_VARS = ["GENDER", "AGE_AT_TREATMENTSTART", "CANCER_TYPE_LUNG",
+              "CANCER_TYPE_SARCOMA", "LINE_2"]
+
+
+def test_full_cohort_drop_does_not_see_ici_only_constants():
+    """The regression: nothing is constant cohort-wide, so main()'s drop is a no-op."""
+    df = _cohort_with_non_ici_only_covariate()
+    assert [c for c in _BASE_VARS if df[c].n_unique() <= 1] == []
+
+
+def test_ici_only_subset_recomputes_constant_columns():
+    df = _cohort_with_non_ici_only_covariate()
+    ici = df.filter(pl.col("PX_on_ICI") == 1)
+    ici_base_vars = [c for c in _BASE_VARS if ici[c].n_unique() > 1]
+    assert ici_base_vars == ["GENDER", "AGE_AT_TREATMENTSTART", "CANCER_TYPE_LUNG"]
+    assert set(_BASE_VARS) - set(ici_base_vars) == {"CANCER_TYPE_SARCOMA", "LINE_2"}
+
+
+def test_guard_rejects_inherited_base_vars_on_the_ici_frame():
+    """Passing the full cohort's base_vars straight through is what broke Track 1."""
+    from pipelines.biomarkers.run_IPTW_analysis import assert_base_design_is_identifiable
+    ici = _cohort_with_non_ici_only_covariate().filter(pl.col("PX_on_ICI") == 1)
+    with pytest.raises(ValueError, match="constant column"):
+        assert_base_design_is_identifiable(ici, _BASE_VARS, "T1/pan_cancer",
+                                           treat_col=None)
+
+
+def test_guard_passes_on_recomputed_ici_base_vars():
+    from pipelines.biomarkers.run_IPTW_analysis import assert_base_design_is_identifiable
+    ici = _cohort_with_non_ici_only_covariate().filter(pl.col("PX_on_ICI") == 1)
+    ici_base_vars = [c for c in _BASE_VARS if ici[c].n_unique() > 1]
+    assert_base_design_is_identifiable(ici, ici_base_vars, "T1/pan_cancer",
+                                       treat_col=None)
+
+
+def test_treat_col_none_excludes_the_constant_treatment_column():
+    """PX_on_ICI is all-1 on the ICI frame; including it would flag the scaffolding."""
+    from pipelines.biomarkers.run_IPTW_analysis import assert_base_design_is_identifiable
+    ici = _cohort_with_non_ici_only_covariate().filter(pl.col("PX_on_ICI") == 1)
+    ici_base_vars = [c for c in _BASE_VARS if ici[c].n_unique() > 1]
+    # Default treat_col would false-positive on its own scaffolding...
+    with pytest.raises(ValueError, match="PX_on_ICI"):
+        assert_base_design_is_identifiable(ici, ici_base_vars, "T1/pan_cancer")
+    # ...which is exactly why Track 1 passes treat_col=None.
+    assert_base_design_is_identifiable(ici, ici_base_vars, "T1/pan_cancer",
+                                       treat_col=None)
