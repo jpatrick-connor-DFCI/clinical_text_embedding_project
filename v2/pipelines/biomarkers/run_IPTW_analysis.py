@@ -116,6 +116,30 @@ EXCLUDE_TYPES = {'OTHER', 'CUP'}
 INCLUDE_TYPES = {'KIDNEY', 'LUNG', 'SKIN'}
 HR_EXTREME_THRESHOLD = 50
 
+# === Smoke-test toggle: subsample the marker list ===
+# A full pan-cancer screen is ~1500 markers x 4 screens and runs for hours, which
+# is a slow way to find out that a path is broken. Set IPTW_MARKER_FRACTION to a
+# fraction in (0, 1] to screen a random subset instead, so a structural failure
+# (singular design, missing dependency, unwritable output) surfaces in minutes.
+#
+# Sampling is seeded off random.seed(42) in main(), so the same fraction always
+# picks the same markers -- a smoke run is reproducible and can be compared
+# against a previous one. Selection happens once per spec, before the cancer-type
+# loop, so every cancer type screens the SAME marker subset; sampling inside the
+# loop would make per-type results incomparable.
+#
+# RESULTS FROM A SUBSAMPLED RUN ARE NOT VALID. FDR is computed within mutation
+# type over whatever is screened, so a subset changes every q-value -- it is not
+# a subset of the full run's hits. Output goes to a _smoke suffixed directory so
+# a test run can never overwrite real results (see RUN_PATH in main()).
+MARKER_FRACTION = float(os.getenv("IPTW_MARKER_FRACTION", "1.0"))
+if not 0.0 < MARKER_FRACTION <= 1.0:
+    raise ValueError(
+        f"IPTW_MARKER_FRACTION must be in (0, 1], got {MARKER_FRACTION}. "
+        f"Unset it (or set 1.0) to screen every marker."
+    )
+IS_SMOKE_RUN = MARKER_FRACTION < 1.0
+
 
 # =============================================
 # Utility functions
@@ -748,7 +772,13 @@ def main() -> None:
     for COHORT in COHORTS:
         for PS_MODEL in PS_MODELS:
             SPEC_LABEL = f'{COHORT}_{PS_MODEL}'
-            RUN_PATH = os.path.join(BIOMARKER_PATH, f'IPTW_runs_{SPEC_LABEL}/')
+            # A smoke run's numbers are not comparable to a real one's (see
+            # MARKER_FRACTION), so it gets its own directory. Without this,
+            # compile_IPTW_results would happily pick up subsampled parquets and
+            # report them as the real screen -- the same silent-wrong-answer
+            # failure mode the all-fits-failed guard exists to prevent.
+            run_dir = f'IPTW_runs_{SPEC_LABEL}' + ('_smoke' if IS_SMOKE_RUN else '')
+            RUN_PATH = os.path.join(BIOMARKER_PATH, run_dir + '/')
             os.makedirs(RUN_PATH, exist_ok=True)
 
             print(f"\n{'#'*60}")
@@ -773,6 +803,20 @@ def main() -> None:
                 col for col in full_df.columns
                 if (col not in excluded_cols) and any(tag in col.upper() for tag in mutation_tags)
             ]
+
+            # Smoke-test subsample. Done once here, before the cancer-type loop,
+            # so every type screens the same markers. `sorted` before `sample`
+            # makes the draw depend only on the seed and not on parquet column
+            # order, so the subset is stable across regenerated inputs.
+            if IS_SMOKE_RUN:
+                n_total = len(biomarker_cols)
+                n_sampled = max(1, round(n_total * MARKER_FRACTION))
+                biomarker_cols = sorted(
+                    random.sample(sorted(biomarker_cols), n_sampled))
+                print(f"  *** SMOKE RUN: IPTW_MARKER_FRACTION={MARKER_FRACTION} -> "
+                      f"screening {n_sampled} of {n_total} markers. "
+                      f"Results are NOT valid (FDR is computed over the subset); "
+                      f"writing to a _smoke directory. ***")
 
             # === Identify embedding columns for prognostic score ===
             embedding_cols = [col for col in full_df.columns
