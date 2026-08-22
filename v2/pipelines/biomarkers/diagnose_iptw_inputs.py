@@ -21,9 +21,15 @@ reports where the chain breaks. Read-only; takes seconds.
 
 Usage:
   python -m pipelines.biomarkers.diagnose_iptw_inputs
+
+  # cap the per-marker support scans (the slow part) for a fast structural check;
+  # same env vars and seeded sampling as run_IPTW_analysis, so this inspects the
+  # same subset a smoke run screened
+  IPTW_MAX_MARKERS=50 python -m pipelines.biomarkers.diagnose_iptw_inputs
 """
 
 import os
+import random
 import traceback
 
 import numpy as np
@@ -42,6 +48,7 @@ from pipelines.biomarkers.run_IPTW_analysis import (
     marker_has_ici_only_support,
     marker_has_within_arm_support,
     merge_rare_cancer_types_into_other,
+    resolve_marker_subset,
 )
 
 MUTATION_TAGS = ('_SNV', '_SV', '_FUSION', '_DEL', '_AMP')
@@ -99,8 +106,21 @@ def _diagnose_spec(spec: str) -> None:
                 cancer_type_cols + ['PX_on_ICI', 'ICI_prediction'])
     biomarker_cols = [c for c in full_df.columns
                       if c not in excluded and any(t in c.upper() for t in MUTATION_TAGS)]
+    n_markers_total = len(biomarker_cols)
+
+    # The support scans below call marker_has_*_support once per marker, each a
+    # full numpy pass over the frame -- ~1500 markers x 2 tracks x 4 specs, and
+    # the slow part of this script. None of the structural checks (schema, rank,
+    # empty model frame) depend on seeing every marker. IPTW_MAX_MARKERS /
+    # IPTW_MARKER_FRACTION cap it, sharing the analysis script's env vars and its
+    # seeded sampling, so the diagnosis inspects the same subset a smoke run
+    # screened. Unset => every marker, exactly as before.
+    biomarker_cols = resolve_marker_subset(biomarker_cols)
+    subset_note = ("" if len(biomarker_cols) == n_markers_total
+                   else f" (SUBSET: {len(biomarker_cols)} of {n_markers_total} -- "
+                        f"support counts below are out of the subset)")
     print(f"  line dummies={len(line_cols)}, PANEL_VERSION_*={len(panel_cols)}, "
-          f"CANCER_TYPE_*={len(cancer_type_cols)}, markers={len(biomarker_cols)}")
+          f"CANCER_TYPE_*={len(cancer_type_cols)}, markers={n_markers_total}{subset_note}")
 
     # --- The actual trap: non-numeric columns that reach a model ---
     _section(f"{spec}: non-numeric columns")
@@ -239,8 +259,10 @@ def _diagnose_spec(spec: str) -> None:
     t1 = [m for m in biomarker_cols
           if marker_has_ici_only_support(type_df, m, min_pos=5,
                                          min_events=MIN_EVENTS_PER_MARKER_GROUP)]
-    print(f"  Track 2 markers with support: {len(t2)}/{len(biomarker_cols)}")
-    print(f"  Track 1 markers with support: {len(t1)}/{len(biomarker_cols)}")
+    scanned = ("" if len(biomarker_cols) == n_markers_total
+               else f" scanned (of {n_markers_total} total)")
+    print(f"  Track 2 markers with support: {len(t2)}/{len(biomarker_cols)}{scanned}")
+    print(f"  Track 1 markers with support: {len(t1)}/{len(biomarker_cols)}{scanned}")
 
     # --- One real fit, with the traceback _safe_fit would have swallowed ---
     _section(f"{spec}: trial fits (uncaught)")
@@ -262,6 +284,11 @@ def _diagnose_spec(spec: str) -> None:
 
 
 def main() -> None:
+    # Same seed as run_IPTW_analysis.main(). resolve_marker_subset draws from the
+    # global `random` state, so without this the marker cap here would select a
+    # DIFFERENT subset than the smoke run being diagnosed -- and the whole point
+    # of sharing IPTW_MAX_MARKERS is to inspect the same markers that ran.
+    random.seed(42)
     for cohort in COHORTS:
         for ps_model in PS_MODELS:
             _diagnose_spec(f'{cohort}_{ps_model}')
