@@ -307,7 +307,7 @@ Because there is no test net, verification is layered:
 - **Tier 2 changes get a before/after diff.** For finding 1, report how many patient-events
   currently carry `tt <= 0` with `event = 1` per met endpoint *before* changing anything; that
   count is both the severity evidence and the acceptance test.
-- **Figure reproduction is the end-to-end test.** Re-run `06_generate_figure_data.ipynb` and
+- **Figure reproduction is the end-to-end test.** Re-run `06b_generate_figure_data.ipynb` and
   `07_render_figures.Rmd`, and diff the output CSVs and panel files against a pre-review run.
   Tier 1 changes must produce **byte-identical** figure data; any diff means a fix was
   misclassified. This is the strongest signal available given the absence of unit tests.

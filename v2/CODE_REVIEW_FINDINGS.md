@@ -49,7 +49,7 @@ user decision — not attempted, not estimated.
    needs no code change — it already reads the same `palette.json` and will now correctly
    require all six modalities including metburden. **Not yet verified against real figure
    data** — this is a content change to a manuscript figure and should be confirmed with a
-   real `06_generate_figure_data.ipynb` / `07_render_figures.Rmd` run before trusting the
+   real `06b_generate_figure_data.ipynb` / `07_render_figures.Rmd` run before trusting the
    rendered Figure 3.
 
 ## Investigated, remains blocked (Finding 3 — `PANEL_VERSION`)
@@ -91,7 +91,7 @@ cluster session** — it's a five-minute check that will either close finding 3 
    95% CIs — no plotting-code change needed since it already draws a generic `CI95_low/high`
    error bar. **Not yet verified against real data** — this changes what the Track-2 side of
    Figure 5's synthesis forest panel (fig5e) shows; confirm with a real
-   `06_generate_figure_data.ipynb` / `07_render_figures.Rmd` run before trusting it.
+   `06b_generate_figure_data.ipynb` / `07_render_figures.Rmd` run before trusting it.
 
 2. **Finding 1 — negative-time metastasis events. Fixed: sign filter added, matching the
    ICD/phecode paths.** `generate_embedding_prediction_datasets.py`'s `_add_metastatic_events`

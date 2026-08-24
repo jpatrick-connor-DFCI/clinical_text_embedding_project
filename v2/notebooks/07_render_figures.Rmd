@@ -28,7 +28,8 @@ multi-panel figure.
 Metric-aware figures render twice: once using mean time-dependent AUC(t), the primary metric,
 and once using Harrell's C-index. Metric-invariant figures render once.
 
-- **Prep tier**: [06_generate_figure_data.ipynb](06_generate_figure_data.ipynb) (Python kernel) — run first.
+- **Code lookups (R)**: [06a_generate_code_lookups.Rmd](06a_generate_code_lookups.Rmd) — one-time bootstrap.
+- **Prep tier**: [06b_generate_figure_data.ipynb](06b_generate_figure_data.ipynb) (Python kernel) — run first.
 - **One-time R package bootstrap** (any host with R):
 
   ```

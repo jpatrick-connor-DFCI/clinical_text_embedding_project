@@ -1,0 +1,163 @@
+---
+title: "Generate code lookups (R tier)"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+find_v2_root <- function() {
+  d <- normalizePath(getwd(), mustWork = TRUE)
+  while (nchar(d) > 1) {
+    if (file.exists(file.path(d, "config.py")) &&
+        dir.exists(file.path(d, "R"))) return(d)
+    parent <- dirname(d)
+    if (parent == d) break
+    d <- parent
+  }
+  stop("Could not find v2 root from ", getwd())
+}
+
+V2_ROOT <- find_v2_root()
+knitr::opts_knit$set(root.dir = V2_ROOT)
+```
+
+Runs the two `pipelines/preprocessing/generate_*.R` scripts that build the phecode lookup tables
+`figures.prep.figure2` labels its panels from. This is the **only** R dependency in the otherwise
+Python figure-data prep tier, split out here so `06b` runs under a plain Python kernel with no
+`Rscript` on `PATH`.
+
+Like the other v2 R scripts, both generators `source("R/config.R")` with a relative path, so this
+document sets the R working directory to the v2 root (via `knitr::opts_knit$set(root.dir = ...)`,
+which — unlike a bare `setwd()` in a chunk — persists across all chunks) before sourcing anything.
+
+Writes to `CODE_PATH` (`$DATA_PATH/code_data/`):
+
+| Output | Used by |
+|---|---|
+| `icd10_to_phecode_mapping.csv` | `figures.prep.figure2` (cross-scheme event dedup + phecode labels), `pipelines.preprocessing.generate_embedding_prediction_datasets` |
+| `icd10_unmapped_codes.csv` | diagnostic only — codes no phecode covers |
+| `phecode_descriptions.csv` | `figures.prep.figure2` (phecode label fallback) |
+
+**These outputs are static reference data.** They change only when the Phecode package tables or
+the cohort's set of unique ICD-10 codes change, so this document is a **one-time bootstrap** —
+re-run it after a cohort rebuild (`01`) or a Phecode package upgrade, not before every `06b`.
+
+- **Prep tier**: [06b_generate_figure_data.ipynb](06b_generate_figure_data.ipynb) (Python kernel) — run after this.
+- **Render tier**: [07_render_figures.Rmd](07_render_figures.Rmd) (R Markdown).
+
+## Prerequisites
+
+Beyond the figure-rendering packages (`Rscript v2/R/install_packages.R`), these generators need
+`arrow` and the Phecode data package, which is GitHub-only:
+
+```
+install.packages(c("data.table", "arrow", "devtools"))
+devtools::install_github("vcastro/Phecode")
+```
+
+`generate_icd10_to_phecode_mapping.R` also reads `SURV_PATH/timestamped_icd_info.parquet`, so
+step `01` must have run.
+
+```{r preflight}
+source(file.path(V2_ROOT, "R", "config.R"))
+
+# Set to TRUE to re-run the generators even when their outputs already exist.
+FORCE_REGENERATE <- FALSE
+
+GENERATORS <- list(
+  list(script = "generate_icd10_to_phecode_mapping.R", output = "icd10_to_phecode_mapping.csv"),
+  list(script = "generate_phecode_descriptions.R",     output = "phecode_descriptions.csv")
+)
+
+cat("v2 root:   ", V2_ROOT, "\n", sep = "")
+cat("CODE_PATH: ", CODE_PATH, "\n", sep = "")
+cat("R version: ", R.version.string, "\n\n", sep = "")
+
+for (g in GENERATORS) {
+  path <- file.path(CODE_PATH, g$output)
+  if (file.exists(path)) {
+    cat(sprintf("  [ok] %-32s %s bytes\n", g$output, format(file.size(path), big.mark = ",")))
+  } else {
+    cat(sprintf("  [--] %-32s missing\n", g$output))
+  }
+}
+
+missing_pkgs <- Filter(function(p) !requireNamespace(p, quietly = TRUE),
+                       c("Phecode", "data.table", "arrow"))
+if (length(missing_pkgs) > 0) {
+  cat("\nMissing R packages: ", paste(missing_pkgs, collapse = ", "),
+      "\n  See the prerequisites above.\n", sep = "")
+}
+```
+
+```{r generate}
+icd_parquet <- file.path(SURV_PATH, "timestamped_icd_info.parquet")
+if (!file.exists(icd_parquet)) {
+  stop(icd_parquet, " not found - run notebook 01 before generating the ICD->phecode mapping.")
+}
+
+# Each generator is sys.source()-ed in its own environment so their identically-named helpers
+# (normalize_phecode(), find_col(), ...) don't leak between them, matching 07's convention.
+for (g in GENERATORS) {
+  script_path <- file.path(V2_ROOT, "pipelines", "preprocessing", g$script)
+  if (!file.exists(script_path)) stop("Code lookup generator not found: ", script_path)
+
+  out_path <- file.path(CODE_PATH, g$output)
+  if (file.exists(out_path) && !FORCE_REGENERATE) {
+    cat("\n=== ", g$script, " - SKIPPED (", g$output,
+        " exists; set FORCE_REGENERATE <- TRUE to rebuild) ===\n", sep = "")
+    next
+  }
+
+  cat("\n=== ", g$script, " ===\n", sep = "")
+  env <- new.env(parent = globalenv())
+  sys.source(script_path, envir = env)
+}
+
+cat("\nDone. Code lookups written to ", CODE_PATH, "\n", sep = "")
+cat("Next: 06b_generate_figure_data.ipynb\n")
+```
+
+```{r verify}
+# Verify what 06b will actually pick up.
+mapping_path <- file.path(CODE_PATH, "icd10_to_phecode_mapping.csv")
+desc_path <- file.path(CODE_PATH, "phecode_descriptions.csv")
+
+if (file.exists(mapping_path)) {
+  mapping <- data.table::fread(mapping_path, colClasses = "character")
+  cat(sprintf("icd10_to_phecode_mapping.csv: %s rows, %s ICD-10 codes, %s phecodes\n",
+              format(nrow(mapping), big.mark = ","),
+              format(length(unique(mapping$icd10_code)), big.mark = ","),
+              format(length(unique(mapping$phecode)), big.mark = ",")))
+  print(utils::head(mapping, 5))
+} else {
+  cat("icd10_to_phecode_mapping.csv MISSING - figure2 will disable cross-scheme event",
+      "dedup and fall back to raw codes for phecode labels.\n")
+}
+
+cat("\n")
+if (file.exists(desc_path)) {
+  desc <- data.table::fread(desc_path, colClasses = "character")
+  cat(sprintf("phecode_descriptions.csv: %s rows\n", format(nrow(desc), big.mark = ",")))
+  print(utils::head(desc, 5))
+} else {
+  cat("phecode_descriptions.csv MISSING - figure2 phecode panels will show bare codes.\n")
+}
+```
+
+## Running without R
+
+`06b` does not hard-fail on missing lookups — `figures.prep.figure2` falls back to raw codes and
+logs the miss counts (`_report_lookup_misses()`) at the end of its run. What you lose:
+
+- **Cross-scheme event dedup is disabled** — `icd3_post`/`icd4_post`/`phecode_post` events that
+  denote the same phenotype are no longer collapsed.
+- **Phecode panels show bare codes** (`250.2`) instead of descriptions (`Type 2 diabetes`).
+
+That is fine for a diagnostic run and **not** fine for manuscript figures. If you need final
+figures on a machine without R, generate these CSVs elsewhere and copy them into `CODE_PATH`.
+
+Render with:
+
+```
+Rscript -e 'rmarkdown::render("v2/notebooks/06a_generate_code_lookups.Rmd")'
+```
