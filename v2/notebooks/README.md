@@ -11,6 +11,8 @@ for the full pipeline DAG this order is derived from.
 | 04b | `04b_run_training_manifests.ipynb` | allocated Jupyter CPU session | Simple treatment-anchor full-cohort fallback when Slurm submission is unavailable; runs manifest events sequentially with `n_jobs=-1`. Run **04** first; do not execute 04b on a login node. |
 | — | `pipelines.training.build_slurm_manifests` + `slurm/launch_*.sh` | cluster CPU (shell) | Preferred distributed path when Slurm is available — build manifests, then `sbatch` the full-cohort, feature-comparison, and held-out-risk array jobs. Run **04** first to catch fitting problems before submitting. |
 | 04 | [`04_smoke_test_training.ipynb`](04_smoke_test_training.ipynb) | cluster CPU (interactive) | Rehearses the real training entrypoints on a handful of representative events and reports fitting issues before you `sbatch` the arrays above. |
+| 04c | [`04c_run_within_vs_pan_models.ipynb`](04c_run_within_vs_pan_models.ipynb) | cluster CPU | Within- vs pan-stratum model comparison for cancer type and first-line treatment class, one subprocess per `pipelines.trajectories.*` script, with per-run toggles. Both are long-running and resume from their own per-stratum checkpoints. Must run **before** 06b — `figures.prep.figure2` reads their metrics CSVs. |
+| 04d | [`04d_run_mortality_trajectories.ipynb`](04d_run_mortality_trajectories.ipynb) | cluster CPU | Landmark mortality risk trajectories (months 0–60) from `pipelines.trajectories.generate_mortality_trajectories`, with landmark coverage and at-risk denominators. **No checkpointing and many hours** — an interrupted run restarts from month 0. Must run **before** 06b — `figures.prep.figure4` clusters these trajectories. |
 | 05 | [`05_run_full_cohort_risk_scores.ipynb`](05_run_full_cohort_risk_scores.ipynb) | cluster CPU | Held-out risk scores for the full-cohort models, once the SLURM arrays have completed. |
 | 05b | [`05b_run_biomarker_pipeline.ipynb`](05b_run_biomarker_pipeline.ipynb) | cluster CPU | ICI biomarker discovery: cohort construction through compiled hits, one subprocess per `pipelines.biomarkers.*` stage, with stage toggles. Stage 5 (`run_IPTW_analysis`) is long-running. Must run **before** 06b — `figures.prep.figure5` reads its output. |
 | 05c | [`05c_diagnose_iptw_run.ipynb`](05c_diagnose_iptw_run.ipynb) | cluster CPU | Diagnostic for 05b stage 5. Run when the screens finish clean but `IPTW_runs_*/` holds zero-row parquets: exercises the guard tests, counts rows per result file, and rebuilds `base_vars` from the saved IPTW datasets to name the covariate that emptied the model frames. Read-only. |
@@ -20,7 +22,12 @@ for the full pipeline DAG this order is derived from.
 
 ## Trajectory and biomarker pipelines
 
-Both run after step 05 (full-cohort risk scores) and before step 06b — see `REFACTOR_PLAN.md`.
-`pipelines.biomarkers.*` is driven by `05b_run_biomarker_pipeline.ipynb` above; the individual
-stages are still runnable directly with `python -m` from `v2/`. `pipelines.trajectories.*` has no
-notebook driver and is invoked directly as scripts.
+Both run before step 06b — see `REFACTOR_PLAN.md`. `pipelines.biomarkers.*` is driven by
+`05b_run_biomarker_pipeline.ipynb` above and needs step 05's full-cohort risk scores.
+`pipelines.trajectories.*` is driven by two notebooks. `04c_run_within_vs_pan_models.ipynb` runs the
+within-vs-pan scripts, which fit their own models and read only the step 03 embedding prediction
+dataset plus the step 01 covariates, so they can run any time after 03 and do not wait on the SLURM
+arrays or step 05. `04d_run_mortality_trajectories.ipynb` runs
+`generate_mortality_trajectories`, which pools the note embeddings itself and so depends only on
+step 01. Neither waits on step 05. The individual scripts are still runnable directly with
+`python -m` from `v2/`.
