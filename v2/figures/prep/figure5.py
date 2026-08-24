@@ -280,13 +280,13 @@ def _km_top_hit() -> tuple[pl.DataFrame, pl.DataFrame]:
     return km, meta
 
 
-def _select_km_example_hits(t1_hits: pl.DataFrame, t2_hits: pl.DataFrame,
+def _select_km_example_hits(t2_hits: pl.DataFrame,
                              max_examples: int = 3) -> pl.DataFrame:
     """Return one row per (marker, cancer, cohort) in HEADLINE_KM_PANELS, in order.
 
-    Tries Track 2 first (so the KM title can carry the interaction HR), falls
-    back to Track 1 if the gene has no T2 interaction hit but is significant
-    in T1. The output is normalized to a track-agnostic schema:
+    Selects the Track 2 interaction hit, so the KM title carries the interaction
+    HR. Panels whose gene has no interaction hit are omitted. The output keeps
+    the track-agnostic schema:
 
         marker, cancer_type, cohort, ps_model, weight_type, track, hr, hr_label
 
@@ -303,7 +303,7 @@ def _select_km_example_hits(t1_hits: pl.DataFrame, t2_hits: pl.DataFrame,
 
     for gene, cancer, cohort, mut in HEADLINE_KM_PANELS:
         marker = f"{gene}_{mut}"
-        # Try Track 2 first (interaction HR is the headline number for fig5D)
+        # Interaction HR is the headline number for fig5D
         t2_sub = t2_hits.filter((pl.col("marker") == marker)
                                  & (pl.col("cancer_type") == cancer)
                                  & (pl.col("cohort") == cohort))
@@ -321,24 +321,6 @@ def _select_km_example_hits(t1_hits: pl.DataFrame, t2_hits: pl.DataFrame,
             })
             continue
 
-        # Fall back to Track 1 (prognostic-within-ICI HR)
-        t1_sub = t1_hits.filter((pl.col("marker") == marker)
-                                 & (pl.col("cancer_type") == cancer)
-                                 & (pl.col("cohort") == cohort))
-        t1_row = _best(t1_sub, "p_marker") if not t1_sub.is_empty() else None
-        if t1_row is not None:
-            chosen.append({
-                "marker":     t1_row["marker"],
-                "cancer_type": t1_row["cancer_type"],
-                "cohort":     t1_row["cohort"],
-                "ps_model":   t1_row["ps_model"],
-                "weight_type": t1_row["weight_type"],
-                "track":      1,
-                "hr":         float(t1_row["HR_marker"]),
-                "hr_label":   "HR(marker | ICI)",
-            })
-            continue
-
         print(f"  KM headline {marker}/{cancer}/{cohort}: no compiled hit; skipping")
 
     if not chosen:
@@ -349,8 +331,8 @@ def _select_km_example_hits(t1_hits: pl.DataFrame, t2_hits: pl.DataFrame,
 
 
 # ---------------------------------------------------------------------------
-# Forest panel (fig5e): T1 (prognostic-in-ICI) vs T2 (predictive-of-ICI) for
-# the headline gene set, with literature-validation strip.
+# Forest panel (fig5e): T2 (predictive-of-ICI) interaction estimates for the
+# headline gene set, with literature-validation strip.
 # ---------------------------------------------------------------------------
 _VALIDATION_FILENAMES = (
     "all_findings_with_validation.csv.gz",
@@ -384,34 +366,17 @@ def _load_validation_lookup() -> dict[tuple[str, str, str], tuple[str, str]]:
     return {}
 
 
-def _narrative_role(t1_robust: bool, t2_robust: bool, validation: str) -> str:
+def _narrative_role(t2_robust: bool, validation: str) -> str:
+    """Classify a finding from interaction robustness plus literature validation.
+
+    Previously this also weighed a Track-1 (prognostic-in-ICI) estimate; with the
+    prognostic screen removed, robustness is the interaction alone -- a hit
+    replicating across >=2 specifications.
+    """
     strong = validation in ("Strong", "Very Strong", "Moderate")
-    if t1_robust and t2_robust:
+    if t2_robust:
         return "Replication of known biology" if strong else "Novel discovery"
-    if t1_robust or t2_robust:
-        return "Supports known biology" if strong else "Hypothesis-generating"
     return "Lower-confidence"
-
-
-def _track1_row(t1: pl.DataFrame, marker: str, cancer: str, cohort: str) -> dict | None:
-    """Primary-spec Track-1 effect (HR + CI95 + p + n_pos + n_specs)."""
-    sub = t1.filter((pl.col("marker") == marker) & (pl.col("cancer_type") == cancer)
-                     & (pl.col("cohort") == cohort))
-    if sub.is_empty():
-        return None
-    primary = sub.filter((pl.col("ps_model") == PRIMARY_PS_MODEL)
-                          & (pl.col("weight_type").str.to_uppercase() == "ATE"))
-    if primary.is_empty():
-        primary = sub.sort("p_marker").head(1)
-    r = primary.row(0, named=True)
-    return {
-        "HR":       float(r["HR_marker"]),
-        "CI95_low": float(r["CI95_marker_low"]),
-        "CI95_high": float(r["CI95_marker_high"]),
-        "p_value":  float(r["p_marker"]),
-        "n_pos":    int(r["n_marker_pos"]),
-        "n_specs":  int(sub.height),
-    }
 
 
 def _track2_row(t2: pl.DataFrame, marker: str, cancer: str, cohort: str) -> dict | None:
@@ -441,29 +406,23 @@ def _track2_row(t2: pl.DataFrame, marker: str, cancer: str, cohort: str) -> dict
 
 
 def _forest_headline() -> pl.DataFrame:
-    t1_fp = os.path.join(COMPILED_DIR, "track1_all_significant_hits.csv")
     t2_fp = os.path.join(COMPILED_DIR, "track2_all_significant_hits.csv")
-    if not (os.path.exists(t1_fp) and os.path.exists(t2_fp)):
-        print(f"  missing T1 or T2 compiled hits at {COMPILED_DIR}; forest empty")
+    if not os.path.exists(t2_fp):
+        print(f"  missing compiled interaction hits at {COMPILED_DIR}; forest empty")
         return pl.DataFrame(schema={c: pl.Float64 for c in FOREST_COLUMNS})
-    t1 = pl.read_csv(t1_fp)
     t2 = pl.read_csv(t2_fp)
     validation = _load_validation_lookup()
 
     rows = []
     for gene, cancer, cohort, mut, label in HEADLINE_FOREST:
         marker = f"{gene}_{mut}"
-        t1_row = _track1_row(t1, marker, cancer, cohort)
         t2_row = _track2_row(t2, marker, cancer, cohort)
         val_level, _ = validation.get((gene, cancer, cohort), ("", ""))
-        t1_robust = t1_row is not None and t1_row["n_specs"] >= 2
         t2_robust = t2_row is not None and t2_row["n_specs"] >= 2
-        role = _narrative_role(t1_robust, t2_robust, val_level)
+        role = _narrative_role(t2_robust, val_level)
         base = dict(gene=gene, cancer=cancer, cohort=cohort,
                     mutation_type=mut, label=label,
                     validation_level=val_level, narrative_role=role)
-        if t1_row is not None:
-            rows.append({**base, "track": "T1_prognostic_in_ICI", **t1_row})
         if t2_row is not None:
             rows.append({**base, "track": "T2_predictive_of_ICI", **t2_row})
     if not rows:
@@ -472,7 +431,6 @@ def _forest_headline() -> pl.DataFrame:
 
 
 def _km_examples() -> pl.DataFrame:
-    t1_fp = os.path.join(COMPILED_DIR, "track1_all_significant_hits.csv")
     t2_fp = os.path.join(COMPILED_DIR, "track2_all_significant_hits.csv")
     if not os.path.exists(t2_fp):
         print(f"  missing {t2_fp}; cannot build KM examples")
@@ -481,14 +439,10 @@ def _km_examples() -> pl.DataFrame:
         t2_hits = pl.read_csv(t2_fp)
     except pl.exceptions.NoDataError:
         t2_hits = pl.DataFrame()
-    try:
-        t1_hits = pl.read_csv(t1_fp) if os.path.exists(t1_fp) else pl.DataFrame()
-    except pl.exceptions.NoDataError:
-        t1_hits = pl.DataFrame()
-    if t2_hits.is_empty() and t1_hits.is_empty():
+    if t2_hits.is_empty():
         return pl.DataFrame(schema={c: pl.Float64 for c in KM_EXAMPLE_COLUMNS})
 
-    examples = _select_km_example_hits(t1_hits, t2_hits)
+    examples = _select_km_example_hits(t2_hits)
     if examples.is_empty():
         return pl.DataFrame(schema={c: pl.Float64 for c in KM_EXAMPLE_COLUMNS})
 

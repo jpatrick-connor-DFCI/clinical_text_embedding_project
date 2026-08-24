@@ -3,8 +3,7 @@
 Reads per-scheme parquets from IPTW_runs_*/ directories — one
 `{cancer_type}_results.parquet` and one `{cancer_type}_diagnostics.parquet` per
 cancer type — and produces:
-  - track1_all_significant_hits.csv: all FDR-significant Track 1 (ICI-only) results
-  - track2_all_significant_hits.csv: all FDR-significant Track 2 (interaction) results
+  - track2_all_significant_hits.csv: all FDR-significant interaction results
   - cohort_patient_counts.parquet: n_ICI and n_control per cancer type in each cohort
   - scheme_diagnostics_summary.parquet: PS AUC, ESS, SMD summaries per scheme
 
@@ -31,9 +30,7 @@ OUTPUT_DIR = os.path.join(BIOMARKER_PATH, 'compiled_results/')
 COHORTS = ['cohort1', 'cohort2']
 PS_MODELS = ['covariates_only', 'covariates_plus_embeddings']
 
-# Track 1: ICI-only (ATE generalizability-weighted + unweighted)
-TRACK1_WEIGHTS = ['unweighted', 'ATE']
-# Track 2: full-cohort interaction (ATE + unweighted)
+# Full-cohort interaction (ATE + unweighted)
 TRACK2_WEIGHTS = ['ATE', 'noIPTW']
 
 
@@ -56,7 +53,6 @@ def main() -> None:
     # ================================================
     # 1. Compile all significant hits
     # ================================================
-    all_t1 = []
     all_t2 = []
     diag_rows = []
 
@@ -82,7 +78,7 @@ def main() -> None:
                             pl.lit(ps_model).alias('ps_model'),
                         ))
 
-                # Results: both tracks and all weightings share one file.
+                # Results: all weightings share one file.
                 results_file = os.path.join(run_path, f'{cancer_type}_results.parquet')
                 if not os.path.isfile(results_file):
                     continue
@@ -91,28 +87,19 @@ def main() -> None:
                     pl.lit(ps_model).alias('ps_model'),
                 )
 
-                # Track 1: ICI-only. `significant_marker` is null on track 2 rows,
-                # and `== True` drops nulls, so the track filter is belt-and-braces.
-                for weight in TRACK1_WEIGHTS:
-                    rows = results.filter(
-                        (pl.col('track') == 1) & (pl.col('weight_type') == weight))
-                    if 'significant_marker' in rows.columns:
-                        all_t1.append(rows.filter(pl.col('significant_marker') == True))
-
-                # Track 2: full-cohort interaction.
+                # Full-cohort interaction. The `track == 2` filter is retained so
+                # result parquets written before Track 1 was removed still read
+                # correctly.
                 for weight in TRACK2_WEIGHTS:
                     rows = results.filter(
                         (pl.col('track') == 2) & (pl.col('weight_type') == weight))
                     if 'significant_predictive' in rows.columns:
                         all_t2.append(rows.filter(pl.col('significant_predictive') == True))
 
-    t1 = pl.concat(all_t1, how='diagonal_relaxed') if all_t1 else pl.DataFrame()
     t2 = pl.concat(all_t2, how='diagonal_relaxed') if all_t2 else pl.DataFrame()
 
-    print(f"Track 1 (ICI-only): {len(t1)} significant hits")
-    print(f"Track 2 (interaction): {len(t2)} significant hits")
+    print(f"Interaction: {len(t2)} significant hits")
 
-    t1.write_csv(os.path.join(OUTPUT_DIR, 'track1_all_significant_hits.csv'))
     t2.write_csv(os.path.join(OUTPUT_DIR, 'track2_all_significant_hits.csv'))
 
     # ================================================

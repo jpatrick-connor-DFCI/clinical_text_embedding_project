@@ -1,6 +1,6 @@
 """Literature-based validation logic for ICI biomarker hits.
 
-Looks up track1/track2 findings against the curated validation reference
+Looks up interaction findings against the curated validation reference
 and assigns a validation level + supporting notes to each hit.
 """
 
@@ -71,9 +71,9 @@ def validate_hit(marker, cancer_type, mutation_type):
 
 
 def bootstrap_findings_df(compiled_dir):
-    """Rebuild all_findings_with_validation.csv from compiled Track 1/2 outputs."""
+    """Rebuild all_findings_with_validation.csv from the compiled interaction output."""
+    # `track` is retained as a constant 2 so downstream schemas are unchanged.
     track_specs = [
-        (1, 'track1_all_significant_hits.csv'),
         (2, 'track2_all_significant_hits.csv'),
     ]
     frames = []
@@ -116,7 +116,7 @@ def load_or_bootstrap_findings_df(compiled_dir, findings_csv):
         print(f"Loading {findings_csv}")
         return pl.read_csv(findings_csv)
 
-    print(f"{findings_csv} not found; rebuilding from compiled Track 1/2 outputs in {compiled_dir}")
+    print(f"{findings_csv} not found; rebuilding from compiled interaction output in {compiled_dir}")
     df = bootstrap_findings_df(compiled_dir)
     df.write_csv(findings_csv)
     print(f"  Bootstrapped findings CSV with {len(df)} rows -> {findings_csv}")

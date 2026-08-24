@@ -43,9 +43,7 @@ from pipelines.biomarkers.run_IPTW_analysis import (
     MIN_MARKER_POS_PER_ARM,
     MIN_EVENTS_PER_MARKER_GROUP,
     PS_MODELS,
-    _fit_track1_marker,
     _fit_track2_marker,
-    marker_has_ici_only_support,
     marker_has_within_arm_support,
     merge_rare_cancer_types_into_other,
     resolve_marker_subset,
@@ -264,18 +262,13 @@ def _diagnose_spec(spec: str) -> None:
                                            min_pos_per_arm=MIN_MARKER_POS_PER_ARM,
                                            min_neg_per_arm=MIN_MARKER_NEG_PER_ARM,
                                            min_events_per_group=MIN_EVENTS_PER_MARKER_GROUP)]
-    t1 = [m for m in biomarker_cols
-          if marker_has_ici_only_support(type_df, m, min_pos=5,
-                                         min_events=MIN_EVENTS_PER_MARKER_GROUP)]
     scanned = ("" if len(biomarker_cols) == n_markers_total
                else f" scanned (of {n_markers_total} total)")
-    print(f"  Track 2 markers with support: {len(t2)}/{len(biomarker_cols)}{scanned}")
-    print(f"  Track 1 markers with support: {len(t1)}/{len(biomarker_cols)}{scanned}")
+    print(f"  Markers with within-arm support: {len(t2)}/{len(biomarker_cols)}{scanned}")
 
     # --- One real fit, with the traceback _safe_fit would have swallowed ---
     _section(f"{spec}: trial fits (uncaught)")
-    for label, markers, fit_fn in (("Track 2", t2, _fit_track2_marker),
-                                   ("Track 1", t1, _fit_track1_marker)):
+    for label, markers, fit_fn in (("Interaction", t2, _fit_track2_marker),):
         if not markers:
             print(f"  {label}: no markers with support — nothing to fit")
             continue

@@ -32,12 +32,10 @@ def _resolve_compiled_dir():
     preferred = DEFAULT_COMPILED_DIR
     legacy_inputs = [
         os.path.join(LEGACY_COMPILED_DIR, 'all_findings_with_validation.csv'),
-        os.path.join(LEGACY_COMPILED_DIR, 'track1_all_significant_hits.csv'),
         os.path.join(LEGACY_COMPILED_DIR, 'track2_all_significant_hits.csv'),
     ]
     preferred_inputs = [
         os.path.join(preferred, 'all_findings_with_validation.csv'),
-        os.path.join(preferred, 'track1_all_significant_hits.csv'),
         os.path.join(preferred, 'track2_all_significant_hits.csv'),
     ]
 

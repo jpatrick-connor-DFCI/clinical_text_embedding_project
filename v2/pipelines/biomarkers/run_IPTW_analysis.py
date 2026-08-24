@@ -1,12 +1,7 @@
-"""Run IPTW biomarker analysis with two tracks.
+"""Run IPTW biomarker analysis (full-cohort interaction model).
 
-Track 1 (ICI-only, generalizability-weighted):
-  S(t) ~ base_vars + line_dummies + marker
-  Effect: marker coefficient
-
-Track 2 (full cohort, IPTW-weighted):
   S(t) ~ base_vars + line_dummies + marker + PX_on_ICI + marker x ICI
-  Effect: interaction coefficient
+  Effect: interaction coefficient -- is the marker predictive of ICI benefit?
 
 Notebook-ready: loops over all cohort x ps_model combinations automatically.
 """
@@ -105,7 +100,6 @@ COMMON_SUPPORT_PCT = (0.5, 99.5)
 IPTW_TRUNC_PCT = (1, 99)
 MIN_MARKER_POS_PER_ARM = 5
 MIN_MARKER_NEG_PER_ARM = 5
-MIN_MARKER_POS_ICI_ONLY = 5
 MIN_EVENTS_PER_MARKER_GROUP = 5   # minimum deaths among marker+ patients
 MIN_MARKERS_TO_TEST = 1
 EXCLUDE_TYPES = {'OTHER', 'CUP'}
@@ -372,17 +366,6 @@ def get_marker_event_counts(df, marker, treat_col='PX_on_ICI'):
     return counts
 
 
-def marker_has_ici_only_support(df, marker, min_pos=10, min_events=5):
-    """Check if marker has enough positive cases and events within ICI patients."""
-    ici_df = df.filter(pl.col('PX_on_ICI') == 1)
-    marker_bin = ici_df.select((finite_or_zero(marker) > 0)).to_series().to_numpy()
-    death = ici_df['death'].to_numpy()
-    marker_pos = int(marker_bin.sum())
-    marker_neg = len(ici_df) - marker_pos
-    events_pos = int(death[marker_bin].sum())
-    return marker_pos >= min_pos and marker_neg >= min_pos and events_pos >= min_events
-
-
 def compute_smd(df, covariates, treat_col='PX_on_ICI', weights=None):
     t_mask = (df[treat_col] == 1).to_numpy()
     rows = []
@@ -586,146 +569,6 @@ def _run_track2_screen(type_df, cancer_type, base_vars, biomarker_cols, n_jobs):
         spec_df = add_track2_fdr_and_labels(spec_df)
         frames.append(spec_df.with_columns(
             pl.lit(2, dtype=pl.Int8).alias('track'),
-            pl.lit(spec_name, dtype=pl.Utf8).alias('weight_type'),
-        ))
-    return frames
-
-
-# =============================================
-# Track 1: ICI-only generalizability-weighted
-# =============================================
-
-TRACK1_RESULT_COLS = [
-    'marker', 'beta_marker', 'HR_marker', 'CI95_marker_low', 'CI95_marker_high', 'p_marker',
-    'n_marker_pos', 'n_marker_neg', 'events_marker_pos', 'events_marker_neg',
-]
-
-
-def _fit_track1_marker(df, marker, base_vars, weights_col):
-    """Track 1: marker-only model on ICI patients."""
-    cols = ['tt_death', 'death'] + base_vars + [marker]
-    if weights_col is not None:
-        cols.append(weights_col)
-    df_fit_pl = filter_finite_rows(df.select(cols), cols)
-
-    # Compute event counts
-    marker_bin = (df_fit_pl[marker] > 0).to_numpy()
-    death = df_fit_pl['death'].to_numpy()
-    n_pos = int(marker_bin.sum())
-    n_neg = int((~marker_bin).sum())
-    events_pos = int(death[marker_bin].sum())
-    events_neg = int(death[~marker_bin].sum())
-
-    df_fit = to_pandas_via_numpy(df_fit_pl)
-    cph = CoxPHFitter(penalizer=0.01)
-    cph = fit_cph_log_warnings(cph, df_fit, 'tt_death', 'death',
-                                weights_col=weights_col, robust=True, marker_name=marker)
-
-    summ = cph.summary.reset_index()
-    b = cph.params_
-    V = cph.variance_matrix_
-
-    beta_m = float(b[marker])
-    se_m = float(np.sqrt(V.loc[marker, marker]))
-    p_m = float(summ.loc[summ['covariate'] == marker, 'p'].values[0])
-    hr_m = np.exp(beta_m)
-    ci_m = (np.exp(beta_m - 1.96 * se_m), np.exp(beta_m + 1.96 * se_m))
-
-    return {
-        "marker": marker,
-        "beta_marker": beta_m, "HR_marker": hr_m,
-        "CI95_marker_low": ci_m[0], "CI95_marker_high": ci_m[1],
-        "p_marker": p_m,
-        "n_marker_pos": n_pos, "n_marker_neg": n_neg,
-        "events_marker_pos": events_pos, "events_marker_neg": events_neg,
-    }
-
-
-def add_track1_fdr(results_df):
-    if results_df.is_empty():
-        return results_df.with_columns(pl.lit(None, dtype=pl.Utf8).alias('mutation_type'))
-    results_df = results_df.with_columns(
-        pl.col('marker').map_elements(get_mutation_type, return_dtype=pl.Utf8).alias('mutation_type')
-    )
-    results_df = _fdr_within_mutation_type(results_df, 'p_marker', 'FDR_marker', 'significant_marker')
-
-    results_df = results_df.with_columns(
-        (
-            (pl.col('HR_marker') > HR_EXTREME_THRESHOLD) |
-            (pl.col('HR_marker') < 1.0 / HR_EXTREME_THRESHOLD)
-        ).alias('extreme_hr_flag')
-    )
-    n_extreme = int(results_df['extreme_hr_flag'].sum())
-    if n_extreme > 0:
-        logger.warning(f"  {n_extreme} markers flagged with extreme HRs (>{HR_EXTREME_THRESHOLD} or <{1/HR_EXTREME_THRESHOLD:.4f})")
-
-    return results_df
-
-
-def _run_track1_screen(type_df, cancer_type, base_vars, biomarker_cols, n_jobs):
-    """Track 1: screen markers with ICI-only support via the generalizability-weighted model.
-
-    Returns one tagged frame per weighting; see `_run_track2_screen`.
-    """
-    eps = 1e-6
-    ici_only_df = type_df.filter(pl.col('PX_on_ICI') == 1)
-
-    # Generalizability weights for ICI subset: weight = 1 / ps
-    # (reweight ICI patients to look like the full eligible population)
-    ici_ps = ici_only_df['ICI_prediction'].clip(eps, 1 - eps).to_numpy()
-    w_gen = 1.0 / ici_ps
-    low_gen, high_gen = np.percentile(w_gen, IPTW_TRUNC_PCT)
-    if np.isfinite(low_gen) and np.isfinite(high_gen):
-        w_gen_trunc = np.clip(w_gen, low_gen, high_gen)
-    else:
-        w_gen_trunc = np.ones(len(ici_only_df))
-    ici_only_df = ici_only_df.with_columns(pl.Series('IPTW_GEN', np.asarray(w_gen_trunc)))
-
-    track1_markers = [
-        m for m in biomarker_cols
-        if marker_has_ici_only_support(type_df, m, min_pos=MIN_MARKER_POS_ICI_ONLY,
-                                       min_events=MIN_EVENTS_PER_MARKER_GROUP)
-    ]
-    print(f"  Track 1 markers to test: {len(track1_markers)}")
-
-    if len(track1_markers) < MIN_MARKERS_TO_TEST:
-        print(f"  Skipping Track 1: fewer than {MIN_MARKERS_TO_TEST} markers with sufficient support.")
-        return []
-
-    # ICI-only base vars. `base_vars` was filtered for constant columns against
-    # the FULL cohort, but this screen fits `ici_only_df` -- a covariate can vary
-    # across the cohort and still be constant within the ICI arm alone. A cancer
-    # type or line-of-therapy that no ICI patient has goes all-zero here, which
-    # makes the Cox Hessian singular for every marker.
-    #
-    # That failure is quieter than the Track 2 one: lifelines does not always
-    # raise on it, so `_safe_fit` records a "success" carrying null/NaN
-    # coefficients, the all-fits-failed guard never trips, and the screen writes
-    # rows whose beta/p are null. Recompute against the frame actually being fit.
-    ici_base_vars = [c for c in base_vars if ici_only_df[c].n_unique() > 1]
-    dropped_ici = [c for c in base_vars if c not in ici_base_vars]
-    if dropped_ici:
-        print(f"  Track 1: dropping {len(dropped_ici)} covariate(s) constant within "
-              f"the ICI arm: {', '.join(dropped_ici)}")
-
-    # Fail fast if what remains is still not identifiable, rather than writing a
-    # screen full of null coefficients.
-    assert_base_design_is_identifiable(
-        ici_only_df, ici_base_vars, f"Track 1 {cancer_type} (ICI-only)",
-        treat_col=None)
-
-    frames = []
-    for spec_name, spec_weights in [('ATE', 'IPTW_GEN'), ('unweighted', None)]:
-        results, failed = _run_marker_screen(
-            ici_only_df, track1_markers, ici_base_vars, spec_weights,
-            _fit_track1_marker, n_jobs, label=f"T1 {cancer_type} {spec_name}")
-        if failed:
-            print(f"  Track 1 {spec_name} failures: {len(failed)}. "
-                  f"First: {failed[0][0]} -> {failed[0][1]}")
-        spec_df = pl.DataFrame(results, schema=TRACK1_RESULT_COLS) if results else pl.DataFrame(schema={c: pl.Float64 for c in TRACK1_RESULT_COLS})
-        spec_df = add_track1_fdr(spec_df)
-        frames.append(spec_df.with_columns(
-            pl.lit(1, dtype=pl.Int8).alias('track'),
             pl.lit(spec_name, dtype=pl.Utf8).alias('weight_type'),
         ))
     return frames
@@ -1134,20 +977,16 @@ def main() -> None:
 
                 # Checked once here rather than discovered 1492 fits later: the
                 # base design is marker-independent, so if it is singular every
-                # fit in both screens is already doomed.
+                # fit in the screen is already doomed.
                 assert_base_design_is_identifiable(
                     type_df, base_vars, f"{SPEC_LABEL}/{cancer_type}")
 
-                # === Track 2: full-cohort interaction ===
+                # === Full-cohort interaction screen ===
                 frames = _run_track2_screen(type_df, cancer_type, base_vars, biomarker_cols, N_JOBS)
 
-                # === Track 1: ICI-only generalizability-weighted ===
-                frames += _run_track1_screen(type_df, cancer_type, base_vars, biomarker_cols, N_JOBS)
-
-                # One results file per cancer type. The two tracks share only
-                # `marker`, `mutation_type` and `extreme_hr_flag`, so the stack is
-                # diagonal: each track's own columns are null on the other's rows.
-                # `track` and `weight_type` identify which screen a row came from.
+                # One results file per cancer type. `weight_type` identifies which
+                # weighting a row came from; `track` is retained as a constant 2 so
+                # downstream readers and already-written parquets keep one schema.
                 if frames:
                     results_df = pl.concat(frames, how='diagonal_relaxed')
                     results_df = results_df.select(
