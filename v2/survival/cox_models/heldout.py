@@ -161,11 +161,14 @@ def get_heldout_risk_scores_CoxPH(
     out_fold = np.full(X.shape[0], -1, dtype=np.int32)
 
     # ---- Parallel backend ----
-    parallel_ctx = (
-        joblib.parallel_backend("loky", inner_max_num_threads=1)
-        if backend == "loky"
-        else joblib.parallel_backend("threading")
-    )
+    # Factory, not a shared instance: joblib.parallel_backend is not reentrant, and its __exit__
+    # unregisters the backend globally, so a second `with` on the same object silently runs loky.
+    def parallel_ctx():
+        return (
+            joblib.parallel_backend("loky", inner_max_num_threads=1)
+            if backend == "loky"
+            else joblib.parallel_backend("threading")
+        )
 
     # ==========================================================================================
     # Path A: NO PCA => NO MEMMAP (fastest)
@@ -207,7 +210,7 @@ def get_heldout_risk_scores_CoxPH(
 
             return test_idx, np.asarray(preds, dtype=np.float64)
 
-        with parallel_ctx:
+        with parallel_ctx():
             outs = joblib.Parallel(n_jobs=n_jobs, verbose=verbose)(
                 joblib.delayed(fit_predict_fold_no_pca)(tr, te) for tr, te in splits
             )
@@ -315,7 +318,7 @@ def get_heldout_risk_scores_CoxPH(
 
             return test_idx, np.asarray(preds, dtype=np.float64)
 
-        with parallel_ctx:
+        with parallel_ctx():
             outs = joblib.Parallel(n_jobs=n_jobs, verbose=verbose)(
                 joblib.delayed(fit_predict_fold_memmap)(m) for m in fold_meta
             )

@@ -213,11 +213,18 @@ def run_grid_CoxPH_parallel(
     penalty_no_pca = np.fromiter((0.0 if c in base_col_set else 1.0 for c in all_cols), dtype=np.float32)
 
     # ---- Parallel backend context ----
-    parallel_ctx = (
-        joblib.parallel_backend("loky", inner_max_num_threads=1)
-        if backend == "loky"
-        else joblib.parallel_backend("threading")
-    )
+    # A factory, not a single context object. joblib.parallel_backend is NOT reentrant: its
+    # __exit__ unregisters the backend globally, so re-entering the same instance silently falls
+    # back to the default (loky). This function enters the context once per alpha grid, and nested
+    # CV calls it once per outer fold, so a shared instance meant every use after the first ran on
+    # loky regardless of `backend` -- pickling the closures to worker processes, which fails
+    # outright once anything unpicklable (a progress bar's lock) is captured.
+    def parallel_ctx():
+        return (
+            joblib.parallel_backend("loky", inner_max_num_threads=1)
+            if backend == "loky"
+            else joblib.parallel_backend("threading")
+        )
 
     if parallel_axis not in {"auto", "l1", "fold"}:
         raise ValueError("parallel_axis must be one of {'auto', 'l1', 'fold'}")
@@ -361,7 +368,7 @@ def _run_grid_no_pca(
         fold_errors = np.zeros(len(folds), dtype=bool)
 
         if parallel_axis_eff == "fold":
-            with parallel_ctx:
+            with parallel_ctx():
                 fold_results = joblib.Parallel(
                     n_jobs=n_jobs,
                     verbose=verbose,
@@ -405,7 +412,7 @@ def _run_grid_no_pca(
         return rows
 
     if parallel_axis_eff == "l1":
-        with parallel_ctx:
+        with parallel_ctx():
             nested = joblib.Parallel(
                 n_jobs=n_jobs,
                 verbose=verbose,
@@ -598,7 +605,7 @@ def _run_grid_with_pca(
             fold_errors = np.zeros(len(fold_meta), dtype=bool)
 
             if parallel_axis_eff == "fold":
-                with parallel_ctx:
+                with parallel_ctx():
                     fold_results = joblib.Parallel(
                         n_jobs=n_jobs,
                         verbose=verbose,
@@ -642,7 +649,7 @@ def _run_grid_with_pca(
             return rows
 
         if parallel_axis_eff == "l1":
-            with parallel_ctx:
+            with parallel_ctx():
                 nested = joblib.Parallel(
                     n_jobs=n_jobs,
                     verbose=verbose,
