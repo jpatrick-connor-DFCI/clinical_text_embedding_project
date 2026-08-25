@@ -354,6 +354,7 @@ def get_nested_heldout_risk_scores_CoxPH(
     backend: str = "threading",
     primary_metric: str = "mean_auc(t)",
     adaptive_low_alphas: list[float] | None = None,
+    show_progress: bool = False,
 ) -> pl.DataFrame:
     """Nested-CV risk scores with tuning isolated inside each outer fold.
 
@@ -361,6 +362,11 @@ def get_nested_heldout_risk_scores_CoxPH(
     and then called the OOF scorer, allowing every patient's outcome to affect
     the pair used for that patient's prediction.  Here each outer-test patient
     is completely absent from both tuning and fitting.
+
+    ``show_progress`` prints a newline-delimited line as each outer fold completes, and forwards
+    to the inner grid so its per-fit bar appears too.  Both write plain lines rather than
+    carriage-return redraws, so they stay readable when the caller is a piped subprocess (a
+    notebook driver).  It requires ``backend='threading'``, which is the default.
     """
     from .grid_search import run_grid_CoxPH_parallel
 
@@ -373,6 +379,12 @@ def get_nested_heldout_risk_scores_CoxPH(
     fold_ids = np.full(df.height, -1, dtype=np.int32)
     chosen_l1 = np.full(df.height, np.nan, dtype=np.float64)
     chosen_alpha = np.full(df.height, np.nan, dtype=np.float64)
+
+    if show_progress:
+        if backend != "threading":
+            raise ValueError("show_progress=True currently requires backend='threading'")
+        print(f"[outer] 0/{len(splits)} folds complete "
+              f"({df.height} patients, {len(penalized_cols)} penalized features)", flush=True)
 
     for fold_i, (train_idx, test_idx) in enumerate(splits):
         train_df = df[train_idx.tolist()]
@@ -394,6 +406,7 @@ def get_nested_heldout_risk_scores_CoxPH(
             n_jobs=n_jobs,
             backend=backend,
             adaptive_low_alphas=adaptive_low_alphas,
+            show_progress=show_progress,
         )
         best = (
             inner_val.filter(pl.col(primary_metric).is_finite())
@@ -418,6 +431,9 @@ def get_nested_heldout_risk_scores_CoxPH(
         fold_ids[test_idx] = fold_i
         chosen_l1[test_idx] = l1_ratio
         chosen_alpha[test_idx] = alpha
+        if show_progress:
+            print(f"[outer] {fold_i + 1}/{len(splits)} folds complete "
+                  f"(l1_ratio={l1_ratio:g}, alpha={alpha:.3g})", flush=True)
 
     ids = df[id_col].to_numpy() if id_col in df.columns else np.arange(df.height)
     return pl.DataFrame({

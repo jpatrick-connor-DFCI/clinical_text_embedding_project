@@ -2,11 +2,11 @@
 
 import io
 import os
+import time
 
 import numpy as np
 import polars as pl
 import zstandard as zstd
-from tqdm import tqdm
 
 from config import FEATURE_PATH, NOTES_PATH, SURV_PATH
 from schemes import scheme_results_dir
@@ -14,19 +14,42 @@ from survival import generate_survival_embedding_df, get_nested_heldout_risk_sco
 from shared.polars_utils import filter_finite_rows
 
 
+# Progress reporting.  This script runs for hours across 21 landmarks with two long silent
+# phases each (re-pooling the embedding array, then a nested CV fit), so silence is
+# indistinguishable from a hang.  Every line below is newline-delimited rather than a
+# carriage-return redraw: the notebook driver (04d) runs this as a piped subprocess, where
+# `\r` bars collapse into one unreadable line.
+SHOW_PROGRESS = os.environ.get("TRAJECTORY_PROGRESS", "1") not in {"0", "false", "False"}
+
+
+def _stage(msg: str) -> None:
+    """One timestamped progress line, flushed so a piped reader sees it immediately."""
+    if SHOW_PROGRESS:
+        print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
 def main() -> None:
     os.environ["JOBLIB_DEFAULT_WORKER_TIMEOUT"] = "600"
 
+    run_started = time.time()
     trajectory_path = os.path.join(scheme_results_dir("death_met"), 'mortality_trajectories/')
     os.makedirs(trajectory_path, exist_ok=True)
 
     # Load datasets
+    _stage("loading note metadata ...")
     notes_meta = pl.read_parquet(NOTES_PATH + 'full_clinical_notes_embeddings_metadata.parquet')
+    _stage(f"  {notes_meta.height:,} notes")
+
+    _stage("decompressing embedding array (large; this takes a few minutes) ...")
     with open(NOTES_PATH + 'full_clinical_notes_embeddings_as_array.npy.zst', 'rb') as f:
         embeddings_data = np.load(io.BytesIO(zstd.decompress(f.read())))
     embeddings_data = embeddings_data.astype(np.float32)
+    _stage(f"  embeddings {embeddings_data.shape}, {embeddings_data.nbytes / 1e9:.2f} GB in memory")
+
+    _stage("loading survival cohort and cancer types ...")
     events_data = pl.read_parquet(SURV_PATH + 'death_met_surv_df.parquet')
     cancer_type_df = pl.read_csv(os.path.join(FEATURE_PATH, 'cancer_type_df.csv.gz'))
+    _stage(f"  {events_data.height:,} patients in the survival cohort")
 
     event = 'death'
     alphas_to_test = np.logspace(-5, 0, 25)
@@ -35,12 +58,14 @@ def main() -> None:
     # regenerate predication dataframe at time 0 with new decay parameter
     decay_param = 0.1
     note_types = ['Clinician', 'Imaging', 'Pathology']
+    _stage(f"pooling baseline embeddings (decay_param={decay_param}, window=0) ...")
     full_prediction_df = (generate_survival_embedding_df(notes_meta, events_data, embeddings_data,
                                                          note_types=note_types, pool_fx={key: 'time_decay_mean' for key in note_types},
                                                          decay_param=decay_param, max_note_window=0)
                               .join(cancer_type_df, on='DFCI_MRN'))
     numeric_cols = [c for c, dtype in full_prediction_df.schema.items() if dtype.is_numeric()]
     full_prediction_df = filter_finite_rows(full_prediction_df, numeric_cols).filter(pl.col(f'tt_{event}') > 0)
+    _stage(f"  baseline cohort: {full_prediction_df.height:,} patients")
 
     # Define model columns
     base_vars = ['GENDER', 'AGE_AT_TREATMENTSTART']
@@ -61,11 +86,15 @@ def main() -> None:
         {f'plus_{month_adj}_months_data': [np.nan for _ in range(len(cohort_mrns))] for month_adj in months_to_test}
     )
 
+    _stage(f"landmark 0/{len(months_to_test)} (month 0, baseline): "
+           f"fitting nested CV on {full_prediction_df.height:,} patients ...")
+    _t0 = time.time()
     risk_scores = get_nested_heldout_risk_scores_CoxPH(
         full_prediction_df, base_vars + type_cols, continuous_vars, embed_cols,
         l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}',
-        id_col='DFCI_MRN', max_iter=3000,
+        id_col='DFCI_MRN', max_iter=3000, show_progress=SHOW_PROGRESS,
     )
+    _stage(f"  month 0 done in {(time.time() - _t0) / 60:.1f} min")
 
     risk_map = dict(zip(risk_scores['DFCI_MRN'].to_list(), risk_scores['risk_score'].to_list()))
     trajectory_predictions_df = trajectory_predictions_df.with_columns(
@@ -86,7 +115,11 @@ def main() -> None:
 
     failed_landmarks = []
     landmark_sizes = []
-    for month_adj in tqdm(months_to_test):
+    # No tqdm bar over this loop: it writes a carriage-return redraw to stderr, which interleaves
+    # with the stdout stage lines below into unreadable output under a piped subprocess (the 04d
+    # notebook driver), and it reports strictly less than the per-landmark lines already do.
+    for landmark_i, month_adj in enumerate(months_to_test, start=1):
+        landmark_started = time.time()
         landmark_day = month_adj * 30
         # At risk at the landmark: still under follow-up strictly beyond it.
         eligible_mrns = [
@@ -94,11 +127,14 @@ def main() -> None:
             if baseline_tt.get(mrn) is not None and baseline_tt[mrn] > landmark_day
         ]
         landmark_sizes.append((month_adj, len(eligible_mrns)))
+        _stage(f"landmark {landmark_i}/{len(months_to_test)} (month {month_adj}): "
+               f"{len(eligible_mrns):,} patients at risk")
         if not eligible_mrns:
             print(f"Trajectory landmark {month_adj} months: no patients at risk, skipping")
             failed_landmarks.append((month_adj, "no patients at risk at landmark"))
             continue
 
+        _stage(f"  pooling embeddings (window={landmark_day}d) ...")
         notes_meta_copy = notes_meta.filter(pl.col('DFCI_MRN').is_in(eligible_mrns))
         events_data_copy = events_data.filter(pl.col('DFCI_MRN').is_in(eligible_mrns))
         monthly_data = (generate_survival_embedding_df(notes_meta_copy, events_data_copy, embeddings_data, note_types=note_types,
@@ -110,23 +146,30 @@ def main() -> None:
         # Every row already satisfies tt > 0 post-shift by construction of
         # `eligible_mrns`; this only drops rows with missing embeddings/covariates.
         monthly_data = filter_finite_rows(monthly_data, numeric_cols)
+        _stage(f"  fitting nested CV on {monthly_data.height:,} complete-case patients ...")
 
         try:
             risk_scores = get_nested_heldout_risk_scores_CoxPH(
                 monthly_data, base_vars + type_cols, continuous_vars, embed_cols,
                 l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}',
-                id_col='DFCI_MRN', max_iter=3000,
+                id_col='DFCI_MRN', max_iter=3000, show_progress=SHOW_PROGRESS,
             )
             risk_map = dict(zip(risk_scores['DFCI_MRN'].to_list(), risk_scores['risk_score'].to_list()))
             trajectory_predictions_df = trajectory_predictions_df.with_columns(
                 pl.col('DFCI_MRN').replace_strict(risk_map, default=np.nan).alias(f'plus_{month_adj}_months_data')
             )
+            _stage(f"  month {month_adj} done in {(time.time() - landmark_started) / 60:.1f} min "
+                   f"({landmark_i}/{len(months_to_test)} landmarks, "
+                   f"{(time.time() - run_started) / 3600:.2f} h elapsed)")
 
         except Exception as exc:
             print(f"Trajectory landmark {month_adj} months failed: {exc}")
+            _stage(f"  month {month_adj} FAILED after "
+                   f"{(time.time() - landmark_started) / 60:.1f} min")
             failed_landmarks.append((month_adj, str(exc)))
             continue
 
+    _stage("writing trajectory scores ...")
     trajectory_predictions_df.write_csv(
         os.path.join(trajectory_path, f'survival_trajectories_w_decay_param_{decay_param}.csv'))
 
@@ -140,6 +183,11 @@ def main() -> None:
         }
     ).write_csv(
         os.path.join(trajectory_path, f'landmark_risk_sets_w_decay_param_{decay_param}.csv'))
+
+    n_ok = len(months_to_test) - len(failed_landmarks)
+    _stage(f"wrote both CSVs to {trajectory_path}")
+    _stage(f"[summary] {n_ok}/{len(months_to_test)} landmarks scored plus the month-0 baseline, "
+           f"in {(time.time() - run_started) / 3600:.2f} h total.")
 
     if failed_landmarks:
         failed_months = ", ".join(str(month) for month, _ in failed_landmarks)
