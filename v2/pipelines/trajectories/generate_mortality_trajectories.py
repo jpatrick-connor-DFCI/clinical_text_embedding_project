@@ -9,9 +9,12 @@ import polars as pl
 import zstandard as zstd
 
 from config import FEATURE_PATH, NOTES_PATH, SURV_PATH
+from pipelines.training.slurm_array_utils import (DEFAULT_ALPHAS, DEFAULT_L1_RATIOS,
+                                                  adaptive_low_alphas_for)
 from schemes import scheme_results_dir
-from survival import (LandmarkCheckpoint, dataframe_fingerprint,
-                      generate_survival_embedding_df, get_nested_heldout_risk_scores_CoxPH)
+from survival import (LandmarkCheckpoint, dataframe_fingerprint, fit_predict_external_CoxPH,
+                      generate_survival_embedding_df, get_nested_heldout_risk_scores_CoxPH,
+                      run_grid_CoxPH_parallel)
 from shared.polars_utils import filter_finite_rows
 
 
@@ -60,8 +63,13 @@ def main() -> None:
     _stage(f"  {events_data.height:,} patients in the survival cohort")
 
     event = 'death'
-    alphas_to_test = np.logspace(-5, 0, 25)
-    l1_ratios = [0.5, 1.0]
+    # Hyperparameter grid matched to the full-cohort training setup
+    # (pipelines/training/run_full_cohort_*), including its adaptive low-alpha refinement, so a
+    # month-0 trajectory score is tuned over the same space as the full-cohort risk score.
+    alphas_to_test = DEFAULT_ALPHAS
+    l1_ratios = DEFAULT_L1_RATIOS
+    low_alphas = adaptive_low_alphas_for(alphas_to_test)
+    max_iter = 1000
 
     # regenerate predication dataframe at time 0 with new decay parameter
     decay_param = 0.1
@@ -97,6 +105,12 @@ def main() -> None:
     # computed under different definitions into one trajectory matrix.
     fingerprint = {
         'script': 'mortality_trajectories',
+        # Bumped when landmarks stopped refitting per landmark and became inference from the
+        # month-0 model: checkpoints written under the old scheme are not comparable.
+        'scoring': 'fit_once_month0_infer_forward',
+        'alphas': [float(a) for a in alphas_to_test],
+        'l1_ratios': [float(r) for r in l1_ratios],
+        'max_iter': max_iter,
         'n_cohort': int(len(cohort_mrns)),
         'n_embed': int(len(embed_cols)),
         'n_base': int(len(base_vars)),
@@ -116,17 +130,45 @@ def main() -> None:
         {f'plus_{month_adj}_months_data': [np.nan for _ in range(len(cohort_mrns))] for month_adj in months_to_test}
     )
 
-    # Month 0 (baseline) is checkpointed under the same store as the other landmarks.
+    # === Month 0: select hyperparameters ONCE, on the baseline cohort ===
+    # Every later landmark re-scores this same model rather than refitting its own. Refitting per
+    # landmark made each column a different model -- different penalty, different scaling -- so a
+    # per-patient slope across columns (figures.prep.figure4) mixed real risk change with model
+    # drift. One fixed model makes the trajectory a statement about the patient.
+    #
+    # Tuning uses the full-cohort grid search; the reported month-0 column stays the nested-CV
+    # held-out score, so no patient's own outcome informs their own month-0 value.
+    _stage(f"landmark 0/{len(months_to_test)} (month 0, baseline): "
+           f"selecting hyperparameters on {full_prediction_df.height:,} patients ...")
+    _t0 = time.time()
+    _, month0_val, month0_model = run_grid_CoxPH_parallel(
+        full_prediction_df, base_vars + type_cols, continuous_vars, embed_cols,
+        l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}',
+        max_iter=max_iter, adaptive_low_alphas=low_alphas,
+    )
+    if month0_model is None:
+        raise RuntimeError(
+            "Month-0 grid search did not converge on any hyperparameter pair, so there is no "
+            "model to carry forward to the later landmarks."
+        )
+    _best = filter_finite_rows(month0_val, ['mean_auc(t)']).sort(
+        'mean_auc(t)', descending=True
+    ).row(0, named=True)
+    best_l1, best_alpha = float(_best['l1_ratio']), float(_best['alpha'])
+    _stage(f"  selected l1_ratio={best_l1}, alpha={best_alpha:.3e} "
+           f"(mean_auc(t)={_best['mean_auc(t)']:.4f}) in {(time.time() - _t0) / 60:.1f} min")
+
+    # Month 0's own column: nested-CV held-out scores under the same grid.
     if ckpt.landmark_done(0):
         risk_map = ckpt.load_landmark(0)
     else:
-        _stage(f"landmark 0/{len(months_to_test)} (month 0, baseline): "
-               f"fitting nested CV on {full_prediction_df.height:,} patients ...")
+        _stage("  fitting nested CV for the month-0 column ...")
         _t0 = time.time()
         risk_scores = get_nested_heldout_risk_scores_CoxPH(
             full_prediction_df, base_vars + type_cols, continuous_vars, embed_cols,
             l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}',
-            id_col='DFCI_MRN', max_iter=3000, show_progress=SHOW_PROGRESS,
+            id_col='DFCI_MRN', max_iter=max_iter, adaptive_low_alphas=low_alphas,
+            show_progress=SHOW_PROGRESS,
         )
         _elapsed = time.time() - _t0
         ckpt.save_landmark(0, risk_scores,
@@ -209,14 +251,22 @@ def main() -> None:
         # Every row already satisfies tt > 0 post-shift by construction of
         # `eligible_mrns`; this only drops rows with missing embeddings/covariates.
         monthly_data = filter_finite_rows(monthly_data, numeric_cols)
-        _stage(f"  fitting nested CV on {monthly_data.height:,} complete-case patients ...")
+        _stage(f"  scoring the month-0 model on {monthly_data.height:,} complete-case patients ...")
 
         try:
-            risk_scores = get_nested_heldout_risk_scores_CoxPH(
-                monthly_data, base_vars + type_cols, continuous_vars, embed_cols,
-                l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}',
-                id_col='DFCI_MRN', max_iter=3000, show_progress=SHOW_PROGRESS,
-            )
+            # Inference only: the month-0 model is refit on the baseline frame and applied to this
+            # landmark's features. fit_predict_external_CoxPH re-derives imputation and scaling from
+            # the TRAINING frame alone and applies them to the eval frame, so this landmark's own
+            # feature distribution never influences its transform -- the scores stay on one common
+            # scale across the whole trajectory. No outcome from this landmark is used.
+            risk_scores = pl.DataFrame({
+                'DFCI_MRN': monthly_data['DFCI_MRN'],
+                'risk_score': fit_predict_external_CoxPH(
+                    full_prediction_df, monthly_data, base_vars + type_cols,
+                    continuous_vars, embed_cols, event_col=event, tstop_col=f'tt_{event}',
+                    l1_ratio=best_l1, alpha=best_alpha, max_iter=max_iter,
+                ),
+            })
             ckpt.save_landmark(month_adj, risk_scores,
                                meta={'n_at_risk': len(eligible_mrns),
                                      'n_scored': int(risk_scores.height),

@@ -7,4 +7,4 @@ from .heldout import (
     get_nested_heldout_risk_scores_CoxPH,
 )
 
-__all__ = ['scale_model_data', 'evaluate_surv_model', 'run_base_CoxPH', 'run_grid_CoxPH_parallel', 'get_heldout_risk_scores_CoxPH', 'get_nested_heldout_risk_scores_CoxPH']
+__all__ = ['scale_model_data', 'evaluate_surv_model', 'run_base_CoxPH', 'run_grid_CoxPH_parallel', 'get_heldout_risk_scores_CoxPH', 'get_nested_heldout_risk_scores_CoxPH', 'fit_predict_external_CoxPH']
