@@ -115,7 +115,8 @@ def main() -> None:
     continuous_vars = ['AGE_AT_TREATMENTSTART'] + embed_cols
 
     # === Checkpoint store (writes intermediate results during the run; enables resume) ===
-    RESUME = True
+    # Resume by default. Set WITHIN_PAN_RESUME=0 for an intentional full recompute.
+    RESUME = os.environ.get('WITHIN_PAN_RESUME', '1') not in {'0', 'false', 'False'}
     train_outdir = os.path.join(RESULTS_PATH, 'pan_vs_within_cancer')
     os.makedirs(train_outdir, exist_ok=True)
 
@@ -216,18 +217,9 @@ def main() -> None:
     for cancer_type in tqdm(cancer_strata, mininterval=30):
         matched_pan_key = f'{cancer_type}__matched_pan__'
 
-        st = ckpt.status(cancer_type)
-        if st == 'done' and ckpt.stratum_done(cancer_type) and ckpt.stratum_done(matched_pan_key):
-            _tr, _hd = ckpt.load_stratum(cancer_type)
-            train_score_frames.append(_tr)
-            held_score_frames.append(_hd)
-            _mp_tr, _mp_hd = ckpt.load_stratum(matched_pan_key)
-            matched_pan_train_frames.append(_mp_tr)
-            matched_pan_held_frames.append(_mp_hd)
-            continue
-        if st == 'done':
-            ckpt.log(f"incomplete checkpoint pair for {cancer_type}; refitting")
-        if st == 'skipped':
+        within_status = ckpt.status(cancer_type)
+        matched_pan_status = ckpt.status(matched_pan_key)
+        if within_status == 'skipped' or matched_pan_status == 'skipped':
             continue
 
         sub_df = train_df.filter(pl.col('STRATUM_CANCER_TYPE') == cancer_type)
@@ -236,37 +228,49 @@ def main() -> None:
             continue
 
         _t0 = time.time()
-        cur_test, cur_val, cur_model = run_grid_CoxPH_parallel(
-            sub_df, base_vars, continuous_vars, embed_cols,
-            l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}', max_iter=3000
-        )
+        if ckpt.stratum_done(cancer_type):
+            trained_sub, held_sub = ckpt.load_stratum(cancer_type)
+        else:
+            if within_status == 'done':
+                ckpt.log(f"incomplete within checkpoint for {cancer_type}; refitting within model")
+            cur_test, cur_val, cur_model = run_grid_CoxPH_parallel(
+                sub_df, base_vars, continuous_vars, embed_cols,
+                l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}', max_iter=3000
+            )
 
-        # Skip strata whose final model failed to converge (returned None).
-        if cur_model is None:
-            ckpt.mark_skipped(cancer_type, 'no_converge', meta={'n_train': int(len(sub_df))})
-            continue
+            # Skip strata whose final model failed to converge (returned None).
+            if cur_model is None:
+                ckpt.mark_skipped(cancer_type, 'no_converge', meta={'n_train': int(len(sub_df))})
+                continue
 
-        best_row = filter_finite_rows(cur_val, ['mean_auc(t)']).sort(
-            'mean_auc(t)', descending=True
-        ).row(0, named=True)
-        best_l1, best_alpha = best_row['l1_ratio'], best_row['alpha']
-        trained_sub = get_nested_heldout_risk_scores_CoxPH(
-            sub_df, base_vars, continuous_vars, embed_cols,
-            l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}',
-            max_iter=3000, backend="threading"
-        ).rename({'risk_score': 'within_cancer_risk_score'})
-        trained_sub = trained_sub.with_columns(pl.lit(cancer_type).alias('STRATUM'))
+            best_row = filter_finite_rows(cur_val, ['mean_auc(t)']).sort(
+                'mean_auc(t)', descending=True
+            ).row(0, named=True)
+            best_l1, best_alpha = best_row['l1_ratio'], best_row['alpha']
+            trained_sub = get_nested_heldout_risk_scores_CoxPH(
+                sub_df, base_vars, continuous_vars, embed_cols,
+                l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}',
+                max_iter=3000, backend="threading"
+            ).rename({'risk_score': 'within_cancer_risk_score'})
+            trained_sub = trained_sub.with_columns(pl.lit(cancer_type).alias('STRATUM'))
 
-        # Held-out predictions for this stratum, taken now while the model is in memory.
-        sub_held = held_df.filter(pl.col('STRATUM_CANCER_TYPE') == cancer_type)
-        held_sub = pl.DataFrame({
-            'DFCI_MRN': sub_held['DFCI_MRN'].to_numpy(),
-            'within_cancer_risk_score': fit_predict_external_CoxPH(
-                sub_df, sub_held, base_vars, continuous_vars, embed_cols,
-                event_col=event, tstop_col=f'tt_{event}', l1_ratio=best_l1,
-                alpha=best_alpha, max_iter=3000,
-            ),
-        }).with_columns(pl.lit(cancer_type).alias('STRATUM'))
+            # Held-out predictions for this stratum, taken now while the model is in memory.
+            sub_held = held_df.filter(pl.col('STRATUM_CANCER_TYPE') == cancer_type)
+            held_sub = pl.DataFrame({
+                'DFCI_MRN': sub_held['DFCI_MRN'].to_numpy(),
+                'within_cancer_risk_score': fit_predict_external_CoxPH(
+                    sub_df, sub_held, base_vars, continuous_vars, embed_cols,
+                    event_col=event, tstop_col=f'tt_{event}', l1_ratio=best_l1,
+                    alpha=best_alpha, max_iter=3000,
+                ),
+            }).with_columns(pl.lit(cancer_type).alias('STRATUM'))
+
+            # Persist the within half before starting the matched-pan fit. If the process is
+            # interrupted below, the next run reloads this work and starts at matched-pan.
+            ckpt.save_stratum(cancer_type, trained_sub, held_sub,
+                              meta={'n_train': int(len(sub_df)), 'n_held': int(len(held_sub)),
+                                    'l1': float(best_l1), 'alpha': float(best_alpha),
+                                    'elapsed_s': round(time.time() - _t0, 1)})
 
         # Size-matched pan comparator: same train N as this stratum, stratum's own patients
         # excluded. Seeded off the base seed + stratum name so it's reproducible per-stratum.
@@ -274,22 +278,32 @@ def main() -> None:
         # patient can appear in more than one stratum's matched-pan pool (only their own
         # stratum is excluded), so DFCI_MRN alone is not unique across matched_pan_*_all.
         matched_seed = 1234 + int(hashlib.md5(cancer_type.encode('utf-8')).hexdigest()[:8], 16) % 10_000
-        trained_matched_pan, matched_pan_held, matched_hp = _fit_matched_pan(
-            cancer_type, n_match=len(sub_df), seed=matched_seed
-        )
-        if trained_matched_pan is None:
-            ckpt.mark_skipped(cancer_type, 'matched_pan_no_converge', meta={'n_train': int(len(sub_df))})
-            continue
-
-        c_pan, c_within, n_held = _provisional_cindex(held_sub, matched_pan_held)
-        ckpt.save_stratum(cancer_type, trained_sub, held_sub,
-                          meta={'n_train': int(len(sub_df)), 'n_held': int(n_held),
-                                'l1': float(best_l1), 'alpha': float(best_alpha),
-                                'c_pan': c_pan, 'c_within': c_within,
-                                'elapsed_s': round(time.time() - _t0, 1)})
-        ckpt.save_stratum(matched_pan_key, trained_matched_pan, matched_pan_held,
-                          meta={'n_train': int(len(sub_df)), 'n_held': int(len(held_df)),
-                                'l1': matched_hp[0], 'alpha': matched_hp[1]})
+        if ckpt.stratum_done(matched_pan_key):
+            trained_matched_pan, matched_pan_held = ckpt.load_stratum(matched_pan_key)
+        else:
+            if matched_pan_status == 'done':
+                ckpt.log(f"incomplete matched-pan checkpoint for {cancer_type}; refitting matched-pan model")
+            trained_matched_pan, matched_pan_held, matched_hp = _fit_matched_pan(
+                cancer_type, n_match=len(sub_df), seed=matched_seed
+            )
+            if trained_matched_pan is None:
+                ckpt.mark_skipped(matched_pan_key, 'no_converge',
+                                  meta={'n_train': int(len(sub_df))})
+                continue
+            c_pan, c_within, n_held = _provisional_cindex(held_sub, matched_pan_held)
+            ckpt.save_stratum(matched_pan_key, trained_matched_pan, matched_pan_held,
+                              meta={'n_train': int(len(sub_df)), 'n_held': int(n_held),
+                                    'l1': matched_hp[0], 'alpha': matched_hp[1],
+                                    'c_pan': c_pan, 'c_within': c_within,
+                                    'elapsed_s': round(time.time() - _t0, 1)})
+        # Complete the within row's comparison metadata after both independent stages exist.
+        # This also repairs the small crash window after matched-pan was saved but before the
+        # parent row could be finalized.
+        if ckpt.metadata(cancer_type).get('c_pan') is None:
+            c_pan, c_within, n_held = _provisional_cindex(held_sub, matched_pan_held)
+            ckpt.update_stratum_meta(cancer_type, {
+                'n_held': int(n_held), 'c_pan': c_pan, 'c_within': c_within,
+            })
         train_score_frames.append(trained_sub)
         held_score_frames.append(held_sub)
         matched_pan_train_frames.append(trained_matched_pan)

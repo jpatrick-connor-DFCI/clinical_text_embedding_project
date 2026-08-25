@@ -10,7 +10,8 @@ import zstandard as zstd
 
 from config import FEATURE_PATH, NOTES_PATH, SURV_PATH
 from schemes import scheme_results_dir
-from survival import generate_survival_embedding_df, get_nested_heldout_risk_scores_CoxPH
+from survival import (LandmarkCheckpoint, dataframe_fingerprint,
+                      generate_survival_embedding_df, get_nested_heldout_risk_scores_CoxPH)
 from shared.polars_utils import filter_finite_rows
 
 
@@ -20,6 +21,13 @@ from shared.polars_utils import filter_finite_rows
 # carriage-return redraw: the notebook driver (04d) runs this as a piped subprocess, where
 # `\r` bars collapse into one unreadable line.
 SHOW_PROGRESS = os.environ.get("TRAJECTORY_PROGRESS", "1") not in {"0", "false", "False"}
+
+# Resume.  Each landmark's scores are checkpointed as soon as they exist, so an interrupted run
+# picks up where it left off instead of refitting from month 0.  Set TRAJECTORY_RESUME=0 to force
+# a full recompute, and TRAJECTORY_RETRY_FAILED=1 to refit landmarks a previous run recorded as
+# failed (they are skipped by default, so a resume does not burn hours re-hitting the same error).
+RESUME = os.environ.get("TRAJECTORY_RESUME", "1") not in {"0", "false", "False"}
+RETRY_FAILED = os.environ.get("TRAJECTORY_RETRY_FAILED", "0") not in {"0", "false", "False"}
 
 
 def _stage(msg: str) -> None:
@@ -81,22 +89,54 @@ def main() -> None:
     months_to_test = [i * 3 for i in range(1, 21)]
 
     cohort_mrns = full_prediction_df['DFCI_MRN'].unique().to_list()
+
+    # === Checkpoint store (persists each landmark as it completes; enables resume) ===
+    # Fingerprint the deterministic inputs. A mismatch on a later run means the cohort, the
+    # feature set, the decay parameter, or the landmark grid changed, so stored landmarks are
+    # stale and LandmarkCheckpoint starts fresh on its own rather than mixing score columns
+    # computed under different definitions into one trajectory matrix.
+    fingerprint = {
+        'script': 'mortality_trajectories',
+        'n_cohort': int(len(cohort_mrns)),
+        'n_embed': int(len(embed_cols)),
+        'n_base': int(len(base_vars)),
+        'n_type': int(len(type_cols)),
+        'decay_param': decay_param,
+        'months': list(months_to_test),
+        'seed': 1234,
+        'data_hash': dataframe_fingerprint(
+            full_prediction_df,
+            ['DFCI_MRN', event, f'tt_{event}'] + base_vars + type_cols + embed_cols,
+        ),
+    }
+    ckpt = LandmarkCheckpoint(os.path.join(trajectory_path, 'checkpoints'), fingerprint,
+                              resume=RESUME, retry_failed=RETRY_FAILED)
     trajectory_predictions_df = pl.DataFrame(
         {'DFCI_MRN': cohort_mrns} |
         {f'plus_{month_adj}_months_data': [np.nan for _ in range(len(cohort_mrns))] for month_adj in months_to_test}
     )
 
-    _stage(f"landmark 0/{len(months_to_test)} (month 0, baseline): "
-           f"fitting nested CV on {full_prediction_df.height:,} patients ...")
-    _t0 = time.time()
-    risk_scores = get_nested_heldout_risk_scores_CoxPH(
-        full_prediction_df, base_vars + type_cols, continuous_vars, embed_cols,
-        l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}',
-        id_col='DFCI_MRN', max_iter=3000, show_progress=SHOW_PROGRESS,
-    )
-    _stage(f"  month 0 done in {(time.time() - _t0) / 60:.1f} min")
+    # Month 0 (baseline) is checkpointed under the same store as the other landmarks.
+    if ckpt.landmark_done(0):
+        risk_map = ckpt.load_landmark(0)
+    else:
+        _stage(f"landmark 0/{len(months_to_test)} (month 0, baseline): "
+               f"fitting nested CV on {full_prediction_df.height:,} patients ...")
+        _t0 = time.time()
+        risk_scores = get_nested_heldout_risk_scores_CoxPH(
+            full_prediction_df, base_vars + type_cols, continuous_vars, embed_cols,
+            l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}',
+            id_col='DFCI_MRN', max_iter=3000, show_progress=SHOW_PROGRESS,
+        )
+        _elapsed = time.time() - _t0
+        ckpt.save_landmark(0, risk_scores,
+                           meta={'n_at_risk': int(full_prediction_df.height),
+                                 'n_scored': int(risk_scores.height),
+                                 'elapsed_s': round(_elapsed, 1)})
+        _stage(f"  month 0 done in {_elapsed / 60:.1f} min")
+        risk_map = dict(zip(risk_scores['DFCI_MRN'].to_list(),
+                            risk_scores['risk_score'].to_list()))
 
-    risk_map = dict(zip(risk_scores['DFCI_MRN'].to_list(), risk_scores['risk_score'].to_list()))
     trajectory_predictions_df = trajectory_predictions_df.with_columns(
         pl.col('DFCI_MRN').replace_strict(risk_map, default=np.nan).alias('plus_0_months_data')
     )
@@ -127,10 +167,33 @@ def main() -> None:
             if baseline_tt.get(mrn) is not None and baseline_tt[mrn] > landmark_day
         ]
         landmark_sizes.append((month_adj, len(eligible_mrns)))
+
+        # Resume: reload a completed landmark rather than refitting it. Done before the
+        # embedding re-pool, which is itself expensive, so a resumed landmark costs a CSV read.
+        if ckpt.landmark_done(month_adj):
+            risk_map = ckpt.load_landmark(month_adj)
+            trajectory_predictions_df = trajectory_predictions_df.with_columns(
+                pl.col('DFCI_MRN').replace_strict(risk_map, default=np.nan)
+                .alias(f'plus_{month_adj}_months_data')
+            )
+            continue
+
+        # A landmark a previous run recorded as failed is left failed unless RETRY_FAILED is
+        # set: without this a resume would spend hours re-hitting the same error every time.
+        if ckpt.should_skip_failed(month_adj):
+            reason = ckpt.failure_reason(month_adj) or 'previously failed'
+            _stage(f"landmark {landmark_i}/{len(months_to_test)} (month {month_adj}): "
+                   f"skipping previously failed landmark ({reason}); "
+                   "set TRAJECTORY_RETRY_FAILED=1 to refit")
+            failed_landmarks.append((month_adj, f"previously failed: {reason}"))
+            continue
+
         _stage(f"landmark {landmark_i}/{len(months_to_test)} (month {month_adj}): "
                f"{len(eligible_mrns):,} patients at risk")
         if not eligible_mrns:
             print(f"Trajectory landmark {month_adj} months: no patients at risk, skipping")
+            ckpt.mark_failed(month_adj, "no patients at risk at landmark",
+                             meta={'n_at_risk': 0})
             failed_landmarks.append((month_adj, "no patients at risk at landmark"))
             continue
 
@@ -154,6 +217,10 @@ def main() -> None:
                 l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}',
                 id_col='DFCI_MRN', max_iter=3000, show_progress=SHOW_PROGRESS,
             )
+            ckpt.save_landmark(month_adj, risk_scores,
+                               meta={'n_at_risk': len(eligible_mrns),
+                                     'n_scored': int(risk_scores.height),
+                                     'elapsed_s': round(time.time() - landmark_started, 1)})
             risk_map = dict(zip(risk_scores['DFCI_MRN'].to_list(), risk_scores['risk_score'].to_list()))
             trajectory_predictions_df = trajectory_predictions_df.with_columns(
                 pl.col('DFCI_MRN').replace_strict(risk_map, default=np.nan).alias(f'plus_{month_adj}_months_data')
@@ -164,6 +231,9 @@ def main() -> None:
 
         except Exception as exc:
             print(f"Trajectory landmark {month_adj} months failed: {exc}")
+            ckpt.mark_failed(month_adj, str(exc),
+                             meta={'n_at_risk': len(eligible_mrns),
+                                   'elapsed_s': round(time.time() - landmark_started, 1)})
             _stage(f"  month {month_adj} FAILED after "
                    f"{(time.time() - landmark_started) / 60:.1f} min")
             failed_landmarks.append((month_adj, str(exc)))
@@ -185,13 +255,22 @@ def main() -> None:
         os.path.join(trajectory_path, f'landmark_risk_sets_w_decay_param_{decay_param}.csv'))
 
     n_ok = len(months_to_test) - len(failed_landmarks)
+    _resumed, _fit, _failed = ckpt.counts()
     _stage(f"wrote both CSVs to {trajectory_path}")
     _stage(f"[summary] {n_ok}/{len(months_to_test)} landmarks scored plus the month-0 baseline, "
            f"in {(time.time() - run_started) / 3600:.2f} h total.")
+    _stage(f"[summary] this session: {_resumed} resumed from checkpoint, {_fit} fit, "
+           f"{_failed} failed.")
+    _stage(f"[summary] checkpoints + progress log under: "
+           f"{os.path.join(trajectory_path, 'checkpoints')}")
 
     if failed_landmarks:
         failed_months = ", ".join(str(month) for month, _ in failed_landmarks)
-        raise RuntimeError(f"Trajectory generation failed at month landmarks: {failed_months}")
+        raise RuntimeError(
+            f"Trajectory generation failed at month landmarks: {failed_months}. "
+            "Completed landmarks are checkpointed — re-running resumes from them and refits "
+            "only what is missing (set TRAJECTORY_RETRY_FAILED=1 to also retry the failures)."
+        )
 
 
 if __name__ == "__main__":

@@ -1,4 +1,9 @@
-"""Resumable checkpointing for long-running within-vs-pan model scripts.
+"""Resumable checkpointing for the long-running trajectory model scripts.
+
+Holds two stores. ``RunCheckpoint`` serves the within-vs-pan cancer/treatment scripts, which
+produce a train/held-out score *pair* per stratum. ``LandmarkCheckpoint`` serves
+``generate_mortality_trajectories``, which produces a single score column per landmark; both
+share the fingerprint-staleness rule described below.
 
 The within-vs-pan cancer/treatment scripts run for hours: one elastic-net grid search per
 stratum plus the pan model. ``RunCheckpoint`` writes each expensive stage's results to disk as
@@ -18,12 +23,13 @@ if a later run's fingerprint differs, the stale checkpoints are ignored and the 
 import hashlib
 import json
 import os
-import time
+import tempfile
 from datetime import datetime
 
 import polars as pl
 
 PAN_KEY = '__pan__'
+LANDMARK_MANIFEST_COLS = ['month', 'status', 'reason', 'n_at_risk', 'n_scored', 'elapsed_s', 'ts']
 MANIFEST_COLS = ['key', 'status', 'reason', 'n_train', 'n_held',
                  'l1', 'alpha', 'c_pan', 'c_within', 'delta_c', 'elapsed_s', 'ts']
 
@@ -49,6 +55,18 @@ def dataframe_fingerprint(df, columns):
 def _slug(key):
     """Stable, filesystem-safe id for a stratum name (hashlib, not the salted builtin hash)."""
     return hashlib.md5(str(key).encode('utf-8')).hexdigest()[:16]
+
+
+def _write_csv_atomic(df, path):
+    """Write a CSV beside its destination, then atomically publish the completed file."""
+    fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path), prefix='.checkpoint-', suffix='.csv')
+    os.close(fd)
+    try:
+        df.write_csv(tmp_path)
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
 class RunCheckpoint:
@@ -109,13 +127,10 @@ class RunCheckpoint:
     def _append_manifest_row(self, row):
         """Append a single record to the manifest CSV without rewriting the whole file.
 
-        Phase-A A9: the previous implementation called _flush_manifest() (rewrite of the full
-        CSV) on every _record() call, which is O(n^2) total writes over a run on a shared
-        filesystem. Each key is recorded at most once per checkpoint's lifetime (status() is
-        checked before any save/skip call, so a 'done' or 'skipped' key is never re-recorded),
-        so a plain append cannot create a duplicate-key row needing dedup on the next resume.
-        The header is written once, by _flush_manifest(), when the manifest file is first
-        created (fresh start or stale-fingerprint reset); every _record() thereafter appends.
+        The previous implementation rewrote the full CSV on every record, which is O(n^2)
+        total writes over a run on a shared filesystem. The manifest is an append-only journal:
+        if a key is updated, the last row wins when the next RunCheckpoint is constructed.
+        The header is written once, by _flush_manifest(), when the manifest file is initialized.
         """
         write_header = not os.path.exists(self.manifest_path)
         row_df = pl.DataFrame([{c: row.get(c) for c in MANIFEST_COLS}], schema=MANIFEST_COLS)
@@ -139,6 +154,11 @@ class RunCheckpoint:
         row = self._manifest.get(key)
         return row['status'] if row else None
 
+    def metadata(self, key):
+        """Return a copy of the latest manifest row for a key."""
+        row = self._manifest.get(key)
+        return dict(row) if row else {}
+
     def stratum_done(self, key):
         """True only when the manifest and both score files are complete."""
         return (
@@ -158,7 +178,7 @@ class RunCheckpoint:
 
     # ---- pan stage -----------------------------------------------------------
     def pan_done(self):
-        return self.status(PAN_KEY) == 'done'
+        return self.stratum_done(PAN_KEY)
 
     def load_pan(self):
         self._resumed.add(PAN_KEY)
@@ -166,8 +186,8 @@ class RunCheckpoint:
         return pl.read_csv(self._train_path(PAN_KEY)), pl.read_csv(self._held_path(PAN_KEY))
 
     def save_pan(self, train_scores_df, held_scores_df, meta=None):
-        train_scores_df.write_csv(self._train_path(PAN_KEY))
-        held_scores_df.write_csv(self._held_path(PAN_KEY))
+        _write_csv_atomic(train_scores_df, self._train_path(PAN_KEY))
+        _write_csv_atomic(held_scores_df, self._held_path(PAN_KEY))
         self._record(PAN_KEY, 'done', meta=meta)
         self._fit.add(PAN_KEY)
         m = meta or {}
@@ -181,8 +201,11 @@ class RunCheckpoint:
         return pl.read_csv(self._train_path(key)), pl.read_csv(self._held_path(key))
 
     def save_stratum(self, key, train_scores_df, held_scores_df, meta=None):
-        train_scores_df.write_csv(self._train_path(key))
-        held_scores_df.write_csv(self._held_path(key))
+        # Publish both data files before the manifest says this stage is complete. A crash can
+        # therefore leave an ignored orphan file, never a resumable record pointing at a
+        # half-written CSV.
+        _write_csv_atomic(train_scores_df, self._train_path(key))
+        _write_csv_atomic(held_scores_df, self._held_path(key))
         self._record(key, 'done', meta=meta)
         self._fit.add(key)
         m = meta or {}
@@ -191,6 +214,15 @@ class RunCheckpoint:
                  f"c_pan={m.get('c_pan')}, c_within={m.get('c_within')}, "
                  f"{m.get('elapsed_s')}s)")
 
+    def update_stratum_meta(self, key, meta):
+        """Add metadata after both independently checkpointed halves are available."""
+        if not self.stratum_done(key):
+            raise ValueError(f"Cannot update incomplete stratum checkpoint: {key}")
+        current = self.metadata(key)
+        merged = {column: current.get(column) for column in MANIFEST_COLS}
+        merged.update(meta)
+        self._record(key, 'done', meta=merged)
+
     def mark_skipped(self, key, reason, meta=None):
         self._record(key, 'skipped', reason=reason, meta=meta)
         self._skipped.add(key)
@@ -198,7 +230,150 @@ class RunCheckpoint:
 
     # ---- summary -------------------------------------------------------------
     def counts(self):
-        """(#resumed, #fit, #skipped) strata this session, excluding the pan stage."""
-        return (len(self._resumed - {PAN_KEY}),
-                len(self._fit - {PAN_KEY}),
-                len(self._skipped))
+        """(#resumed, #fit, #skipped) within strata, excluding matched-pan stages."""
+        def within_only(keys):
+            return {key for key in keys
+                    if key != PAN_KEY and not str(key).endswith('__matched_pan__')}
+
+        return (len(within_only(self._resumed)),
+                len(within_only(self._fit)),
+                len(within_only(self._skipped)))
+
+
+class LandmarkCheckpoint:
+    """Disk-backed checkpoint store for one mortality-trajectory run.
+
+    ``generate_mortality_trajectories`` scores ~21 landmarks, each costing an embedding re-pool
+    plus a nested CV fit, and previously had no resume: an interrupted run restarted from month 0
+    and discarded every completed landmark. This store writes each landmark's risk scores as soon
+    as they exist, so a re-run reloads them and refits only what is missing.
+
+    Unlike ``RunCheckpoint`` a landmark has no train/held split — one score column per landmark is
+    the whole result — so the record is a single CSV keyed by month, not a pair.
+
+    Resume is sound for the same reason it is there: the pipeline is deterministic. The at-risk set
+    at a landmark is a fixed function of the baseline event times, pooling is deterministic given
+    ``decay_param`` and the window, and the nested CV uses a fixed ``random_state=1234``. Refitting
+    a landmark would reproduce the scores being reloaded.
+
+    A failed landmark is recorded as 'failed' rather than left absent, so a resumed run does not
+    silently retry a fit that will fail the same way. Pass ``retry_failed=True`` to refit those.
+    """
+
+    def __init__(self, checkpoint_dir, fingerprint, resume=True, retry_failed=False):
+        self.dir = checkpoint_dir
+        self.fingerprint = fingerprint
+        self.retry_failed = retry_failed
+        os.makedirs(self.dir, exist_ok=True)
+
+        self.manifest_path = os.path.join(self.dir, 'landmark_manifest.csv')
+        self.meta_path = os.path.join(self.dir, 'landmark_meta.json')
+        self.log_path = os.path.join(self.dir, 'landmark_progress.log')
+
+        self._manifest = {}
+        self._resumed, self._fit, self._failed = set(), set(), set()
+
+        stale = False
+        if resume and os.path.exists(self.manifest_path) and os.path.exists(self.meta_path):
+            with open(self.meta_path) as fh:
+                prev = json.load(fh).get('fingerprint')
+            if prev == fingerprint:
+                man = pl.read_csv(self.manifest_path, schema_overrides={'month': pl.Int64})
+                self._manifest = {int(r['month']): dict(r) for r in man.to_dicts()}
+                done = sum(1 for r in self._manifest.values() if r['status'] == 'done')
+                self.log(f"resume: loaded manifest with {len(self._manifest)} entries ({done} done)")
+            else:
+                stale = True
+        if (not resume) or stale or not os.path.exists(self.meta_path):
+            if stale:
+                self.log("WARNING: checkpoint fingerprint mismatch — ignoring stale checkpoints, "
+                         "starting fresh")
+            self._manifest = {}
+            with open(self.meta_path, 'w') as fh:
+                json.dump({'fingerprint': fingerprint,
+                           'created': datetime.now().isoformat(timespec='seconds')}, fh, indent=2)
+            pl.DataFrame([], schema=LANDMARK_MANIFEST_COLS).write_csv(self.manifest_path)
+
+    # ---- logging -------------------------------------------------------------
+    def log(self, msg):
+        line = f"[{datetime.now().isoformat(timespec='seconds')}] {msg}"
+        with open(self.log_path, 'a') as fh:
+            fh.write(line + '\n')
+        print(line, flush=True)
+
+    # ---- manifest ------------------------------------------------------------
+    def _append_manifest_row(self, row):
+        """Append one record without rewriting the file (same rationale as RunCheckpoint's)."""
+        write_header = not os.path.exists(self.manifest_path)
+        row_df = pl.DataFrame([{c: row.get(c) for c in LANDMARK_MANIFEST_COLS}],
+                              schema=LANDMARK_MANIFEST_COLS)
+        with open(self.manifest_path, 'a') as fh:
+            row_df.write_csv(fh, include_header=write_header)
+
+    def _record(self, month, status, reason=None, meta=None):
+        meta = meta or {}
+        row = {c: meta.get(c) for c in LANDMARK_MANIFEST_COLS}
+        row['month'] = int(month)
+        row['status'] = status
+        row['reason'] = reason
+        row['ts'] = datetime.now().isoformat(timespec='seconds')
+        self._manifest[int(month)] = row
+        self._append_manifest_row(row)
+
+    def _scores_path(self, month):
+        return os.path.join(self.dir, f'landmark_{int(month):03d}_scores.csv')
+
+    # ---- query ---------------------------------------------------------------
+    def status(self, month):
+        """Return 'done' | 'failed' | None for a landmark month."""
+        row = self._manifest.get(int(month))
+        return row['status'] if row else None
+
+    def landmark_done(self, month):
+        """True only when the manifest says done AND the score file is on disk."""
+        return self.status(month) == 'done' and os.path.isfile(self._scores_path(month))
+
+    def failure_reason(self, month):
+        """Recorded reason for a failed landmark, or None."""
+        row = self._manifest.get(int(month))
+        return row.get('reason') if row and row['status'] == 'failed' else None
+
+    def should_skip_failed(self, month):
+        """True when a previously failed landmark should not be retried this run."""
+        return self.status(month) == 'failed' and not self.retry_failed
+
+    # ---- records -------------------------------------------------------------
+    def load_landmark(self, month):
+        """Reload a completed landmark's scores as a {DFCI_MRN: risk_score} dict."""
+        self._resumed.add(int(month))
+        df = pl.read_csv(self._scores_path(month))
+        self.log(f"resumed: month {month} ({df.height} scored patients)")
+        return dict(zip(df['DFCI_MRN'].to_list(), df['risk_score'].to_list()))
+
+    def save_landmark(self, month, scores_df, meta=None):
+        """Persist one landmark's scores. Written before the manifest row, so a crash
+        mid-write leaves an unreferenced file rather than a manifest entry with no data."""
+        _write_csv_atomic(scores_df.select(['DFCI_MRN', 'risk_score']),
+                          self._scores_path(month))
+        self._record(month, 'done', meta=meta)
+        self._fit.add(int(month))
+        m = meta or {}
+        self.log(f"fit: month {month} (n_at_risk={m.get('n_at_risk')}, "
+                 f"n_scored={m.get('n_scored')}, {m.get('elapsed_s')}s)")
+
+    def mark_failed(self, month, reason, meta=None):
+        self._record(month, 'failed', reason=reason, meta=meta)
+        self._failed.add(int(month))
+        self.log(f"failed: month {month} ({reason})")
+
+    # ---- summary -------------------------------------------------------------
+    def counts(self):
+        """(#resumed, #fit, #failed) landmarks this session."""
+        return (len(self._resumed), len(self._fit), len(self._failed))
+
+    def recorded_failures(self):
+        """[(month, reason)] for every landmark marked failed, this session or a previous one."""
+        return sorted(
+            (int(r['month']), r.get('reason'))
+            for r in self._manifest.values() if r['status'] == 'failed'
+        )
