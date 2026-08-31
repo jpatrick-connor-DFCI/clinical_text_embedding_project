@@ -9,7 +9,7 @@ for the full pipeline DAG this order is derived from.
 | 02 | [`02_generate_embeddings_gcp.ipynb`](02_generate_embeddings_gcp.ipynb) | GCP GPU | Copy token batches to the GPU environment and run `generate_clinical_embeddings`, then copy results back. |
 | 03 | [`03_build_prediction_datasets.ipynb`](03_build_prediction_datasets.ipynb) | cluster CPU | Knit embeddings, report data availability, build per-anchor embedding prediction datasets. |
 | 04b | `04b_run_training_manifests.ipynb` | allocated Jupyter CPU session | Simple treatment-anchor full-cohort fallback when Slurm submission is unavailable; runs manifest events sequentially with `n_jobs=-1`. Run **04** first; do not execute 04b on a login node. |
-| 04e | [`04e_run_feature_comp_small.ipynb`](04e_run_feature_comp_small.ipynb) | allocated Jupyter CPU session | Feature-comparison counterpart to 04b, covering only the `small` modality class (`stage`, `treatment`, `somatic`, `metburden`) — the four that `run_feature_comp_task` pins to `n_jobs=1` because they have under 50 penalized columns. `text` and `prs` are left to the `big` SLURM array. Safe to run **alongside** that array: with `OVERWRITE = False` each side skips whatever the other has finished. Includes a read-only pre-flight census of how much is already done. Do not execute on a login node. |
+| 04e | [`04e_run_feature_comp_small.ipynb`](04e_run_feature_comp_small.ipynb) | allocated Jupyter CPU session | Feature-comparison counterpart to 04b, covering the three cheapest modalities (`stage`, `treatment`, `metburden`) — each pinned to `n_jobs=1` by `run_feature_comp_task` for having under 50 penalized columns. `somatic`, `text` and `prs` stay on the SLURM arrays. Safe to run **alongside** them: with `OVERWRITE = False` each side skips whatever the other has finished. Includes a read-only pre-flight census of how much is already done. Do not execute on a login node. |
 | — | `pipelines.training.build_slurm_manifests` + `slurm/launch_*.sh` | cluster CPU (shell) | Preferred distributed path when Slurm is available — build manifests, then `sbatch` the full-cohort, feature-comparison, and held-out-risk array jobs. Run **04** first to catch fitting problems before submitting. When the queue is congested, 04e can take the light feature-comparison modalities off it. |
 | 04 | [`04_smoke_test_training.ipynb`](04_smoke_test_training.ipynb) | cluster CPU (interactive) | Rehearses the real training entrypoints on a handful of representative events and reports fitting issues before you `sbatch` the arrays above. |
 | 04c | [`04c_run_within_vs_pan_models.ipynb`](04c_run_within_vs_pan_models.ipynb) | cluster CPU | Within- vs pan-stratum model comparison for cancer type and first-line treatment class, one subprocess per `pipelines.trajectories.*` script, with per-run toggles. Both are long-running and resume from their own per-stratum checkpoints. Must run **before** 06b — `figures.prep.figure2` reads their metrics CSVs. |
@@ -26,17 +26,23 @@ for the full pipeline DAG this order is derived from.
 `slurm/launch_feature_comp.sh` already sizes the six modalities in two classes: `big`
 (`text`, `prs`) at 5 CPU / 8G, and `small` (`stage`, `treatment`, `somatic`, `metburden`) at
 1 CPU / 4G, because `run_feature_comp_task.py` forces `n_jobs=1` for any modality with fewer than
-50 penalized columns. The `small` four therefore gain nothing from the cluster's parallelism — they
+50 penalized columns. Those four therefore gain nothing from the cluster's parallelism — they
 are single-core work sitting in the same queue as the heavy fits.
 
-`04e_run_feature_comp_small.ipynb` runs exactly that class in an allocated Jupyter session so it
-can proceed while the `big` array keeps its slots. The two sides coordinate through the skip logic
-already in `run_feature_comp_task.py`, which passes over any scheme/event/modality whose
-`_test.csv`, `_val.csv`, `_ipcw_reference.csv.gz` and `_risk_scores.csv` all exist — so with
-`OVERWRITE = False` neither redoes the other's work. That check runs once at task start, so a task
-begun simultaneously on both sides is computed twice; the outputs are deterministic, so this costs
-CPU rather than correctness. `scancel`-ing the `small` array removes even that overlap and leaves
-the `big` array untouched.
+`04e_run_feature_comp_small.ipynb` takes a **subset** of that class — `stage`, `treatment` and
+`metburden` — in an allocated Jupyter session, so it can proceed while the arrays keep their
+slots. `somatic` is left on SLURM despite being nominally `small`: its design matrix is a wide
+gene-by-alteration panel whose width is derived at runtime from the
+`_AMP`/`_DEL`/`_SNV`/`_SV`/`_FUSION` suffixes, so it is not reliably cheap.
+
+The two sides coordinate through the skip logic already in `run_feature_comp_task.py`, which
+passes over any scheme/event/modality whose `_test.csv`, `_val.csv`, `_ipcw_reference.csv.gz` and
+`_risk_scores.csv` all exist — so with `OVERWRITE = False` neither redoes the other's work.
+That check runs once at task start, so a task begun simultaneously on both sides is computed
+twice; the outputs are deterministic, so this costs CPU rather than correctness. Because the
+`small` array still owns `somatic`, it should keep running rather than being `scancel`-ed; to make
+the two sides disjoint instead, re-submit it against a manifest pinned to `somatic` via the
+third TSV field.
 
 ## Trajectory and biomarker pipelines
 
