@@ -9,7 +9,8 @@ for the full pipeline DAG this order is derived from.
 | 02 | [`02_generate_embeddings_gcp.ipynb`](02_generate_embeddings_gcp.ipynb) | GCP GPU | Copy token batches to the GPU environment and run `generate_clinical_embeddings`, then copy results back. |
 | 03 | [`03_build_prediction_datasets.ipynb`](03_build_prediction_datasets.ipynb) | cluster CPU | Knit embeddings, report data availability, build per-anchor embedding prediction datasets. |
 | 04b | `04b_run_training_manifests.ipynb` | allocated Jupyter CPU session | Simple treatment-anchor full-cohort fallback when Slurm submission is unavailable; runs manifest events sequentially with `n_jobs=-1`. Run **04** first; do not execute 04b on a login node. |
-| — | `pipelines.training.build_slurm_manifests` + `slurm/launch_*.sh` | cluster CPU (shell) | Preferred distributed path when Slurm is available — build manifests, then `sbatch` the full-cohort, feature-comparison, and held-out-risk array jobs. Run **04** first to catch fitting problems before submitting. |
+| 04e | [`04e_run_feature_comp_small.ipynb`](04e_run_feature_comp_small.ipynb) | allocated Jupyter CPU session | Feature-comparison counterpart to 04b, covering only the `small` modality class (`stage`, `treatment`, `somatic`, `metburden`) — the four that `run_feature_comp_task` pins to `n_jobs=1` because they have under 50 penalized columns. `text` and `prs` are left to the `big` SLURM array. Safe to run **alongside** that array: with `OVERWRITE = False` each side skips whatever the other has finished. Includes a read-only pre-flight census of how much is already done. Do not execute on a login node. |
+| — | `pipelines.training.build_slurm_manifests` + `slurm/launch_*.sh` | cluster CPU (shell) | Preferred distributed path when Slurm is available — build manifests, then `sbatch` the full-cohort, feature-comparison, and held-out-risk array jobs. Run **04** first to catch fitting problems before submitting. When the queue is congested, 04e can take the light feature-comparison modalities off it. |
 | 04 | [`04_smoke_test_training.ipynb`](04_smoke_test_training.ipynb) | cluster CPU (interactive) | Rehearses the real training entrypoints on a handful of representative events and reports fitting issues before you `sbatch` the arrays above. |
 | 04c | [`04c_run_within_vs_pan_models.ipynb`](04c_run_within_vs_pan_models.ipynb) | cluster CPU | Within- vs pan-stratum model comparison for cancer type and first-line treatment class, one subprocess per `pipelines.trajectories.*` script, with per-run toggles. Both are long-running and resume from their own per-stratum checkpoints. Must run **before** 06b — `figures.prep.figure2` reads their metrics CSVs. |
 | 04d | [`04d_run_mortality_trajectories.ipynb`](04d_run_mortality_trajectories.ipynb) | cluster CPU | Landmark mortality risk trajectories (months 0–60) from `pipelines.trajectories.generate_mortality_trajectories`, with landmark coverage and at-risk denominators. **Fits one model at month 0 and re-scores it at every later landmark** (hyperparameters matched to the full-cohort runs), so trajectories are comparable across months. Resumable — each landmark is checkpointed as it completes. Must run **before** 06b — `figures.prep.figure4` clusters these trajectories. |
@@ -19,6 +20,23 @@ for the full pipeline DAG this order is derived from.
 | 06a | [`06a_generate_code_lookups.Rmd`](06a_generate_code_lookups.Rmd) | local / cluster (R) | **One-time bootstrap**, not a per-run step. Builds the ICD-10→phecode mapping and phecode descriptions in `CODE_PATH` that `figures.prep.figure2` labels its panels from — the only R dependency in the prep tier, split out so `06b` needs no `Rscript`. Re-run after a cohort rebuild (01) or a Phecode package upgrade. Needs `devtools::install_github("vcastro/Phecode")` plus `arrow`. |
 | 06b | [`06b_generate_figure_data.ipynb`](06b_generate_figure_data.ipynb) | cluster CPU / local | Runs `figures/prep/figureN.py` to write the CSVs the R tier plots from. Pure Python — warns and falls back to raw code labels if `06a` has not run. |
 | 07 | [`07_render_figures.Rmd`](07_render_figures.Rmd) | local / cluster (R) | Renders manuscript figure panels from the `06b` CSVs. Bootstrap R packages once with `Rscript v2/R/install_packages.R`, then render with `Rscript -e 'rmarkdown::render("v2/notebooks/07_render_figures.Rmd")'`. |
+
+## Splitting feature comparisons between Slurm and a notebook
+
+`slurm/launch_feature_comp.sh` already sizes the six modalities in two classes: `big`
+(`text`, `prs`) at 5 CPU / 8G, and `small` (`stage`, `treatment`, `somatic`, `metburden`) at
+1 CPU / 4G, because `run_feature_comp_task.py` forces `n_jobs=1` for any modality with fewer than
+50 penalized columns. The `small` four therefore gain nothing from the cluster's parallelism — they
+are single-core work sitting in the same queue as the heavy fits.
+
+`04e_run_feature_comp_small.ipynb` runs exactly that class in an allocated Jupyter session so it
+can proceed while the `big` array keeps its slots. The two sides coordinate through the skip logic
+already in `run_feature_comp_task.py`, which passes over any scheme/event/modality whose
+`_test.csv`, `_val.csv`, `_ipcw_reference.csv.gz` and `_risk_scores.csv` all exist — so with
+`OVERWRITE = False` neither redoes the other's work. That check runs once at task start, so a task
+begun simultaneously on both sides is computed twice; the outputs are deterministic, so this costs
+CPU rather than correctness. `scancel`-ing the `small` array removes even that overlap and leaves
+the `big` array untouched.
 
 ## Trajectory and biomarker pipelines
 
