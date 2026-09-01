@@ -311,6 +311,11 @@ def _run_grid_no_pca(
 ):
     alphas_desc = np.sort(alphas_to_test)[::-1].tolist()
     n_alphas = len(alphas_desc)
+    # Collected across every l1 path so a total failure can report why (see the
+    # RuntimeError below). Appended to under joblib's threading backend, which is
+    # why this is a plain list mutated in the sequential result-gathering loop
+    # rather than inside the parallel worker.
+    grid_error_messages: list[str] = []
 
     def _evaluate_fold_no_pca(fi: int, tr: np.ndarray, va: np.ndarray, l1_ratio: float):
         fold_auc = np.full(n_alphas, np.nan)
@@ -318,6 +323,10 @@ def _run_grid_no_pca(
         fold_auc_curves = np.full((n_alphas, len(eval_times)), np.nan)
         start = time.time()
         error_flag = False
+        # First exception seen in this fold. Every alpha's failure is otherwise only
+        # logger.debug'd, and run_feature_comp_task never configures logging, so a
+        # fully-failed grid used to surface as a bare "all NaN" with no cause.
+        first_error = None
 
         # Fancy indexing already copies, and X_train_val is float32 (built at grid_search.py:99),
         # so the previous np.array(..., copy=True) was a redundant second copy (Phase-A A4).
@@ -354,11 +363,13 @@ def _run_grid_no_pca(
                 except Exception as e:
                     logger.debug("Grid CV fold %d, alpha=%.2e, l1=%.2f failed: %s", fi, a, l1_ratio, e)
                     error_flag = True
+                    if first_error is None:
+                        first_error = f"fold {fi}, alpha={a:.2e}, l1={l1_ratio:.2f}: {type(e).__name__}: {e}"
                 finally:
                     if progress is not None:
                         progress.update()
 
-        return fi, fold_auc, fold_cindex, fold_auc_curves, time.time() - start, error_flag
+        return fi, fold_auc, fold_cindex, fold_auc_curves, time.time() - start, error_flag, first_error
 
     def evaluate_l1_path_no_pca(l1_ratio: float):
         fold_aucs = np.full((len(folds), n_alphas), np.nan)
@@ -366,6 +377,7 @@ def _run_grid_no_pca(
         fold_auc_curves = np.full((len(folds), n_alphas, len(eval_times)), np.nan)
         fold_times = np.zeros(len(folds))
         fold_errors = np.zeros(len(folds), dtype=bool)
+        fold_error_messages = []
 
         if parallel_axis_eff == "fold":
             with parallel_ctx():
@@ -384,12 +396,15 @@ def _run_grid_no_pca(
                 for fi, (tr, va) in enumerate(folds)
             ]
 
-        for fi, fold_auc, fold_cindex, fold_curves, fold_time, error_flag in fold_results:
+        for fi, fold_auc, fold_cindex, fold_curves, fold_time, error_flag, first_error in fold_results:
             fold_aucs[fi, :] = fold_auc
             fold_cindices[fi, :] = fold_cindex
             fold_auc_curves[fi, :, :] = fold_curves
             fold_times[fi] = fold_time
             fold_errors[fi] = error_flag
+            if first_error is not None:
+                fold_error_messages.append(first_error)
+        grid_error_messages.extend(fold_error_messages)
 
         rows = []
         for ai, alpha in enumerate(alphas_desc):
@@ -449,7 +464,24 @@ def _run_grid_no_pca(
 
     valid_cv = cv_results_df.filter(pl.col("mean_auc(t)").is_finite())
     if valid_cv.is_empty():
-        raise RuntimeError("All CV evaluations failed (all NaN mean_auc(t)). Check data and parameters.")
+        detail = ""
+        if grid_error_messages:
+            unique_errors = list(dict.fromkeys(grid_error_messages))
+            shown = "; ".join(unique_errors[:3])
+            more = f" (+{len(unique_errors) - 3} more)" if len(unique_errors) > 3 else ""
+            detail = f" Underlying fold errors: {shown}{more}"
+        else:
+            # No exception was raised anywhere: every fit succeeded but produced a
+            # non-finite AUC, which points at eval_times / follow-up coverage rather
+            # than at the solver.
+            detail = (
+                " No fold raised an exception, so every fit succeeded but scored non-finite "
+                f"AUC — check follow-up coverage against the {len(eval_times)} eval time(s) "
+                f"spanning [{eval_times[0]:.1f}, {eval_times[-1]:.1f}]."
+            )
+        raise RuntimeError(
+            "All CV evaluations failed (all NaN mean_auc(t)). Check data and parameters." + detail
+        )
     opt = valid_cv.sort("mean_auc(t)", descending=True).row(0, named=True)
     opt_l1, opt_alpha = float(opt["l1_ratio"]), float(opt["alpha"])
     logger.info(
