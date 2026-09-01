@@ -22,6 +22,7 @@ from sklearn.model_selection import train_test_split, StratifiedKFold
 
 from sksurv.linear_model import CoxnetSurvivalAnalysis
 from sksurv.metrics import concordance_index_censored, cumulative_dynamic_auc
+from sksurv.nonparametric import SurvivalFunctionEstimator
 
 from ._common import (
     _SUPPRESSED_WARNINGS,
@@ -36,6 +37,47 @@ from ._common import (
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+
+def _mean_auc_ignoring_nan(auc_curve, y_eval, eval_times):
+    """sksurv's survival-weighted mean AUC, renormalized over computable time points.
+
+    ``cumulative_dynamic_auc`` returns its scalar as an integral of AUC(t) weighted by the
+    drop in the survival function, ``(scores * d).sum() / (1 - s_times[-1])``. That is a
+    plain sum, so a single non-finite AUC(t) makes the whole fold NaN -- and AUC(t) is
+    routinely non-finite at times outside the evaluation fold's support (e.g. before its
+    first event), which discards folds that scored fine at the other 40-plus time points.
+
+    Here the same weights are used but restricted to the finite points and renormalized by
+    the weight actually covered, so a partially-computable curve yields a score instead of
+    NaN. When every point is finite this reproduces the library's value exactly (the weights
+    then sum to ``1 - s_times[-1]``); only otherwise-NaN folds change. Returns NaN when no
+    point is computable or the weights carry no mass, which still marks the fold as failed.
+    """
+    scores = np.asarray(auc_curve, dtype=float)
+    finite = np.isfinite(scores)
+    if not finite.any():
+        return np.nan
+    if scores.size == 1:
+        return float(scores[0])
+
+    estimator = SurvivalFunctionEstimator()
+    estimator.fit(y_eval)
+    s_times = estimator.predict_proba(np.asarray(eval_times, dtype=float))
+    weights = -np.diff(np.r_[1.0, s_times])
+
+    if finite.all():
+        denominator = 1.0 - s_times[-1]
+        if not np.isfinite(denominator) or denominator <= 0:
+            return np.nan
+        return float((scores * weights).sum() / denominator)
+
+    covered = weights[finite]
+    total = covered.sum()
+    if not np.isfinite(total) or total <= 0:
+        return np.nan
+    return float((scores[finite] * covered).sum() / total)
 
 
 class _LineProgress:
@@ -354,8 +396,11 @@ def _run_grid_no_pca(
                     )
                     m.fit(X_tr, y_tr)
                     predictions = m.predict(X_va)
-                    fold_auc_curves[ai], fold_auc[ai] = cumulative_dynamic_auc(
+                    fold_auc_curves[ai], _ = cumulative_dynamic_auc(
                         y_tr, y_va, predictions, eval_times
+                    )
+                    fold_auc[ai] = _mean_auc_ignoring_nan(
+                        fold_auc_curves[ai], y_va, eval_times
                     )
                     fold_cindex[ai] = concordance_index_censored(
                         y_va["Status"], y_va["Survival_in_days"], predictions
@@ -614,8 +659,11 @@ def _run_grid_with_pca(
                         )
                         m.fit(X_tr_np, y_tr)
                         predictions = m.predict(X_va_np)
-                        fold_auc_curves[ai], fold_auc[ai] = cumulative_dynamic_auc(
+                        fold_auc_curves[ai], _ = cumulative_dynamic_auc(
                             y_tr, y_va, predictions, eval_times
+                        )
+                        fold_auc[ai] = _mean_auc_ignoring_nan(
+                            fold_auc_curves[ai], y_va, eval_times
                         )
                         fold_cindex[ai] = concordance_index_censored(
                             y_va["Status"], y_va["Survival_in_days"], predictions
