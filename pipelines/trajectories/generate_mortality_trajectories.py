@@ -135,10 +135,17 @@ def _score_landmark(month_adj: int, eligible_mrns: list) -> dict:
             continuous_window=False)
             .select(['DFCI_MRN', event, f'tt_{event}'] + spec['base_vars'] + spec['embed_cols'])
             .join(_W['cancer_type_df'], on='DFCI_MRN'))
-        numeric_cols = [c for c, dtype in monthly_data.schema.items() if dtype.is_numeric()]
+        # Complete-case on the model's columns, scoped the same way as the month-0 filter.  The
+        # .select() above already dropped everything else (AGE_AT_SEQUENCING included), so this
+        # is currently equivalent to filtering on dtype -- named explicitly so that widening the
+        # select later cannot silently reintroduce an unrelated column as a drop criterion.
         # Every row already satisfies tt > 0 post-shift by construction of `eligible_mrns`;
         # this only drops rows with missing embeddings/covariates.
-        monthly_data = filter_finite_rows(monthly_data, numeric_cols)
+        landmark_model_cols = [c for c in
+                              dict.fromkeys(spec['base_vars'] + spec['type_cols']
+                                            + spec['embed_cols'] + [event, f'tt_{event}'])
+                              if c in monthly_data.columns]
+        monthly_data = filter_finite_rows(monthly_data, landmark_model_cols)
 
         # Inference only: the month-0 model is refit on the baseline frame and applied to this
         # landmark's features. fit_predict_external_CoxPH re-derives imputation and scaling from
@@ -202,6 +209,22 @@ def main() -> None:
     cancer_type_df = pl.read_csv(os.path.join(FEATURE_PATH, 'cancer_type_df.csv.gz'))
     _stage(f"  {events_data.height:,} patients in the survival cohort")
 
+    # Drop the sequencing columns outright.  This is a treatment-anchored death model: it uses
+    # AGE_AT_TREATMENTSTART, never AGE_AT_SEQUENCING, and nothing downstream reads
+    # sequencing_date.  They ride along only because the survival parquet is written with the
+    # whole of BASE_OUTPUT_COLS.  Both are null for every patient without a genomic specimen
+    # (build_cohort derives them from a left-joined sequencing_date), so leaving them in the
+    # frame made them a live drop criterion for any complete-case filter scoped by dtype -- which
+    # is exactly what evicted tens of thousands of patients from a model that never reads them.
+    # Removing them here, at the source, means no filter or feature list downstream can pick
+    # them up again.
+    _sequencing_cols = [c for c in ('AGE_AT_SEQUENCING', 'sequencing_date')
+                        if c in events_data.columns]
+    if _sequencing_cols:
+        events_data = events_data.drop(_sequencing_cols)
+        _stage(f"  dropped sequencing columns (unused by this model): "
+               f"{', '.join(_sequencing_cols)}")
+
     event = 'death'
     # Hyperparameter grid matched to the full-cohort training setup
     # (pipelines/training/run_full_cohort_*), including its adaptive low-alpha refinement, so a
@@ -235,8 +258,28 @@ def main() -> None:
     n_pooled = pooled_baseline.height
     full_prediction_df = pooled_baseline.join(cancer_type_df, on='DFCI_MRN')
     n_typed = full_prediction_df.height
-    numeric_cols = [c for c, dtype in full_prediction_df.schema.items() if dtype.is_numeric()]
-    full_prediction_df = filter_finite_rows(full_prediction_df, numeric_cols)
+
+    # Feature columns, defined before the complete-case filter because the filter is scoped to
+    # them (see below).  `base_vars` and the cancer-type indicators are the model's non-embedding
+    # inputs; embed_cols is the pooled text block plus the two year-adjustment columns.
+    base_vars = ['GENDER', 'AGE_AT_TREATMENTSTART']
+    embed_cols_all = [c for c in full_prediction_df.columns if 'EMBEDDING' in c or '2015' in c]
+    type_cols = [c for c in full_prediction_df.columns if c.startswith('CANCER_TYPE_')]
+    base_vars_all = base_vars + type_cols
+
+    # Complete-case on the MODEL's columns only -- the pooled embeddings, the year-adjustment
+    # columns, the two baseline covariates, the cancer-type indicators, and this endpoint's own
+    # outcome pair.  Emphatically NOT every numeric column in the frame: `events_data` also
+    # carries every OTHER endpoint's event/tt pair (tt_brain_met and friends), which are null for
+    # patients who never had that event and would otherwise each become a drop criterion for a
+    # death model.  The sequencing columns were the worst case and are now dropped at load, but
+    # scoping the filter is the durable fix -- a dtype-based filter silently acquires any numeric
+    # column a future change adds to the parquet.  Mirrors the canonical builder, which likewise
+    # filters on the pooled feature columns rather than on dtype.
+    model_cols = [c for c in
+                  dict.fromkeys(base_vars_all + embed_cols_all + [event, f'tt_{event}'])
+                  if c in full_prediction_df.columns]
+    full_prediction_df = filter_finite_rows(full_prediction_df, model_cols)
     n_complete = full_prediction_df.height
     full_prediction_df = full_prediction_df.filter(pl.col(f'tt_{event}') > 0)
 
@@ -264,15 +307,10 @@ def main() -> None:
                   'n_patients': [n for _, n in attrition]}).write_csv(
         os.path.join(trajectory_path, f'cohort_attrition_w_decay_param_{decay_param}.csv'))
 
-    # Define model columns
-    base_vars = ['GENDER', 'AGE_AT_TREATMENTSTART']
-    events = [col.split('_', 1)[1] for col in full_prediction_df.columns if col.startswith('tt')]
-    tt_events = [f"tt_{event}" for event in events]
-
-    # Column groups
-    embed_cols = [c for c in full_prediction_df.columns if 'EMBEDDING' in c or '2015' in c]
+    # Column groups. base_vars, type_cols and embed_cols_all are defined above, before the
+    # complete-case filter that is scoped to them.
+    embed_cols = embed_cols_all
     continuous_vars = ['AGE_AT_TREATMENTSTART'] + embed_cols
-    type_cols = [c for c in full_prediction_df.columns if c.startswith('CANCER_TYPE_')]
 
     ## Generate monthly data frames
     months_to_test = [i * 3 for i in range(1, 21)]
