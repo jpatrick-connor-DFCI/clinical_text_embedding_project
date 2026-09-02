@@ -22,7 +22,15 @@ SURV_PATH = os.path.join(DATA_PATH, "time-to-event_analysis/")
 FEATURE_PATH = os.path.join(DATA_PATH, "clinical_and_genomic_features/")
 NOTES_PATH = os.path.join(DATA_PATH, "batched_datasets/processed_datasets/")
 RESULTS_PATH = os.path.join(SURV_PATH, "results/")
-FIGURE_DATA_DIR = os.path.join(RESULTS_PATH, "figure_data/")
+# Prepared figure-data CSVs (figures/prep/* write here, figures/plot/* and the R
+# plotting scripts read from here).  Promoted out of RESULTS_PATH to sit directly
+# under DATA_PATH: the prepped CSVs are a hand-off artifact shared with the
+# plotting layer, not another per-scheme training result.  Overridable via
+# CTEP_FIGURE_DATA_DIR, mirroring CLINICAL_FIGURES_OUT below.
+FIGURE_DATA_DIR = os.environ.get(
+    "CTEP_FIGURE_DATA_DIR",
+    os.path.join(DATA_PATH, "figure_data/"),
+)
 BIOMARKER_PATH = os.path.join(DATA_PATH, "biomarker_analysis/")
 MATCHED_COHORT_PATH = os.path.join(BIOMARKER_PATH, "matched_cohorts/")
 MED_CLASSES_FILE = os.path.join(DATA_PATH, "GPT_generated_med_classes.csv")

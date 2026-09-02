@@ -10,7 +10,14 @@ CODE_PATH       <- file.path(DATA_PATH, "code_data")
 SURV_PATH       <- file.path(DATA_PATH, "time-to-event_analysis")
 FEATURE_PATH    <- file.path(DATA_PATH, "clinical_and_genomic_features")
 RESULTS_PATH    <- file.path(SURV_PATH, "results")
-FIGURE_DATA_DIR <- file.path(RESULTS_PATH, "figure_data")
+# Prepared figure-data CSVs, written by figures/prep/* and read by the plot
+# scripts here. Must stay in lockstep with FIGURE_DATA_DIR in config.py --
+# including the CTEP_FIGURE_DATA_DIR override, or an override set for the
+# Python prep tier would leave the R tier reading the old location.
+FIGURE_DATA_DIR <- Sys.getenv(
+  "CTEP_FIGURE_DATA_DIR",
+  unset = file.path(DATA_PATH, "figure_data")
+)
 
 # Figure rendering output (Python figure-data prep + R plotting share this).
 FIGURE_OUT_DIR <- Sys.getenv(

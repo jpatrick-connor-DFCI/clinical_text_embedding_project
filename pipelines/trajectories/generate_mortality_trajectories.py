@@ -74,14 +74,55 @@ def main() -> None:
     # regenerate predication dataframe at time 0 with new decay parameter
     decay_param = 0.1
     note_types = ['Clinician', 'Imaging', 'Pathology']
+    # continuous_window=False matches the canonical text cohort built by
+    # pipelines/preprocessing/generate_embedding_prediction_datasets.py, which pools every
+    # pre-landmark note.  The default (True) routes through
+    # find_continuous_records_to_analyze, which drops notes across gaps > 2 years -- a
+    # different note set, hence different embeddings, and a month-0 column that could not be
+    # compared against the full-cohort risk scores it is meant to reproduce.
     _stage(f"pooling baseline embeddings (decay_param={decay_param}, window=0) ...")
-    full_prediction_df = (generate_survival_embedding_df(notes_meta, events_data, embeddings_data,
-                                                         note_types=note_types, pool_fx={key: 'time_decay_mean' for key in note_types},
-                                                         decay_param=decay_param, max_note_window=0)
-                              .join(cancer_type_df, on='DFCI_MRN'))
+    pooled_baseline = generate_survival_embedding_df(
+        notes_meta, events_data, embeddings_data,
+        note_types=note_types, pool_fx={key: 'time_decay_mean' for key in note_types},
+        decay_param=decay_param, max_note_window=0, continuous_window=False,
+    )
+
+    # Cohort attrition, reported step by step.  The cancer-type join is an INNER join, so a
+    # patient with no cancer_type_df row leaves the cohort here -- before `cohort_mrns` is
+    # taken, and therefore before the per-landmark `n_at_risk` denominators are computed.
+    # Without this the coverage table downstream would show full coverage of a quietly
+    # shrunken cohort, since it can only measure against a denominator this join already cut.
+    n_pooled = pooled_baseline.height
+    full_prediction_df = pooled_baseline.join(cancer_type_df, on='DFCI_MRN')
+    n_typed = full_prediction_df.height
     numeric_cols = [c for c, dtype in full_prediction_df.schema.items() if dtype.is_numeric()]
-    full_prediction_df = filter_finite_rows(full_prediction_df, numeric_cols).filter(pl.col(f'tt_{event}') > 0)
-    _stage(f"  baseline cohort: {full_prediction_df.height:,} patients")
+    full_prediction_df = filter_finite_rows(full_prediction_df, numeric_cols)
+    n_complete = full_prediction_df.height
+    full_prediction_df = full_prediction_df.filter(pl.col(f'tt_{event}') > 0)
+
+    attrition = [
+        ('survival cohort', events_data.height),
+        ('after embedding pooling', n_pooled),
+        ('after cancer-type join', n_typed),
+        ('after complete-case filter', n_complete),
+        ('baseline cohort (tt>0)', full_prediction_df.height),
+    ]
+    _prev = None
+    for _label, _n in attrition:
+        _drop = '' if _prev is None else f'  ({_prev - _n:,} dropped)'
+        _stage(f"  {_label + ':':<28}{_n:>7,}{_drop}")
+        _prev = _n
+    if n_typed < n_pooled:
+        pct = 100.0 * (n_pooled - n_typed) / n_pooled
+        _stage(f"  [warn] {pct:.1f}% of pooled patients had no cancer_type_df row and left the "
+               "cohort before the landmark denominators were computed")
+
+    # Persisted so the notebook's coverage cell can show what the at-risk denominators are a
+    # denominator *of*: every count below is upstream of `cohort_mrns`, so a patient dropped
+    # here is invisible to the per-landmark coverage table.
+    pl.DataFrame({'step': [s for s, _ in attrition],
+                  'n_patients': [n for _, n in attrition]}).write_csv(
+        os.path.join(trajectory_path, f'cohort_attrition_w_decay_param_{decay_param}.csv'))
 
     # Define model columns
     base_vars = ['GENDER', 'AGE_AT_TREATMENTSTART']
@@ -108,6 +149,9 @@ def main() -> None:
         # Bumped when landmarks stopped refitting per landmark and became inference from the
         # month-0 model: checkpoints written under the old scheme are not comparable.
         'scoring': 'fit_once_month0_infer_forward',
+        # Note-selection rule. `data_hash` below already changes when this does, but naming it
+        # makes the invalidation legible in landmark_meta.json rather than an opaque hash diff.
+        'continuous_window': False,
         'alphas': [float(a) for a in alphas_to_test],
         'l1_ratios': [float(r) for r in l1_ratios],
         'max_iter': max_iter,
@@ -242,9 +286,12 @@ def main() -> None:
         _stage(f"  pooling embeddings (window={landmark_day}d) ...")
         notes_meta_copy = notes_meta.filter(pl.col('DFCI_MRN').is_in(eligible_mrns))
         events_data_copy = events_data.filter(pl.col('DFCI_MRN').is_in(eligible_mrns))
+        # continuous_window=False must match the month-0 pooling above: the month-0 model is
+        # applied to these features unchanged, so a landmark pooled under a different note-
+        # selection rule would shift the feature distribution out from under the fixed model.
         monthly_data = (generate_survival_embedding_df(notes_meta_copy, events_data_copy, embeddings_data, note_types=note_types,
                                                       pool_fx={key: 'time_decay_mean' for key in note_types}, decay_param=decay_param,
-                                                      max_note_window=landmark_day)
+                                                      max_note_window=landmark_day, continuous_window=False)
                         .select(['DFCI_MRN', event, f'tt_{event}'] + base_vars + embed_cols)
                         .join(cancer_type_df, on='DFCI_MRN'))
         numeric_cols = [c for c, dtype in monthly_data.schema.items() if dtype.is_numeric()]
