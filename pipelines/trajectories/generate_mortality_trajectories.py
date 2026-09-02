@@ -14,9 +14,9 @@ from config import FEATURE_PATH, NOTES_PATH, SURV_PATH
 from pipelines.training.slurm_array_utils import (DEFAULT_ALPHAS, DEFAULT_L1_RATIOS,
                                                   adaptive_low_alphas_for)
 from schemes import scheme_results_dir
-from survival import (LandmarkCheckpoint, dataframe_fingerprint, fit_predict_external_CoxPH,
+from survival import (LandmarkCheckpoint, dataframe_fingerprint, fit_external_CoxPH_model,
                       generate_survival_embedding_df, get_nested_heldout_risk_scores_CoxPH,
-                      run_grid_CoxPH_parallel)
+                      run_grid_CoxPH_parallel, score_external_CoxPH)
 from shared.polars_utils import filter_finite_rows
 
 
@@ -75,8 +75,7 @@ _W: dict = {}
 
 def _worker_init(embeddings_path: str, embeddings_shape: tuple, embeddings_dtype: str,
                  embeddings_offset: int, notes_meta: pl.DataFrame, events_data: pl.DataFrame,
-                 cancer_type_df: pl.DataFrame, full_prediction_df: pl.DataFrame,
-                 spec: dict) -> None:
+                 cancer_type_df: pl.DataFrame, fitted_model: dict, spec: dict) -> None:
     """Per-process setup. Runs once per worker, not once per landmark.
 
     The embedding array is mapped read-only at the .npy payload offset the parent already
@@ -91,13 +90,13 @@ def _worker_init(embeddings_path: str, embeddings_shape: tuple, embeddings_dtype
     _W['notes_meta'] = notes_meta
     _W['events_data'] = events_data
     _W['cancer_type_df'] = cancer_type_df
-    _W['full_prediction_df'] = full_prediction_df
+    _W['fitted_model'] = fitted_model
     _W['spec'] = spec
 
 
 def _worker_init_serial(embeddings: np.ndarray, notes_meta: pl.DataFrame,
                         events_data: pl.DataFrame, cancer_type_df: pl.DataFrame,
-                        full_prediction_df: pl.DataFrame, spec: dict) -> None:
+                        fitted_model: dict, spec: dict) -> None:
     """Populate the same worker state in-process, for the TRAJECTORY_WORKERS=1 serial path.
 
     Uses the already-decompressed in-memory array: with one worker there is nothing to share,
@@ -107,12 +106,15 @@ def _worker_init_serial(embeddings: np.ndarray, notes_meta: pl.DataFrame,
     _W['notes_meta'] = notes_meta
     _W['events_data'] = events_data
     _W['cancer_type_df'] = cancer_type_df
-    _W['full_prediction_df'] = full_prediction_df
+    _W['fitted_model'] = fitted_model
     _W['spec'] = spec
 
 
 def _score_landmark(month_adj: int, eligible_mrns: list) -> dict:
-    """Pool this landmark's notes and score them with the fixed month-0 model.
+    """Pool this landmark's notes and score them with the pre-fitted month-0 model.
+
+    No model is fit here. `_W['fitted_model']` is the single bundle fit once in the parent; a
+    worker only re-pools this landmark's notes and applies it.
 
     Returns a plain dict rather than raising, so one landmark's failure is recorded and the
     remaining landmarks still run -- matching the try/except the serial loop had. The parent
@@ -147,19 +149,14 @@ def _score_landmark(month_adj: int, eligible_mrns: list) -> dict:
                               if c in monthly_data.columns]
         monthly_data = filter_finite_rows(monthly_data, landmark_model_cols)
 
-        # Inference only: the month-0 model is refit on the baseline frame and applied to this
-        # landmark's features. fit_predict_external_CoxPH re-derives imputation and scaling from
-        # the TRAINING frame alone and applies them to the eval frame, so this landmark's own
-        # feature distribution never influences its transform -- the scores stay on one common
-        # scale across the whole trajectory. No outcome from this landmark is used.
+        # Inference only, with the ONE model fit at month 0 -- no refit here. Its imputation
+        # means and continuous-variable scaling were derived from the baseline training frame
+        # alone, so this landmark's own feature distribution never influences its transform and
+        # every landmark's scores stay on one common scale. No outcome from this landmark is
+        # used; monthly_data's event columns exist only to satisfy the frame's schema.
         risk_scores = pl.DataFrame({
             'DFCI_MRN': monthly_data['DFCI_MRN'],
-            'risk_score': fit_predict_external_CoxPH(
-                _W['full_prediction_df'], monthly_data,
-                spec['base_vars'] + spec['type_cols'], spec['continuous_vars'],
-                spec['embed_cols'], event_col=event, tstop_col=f'tt_{event}',
-                l1_ratio=spec['best_l1'], alpha=spec['best_alpha'],
-                max_iter=spec['max_iter']),
+            'risk_score': score_external_CoxPH(_W['fitted_model'], monthly_data),
         })
         return {'month': month_adj, 'ok': True, 'scores': risk_scores,
                 'n_at_risk': len(eligible_mrns), 'n_scored': int(risk_scores.height),
@@ -479,11 +476,25 @@ def main() -> None:
                               .filter(pl.col('DFCI_MRN').is_in(cohort_mrns)))
     events_data_for_workers = events_data.filter(pl.col('DFCI_MRN').is_in(cohort_mrns))
 
+    # === The one model. Fit once, here, on the baseline cohort. ===
+    # Every landmark below scores with this exact fitted object -- it is never refit. That is
+    # what makes a trajectory a statement about the patient: the coefficients, the imputation
+    # means and the feature scaling are all frozen at month 0, so a change in a patient's score
+    # across landmarks can only come from a change in that patient's pooled notes.
+    _stage(f"fitting the single month-0 model carried forward to every landmark "
+           f"(l1_ratio={best_l1}, alpha={best_alpha:.3e}) ...")
+    _t0 = time.time()
+    fitted_model = fit_external_CoxPH_model(
+        full_prediction_df, base_vars + type_cols, continuous_vars, embed_cols,
+        event_col=event, tstop_col=f'tt_{event}', l1_ratio=best_l1, alpha=best_alpha,
+        max_iter=max_iter,
+    )
+    _stage(f"  fit on {fitted_model['n_train']:,} patients in {time.time() - _t0:.1f}s")
+
     spec = {
         'event': event, 'note_types': note_types, 'decay_param': decay_param,
         'base_vars': base_vars, 'type_cols': type_cols, 'continuous_vars': continuous_vars,
-        'embed_cols': embed_cols, 'best_l1': best_l1, 'best_alpha': best_alpha,
-        'max_iter': max_iter,
+        'embed_cols': embed_cols, 'max_iter': max_iter,
     }
 
     n_workers = _resolve_workers(len(pending)) if pending else 1
@@ -522,7 +533,7 @@ def main() -> None:
         # Serial path, kept explicit: TRAJECTORY_WORKERS=1 gets no pool and no memmap, so a run
         # that OOMs under the pool has a fallback with the original memory profile.
         _worker_init_serial(embeddings_data, notes_meta_for_workers, events_data_for_workers,
-                            cancer_type_df, full_prediction_df, spec)
+                            cancer_type_df, fitted_model, spec)
         for month_adj, eligible_mrns in pending:
             _stage(f"landmark month {month_adj}: {len(eligible_mrns):,} patients at risk")
             _record_result(_score_landmark(month_adj, eligible_mrns))
@@ -568,7 +579,7 @@ def main() -> None:
                 initializer=_worker_init,
                 initargs=(embeddings_mmap_path, _mm_shape, str(_mm_dtype), _mm_offset,
                           notes_meta_for_workers, events_data_for_workers, cancer_type_df,
-                          full_prediction_df, spec),
+                          fitted_model, spec),
             ) as pool:
                 in_flight = {pool.submit(_score_landmark, month_adj, eligible_mrns): month_adj
                              for month_adj, eligible_mrns in pending}

@@ -29,6 +29,98 @@ from ._common import (
 logger = logging.getLogger(__name__)
 
 
+def fit_external_CoxPH_model(
+    train_df: pl.DataFrame,
+    base_cols: list[str],
+    continuous_vars: list[str],
+    penalized_cols: list[str],
+    *,
+    event_col: str,
+    tstop_col: str,
+    l1_ratio: float,
+    alpha: float,
+    max_iter: int = 1000,
+) -> dict:
+    """Fit once and return the model together with the transforms derived from ``train_df``.
+
+    ``fit_predict_external_CoxPH`` refits on every call, so scoring N external frames against one
+    training set refits the identical model N times. This splits that in two: fit here, then pass
+    the returned bundle to ``score_external_CoxPH`` for each frame to score.
+
+    The returned dict holds everything scoring needs and nothing that depends on an eval frame:
+    the column order, the training column means used for imputation, the continuous-variable
+    (mu, sigma) used for scaling, and the fitted estimator. Applying it to any eval frame
+    reproduces ``fit_predict_external_CoxPH`` exactly.
+
+    PCA is deliberately unsupported: ``apply_group_pca_np`` fits a PCA (and its own
+    standardization) jointly on train and eval, which is not expressible as a fixed transform
+    reusable across frames. Callers needing PCA should keep using ``fit_predict_external_CoxPH``.
+    """
+    all_cols = list(dict.fromkeys(base_cols + continuous_vars + penalized_cols))
+    base_col_set = set(base_cols) | (set(continuous_vars) - set(penalized_cols))
+    missing_train = [c for c in all_cols + [event_col, tstop_col] if c not in train_df.columns]
+    if missing_train:
+        raise ValueError(f"Missing external-fit columns: train={missing_train}")
+
+    train = train_df.filter(
+        pl.col(tstop_col).cast(pl.Float64, strict=False).is_finite()
+        & (pl.col(tstop_col) > 0)
+        & pl.col(event_col).cast(pl.Float64, strict=False).is_finite()
+    )
+    X_tr = train.select(all_cols).to_numpy().astype(np.float32, copy=True)
+    y_tr = _make_surv_array(train[event_col].to_numpy(), train[tstop_col].to_numpy())
+
+    # Imputation: training column means, with all-NaN columns pinned to 0. Matches
+    # _impute_train_test_np, but the means are kept so an eval frame can reuse them.
+    col_means = np.nanmean(X_tr, axis=0)
+    col_means = np.where(np.isnan(col_means), 0.0, col_means)
+    X_tr = np.where(np.isnan(X_tr), col_means, X_tr)
+
+    # Scaling: training mean/std over the continuous columns only. Mirrors
+    # _scale_continuous_train_test_np, including its eps floor on sigma.
+    name_to_idx = {c: i for i, c in enumerate(all_cols)}
+    scale_idx = np.asarray([name_to_idx[c] for c in continuous_vars if c in name_to_idx],
+                           dtype=np.int32)
+    if scale_idx.size:
+        mu = X_tr[:, scale_idx].mean(axis=0, dtype=np.float32)
+        sigma = np.maximum(X_tr[:, scale_idx].std(axis=0, dtype=np.float32), 1e-12)
+        sigma = sigma.astype(np.float32, copy=False)
+        X_tr[:, scale_idx] = (X_tr[:, scale_idx] - mu) / sigma
+    else:
+        mu = sigma = np.zeros(0, dtype=np.float32)
+
+    penalty = np.fromiter(
+        (0.0 if c in base_col_set else 1.0 for c in all_cols), dtype=np.float32
+    )
+    model = CoxnetSurvivalAnalysis(
+        alphas=[alpha], l1_ratio=l1_ratio, max_iter=max_iter,
+        fit_baseline_model=True, penalty_factor=penalty,
+    )
+    model.fit(X_tr, y_tr)
+    return {'model': model, 'all_cols': all_cols, 'col_means': col_means,
+            'scale_idx': scale_idx, 'mu': mu, 'sigma': sigma, 'n_train': int(X_tr.shape[0])}
+
+
+def score_external_CoxPH(fitted: dict, eval_df: pl.DataFrame) -> np.ndarray:
+    """Score a frame with a bundle from ``fit_external_CoxPH_model``.
+
+    The transforms come from the training frame alone, so an eval frame's own distribution never
+    influences its scores -- which is what keeps scores from different eval frames on one common
+    scale.
+    """
+    all_cols = fitted['all_cols']
+    missing_eval = [c for c in all_cols if c not in eval_df.columns]
+    if missing_eval:
+        raise ValueError(f"Missing external-score columns: eval={missing_eval}")
+
+    X_ev = eval_df.select(all_cols).to_numpy().astype(np.float32, copy=True)
+    X_ev = np.where(np.isnan(X_ev), fitted['col_means'], X_ev)
+    scale_idx = fitted['scale_idx']
+    if scale_idx.size:
+        X_ev[:, scale_idx] = (X_ev[:, scale_idx] - fitted['mu']) / fitted['sigma']
+    return np.asarray(fitted['model'].predict(X_ev), dtype=np.float64)
+
+
 def fit_predict_external_CoxPH(
     train_df: pl.DataFrame,
     eval_df: pl.DataFrame,
