@@ -220,16 +220,19 @@ def _complete_case_rank_matrix(metrics_df: pl.DataFrame, value_col: str):
         return None, [], None
     key_df = mat.select(["scheme", "event"])
     mat = mat.select(modalities)
+    # `is_finite()` is null where the pivot left a null, so fill to False: a
+    # missing modality means the endpoint is not complete-case. Keeping the mask
+    # a null-free Boolean Series also keeps it usable as a `filter` predicate.
     complete_mask = mat.select(
         pl.all_horizontal([
-            pl.col(m).cast(pl.Float64, strict=False).is_finite()
+            pl.col(m).cast(pl.Float64, strict=False).is_finite().fill_null(False)
             for m in modalities
         ]).alias("_ok")
-    )["_ok"].to_numpy()
+    )["_ok"]
     if not complete_mask.any():
         return None, [], None
-    key_df = key_df.filter(pl.Series(complete_mask))
-    values = mat.filter(pl.Series(complete_mask)).to_numpy()
+    key_df = key_df.filter(complete_mask)
+    values = mat.filter(complete_mask).to_numpy()
 
     # Higher value -> better -> rank 1; ties share the average rank.
     order = np.argsort(-values, axis=1, kind="mergesort")
