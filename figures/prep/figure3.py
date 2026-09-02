@@ -15,7 +15,30 @@ Writes to FIGURE_DATA_DIR:
 
 from __future__ import annotations
 
+import logging
 import os
+
+# The joint Cox refits fan out over schemes (see _map_schemes), so several
+# lifelines fits run concurrently in-process. Each would otherwise size its BLAS
+# pool to the whole machine, and some cluster nodes advertise more CPUs than the
+# precompiled OpenBLAS build supports -- which segfaults while allocating thread
+# metadata rather than raising. Cap before NumPy/lifelines initialize a BLAS
+# runtime. Kept in sync with the identical block in figure4.py.
+_BLAS_THREAD_LIMIT = 8
+for _thread_var in (
+    "OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS", "BLIS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS",
+):
+    try:
+        _configured_threads = int(os.environ.get(_thread_var, _BLAS_THREAD_LIMIT))
+    except ValueError:
+        _configured_threads = _BLAS_THREAD_LIMIT + 1
+    if not 1 <= _configured_threads <= _BLAS_THREAD_LIMIT:
+        os.environ[_thread_var] = str(_BLAS_THREAD_LIMIT)
+    else:
+        os.environ.setdefault(_thread_var, str(_BLAS_THREAD_LIMIT))
+
+from concurrent.futures import ThreadPoolExecutor
 from functools import reduce
 
 import numpy as np
@@ -34,6 +57,10 @@ from shared.polars_utils import filter_finite_rows
 SCHEMES = ["death_met", "icd3_post", "icd4_post", "phecode_post"]
 DEATH_SCHEME = "death_met"    # scheme for the correlation heatmap
 
+logger = logging.getLogger(__name__)
+
+MAX_WORKERS_FALLBACK = 4      # == len(SCHEMES); more workers than schemes buys nothing
+
 MODALITY_CINDEX_COLUMNS = ["scheme", "event", "modality", "cindex", "auc"]
 MODALITY_AVG_RANK_COLUMNS = ["modality", "mean_rank", "sem_rank", "n_events"]
 MODALITY_RANKS_LONG_COLUMNS = ["scheme", "event", "modality", "rank"]
@@ -42,6 +69,61 @@ JOINT_BETA_COLUMNS = [
     "beta", "se", "hr", "p_value", "n", "n_events",
 ]
 RISK_SCORE_CORR_COLUMNS = ["modality", *MODALITY_ORDER, "n_patients"]
+
+
+def _resolve_n_jobs() -> int:
+    """Concrete worker count for the per-scheme fan-out.
+
+    Mirrors run_IPTW_analysis._resolve_n_jobs: prefer the SLURM allocation over
+    the machine's core count, which on a shared node is far more than the job
+    was given. FIG3_N_JOBS overrides both. Capped at the scheme count.
+    """
+    for var in ("FIG3_N_JOBS", "SLURM_CPUS_PER_TASK"):
+        raw = os.getenv(var)
+        if raw:
+            try:
+                value = int(raw)
+            except ValueError:
+                logger.warning("%s=%r is not an integer; ignoring", var, raw)
+                continue
+            if value > 0:
+                return min(value, MAX_WORKERS_FALLBACK)
+    return min(os.cpu_count() or 1, MAX_WORKERS_FALLBACK)
+
+
+def _map_schemes(fn, label: str) -> list[pl.DataFrame]:
+    """Run `fn` over SCHEMES concurrently, preserving SCHEMES order in the result.
+
+    Threads, not processes: the work is polars IO (read_parquet/read_csv) and
+    lifelines fits, both of which release the GIL. Processes would re-import
+    polars and re-read every parquet per worker for no gain. Ordered output
+    keeps the concatenated CSVs byte-identical to the serial version.
+
+    A scheme that raises is logged and contributes nothing, matching the
+    serial behaviour of the per-scheme helpers, which already swallow their own
+    expected failures — one bad scheme must not lose the other three.
+    """
+    n_workers = min(_resolve_n_jobs(), len(SCHEMES))
+    if n_workers <= 1:
+        results = []
+        for scheme in SCHEMES:
+            try:
+                results.append(fn(scheme))
+            except Exception:
+                logger.exception("  [%s/%s] failed; skipping scheme", label, scheme)
+        return results
+
+    print(f"  [{label}] {len(SCHEMES)} scheme(s) across {n_workers} worker(s)")
+    with ThreadPoolExecutor(max_workers=n_workers,
+                            thread_name_prefix=f"fig3-{label}") as pool:
+        futures = [(scheme, pool.submit(fn, scheme)) for scheme in SCHEMES]
+        results = []
+        for scheme, future in futures:
+            try:
+                results.append(future.result())
+            except Exception:
+                logger.exception("  [%s/%s] failed; skipping scheme", label, scheme)
+    return results
 
 
 def _modality_cindex(scheme: str) -> pl.DataFrame:
@@ -196,14 +278,12 @@ def _joint_betas(scheme: str) -> pl.DataFrame:
 
 
 def _modality_cindex_all() -> pl.DataFrame:
-    frames = [_modality_cindex(scheme) for scheme in SCHEMES]
-    frames = [f for f in frames if not f.is_empty()]
+    frames = [f for f in _map_schemes(_modality_cindex, "cindex") if not f.is_empty()]
     return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame(schema={c: pl.Float64 for c in MODALITY_CINDEX_COLUMNS})
 
 
 def _joint_betas_all() -> pl.DataFrame:
-    frames = [_joint_betas(scheme) for scheme in SCHEMES]
-    frames = [f for f in frames if not f.is_empty()]
+    frames = [f for f in _map_schemes(_joint_betas, "betas") if not f.is_empty()]
     return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame(schema={c: pl.Float64 for c in JOINT_BETA_COLUMNS})
 
 
@@ -368,15 +448,24 @@ def _risk_score_corr(scheme: str, event: str = "death") -> pl.DataFrame:
 
 
 def main() -> None:
-    metrics_all = _modality_cindex_all()
-    save_figure_data(metrics_all, "fig3_modality_cindex.csv")
-    for value_col, tag in [("cindex", "cindex"), ("auc", "auc")]:
-        save_figure_data(_modality_avg_rank(metrics_all, value_col),
-                          f"fig3_modality_avg_rank_{tag}.csv")
-        save_figure_data(_modality_ranks_long(metrics_all, value_col),
-                          f"fig3_modality_ranks_long_{tag}.csv")
-    save_figure_data(_joint_betas_all(), "fig3_joint_betas.csv")
-    save_figure_data(_risk_score_corr(DEATH_SCHEME, "death"), "fig3_risk_score_corr.csv")
+    # The three top-level products are independent, and the joint refits dominate
+    # the runtime, so start them first and do the cheap metric/rank work while
+    # they run. Each already fans out over schemes internally; this only overlaps
+    # the three phases with each other. Writes stay on the main thread in a fixed
+    # order -- save_figure_data is not the thing being parallelized.
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="fig3-main") as pool:
+        betas_future = pool.submit(_joint_betas_all)
+        corr_future = pool.submit(_risk_score_corr, DEATH_SCHEME, "death")
+        metrics_all = _modality_cindex_all()
+
+        save_figure_data(metrics_all, "fig3_modality_cindex.csv")
+        for value_col, tag in [("cindex", "cindex"), ("auc", "auc")]:
+            save_figure_data(_modality_avg_rank(metrics_all, value_col),
+                              f"fig3_modality_avg_rank_{tag}.csv")
+            save_figure_data(_modality_ranks_long(metrics_all, value_col),
+                              f"fig3_modality_ranks_long_{tag}.csv")
+        save_figure_data(betas_future.result(), "fig3_joint_betas.csv")
+        save_figure_data(corr_future.result(), "fig3_risk_score_corr.csv")
 
 
 if __name__ == "__main__":
