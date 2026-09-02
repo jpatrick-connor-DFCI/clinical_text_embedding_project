@@ -39,11 +39,15 @@ build_fig3a <- function(betas) {
   if (nrow(betas) == 0 || !"sig" %in% names(betas))
     return(placeholder_panel("fig3_joint_betas.csv missing p-values"))
 
-  # Complete-case endpoints = (scheme, event) groups with all modalities fit
+  # Complete-case endpoints = (scheme, event) groups with all modalities fit.
+  # "All" means every modality present somewhere in this run, not every modality
+  # in MODALITY_ORDER: one that never fit anywhere (its feature-comp tasks did
+  # not finish) would otherwise disqualify every endpoint and blank the panel.
+  fitted_mods <- intersect(MODALITY_ORDER, unique(betas$modality[!is.na(betas$beta)]))
   present <- betas %>% filter(!is.na(beta)) %>%
     group_by(scheme, event) %>%
     summarise(mods = list(unique(modality)), .groups = "drop") %>%
-    filter(vapply(mods, function(s) all(MODALITY_ORDER %in% s), logical(1))) %>%
+    filter(vapply(mods, function(s) all(fitted_mods %in% s), logical(1))) %>%
     select(scheme, event)
   cc <- betas %>% inner_join(present, by = c("scheme", "event"))
   counts <- cc %>%
@@ -112,8 +116,13 @@ friedman_p <- function(ranks_long) {
 build_fig3c <- function(metric = METRIC) {
   d <- load_figure_data(sprintf("fig3_modality_avg_rank_%s.csv", metric_suffix(metric)))
   if (nrow(d) == 0) return(placeholder_panel("fig3_modality_avg_rank_*.csv empty"))
-  d <- d %>% filter(!is.na(mean_rank)) %>%
-    mutate(modality = factor(modality, levels = MODALITY_ORDER)) %>%
+  # Drop MODALITY_ORDER levels this run has no rank for, so a modality that
+  # never ran leaves no empty slot on the axis; ranked_mods also sizes the
+  # x-range below, which is 1..n over what was actually ranked.
+  d <- d %>% filter(!is.na(mean_rank))
+  ranked_mods <- intersect(MODALITY_ORDER, unique(d$modality))
+  d <- d %>%
+    mutate(modality = factor(modality, levels = ranked_mods)) %>%
     arrange(mean_rank) %>%
     mutate(modality = fct_reorder(modality, mean_rank, .desc = TRUE))
 
@@ -132,7 +141,7 @@ build_fig3c <- function(metric = METRIC) {
               hjust = 0, size = MANUSCRIPT_SMALL_TEXT_SIZE) +
     scale_fill_manual(values = MODALITY_COLORS, guide = "none") +
     scale_y_discrete(labels = MODALITY_DISPLAY) +
-    coord_cartesian(xlim = c(0.5, length(MODALITY_ORDER) + 0.5)) +
+    coord_cartesian(xlim = c(0.5, length(ranked_mods) + 0.5)) +
     labs(x = sprintf("Average rank across endpoints (1 = best, ranked by %s)", lbl), y = NULL,
          title = "Average Modality Rank",
          caption = sprintf("Friedman test across modalities: p=%s  %s",

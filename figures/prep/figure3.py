@@ -212,10 +212,23 @@ def _complete_case_rank_matrix(metrics_df: pl.DataFrame, value_col: str):
 
     Returns (scheme_event_df, modalities, ranks_2d) where ranks_2d is an
     (n_endpoints x n_modalities) numpy array of average ranks (1 = best),
-    or (None, [], None) if there are no complete-case endpoints.
+    or (None, [], None) if there are no rankable endpoints.
+
+    Ranking is complete-case over the modalities that are *present in the run*,
+    not over all of MODALITY_ORDER: a modality missing everywhere (e.g. its
+    feature-comp tasks never finished) would otherwise disqualify every
+    endpoint and silently empty the output. Modalities present for some
+    endpoints but not others still impose completeness, so every mean rank is
+    computed over the same endpoint set — that is what makes the averages
+    comparable, and relaxing it would bias each modality by which endpoints it
+    happened to cover.
     """
     mat = metrics_df.pivot(on="modality", index=["scheme", "event"], values=value_col, aggregate_function="mean")
     modalities = [m for m in MODALITY_ORDER if m in mat.columns]
+    absent = [m for m in MODALITY_ORDER if m not in mat.columns]
+    if absent:
+        print(f"  [{value_col}] no data for {absent}; ranking over the remaining "
+              f"{len(modalities)} of {len(MODALITY_ORDER)} modalities")
     if not modalities:
         return None, [], None
     key_df = mat.select(["scheme", "event"])
@@ -229,7 +242,22 @@ def _complete_case_rank_matrix(metrics_df: pl.DataFrame, value_col: str):
             for m in modalities
         ]).alias("_ok")
     )["_ok"]
+    n_total, n_complete = mat.height, int(complete_mask.sum())
+    if n_complete < n_total:
+        # Name the modalities responsible, not just the count: with several
+        # partially-covered modalities the endpoint loss is otherwise
+        # untraceable back to which feature-comp tasks need re-running.
+        blame = {
+            m: int(mat.select(
+                pl.col(m).cast(pl.Float64, strict=False).is_finite().fill_null(False)
+            ).to_series().not_().sum())
+            for m in modalities
+        }
+        blame = {m: k for m, k in sorted(blame.items(), key=lambda kv: -kv[1]) if k}
+        print(f"  [{value_col}] complete-case: {n_complete}/{n_total} endpoints retained; "
+              f"missing-by-modality: {blame}")
     if not complete_mask.any():
+        print(f"  [{value_col}] no endpoint has every present modality; nothing to rank")
         return None, [], None
     key_df = key_df.filter(complete_mask)
     values = mat.filter(complete_mask).to_numpy()
