@@ -61,6 +61,15 @@ logger = logging.getLogger(__name__)
 
 MAX_WORKERS_FALLBACK = 4      # == len(SCHEMES); more workers than schemes buys nothing
 
+# Fewest endpoints a modality set may rank over before it is not worth ranking.
+# Selection (see _select_rankable_modalities) maximizes modalities subject to
+# this floor, rather than thresholding each modality's coverage independently:
+# what matters is the size of the *intersection*, and modalities often share the
+# same trained endpoints (prs and text both cover the same ~575 of 1596), so
+# admitting them together costs no endpoints beyond the first. Does not affect
+# fig3_modality_cindex.csv, which stays the complete unfiltered record.
+MIN_RANK_ENDPOINTS = 30
+
 MODALITY_CINDEX_COLUMNS = ["scheme", "event", "modality", "cindex", "auc"]
 MODALITY_AVG_RANK_COLUMNS = ["modality", "mean_rank", "sem_rank", "n_events"]
 MODALITY_RANKS_LONG_COLUMNS = ["scheme", "event", "modality", "rank"]
@@ -287,6 +296,59 @@ def _joint_betas_all() -> pl.DataFrame:
     return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame(schema={c: pl.Float64 for c in JOINT_BETA_COLUMNS})
 
 
+def _select_rankable_modalities(mat: pl.DataFrame, present: list[str],
+                                value_col: str) -> list[str]:
+    """Largest set of modalities that still share at least MIN_RANK_ENDPOINTS endpoints.
+
+    Ranking is complete-case, so each added modality can only shrink the shared
+    endpoint set. Thresholding each modality's coverage on its own gets this
+    wrong: prs and text each cover only ~36% of endpoints and a 50% rule would
+    drop both, even though they cover the *same* endpoints and so cost nothing
+    once either is in.
+
+    Greedy: while the intersection is below the floor, drop the modality whose
+    removal recovers the most endpoints. That is exact when sparse modalities
+    are nested or disjoint (the real case here: somatic ⊂ prs = text) and a
+    reasonable approximation otherwise.
+    """
+    finite = mat.select([
+        pl.col(m).cast(pl.Float64, strict=False).is_finite().fill_null(False).alias(m)
+        for m in present
+    ])
+    n_endpoints = finite.height
+
+    def n_shared(mods: list[str]) -> int:
+        if not mods:
+            return 0
+        return int(finite.select(pl.all_horizontal([pl.col(m) for m in mods])
+                                 .alias("_ok"))["_ok"].sum())
+
+    coverage = {m: int(finite[m].sum()) for m in present}
+    print(f"  [{value_col}] modality coverage over {n_endpoints} endpoints: "
+          + ", ".join(f"{m} {coverage[m]}" for m in present))
+
+    kept, dropped = list(present), []
+    while kept and n_shared(kept) < MIN_RANK_ENDPOINTS:
+        # Drop whichever modality is costing the most shared endpoints.
+        worst = max(kept, key=lambda m: n_shared([k for k in kept if k != m]))
+        if n_shared([k for k in kept if k != worst]) <= n_shared(kept):
+            break   # removing anything helps nothing; the floor is unreachable
+        kept.remove(worst)
+        dropped.append(worst)
+
+    shared = n_shared(kept)
+    if not kept or shared < MIN_RANK_ENDPOINTS:
+        print(f"  [{value_col}] no modality set reaches {MIN_RANK_ENDPOINTS} shared "
+              f"endpoints (best {shared}); nothing to rank")
+        return []
+    if dropped:
+        print(f"  [{value_col}] excluded to keep the shared endpoint set usable: "
+              + ", ".join(f"{m} ({coverage[m]}/{n_endpoints})" for m in dropped))
+    print(f"  [{value_col}] ranking {len(kept)} modalities over {shared} shared endpoints: "
+          + ", ".join(kept))
+    return [m for m in MODALITY_ORDER if m in kept]
+
+
 def _complete_case_rank_matrix(metrics_df: pl.DataFrame, value_col: str):
     """Shared pivot+rank helper for _modality_avg_rank / _modality_ranks_long.
 
@@ -294,23 +356,35 @@ def _complete_case_rank_matrix(metrics_df: pl.DataFrame, value_col: str):
     (n_endpoints x n_modalities) numpy array of average ranks (1 = best),
     or (None, [], None) if there are no rankable endpoints.
 
-    Ranking is complete-case over the modalities that are *present in the run*,
-    not over all of MODALITY_ORDER: a modality missing everywhere (e.g. its
-    feature-comp tasks never finished) would otherwise disqualify every
-    endpoint and silently empty the output. Modalities present for some
-    endpoints but not others still impose completeness, so every mean rank is
-    computed over the same endpoint set — that is what makes the averages
-    comparable, and relaxing it would bias each modality by which endpoints it
-    happened to cover.
+    Two-step, because complete-case over all of MODALITY_ORDER collapses the
+    panel to a single endpoint on real data (somatic is trained for 1 of 1596):
+
+    1. `_select_rankable_modalities` picks the largest modality set still
+       sharing a usable number of endpoints.
+    2. Complete-case over that set, so every mean rank comes from the same
+       endpoints.
+
+    Step 2 is deliberately kept: ranking each endpoint over whatever it happens
+    to have would score each modality on a different endpoint set and break the
+    Friedman test's repeated-measures assumption. Step 1 is the price — a
+    modality too sparse to share endpoints is reported and excluded rather than
+    silently dragging the panel down to its own coverage.
+
+    Selection is by measured coverage, not modality name, so an excluded
+    modality rejoins automatically once its feature-comp tasks finish.
     """
     mat = metrics_df.pivot(on="modality", index=["scheme", "event"], values=value_col, aggregate_function="mean")
-    modalities = [m for m in MODALITY_ORDER if m in mat.columns]
+    present = [m for m in MODALITY_ORDER if m in mat.columns]
     absent = [m for m in MODALITY_ORDER if m not in mat.columns]
     if absent:
-        print(f"  [{value_col}] no data for {absent}; ranking over the remaining "
-              f"{len(modalities)} of {len(MODALITY_ORDER)} modalities")
+        print(f"  [{value_col}] no data at all for {absent}")
+    if not present:
+        return None, [], None
+
+    modalities = _select_rankable_modalities(mat, present, value_col)
     if not modalities:
         return None, [], None
+
     key_df = mat.select(["scheme", "event"])
     mat = mat.select(modalities)
     # `is_finite()` is null where the pivot left a null, so fill to False: a
