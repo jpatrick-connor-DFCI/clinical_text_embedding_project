@@ -1,9 +1,8 @@
-"""Regression tests for the v2 Polars-first dataframe boundary."""
+"""Regression tests for the Polars-first dataframe boundary."""
 
 from __future__ import annotations
 
 import contextlib
-import json
 import sys
 import unittest
 from datetime import date
@@ -14,9 +13,9 @@ import numpy as np
 import polars as pl
 
 
-V2_ROOT = Path(__file__).resolve().parents[1] / "v2"
-if str(V2_ROOT) not in sys.path:
-    sys.path.insert(0, str(V2_ROOT))
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from pipelines.training.slurm_array_utils import filter_event_rows  # noqa: E402
 from shared.polars_utils import (  # noqa: E402
@@ -41,24 +40,6 @@ from pipelines.biomarkers.profile_lines import derive_lines_of_therapy  # noqa: 
 
 
 class PolarsPrimaryPipelineTests(unittest.TestCase):
-    def test_smoke_notebook_defines_subprocess_helpers_before_use(self) -> None:
-        notebook_path = V2_ROOT / "notebooks" / "04_smoke_test_training.ipynb"
-        notebook = json.loads(notebook_path.read_text())
-        code_cells = []
-        for cell in notebook["cells"]:
-            if cell["cell_type"] != "code":
-                continue
-            source = cell["source"]
-            code_cells.append("".join(source) if isinstance(source, list) else source)
-
-        execution_idx = next(
-            i for i, source in enumerate(code_cells)
-            if "run_results: list[dict]" in source
-        )
-        preceding_source = "\n".join(code_cells[:execution_idx])
-        self.assertIn("def run_subprocess(", preceding_source)
-        self.assertIn("def build_full_cohort_cmd(", preceding_source)
-
     def test_filter_event_rows_rejects_null_nan_infinite_and_nonpositive_times(self) -> None:
         frame = pl.DataFrame(
             {

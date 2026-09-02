@@ -10,7 +10,7 @@ import sys
 import polars as pl
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "v2"))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pipelines.biomarkers.profile_lines import (  # noqa: E402
     LINE_WINDOW_DAYS,

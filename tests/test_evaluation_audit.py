@@ -15,9 +15,9 @@ import numpy as np
 import polars as pl
 
 
-V2_ROOT = Path(__file__).resolve().parents[1] / "v2"
-if str(V2_ROOT) not in sys.path:
-    sys.path.insert(0, str(V2_ROOT))
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from pipelines.training.slurm_array_utils import (  # noqa: E402
     DEFAULT_ALPHAS,

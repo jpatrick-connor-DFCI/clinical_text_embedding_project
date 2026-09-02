@@ -28,7 +28,6 @@ if importlib.util.find_spec("zstandard") is None:
 
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[1]
-    / "v2"
     / "pipelines"
     / "preprocessing"
     / "generate_clinical_embeddings.py"

@@ -1,0 +1,93 @@
+---
+title: "Render manuscript figures (R tier)"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+find_repo_root <- function() {
+  d <- normalizePath(getwd(), mustWork = TRUE)
+  while (nchar(d) > 1) {
+    if (file.exists(file.path(d, "config.py")) &&
+        dir.exists(file.path(d, "R"))) return(d)
+    parent <- dirname(d)
+    if (parent == d) break
+    d <- parent
+  }
+  stop("Could not find repo root from ", getwd())
+}
+
+REPO_ROOT <- find_repo_root()
+knitr::opts_knit$set(root.dir = REPO_ROOT)
+```
+
+Runs the `R/plot_figure_*.R` scripts in this notebook's **R kernel**. Each
+script reads the CSVs written by the Python prep tier and builds every panel as a standalone
+ggplot object, saving each one individually (both PNG and PDF) — there is no composed
+multi-panel figure.
+
+Metric-aware figures render twice: once using mean time-dependent AUC(t), the primary metric,
+and once using Harrell's C-index. Metric-invariant figures render once.
+
+- **Code lookups (R)**: [01_code_lookups.Rmd](01_code_lookups.Rmd) — one-time bootstrap.
+- **Prep tier**: [02_figure_data.ipynb](02_figure_data.ipynb) (Python kernel) — run first.
+- **One-time R package bootstrap** (any host with R):
+
+  ```
+  Rscript R/install_packages.R
+  ```
+
+Each plot script is `sys.source()`-ed in its own environment so per-script ggplot objects
+(`p2a`, `p3b`, …) don't leak between cells. R scripts always assume the working directory
+is the repo root (they `source("R/figure_utils.R")` with a relative path), so this document sets the
+R working directory to the repo root (via `knitr::opts_knit$set(root.dir = ...)`, which — unlike a
+bare `setwd()` in a chunk — persists across all chunks) before sourcing anything.
+
+```{r find-root}
+R_DIR <- file.path(REPO_ROOT, "R")
+
+cat("repo root:   ", REPO_ROOT, "\n", sep = "")
+cat("R scripts: ", R_DIR, "\n", sep = "")
+cat("R version: ", R.version.string, "\n", sep = "")
+```
+
+```{r render-plots}
+METRIC_INVARIANT_SCRIPTS <- c(
+  "plot_figure_0.R",
+  "plot_figure_1.R",
+  "plot_figure_4.R",
+  "plot_figure_4_supp.R",
+  "plot_figure_5.R"
+)
+
+METRIC_SCRIPTS <- c(
+  "plot_figure_2.R",
+  "plot_figure_2_supp.R",
+  "plot_figure_2_supp_events.R",
+  "plot_figure_2_supp_anchor.R",
+  "plot_figure_3.R"
+)
+
+run_plot <- function(script, metric = NULL) {
+  if (is.null(metric)) Sys.unsetenv("MANUSCRIPT_METRIC") else Sys.setenv(MANUSCRIPT_METRIC = metric)
+  cat("\n=== ", script, if (is.null(metric)) "" else paste0(" [", metric, "]"), " ===\n", sep = "")
+  env <- new.env(parent = globalenv())
+  sys.source(file.path(R_DIR, script), envir = env)
+}
+
+for (s in METRIC_INVARIANT_SCRIPTS) run_plot(s)
+for (metric in c("auc", "cindex")) {
+  for (s in METRIC_SCRIPTS) run_plot(s, metric)
+}
+
+Sys.unsetenv("MANUSCRIPT_METRIC")
+
+cat("\nDone.\n")
+cat("Panel PNGs: $CLINICAL_FIGURES_OUT/png/<figureN>/ (or /data/.../manuscript_figures/png/<figureN>/)\n")
+cat("Panel PDFs: $CLINICAL_FIGURES_OUT/pdf/<figureN>/ (or /data/.../manuscript_figures/pdf/<figureN>/)\n")
+```
+
+Render with:
+
+```
+Rscript -e 'rmarkdown::render("notebooks/4_figures/03_render_figures.Rmd")'
+```

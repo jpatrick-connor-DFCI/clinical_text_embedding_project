@@ -23,9 +23,16 @@ dist/
 # Data files (if applicable)
 *.csv
 *.parquet
+*.tsv
 data/
 
-# v2/data contains versioned code and the curated biomarker-validation table,
-# not generated project data.
-!v2/data/
-!v2/data/**
+# The top-level data/ package holds versioned code and the curated
+# biomarker-validation table, not generated project data. The leading slash
+# anchors these to the repo root, so a data/ directory anywhere else stays
+# ignored by the rule above.
+!/data/
+!/data/**
+# ...but the negation above out-ranks the earlier Python rules (last match wins),
+# so re-exclude build artifacts inside it.
+/data/**/__pycache__/
+/data/**/*.pyc

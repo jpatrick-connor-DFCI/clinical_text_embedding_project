@@ -2,39 +2,38 @@
 
 This project investigates whether dense representations of clinical narratives (EHR notes) can
 improve survival prediction and identify genomic biomarkers of treatment response in oncology.
-See [`REFACTOR_PLAN.md`](REFACTOR_PLAN.md) for the rationale behind the `v1/`/`v2/` split below
-and the phase-by-phase migration record.
 
-## `v1/` vs `v2/`
+## Layout
 
-- **`v2/`** is the maintained tree. Start here. Organized by pipeline
-  (`pipelines/preprocessing`, `pipelines/training`, `pipelines/trajectories`,
-  `pipelines/biomarkers`) rather than by file type, with single sources of truth for paths
-  (`config.py`), scheme registry (`schemes.py`), and shared palette/stage logic (`shared/`).
-  Run with `python -m` from inside `v2/`, e.g.:
+The tree is organized by pipeline stage rather than by file type:
 
-  ```bash
-  cd v2
-  python -m pipelines.training.run_full_cohort_event --scheme death_met --event death
-  python -m figures.prep.figure2
-  ```
+- `pipelines/` — `preprocessing/`, `training/`, `trajectories/`, `biomarkers/`
+- `survival/` — Cox model fitting, checkpointing, evaluation
+- `figures/prep/` — `figure0.py` … `figure5.py`, which write the CSVs the R tier plots from
+- `R/` — figure rendering and shared plot utilities
+- `notebooks/` — thin driver notebooks, grouped by stage
+- `shared/` — palette and stage logic used across pipelines and figures
+- `data/` — versioned lookup tables and their loaders
 
-  No install step — `python -m` from `v2/` puts `v2/` on `sys.path` automatically.
+Single sources of truth: paths in `config.py`, the scheme registry in `schemes.py`, and the
+time-zero anchor registry in `anchors.py`.
 
-- **`v1/`** is the frozen, byte-for-byte original tree (organized by file type:
-  `python_scripts/`, `python_utils/`, `bash_scripts/`, `jupyter_notebooks/`). It is the reference
-  that produced current manuscript results and remains fully runnable, but is not edited going
-  forward — treat it as archive-only once `v2/` passes verification. A few components that don't
-  feed the manuscript figures (the mortality-model-comparison benchmark, some diagnostic
-  notebooks) only exist in `v1/`; see `REFACTOR_PLAN.md` for the full list.
+Run with `python -m` from the repo root — no install step, since that puts the repo root on
+`sys.path` automatically:
+
+```bash
+python -m pipelines.training.run_full_cohort_event --scheme death_met --event death
+python -m figures.prep.figure2
+```
 
 ## Where to start
 
-- Reproducing or extending the manuscript figures: `v2/figures/prep/figure0.py` … `figure5.py`,
-  rendered via the R scripts in `v2/R/`. `v2/notebooks/` has thin driver notebooks for both steps.
-- Understanding the pipeline DAG: `REFACTOR_PLAN.md` traces raw data through to the figures.
-- Digging into what changed during the refactor: `REFACTOR_PLAN.md`'s phase-by-phase plan, or
-  diff a `v2/` file against its `v1/` counterpart directly.
+- Understanding the pipeline DAG: [`notebooks/README.md`](notebooks/README.md) walks the stages in
+  run order, from cohort build through to the rendered figures.
+- Reproducing or extending the manuscript figures: `figures/prep/figure0.py` … `figure5.py`,
+  rendered via the R scripts in `R/`. `notebooks/4_figures/` drives both steps.
+- Running on the cluster: `slurm/launch_*.sh` build manifests and submit the array jobs. They
+  default `PROJECT_ROOT` to the cluster checkout path; override it to run elsewhere.
 
 ## Configuration and validation
 

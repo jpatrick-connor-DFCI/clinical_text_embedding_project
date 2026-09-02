@@ -7,7 +7,7 @@ import polars as pl
 import pytest
 
 
-CHECKPOINT_PATH = Path(__file__).resolve().parents[1] / "v2" / "survival" / "checkpoint.py"
+CHECKPOINT_PATH = Path(__file__).resolve().parents[1] / "survival" / "checkpoint.py"
 SPEC = importlib.util.spec_from_file_location("checkpoint_under_test", CHECKPOINT_PATH)
 checkpoint_module = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None

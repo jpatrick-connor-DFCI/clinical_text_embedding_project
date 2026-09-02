@@ -18,7 +18,7 @@ import pytest
 pytest.importorskip("statsmodels")
 pytest.importorskip("zstandard")
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "v2"))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pipelines.biomarkers.run_IPTW_analysis import (  # noqa: E402
     _run_marker_screen,
