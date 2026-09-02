@@ -1,6 +1,8 @@
 """Generate Mortality Trajectories script for model evaluation workflows."""
 
+import concurrent.futures
 import io
+import multiprocessing
 import os
 import time
 
@@ -32,11 +34,149 @@ SHOW_PROGRESS = os.environ.get("TRAJECTORY_PROGRESS", "1") not in {"0", "false",
 RESUME = os.environ.get("TRAJECTORY_RESUME", "1") not in {"0", "false", "False"}
 RETRY_FAILED = os.environ.get("TRAJECTORY_RETRY_FAILED", "0") not in {"0", "false", "False"}
 
+# Landmark-level parallelism.  The 20 post-baseline landmarks are mutually independent -- each is
+# drawn from the full baseline cohort (see the `prev_mrns` note at the loop) and scored by the one
+# month-0 model -- so they are computed in a process pool rather than one after another.
+#
+# Processes, not threads: the dominant per-landmark cost is the per-(patient, note-type) Python
+# loop in survival.preprocessing.pool_embedding_series_vectorized, which holds the GIL, so threads
+# would serialize exactly the part worth parallelizing.
+#
+# TRAJECTORY_WORKERS=1 restores the original strictly serial path (no pool, no memmap), which is
+# the fallback if a worker is OOM-killed.
+WORKERS_ENV = os.environ.get("TRAJECTORY_WORKERS", "").strip()
+
+# Per-worker RAM budget for auto-sizing.  A worker holds one landmark's filtered note metadata and
+# its pooled embedding frame (n_eligible x 3 note types x embed_dim, float64) on top of the shared
+# read-only memmap, which is not counted here because it is paged, not copied.
+WORKER_MEM_GB = float(os.environ.get("TRAJECTORY_WORKER_MEM_GB", "8"))
+
+# Each worker is single-core by construction.  Without this every worker would size its BLAS and
+# Rayon pools to the whole machine and N workers would fight over the same cores -- the same
+# oversubscription guard the 04 notebook applies to its subprocess fan-out.
+SINGLE_THREAD_ENV = {var: "1" for var in (
+    "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS",
+    "POLARS_MAX_THREADS", "RAYON_NUM_THREADS")}
+
 
 def _stage(msg: str) -> None:
     """One timestamped progress line, flushed so a piped reader sees it immediately."""
     if SHOW_PROGRESS:
         print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+# === Landmark worker ==========================================================================
+# State a worker needs on every landmark, set once per process by _worker_init rather than
+# pickled per task: the note metadata and baseline frame are large, and the embedding array is
+# opened as a read-only memmap so N workers share the OS page cache instead of each holding a
+# private multi-GB copy.
+_W: dict = {}
+
+
+def _worker_init(embeddings_path: str, embeddings_shape: tuple, embeddings_dtype: str,
+                 embeddings_offset: int, notes_meta: pl.DataFrame, events_data: pl.DataFrame,
+                 cancer_type_df: pl.DataFrame, full_prediction_df: pl.DataFrame,
+                 spec: dict) -> None:
+    """Per-process setup. Runs once per worker, not once per landmark.
+
+    The embedding array is mapped read-only at the .npy payload offset the parent already
+    parsed, so every worker shares one mapping through the OS page cache. `pool_embedding_
+    series_vectorized` only fancy-indexes rows out of it, which copies into a fresh array --
+    nothing writes through the mapping.
+    """
+    for var, val in SINGLE_THREAD_ENV.items():
+        os.environ.setdefault(var, val)
+    _W['embeddings'] = np.memmap(embeddings_path, dtype=np.dtype(embeddings_dtype), mode='r',
+                                 shape=tuple(embeddings_shape), offset=int(embeddings_offset))
+    _W['notes_meta'] = notes_meta
+    _W['events_data'] = events_data
+    _W['cancer_type_df'] = cancer_type_df
+    _W['full_prediction_df'] = full_prediction_df
+    _W['spec'] = spec
+
+
+def _worker_init_serial(embeddings: np.ndarray, notes_meta: pl.DataFrame,
+                        events_data: pl.DataFrame, cancer_type_df: pl.DataFrame,
+                        full_prediction_df: pl.DataFrame, spec: dict) -> None:
+    """Populate the same worker state in-process, for the TRAJECTORY_WORKERS=1 serial path.
+
+    Uses the already-decompressed in-memory array: with one worker there is nothing to share,
+    so spilling a multi-GB memmap would be pure cost.
+    """
+    _W['embeddings'] = embeddings
+    _W['notes_meta'] = notes_meta
+    _W['events_data'] = events_data
+    _W['cancer_type_df'] = cancer_type_df
+    _W['full_prediction_df'] = full_prediction_df
+    _W['spec'] = spec
+
+
+def _score_landmark(month_adj: int, eligible_mrns: list) -> dict:
+    """Pool this landmark's notes and score them with the fixed month-0 model.
+
+    Returns a plain dict rather than raising, so one landmark's failure is recorded and the
+    remaining landmarks still run -- matching the try/except the serial loop had. The parent
+    owns every checkpoint write; a worker only computes.
+    """
+    started = time.time()
+    spec = _W['spec']
+    event = spec['event']
+    landmark_day = month_adj * 30
+    try:
+        notes_meta_copy = _W['notes_meta'].filter(pl.col('DFCI_MRN').is_in(eligible_mrns))
+        events_data_copy = _W['events_data'].filter(pl.col('DFCI_MRN').is_in(eligible_mrns))
+        # continuous_window=False must match the month-0 pooling: the month-0 model is applied to
+        # these features unchanged, so a landmark pooled under a different note-selection rule
+        # would shift the feature distribution out from under the fixed model.
+        monthly_data = (generate_survival_embedding_df(
+            notes_meta_copy, events_data_copy, _W['embeddings'], note_types=spec['note_types'],
+            pool_fx={key: 'time_decay_mean' for key in spec['note_types']},
+            decay_param=spec['decay_param'], max_note_window=landmark_day,
+            continuous_window=False)
+            .select(['DFCI_MRN', event, f'tt_{event}'] + spec['base_vars'] + spec['embed_cols'])
+            .join(_W['cancer_type_df'], on='DFCI_MRN'))
+        numeric_cols = [c for c, dtype in monthly_data.schema.items() if dtype.is_numeric()]
+        # Every row already satisfies tt > 0 post-shift by construction of `eligible_mrns`;
+        # this only drops rows with missing embeddings/covariates.
+        monthly_data = filter_finite_rows(monthly_data, numeric_cols)
+
+        # Inference only: the month-0 model is refit on the baseline frame and applied to this
+        # landmark's features. fit_predict_external_CoxPH re-derives imputation and scaling from
+        # the TRAINING frame alone and applies them to the eval frame, so this landmark's own
+        # feature distribution never influences its transform -- the scores stay on one common
+        # scale across the whole trajectory. No outcome from this landmark is used.
+        risk_scores = pl.DataFrame({
+            'DFCI_MRN': monthly_data['DFCI_MRN'],
+            'risk_score': fit_predict_external_CoxPH(
+                _W['full_prediction_df'], monthly_data,
+                spec['base_vars'] + spec['type_cols'], spec['continuous_vars'],
+                spec['embed_cols'], event_col=event, tstop_col=f'tt_{event}',
+                l1_ratio=spec['best_l1'], alpha=spec['best_alpha'],
+                max_iter=spec['max_iter']),
+        })
+        return {'month': month_adj, 'ok': True, 'scores': risk_scores,
+                'n_at_risk': len(eligible_mrns), 'n_scored': int(risk_scores.height),
+                'n_complete': int(monthly_data.height),
+                'elapsed_s': round(time.time() - started, 1)}
+    except Exception as exc:
+        return {'month': month_adj, 'ok': False, 'error': f"{type(exc).__name__}: {exc}",
+                'n_at_risk': len(eligible_mrns),
+                'elapsed_s': round(time.time() - started, 1)}
+
+
+def _resolve_workers(n_tasks: int) -> int:
+    """Auto-size the pool: leave a core free, and budget WORKER_MEM_GB per worker."""
+    if WORKERS_ENV:
+        return max(1, min(int(WORKERS_ENV), n_tasks))
+    workers = max(1, (os.cpu_count() or 1) - 1)
+    try:
+        # Linux-only; on a cgroup-limited node this reflects the real allowance better than
+        # total system memory. Skipped silently where unavailable (e.g. macOS).
+        available_gb = (os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_AVPHYS_PAGES')) / 1024 ** 3
+        workers = max(1, min(workers, int(available_gb // WORKER_MEM_GB)))
+    except (ValueError, OSError, AttributeError):
+        pass
+    return max(1, min(workers, n_tasks))
 
 
 def main() -> None:
@@ -241,11 +381,13 @@ def main() -> None:
 
     failed_landmarks = []
     landmark_sizes = []
-    # No tqdm bar over this loop: it writes a carriage-return redraw to stderr, which interleaves
-    # with the stdout stage lines below into unreadable output under a piped subprocess (the 04d
-    # notebook driver), and it reports strictly less than the per-landmark lines already do.
-    for landmark_i, month_adj in enumerate(months_to_test, start=1):
-        landmark_started = time.time()
+
+    # Landmark eligibility and resume status are decided here, in the parent, before any work is
+    # dispatched: the checkpoint store appends to a shared manifest CSV and mutates in-process
+    # bookkeeping, neither of which is safe under concurrent writers. Workers only compute and
+    # return scores; every save_landmark/mark_failed below happens in this process.
+    pending = []
+    for month_adj in months_to_test:
         landmark_day = month_adj * 30
         # At risk at the landmark: still under follow-up strictly beyond it.
         eligible_mrns = [
@@ -254,8 +396,8 @@ def main() -> None:
         ]
         landmark_sizes.append((month_adj, len(eligible_mrns)))
 
-        # Resume: reload a completed landmark rather than refitting it. Done before the
-        # embedding re-pool, which is itself expensive, so a resumed landmark costs a CSV read.
+        # Resume: reload a completed landmark rather than refitting it. Done before dispatch, so
+        # a resumed landmark costs a CSV read instead of a worker slot.
         if ckpt.landmark_done(month_adj):
             risk_map = ckpt.load_landmark(month_adj)
             trajectory_predictions_df = trajectory_predictions_df.with_columns(
@@ -268,73 +410,157 @@ def main() -> None:
         # set: without this a resume would spend hours re-hitting the same error every time.
         if ckpt.should_skip_failed(month_adj):
             reason = ckpt.failure_reason(month_adj) or 'previously failed'
-            _stage(f"landmark {landmark_i}/{len(months_to_test)} (month {month_adj}): "
-                   f"skipping previously failed landmark ({reason}); "
-                   "set TRAJECTORY_RETRY_FAILED=1 to refit")
+            _stage(f"landmark month {month_adj}: skipping previously failed landmark "
+                   f"({reason}); set TRAJECTORY_RETRY_FAILED=1 to refit")
             failed_landmarks.append((month_adj, f"previously failed: {reason}"))
             continue
 
-        _stage(f"landmark {landmark_i}/{len(months_to_test)} (month {month_adj}): "
-               f"{len(eligible_mrns):,} patients at risk")
         if not eligible_mrns:
             print(f"Trajectory landmark {month_adj} months: no patients at risk, skipping")
-            ckpt.mark_failed(month_adj, "no patients at risk at landmark",
-                             meta={'n_at_risk': 0})
+            ckpt.mark_failed(month_adj, "no patients at risk at landmark", meta={'n_at_risk': 0})
             failed_landmarks.append((month_adj, "no patients at risk at landmark"))
             continue
 
-        _stage(f"  pooling embeddings (window={landmark_day}d) ...")
-        notes_meta_copy = notes_meta.filter(pl.col('DFCI_MRN').is_in(eligible_mrns))
-        events_data_copy = events_data.filter(pl.col('DFCI_MRN').is_in(eligible_mrns))
-        # continuous_window=False must match the month-0 pooling above: the month-0 model is
-        # applied to these features unchanged, so a landmark pooled under a different note-
-        # selection rule would shift the feature distribution out from under the fixed model.
-        monthly_data = (generate_survival_embedding_df(notes_meta_copy, events_data_copy, embeddings_data, note_types=note_types,
-                                                      pool_fx={key: 'time_decay_mean' for key in note_types}, decay_param=decay_param,
-                                                      max_note_window=landmark_day, continuous_window=False)
-                        .select(['DFCI_MRN', event, f'tt_{event}'] + base_vars + embed_cols)
-                        .join(cancer_type_df, on='DFCI_MRN'))
-        numeric_cols = [c for c, dtype in monthly_data.schema.items() if dtype.is_numeric()]
-        # Every row already satisfies tt > 0 post-shift by construction of
-        # `eligible_mrns`; this only drops rows with missing embeddings/covariates.
-        monthly_data = filter_finite_rows(monthly_data, numeric_cols)
-        _stage(f"  scoring the month-0 model on {monthly_data.height:,} complete-case patients ...")
+        pending.append((month_adj, eligible_mrns))
+
+    # Dispatch the remaining landmarks. Longest first: the at-risk set shrinks monotonically with
+    # the landmark, so the earliest months are the most expensive, and starting them first keeps
+    # the pool from finishing with one long task running alone.
+    pending.sort(key=lambda task: len(task[1]), reverse=True)
+
+    # Trim what crosses the process boundary.  Workers are spawned (the default on macOS, and
+    # what `python -m` gets on Linux under any start method here), so every object in `initargs`
+    # is pickled once per worker.  Pooling with continuous_window=False touches only these five
+    # columns, and only for cohort patients, so shipping the full multi-million-row note table
+    # would be pure serialization cost.
+    _worker_note_cols = [c for c in ('DFCI_MRN', 'NOTE_TYPE', 'EMBEDDING_INDEX',
+                                     'NOTE_TIME_REL_FIRST_TREATMENT_START', 'NOTE_DATETIME')
+                         if c in notes_meta.columns]
+    notes_meta_for_workers = (notes_meta
+                              .select(_worker_note_cols)
+                              .filter(pl.col('DFCI_MRN').is_in(cohort_mrns)))
+    events_data_for_workers = events_data.filter(pl.col('DFCI_MRN').is_in(cohort_mrns))
+
+    spec = {
+        'event': event, 'note_types': note_types, 'decay_param': decay_param,
+        'base_vars': base_vars, 'type_cols': type_cols, 'continuous_vars': continuous_vars,
+        'embed_cols': embed_cols, 'best_l1': best_l1, 'best_alpha': best_alpha,
+        'max_iter': max_iter,
+    }
+
+    n_workers = _resolve_workers(len(pending)) if pending else 1
+    if pending:
+        _stage(f"scoring {len(pending)} landmark(s) across {n_workers} worker(s) "
+               f"(month 0 and {len(months_to_test) - len(pending)} other landmark(s) "
+               "already accounted for)")
+
+    def _record_result(result: dict) -> None:
+        """Apply one worker result in the parent: checkpoint it, then fold it into the matrix."""
+        nonlocal trajectory_predictions_df
+        month_adj = result['month']
+        if result['ok']:
+            ckpt.save_landmark(month_adj, result['scores'],
+                               meta={'n_at_risk': result['n_at_risk'],
+                                     'n_scored': result['n_scored'],
+                                     'elapsed_s': result['elapsed_s']})
+            risk_map = dict(zip(result['scores']['DFCI_MRN'].to_list(),
+                                result['scores']['risk_score'].to_list()))
+            trajectory_predictions_df = trajectory_predictions_df.with_columns(
+                pl.col('DFCI_MRN').replace_strict(risk_map, default=np.nan)
+                .alias(f'plus_{month_adj}_months_data')
+            )
+            _stage(f"  month {month_adj} done in {result['elapsed_s'] / 60:.1f} min "
+                   f"({result['n_scored']:,}/{result['n_at_risk']:,} at-risk patients scored, "
+                   f"{(time.time() - run_started) / 3600:.2f} h elapsed)")
+        else:
+            print(f"Trajectory landmark {month_adj} months failed: {result['error']}")
+            ckpt.mark_failed(month_adj, result['error'],
+                             meta={'n_at_risk': result['n_at_risk'],
+                                   'elapsed_s': result['elapsed_s']})
+            _stage(f"  month {month_adj} FAILED after {result['elapsed_s'] / 60:.1f} min")
+            failed_landmarks.append((month_adj, result['error']))
+
+    if pending and n_workers == 1:
+        # Serial path, kept explicit: TRAJECTORY_WORKERS=1 gets no pool and no memmap, so a run
+        # that OOMs under the pool has a fallback with the original memory profile.
+        _worker_init_serial(embeddings_data, notes_meta_for_workers, events_data_for_workers,
+                            cancer_type_df, full_prediction_df, spec)
+        for month_adj, eligible_mrns in pending:
+            _stage(f"landmark month {month_adj}: {len(eligible_mrns):,} patients at risk")
+            _record_result(_score_landmark(month_adj, eligible_mrns))
+    elif pending:
+        # Workers are spawned, never forked, on every platform.  `main()` has already done
+        # substantial polars work by this point, and forking a process whose Rayon threadpool is
+        # warm copies the pool's mutexes without the threads holding them -- the child then hangs
+        # on its first group_by, which is the very first thing a landmark does.  Verified: a fork
+        # child deadlocks here; the spawn path below reproduces the serial scores exactly.
+        #
+        # Spawn has no copy-on-write inheritance, so the embedding array is spilled to a
+        # memmap-able .npy once and the N workers share one read-only mapping through the OS page
+        # cache rather than each pickling a private multi-GB copy.  Written next to the
+        # checkpoints and removed on the way out.
+        os.makedirs(os.path.join(trajectory_path, 'checkpoints'), exist_ok=True)
+        embeddings_mmap_path = os.path.join(trajectory_path, 'checkpoints',
+                                            f'_embeddings_shared_{os.getpid()}.npy')
+        _stage(f"spilling embedding array to a shared memmap "
+               f"({embeddings_data.nbytes / 1e9:.2f} GB) ...")
+        _spill = np.lib.format.open_memmap(
+            embeddings_mmap_path, mode='w+', dtype=embeddings_data.dtype,
+            shape=embeddings_data.shape)
+        _spill[:] = embeddings_data
+        _spill.flush()
+        del _spill
+        # Offset, shape and dtype of the raw block inside the .npy, read once here so each
+        # worker maps the payload directly instead of re-parsing the header.  Public header
+        # readers only (no np.lib.format._read_array_header, which is private and has changed
+        # signature across NumPy versions).
+        with open(embeddings_mmap_path, 'rb') as _fh:
+            _major, _minor = np.lib.format.read_magic(_fh)
+            _read_header = (np.lib.format.read_array_header_1_0 if _major == 1
+                            else np.lib.format.read_array_header_2_0)
+            _mm_shape, _mm_fortran, _mm_dtype = _read_header(_fh)
+            _mm_offset = _fh.tell()
+        if _mm_fortran:
+            raise RuntimeError("Spilled embedding memmap is Fortran-ordered; workers map it C-order")
 
         try:
-            # Inference only: the month-0 model is refit on the baseline frame and applied to this
-            # landmark's features. fit_predict_external_CoxPH re-derives imputation and scaling from
-            # the TRAINING frame alone and applies them to the eval frame, so this landmark's own
-            # feature distribution never influences its transform -- the scores stay on one common
-            # scale across the whole trajectory. No outcome from this landmark is used.
-            risk_scores = pl.DataFrame({
-                'DFCI_MRN': monthly_data['DFCI_MRN'],
-                'risk_score': fit_predict_external_CoxPH(
-                    full_prediction_df, monthly_data, base_vars + type_cols,
-                    continuous_vars, embed_cols, event_col=event, tstop_col=f'tt_{event}',
-                    l1_ratio=best_l1, alpha=best_alpha, max_iter=max_iter,
-                ),
-            })
-            ckpt.save_landmark(month_adj, risk_scores,
-                               meta={'n_at_risk': len(eligible_mrns),
-                                     'n_scored': int(risk_scores.height),
-                                     'elapsed_s': round(time.time() - landmark_started, 1)})
-            risk_map = dict(zip(risk_scores['DFCI_MRN'].to_list(), risk_scores['risk_score'].to_list()))
-            trajectory_predictions_df = trajectory_predictions_df.with_columns(
-                pl.col('DFCI_MRN').replace_strict(risk_map, default=np.nan).alias(f'plus_{month_adj}_months_data')
-            )
-            _stage(f"  month {month_adj} done in {(time.time() - landmark_started) / 60:.1f} min "
-                   f"({landmark_i}/{len(months_to_test)} landmarks, "
-                   f"{(time.time() - run_started) / 3600:.2f} h elapsed)")
+            with concurrent.futures.ProcessPoolExecutor(
+                max_workers=n_workers,
+                mp_context=multiprocessing.get_context('spawn'),
+                initializer=_worker_init,
+                initargs=(embeddings_mmap_path, _mm_shape, str(_mm_dtype), _mm_offset,
+                          notes_meta_for_workers, events_data_for_workers, cancer_type_df,
+                          full_prediction_df, spec),
+            ) as pool:
+                in_flight = {pool.submit(_score_landmark, month_adj, eligible_mrns): month_adj
+                             for month_adj, eligible_mrns in pending}
+                n_done = 0
+                try:
+                    for future in concurrent.futures.as_completed(in_flight):
+                        _record_result(future.result())
+                        n_done += 1
+                        _stage(f"  [{n_done}/{len(pending)} dispatched landmarks complete]")
+                except KeyboardInterrupt:
+                    # Without this, pool shutdown blocks on every queued task. Landmarks already
+                    # recorded above are checkpointed, so a resume picks up from them.
+                    for future in in_flight:
+                        future.cancel()
+                    print("\nInterrupted -- cancelled queued landmarks, waiting for in-flight ones.")
+                    raise
+        finally:
+            # The spill file is a derived copy of an input, not a checkpoint: leaving it behind
+            # would put a multi-GB stale artifact in the checkpoint dir that resume never reads.
+            if os.path.exists(embeddings_mmap_path):
+                os.unlink(embeddings_mmap_path)
 
-        except Exception as exc:
-            print(f"Trajectory landmark {month_adj} months failed: {exc}")
-            ckpt.mark_failed(month_adj, str(exc),
-                             meta={'n_at_risk': len(eligible_mrns),
-                                   'elapsed_s': round(time.time() - landmark_started, 1)})
-            _stage(f"  month {month_adj} FAILED after "
-                   f"{(time.time() - landmark_started) / 60:.1f} min")
-            failed_landmarks.append((month_adj, str(exc)))
-            continue
+    # Landmark order is dispatch order, not month order, so restore the month ordering the
+    # figure tier expects before writing.
+    landmark_sizes.sort()
+    failed_landmarks.sort()
+    trajectory_predictions_df = trajectory_predictions_df.select(
+        ['DFCI_MRN'] + [f'plus_{m}_months_data' for m in months_to_test]
+    )
+
 
     _stage("writing trajectory scores ...")
     trajectory_predictions_df.write_csv(
