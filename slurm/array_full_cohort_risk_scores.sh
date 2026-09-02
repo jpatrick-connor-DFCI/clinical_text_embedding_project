@@ -2,8 +2,8 @@
 
 #SBATCH --job-name=coxnet_full_risk
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=6
-#SBATCH --mem=8G
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=48G
 #SBATCH --time=24:00:00
 #SBATCH --array=0-0%1
 #SBATCH --output=slurm/array_full_cohort_risk_scores/output/%A_%a.out
@@ -13,6 +13,14 @@
 # text_val.csv for each row — this script picks best hyperparameters from that CV grid and
 # generates held-out risk scores (run_full_cohort_risk_scores.py). Same manifest format as
 # array_full_cohort_run.sh (scheme<TAB>event), so full_cohort_tasks.tsv is reused by default.
+#
+# Memory: this step is the heaviest in the pipeline and was previously being OOM-killed at 8G.
+# get_nested_heldout_risk_scores_CoxPH runs a *full inner grid search per outer fold* over the
+# same cohort array that array_full_cohort_run.sh fits once at 32G, so it needs at least that
+# much, plus headroom for the concurrently live inner-fold copies. Hence 48G / 4 CPUs (down
+# from 6: threads multiply the per-fit copies without speeding up the outer loop, which is
+# serial). Raise MEMORY in launch_full_cohort_risk_scores.sh if a wide scheme still trips it;
+# lowering CPUS_PER_TASK is the other lever, since peak memory scales with in-flight fits.
 
 # ANCHOR selects the time-zero anchor (see anchors.py): "treatment" (default) or
 # "sequencing". Forwarded to run_full_cohort_risk_scores.py as --anchor; non-default anchors

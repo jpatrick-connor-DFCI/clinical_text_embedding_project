@@ -7,28 +7,31 @@
 # COXNET_MAX_ITER, COXNET_BACKEND, ANCHOR, PARTITION). If PARTITION is unset,
 # Slurm uses the cluster/account default partition.
 #
-# Resource sizing (Phase-A A0): by default (MODALITY_CLASS=split) this submits TWO array jobs
-# against the same manifest, sized per modality class, each running its modalities one process
-# per modality (as before) —
-#   "big"   (text, prs)                             : --cpus-per-task=5 --mem=8G
-#   "small" (stage, treatment, somatic, metburden)    : --cpus-per-task=1 --mem=4G
-# because run_feature_comp_task.py already forces n_jobs=1 for the small modalities
-# (< 50 penalized columns), so they were previously requesting 6 CPUs and using 1.
-# metburden has 9 feature columns, well within the "small" sizing.
-# Set MODALITY_CLASS=all to submit a single unsplit job instead (legacy 6 CPU / 8G sizing),
-# which uses the collapsed --modality all in-process loop over all six modalities (A2).
+# Resource sizing: by default (MODALITY_CLASS=big) this submits ONE array job covering only
+# the wide-design modalities, which are the ones that actually need a cluster slot —
+#   "big"   (somatic, prs, text)              : --cpus-per-task=5 --mem=16G
+#   "small" (stage, treatment, metburden)     : --cpus-per-task=1 --mem=4G
+# run_feature_comp_task.py forces n_jobs=1 for any modality under 50 penalized columns, so the
+# "small" three are single-core work that gains nothing from the cluster and only queues behind
+# the heavy fits. notebooks/2_models/01_feature_comparison.ipynb runs them locally instead, and
+# is the intended path — it skips whatever these arrays have already finished, and vice versa.
+#
+# somatic sits in "big" despite a modest penalized-column count because its design matrix is a
+# wide gene-by-alteration panel of data-dependent width.
 #
 # Usage:
-#   bash launch_feature_comp.sh
+#   bash launch_feature_comp.sh                      # big only (somatic, prs, text)
+#   MODALITY_CLASS=split bash launch_feature_comp.sh # big + small, if not using the notebook
+#   MODALITY_CLASS=small bash launch_feature_comp.sh # small only
+#   MODALITY_CLASS=all   bash launch_feature_comp.sh # all six in one process (legacy)
 #   OVERWRITE=1 bash launch_feature_comp.sh
 #   ROWS_PER_TASK=5 bash launch_feature_comp.sh
-#   MODALITY_CLASS=all bash launch_feature_comp.sh
 
 set -euo pipefail
 
 PROJECT_ROOT="${PROJECT_ROOT:-/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project}"
 ROWS_PER_TASK="${ROWS_PER_TASK:-7}"
-MODALITY_CLASS="${MODALITY_CLASS:-split}"
+MODALITY_CLASS="${MODALITY_CLASS:-big}"
 ANCHOR="${ANCHOR:-treatment}"
 PARTITION="${PARTITION:-}"
 SBATCH_PARTITION_ARGS=()
@@ -77,7 +80,11 @@ submit_class () {
 }
 
 if [[ "$MODALITY_CLASS" == "split" ]]; then
-    submit_class big 5 8G
+    submit_class big 5 16G
+    submit_class small 1 4G
+elif [[ "$MODALITY_CLASS" == "big" ]]; then
+    submit_class big 5 16G
+elif [[ "$MODALITY_CLASS" == "small" ]]; then
     submit_class small 1 4G
 else
     sbatch \
