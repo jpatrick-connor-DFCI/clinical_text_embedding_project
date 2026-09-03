@@ -202,14 +202,17 @@ compact_panels <- function(panels) {
 # event in one panel that was filtered out of another. The rule is
 # one-directional: an event is excluded only when
 #
-#     base_cindex - text_cindex > EVENT_EXCLUSION_DELTA
+#     base_<metric> - text_<metric> > EVENT_EXCLUSION_DELTA
 #
 # i.e. only when text is worse by more than the threshold. Events where text
 # wins are always kept, by any margin.
 #
-# The comparison is always on the C-index, regardless of the active METRIC:
-# the exclusion set must be identical across the cindex and auc renders, or the
-# two figure sets would disagree about which events exist.
+# The comparison uses whichever metric the render is built on: the cindex figures
+# are trimmed on base_cindex/text_cindex, the auc figures on base_auc/text_auc.
+# Each figure set is therefore internally consistent -- no panel shows an event
+# another panel dropped -- but the two sets need not exclude the same events,
+# since an event can be worse by >0.05 on one metric and not the other. That is
+# intended: an event is judged by the metric the figure actually reports.
 # ----------------------------------------------------------------------------
 EVENT_EXCLUSION_DELTA <- 0.05
 # Strictly-greater-than comparisons on doubles need slack: 0.65 - 0.60 evaluates
@@ -223,23 +226,27 @@ EVENT_EXCLUSION_TOL <- 1e-9
 .event_key <- function(scheme, event) paste(scheme, event, sep = "\u001f")
 
 # Returns the character vector of scheme/event keys to exclude, given the
-# full-cohort metrics frame. Empty vector when the frame lacks the C-index
-# columns (nothing can be judged, so nothing is dropped).
-excluded_event_keys <- function(metrics) {
+# full-cohort metrics frame, judged on `metric` (defaults to the active METRIC).
+# Empty vector when the frame lacks that metric's columns (nothing can be
+# judged, so nothing is dropped).
+excluded_event_keys <- function(metrics, metric = METRIC) {
   if (is.null(metrics) || nrow(metrics) == 0) return(character(0))
-  if (!all(c("base_cindex", "text_cindex", "scheme", "event") %in% names(metrics))) {
+  base_col <- paste0("base_", metric_suffix(metric))
+  text_col <- paste0("text_", metric_suffix(metric))
+  if (!all(c(base_col, text_col, "scheme", "event") %in% names(metrics))) {
     return(character(0))
   }
-  drop <- (metrics$base_cindex - metrics$text_cindex) >
-    (EVENT_EXCLUSION_DELTA + EVENT_EXCLUSION_TOL)
+  base_val <- metrics[[base_col]]
+  text_val <- metrics[[text_col]]
+  drop <- (base_val - text_val) > (EVENT_EXCLUSION_DELTA + EVENT_EXCLUSION_TOL)
   drop[is.na(drop)] <- FALSE
   if (!any(drop)) return(character(0))
   keys <- .event_key(metrics$scheme[drop], metrics$event[drop])
   message(sprintf(
-    "[exclude] %d event(s) dropped from all figures (base C-index beats text by > %.2f): %s",
-    length(keys), EVENT_EXCLUSION_DELTA,
+    "[exclude] %d event(s) dropped from all figures (base %s beats text by > %.2f): %s",
+    length(keys), metric_label(metric), EVENT_EXCLUSION_DELTA,
     paste(sprintf("%s/%s (delta %.3f)", metrics$scheme[drop], metrics$event[drop],
-                  (metrics$text_cindex - metrics$base_cindex)[drop]),
+                  (text_val - base_val)[drop]),
           collapse = "; ")))
   unique(keys)
 }

@@ -338,7 +338,12 @@ p3c <- build_fig3c()
 p3d <- build_fig3d(betas)
 
 .tag <- metric_tag(METRIC)
-save_panel(p3a, "fig3a", group = "figure3", width = 7.2, height = 5.8)
+# 3A/3D depend on METRIC only through the event-exclusion set, which is now
+# judged on the active metric -- so their content differs between the cindex and
+# auc renders and each needs its own filename. Untagged, the second render
+# silently overwrote the first. 3B (risk-score correlation) has no event
+# dimension and is identical across metrics, so it stays untagged.
+save_panel(p3a, paste0("fig3a", .tag), group = "figure3", width = 7.2, height = 5.8)
 save_panel(p3b, "fig3b", group = "figure3", width = 7.2, height = 6.0)
 save_panel(p3c, paste0("fig3c", .tag), group = "figure3", width = 7.2, height = 6.0)
-save_panel(p3d, "fig3d", group = "figure3", width = 7.8, height = 6.0)
+save_panel(p3d, paste0("fig3d", .tag), group = "figure3", width = 7.8, height = 6.0)

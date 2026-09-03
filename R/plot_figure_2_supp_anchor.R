@@ -88,5 +88,8 @@ if (nrow(sens) > 0) {
 pS_scatter <- build_scatter_panel(wide)
 pS_delta   <- build_delta_panel(wide)
 
-save_panel(pS_scatter, "figS_anchor_scatter", group = "figure2", width = 6.4, height = 6.4)
-save_panel(pS_delta,   "figS_anchor_delta",   group = "figure2", width = 7.8, height = 5.2)
+# Both panels plot the active metric (cindex vs mean_auc) and are trimmed on it,
+# so each render needs its own filename -- untagged, the two runs collided.
+.tag <- metric_tag(METRIC)
+save_panel(pS_scatter, paste0("figS_anchor_scatter", .tag), group = "figure2", width = 6.4, height = 6.4)
+save_panel(pS_delta,   paste0("figS_anchor_delta", .tag),   group = "figure2", width = 7.8, height = 5.2)
