@@ -92,12 +92,29 @@ build_fig1a <- function() {
 # intended reading of "endpoints this manuscript reports".
 trimmed_endpoint_counts <- function() {
   m <- load_figure_data("fig2_full_cohort_metrics.csv")
-  if (nrow(m) == 0 || !all(c("scheme", "event") %in% names(m))) return(tibble::tibble())
+  if (nrow(m) == 0 || !all(c("scheme", "event") %in% names(m))) {
+    message("[fig1b] fig2_full_cohort_metrics.csv unusable (absent, empty, or no ",
+            "scheme/event columns) -- cannot trim")
+    return(tibble::tibble())
+  }
+  # The exclusion is judged on the active metric's columns; without them
+  # excluded_event_keys() drops nothing and the panel would silently report
+  # untrimmed counts, so say so rather than looking like a successful trim.
+  needed <- paste0(c("base_", "text_"), metric_suffix(METRIC))
+  if (!all(needed %in% names(m))) {
+    message(sprintf("[fig1b] fig2_full_cohort_metrics.csv lacks %s -- cannot trim on %s",
+                    paste(setdiff(needed, names(m)), collapse = "/"), metric_label(METRIC)))
+    return(tibble::tibble())
+  }
+  n_before <- nrow(dplyr::distinct(m, scheme, event))
   m <- drop_excluded_events(m, excluded_event_keys(m))
   if (nrow(m) == 0) return(tibble::tibble())
-  m %>%
+  out <- m %>%
     distinct(scheme, event) %>%
     count(scheme, name = "n_endpoints")
+  message(sprintf("[fig1b] endpoints trimmed on %s: %d -> %d",
+                  metric_label(METRIC), n_before, sum(out$n_endpoints)))
+  out
 }
 
 build_fig1b <- function() {
@@ -105,6 +122,7 @@ build_fig1b <- function() {
   if (nrow(d) == 0) {
     # Fallback: no per-event metrics available, so report the untrimmed counts
     # rather than blanking the panel.
+    message("[fig1b] FALLING BACK to untrimmed fig1_endpoint_counts.csv")
     d <- load_figure_data("fig1_endpoint_counts.csv")
   }
   if (nrow(d) == 0) return(placeholder_panel("fig1_endpoint_counts.csv empty"))
