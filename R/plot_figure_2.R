@@ -373,15 +373,25 @@ build_scheme_delta_bars <- function(topk) {
   d <- topk %>% filter(category %in% names(SCHEME_CATEGORY_TITLES)) %>%
     arrange(category, delta)
   if (nrow(d) == 0) return(placeholder_panel("no positive-delta events"))
-  # event_lbl is ordered (and disambiguated) within each category so identical
-  # labels across categories don't collide into one y-axis row, and each
-  # facet's bars come out sorted by its own delta. The "Mets: " prefix is
-  # dropped here (mets-only) since the facet strip already reads "Mets".
+  # One bar group per (scheme, event), ordered by delta within each facet. The
+  # key is built from scheme+event rather than the label because event_lbl is not
+  # unique: ICD10 pools icd3_post and icd4_post, and a level-3 code and its
+  # level-4 child can share a description, which made the label-keyed factor die
+  # on a duplicated level. Distinct events must stay distinct bars even when they
+  # print the same text. The "Mets: " prefix is dropped (mets-only) since the
+  # facet strip already reads "Mets".
   d <- d %>%
     mutate(category = factor(category, levels = names(SCHEME_CATEGORY_TITLES)),
            event_lbl = ifelse(category == "mets", sub("^Mets: ", "", event_lbl), event_lbl),
-           row_key = factor(paste(category, event_lbl, sep = "|"),
-                            levels = paste(category, event_lbl, sep = "|")))
+           row_key = factor(paste(category, scheme, event, sep = "|"),
+                            levels = paste(category, scheme, event, sep = "|")))
+  # Two bars carrying the identical description would be unreadable, so append the
+  # event code to distinguish them. Only labels that actually repeat are touched,
+  # which keeps the common case uncluttered.
+  d <- d %>%
+    group_by(category, event_lbl) %>%
+    mutate(event_lbl = if (n() > 1) paste0(event_lbl, " (", event, ")") else event_lbl) %>%
+    ungroup()
   d_long <- d %>%
     select(category, row_key, event_lbl, text = text_value, base = base_value) %>%
     pivot_longer(c(text, base), names_to = "model", values_to = "metric_value") %>%
