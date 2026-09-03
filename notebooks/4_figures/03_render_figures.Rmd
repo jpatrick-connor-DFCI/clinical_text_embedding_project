@@ -28,6 +28,12 @@ multi-panel figure.
 Metric-aware figures render twice: once using mean time-dependent AUC(t), the primary metric,
 and once using Harrell's C-index. Metric-invariant figures render once.
 
+A script belongs in `METRIC_SCRIPTS` if **any** of its panels depends on the active metric —
+including only through the event-exclusion set, which is judged on that metric (this is why
+figure 1 is metric-aware: `fig1b` recounts endpoints after the exclusion). Such panels are saved
+metric-tagged, so listing the script as metric-invariant silently renders just the AUC variant and
+never writes the C-index file.
+
 - **Code lookups (R)**: [01_code_lookups.Rmd](01_code_lookups.Rmd) — one-time bootstrap.
 - **Prep tier**: [02_figure_data.ipynb](02_figure_data.ipynb) (Python kernel) — run first.
 - **One-time R package bootstrap** (any host with R):
@@ -53,13 +59,20 @@ cat("R version: ", R.version.string, "\n", sep = "")
 ```{r render-plots}
 METRIC_INVARIANT_SCRIPTS <- c(
   "plot_figure_0.R",
-  "plot_figure_1.R",
   "plot_figure_4.R",
   "plot_figure_4_supp.R",
   "plot_figure_5.R"
 )
 
+# plot_figure_1.R belongs here, not in METRIC_INVARIANT_SCRIPTS: fig1b's endpoint
+# counts are recounted after the event exclusion, which is judged on the active
+# metric, so the panel differs between metrics and is saved metric-tagged
+# (fig1b_cindex / fig1b_auc). Rendered as metric-invariant it ran once with
+# MANUSCRIPT_METRIC unset -- which figure_utils.R defaults to "auc" -- and
+# fig1b_cindex was never written at all. Figure 1's other panels have no event
+# dimension and are simply rewritten identically by the second pass.
 METRIC_SCRIPTS <- c(
+  "plot_figure_1.R",
   "plot_figure_2.R",
   "plot_figure_2_supp.R",
   "plot_figure_2_supp_events.R",
