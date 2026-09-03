@@ -52,8 +52,10 @@ WORKERS_ENV = os.environ.get("TRAJECTORY_WORKERS", "").strip()
 WORKER_MEM_GB = float(os.environ.get("TRAJECTORY_WORKER_MEM_GB", "8"))
 
 # Each worker is single-core by construction.  Without this every worker would size its BLAS and
-# Rayon pools to the whole machine and N workers would fight over the same cores -- the same
-# oversubscription guard the 04 notebook applies to its subprocess fan-out.
+# Rayon pools to the whole machine -- not just contending for cores, but exhausting RLIMIT_NPROC
+# outright once N workers each ask for ~2 x n_cpu threads.  Exported by the parent immediately
+# before the pool is built (see main()), because a spawned child builds these pools during its
+# own imports, before any initializer of ours can run.
 SINGLE_THREAD_ENV = {var: "1" for var in (
     "OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS",
     "POLARS_MAX_THREADS", "RAYON_NUM_THREADS")}
@@ -83,8 +85,9 @@ def _worker_init(embeddings_path: str, embeddings_shape: tuple, embeddings_dtype
     series_vectorized` only fancy-indexes rows out of it, which copies into a fresh array --
     nothing writes through the mapping.
     """
-    for var, val in SINGLE_THREAD_ENV.items():
-        os.environ.setdefault(var, val)
+    # No thread limiting here: the parent exports SINGLE_THREAD_ENV before creating the pool,
+    # and by the time this runs the child's polars/numpy pools are already built from that
+    # inherited environment.  Setting it at this point would be too late to have any effect.
     _W['embeddings'] = np.memmap(embeddings_path, dtype=np.dtype(embeddings_dtype), mode='r',
                                  shape=tuple(embeddings_shape), offset=int(embeddings_offset))
     _W['notes_meta'] = notes_meta
@@ -499,9 +502,9 @@ def main() -> None:
 
     n_workers = _resolve_workers(len(pending)) if pending else 1
     if pending:
-        _stage(f"scoring {len(pending)} landmark(s) across {n_workers} worker(s) "
-               f"(month 0 and {len(months_to_test) - len(pending)} other landmark(s) "
-               "already accounted for)")
+        _stage(f"scoring {len(pending)} landmark(s) across {n_workers} worker(s), "
+               f"1 thread each (month 0 and {len(months_to_test) - len(pending)} other "
+               "landmark(s) already accounted for)")
 
     def _record_result(result: dict) -> None:
         """Apply one worker result in the parent: checkpoint it, then fold it into the matrix."""
@@ -548,6 +551,18 @@ def main() -> None:
         # memmap-able .npy once and the N workers share one read-only mapping through the OS page
         # cache rather than each pickling a private multi-GB copy.  Written next to the
         # checkpoints and removed on the way out.
+        #
+        # Single-threading is set HERE, in the parent, not in _worker_init: a spawned child
+        # builds its Rayon and OpenBLAS pools while importing polars and numpy, which happens
+        # in multiprocessing.spawn's run_module -- long before the initializer runs.  Setting
+        # it there sized every pool to the whole machine anyway, and N workers x ~2 x n_cpu
+        # threads blew past RLIMIT_NPROC on a 64-core node (ThreadPoolBuildError, then a
+        # poisoned LazyLock and a failed numpy C-extension import).  Children inherit
+        # os.environ across spawn, so assigning it before the pool is what actually lands.
+        # The parent's own pools are already built and keep their threads, which is what the
+        # month-0 fit above wants.
+        for _var, _val in SINGLE_THREAD_ENV.items():
+            os.environ[_var] = _val
         os.makedirs(os.path.join(trajectory_path, 'checkpoints'), exist_ok=True)
         embeddings_mmap_path = os.path.join(trajectory_path, 'checkpoints',
                                             f'_embeddings_shared_{os.getpid()}.npy')
