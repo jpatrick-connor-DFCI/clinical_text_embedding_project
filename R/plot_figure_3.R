@@ -19,6 +19,32 @@ source("R/figure_utils.R")
 FDR_ALPHA  <- 0.05
 IQR_WHISKER <- 1.5
 
+# Modalities held out of Figure 3 only. MODALITY_ORDER comes from the shared
+# shared/palette.json and is also read by figures 0/1 and the Python tier, so it
+# is deliberately not edited here -- this narrows Figure 3 alone and leaves the
+# rest of the manuscript untouched.
+FIG3_EXCLUDED_MODALITIES <- c("somatic")
+
+FIG3_MODALITIES <- setdiff(MODALITY_ORDER, FIG3_EXCLUDED_MODALITIES)
+
+drop_fig3_modalities <- function(df) {
+  if (is.null(df) || nrow(df) == 0 || !"modality" %in% names(df)) return(df)
+  df[!df$modality %in% FIG3_EXCLUDED_MODALITIES, , drop = FALSE]
+}
+
+# Per-endpoint ranks are 1..N over the modalities that were ranked. Dropping one
+# leaves holes (a 5-modality endpoint ranked 1,2,3,4,5 becomes 1,2,4,5), which
+# would bias every surviving mean rank upward. Re-rank within each endpoint so
+# the axis still runs 1..N over what remains.
+rerank_within_endpoint <- function(ranks_long) {
+  if (is.null(ranks_long) || nrow(ranks_long) == 0) return(ranks_long)
+  if (!all(c("scheme", "event", "rank") %in% names(ranks_long))) return(ranks_long)
+  ranks_long %>%
+    group_by(scheme, event) %>%
+    mutate(rank = rank(rank, ties.method = "average")) %>%
+    ungroup()
+}
+
 
 # BH-FDR per (scheme, event) cell — matches the Python pipeline
 bh_within_cell <- function(betas) {
@@ -45,7 +71,7 @@ bh_within_cell <- function(betas) {
 # in 3D's per-modality violins while 3A excludes it made the two panels describe
 # different endpoints from the same file.
 complete_case_events <- function(betas) {
-  fitted_mods <- intersect(MODALITY_ORDER, unique(betas$modality[!is.na(betas$beta)]))
+  fitted_mods <- intersect(FIG3_MODALITIES, unique(betas$modality[!is.na(betas$beta)]))
   betas %>% filter(!is.na(beta)) %>%
     group_by(scheme, event) %>%
     summarise(mods = list(unique(modality)), .groups = "drop") %>%
@@ -88,9 +114,11 @@ build_fig3b <- function() {
   d <- load_figure_data("fig3_risk_score_corr.csv")
   if (nrow(d) == 0 || !"modality" %in% names(d))
     return(placeholder_panel("fig3_risk_score_corr.csv empty"))
-  mat <- d %>% select(any_of(c("modality", MODALITY_ORDER))) %>%
+  d <- drop_fig3_modalities(d)
+  if (nrow(d) == 0) return(placeholder_panel("fig3_risk_score_corr.csv empty after modality filter"))
+  mat <- d %>% select(any_of(c("modality", FIG3_MODALITIES))) %>%
     tibble::column_to_rownames("modality") %>% as.matrix()
-  mods <- intersect(MODALITY_ORDER, rownames(mat))
+  mods <- intersect(FIG3_MODALITIES, rownames(mat))
   mat <- mat[mods, mods, drop = FALSE]
   mat[!is.finite(mat)] <- NA_real_
 
@@ -141,9 +169,9 @@ avg_rank_from_long <- function(ranks_long) {
 # fig3c: average modality rank across endpoints (1 = best)
 # ============================================================================
 build_fig3c <- function(metric = METRIC, excluded = EXCLUDED_EVENTS) {
-  ranks_long <- drop_excluded_events(
+  ranks_long <- rerank_within_endpoint(drop_fig3_modalities(drop_excluded_events(
     load_figure_data(sprintf("fig3_modality_ranks_long_%s.csv", metric_suffix(metric))),
-    excluded)
+    excluded)))
   # fig3_modality_avg_rank_*.csv is pre-aggregated per modality in the Python tier
   # and carries no event column, so it cannot be filtered directly. When events are
   # disqualified, re-derive the mean/SEM from the (filtered) long companion, which
@@ -151,14 +179,17 @@ build_fig3c <- function(metric = METRIC, excluded = EXCLUDED_EVENTS) {
   # 3C would still be averaging over events no other panel reports.
   d <- avg_rank_from_long(ranks_long)
   if (nrow(d) == 0) {
-    d <- load_figure_data(sprintf("fig3_modality_avg_rank_%s.csv", metric_suffix(metric)))
+    # Fallback only: this file is pre-aggregated and carries no event column, so
+    # its mean ranks still reflect the held-out modality and are not re-ranked.
+    d <- drop_fig3_modalities(
+      load_figure_data(sprintf("fig3_modality_avg_rank_%s.csv", metric_suffix(metric))))
   }
   if (nrow(d) == 0) return(placeholder_panel("fig3_modality_avg_rank_*.csv empty"))
   # Drop MODALITY_ORDER levels this run has no rank for, so a modality that
   # never ran leaves no empty slot on the axis; ranked_mods also sizes the
   # x-range below, which is 1..n over what was actually ranked.
   d <- d %>% filter(!is.na(mean_rank))
-  ranked_mods <- intersect(MODALITY_ORDER, unique(d$modality))
+  ranked_mods <- intersect(FIG3_MODALITIES, unique(d$modality))
   d <- d %>%
     mutate(modality = factor(modality, levels = ranked_mods)) %>%
     arrange(mean_rank) %>%
@@ -232,7 +263,7 @@ build_fig3d <- function(betas) {
     select(modality, kept) %>%
     tidyr::unnest(kept) %>%
     rename(z = kept) %>%
-    mutate(modality = factor(modality, levels = MODALITY_ORDER))
+    mutate(modality = factor(modality, levels = FIG3_MODALITIES))
 
   ann <- trimmed %>%
     rowwise() %>%
@@ -274,9 +305,9 @@ build_fig3d <- function(betas) {
          title = "Joint Cox Model: Standardized Coefficient by Modality",
          caption = paste0(sprintf("%d complete-case endpoints.  ", nrow(cc_events)),
                           "Mean z by modality: ", means_str, "\n",
-                          "z from L2-penalized fit; ±1.96 lines are descriptive, not an exact test.",
-                          "  Stars: Wilcoxon vs z=0  (*<.05, **<.01, ***<.001, ****<1e-4).",
-                          "  Diamond ± bar: mean ± SD.")) +
+                          "z from L2-penalized fit; \u00B11.96 lines are descriptive, not an exact test.",
+                          "  Diamond \u00B1 bar: mean \u00B1 SD.\n",
+                          "Stars: Wilcoxon vs z=0  (*<.05, **<.01, ***<.001, ****<1e-4).")) +
     theme_manuscript() +
     theme(axis.text.x = element_text(angle = 0, hjust = 0.5),
           plot.caption = element_text(size = MANUSCRIPT_CAPTION_SIZE, hjust = 0,
@@ -296,6 +327,9 @@ build_fig3d <- function(betas) {
 EXCLUDED_EVENTS <- excluded_event_keys(load_figure_data("fig2_full_cohort_metrics.csv"))
 
 betas <- drop_excluded_events(load_figure_data("fig3_joint_betas.csv"), EXCLUDED_EVENTS)
+# Held-out modalities go before the complete-case test in build_fig3a/3d, so an
+# endpoint is judged complete over the modalities Figure 3 actually reports.
+betas <- drop_fig3_modalities(betas)
 if (nrow(betas) > 0 && "p_value" %in% names(betas)) betas <- bh_within_cell(betas)
 
 p3a <- build_fig3a(betas)
