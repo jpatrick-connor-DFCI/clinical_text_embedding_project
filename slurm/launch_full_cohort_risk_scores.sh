@@ -19,13 +19,24 @@
 #   ROWS_PER_TASK=5 bash launch_full_cohort_risk_scores.sh
 #   MEMORY=64G bash launch_full_cohort_risk_scores.sh
 #   ANCHOR=sequencing bash launch_full_cohort_risk_scores.sh
+#
+# SCHEDULER SIZING. The binding constraint is the scheduler, not the node: many short jobs
+# queue worse than a few long ones. A row here fits BOTH the text and base models on the
+# full cohort (no common-modality-MRN restriction), so it costs more than a feature-comp
+# row -- budget ~75m. Against the 24h wall that puts ROWS_PER_TASK at 16 (~20h, ~83%
+# utilization) rather than 20, which would overshoot if rows run at the top of their range.
+# The array script is deadline-guarded and measures actual per-row cost at runtime, so it
+# stops dispatching and defers the rest rather than being killed mid-row; re-running the
+# same array picks the deferred rows up, since completed rows are skipped. Raise
+# ROWS_PER_TASK once you have real timings in the logs.
 
 set -euo pipefail
 
 PROJECT_ROOT="${PROJECT_ROOT:-/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project}"
-ROWS_PER_TASK="${ROWS_PER_TASK:-20}"
+ROWS_PER_TASK="${ROWS_PER_TASK:-16}"
 CPUS_PER_TASK="${CPUS_PER_TASK:-4}"
 MEMORY="${MEMORY:-48G}"
+TIME_LIMIT="${TIME_LIMIT:-24:00:00}"
 ANCHOR="${ANCHOR:-treatment}"
 PARTITION="${PARTITION:-}"
 SBATCH_PARTITION_ARGS=()
@@ -53,6 +64,7 @@ MAX_TASK=$(( N_TASKS - 1 ))
 echo "Manifest:      $MANIFEST"
 echo "Rows:          $N_ROWS"
 echo "Rows per task: $ROWS_PER_TASK"
+echo "Time limit:    $TIME_LIMIT"
 echo "Array tasks:   $N_TASKS  (--array=0-${MAX_TASK})"
 echo "Resources:     ${CPUS_PER_TASK} CPUs, ${MEMORY} per array task"
 
@@ -64,6 +76,7 @@ sbatch \
     --array="0-${MAX_TASK}" \
     --cpus-per-task="$CPUS_PER_TASK" \
     --mem="$MEMORY" \
+    --time="$TIME_LIMIT" \
     --output="$PROJECT_ROOT/slurm/array_full_cohort_risk_scores/output/%A_%a.out" \
     --error="$PROJECT_ROOT/slurm/array_full_cohort_risk_scores/error/%A_%a.err" \
     --export=ALL,PROJECT_ROOT="$PROJECT_ROOT",MANIFEST="$MANIFEST",ROWS_PER_TASK="$ROWS_PER_TASK",ANCHOR="$ANCHOR" \

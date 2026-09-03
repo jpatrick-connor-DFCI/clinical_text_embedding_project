@@ -26,11 +26,28 @@
 #   MODALITY_CLASS=all   bash launch_feature_comp.sh # all six in one process (legacy)
 #   OVERWRITE=1 bash launch_feature_comp.sh
 #   ROWS_PER_TASK=5 bash launch_feature_comp.sh
+#
+# SCHEDULER SIZING. The binding constraint is the scheduler, not the node: many short jobs
+# queue worse than a few long ones. Observed per-modality cost on the "big" class is
+# ~2.5-11m grid + ~16-49m held-out risk (~20-60m, mean ~45m); MODALITY_CLASS=big runs three
+# modalities per row, so a big row is ~2.2h. ROWS_PER_TASK=28 was chosen for the somatic
+# array (one modality per row, ~21h of a 24h wall); the same count here means a "big" task
+# would need ~60h and be killed by the wall.
+#
+# So ROWS_PER_TASK is kept per-class below rather than taken from this one default:
+#   big   -> 10 rows (3 modalities x ~45m = ~2.2h/row -> ~22h)
+#   small -> 28 rows (single-core, minutes per row; the notebook usually covers these)
+# Setting ROWS_PER_TASK explicitly overrides both. Unlike array_somatic_comp.sh, this array
+# has no deadline guard, so these counts are deliberately conservative -- a task that runs
+# long here is killed mid-row rather than deferring cleanly.
 
 set -euo pipefail
 
 PROJECT_ROOT="${PROJECT_ROOT:-/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project}"
-ROWS_PER_TASK="${ROWS_PER_TASK:-7}"
+# Captured before the default is applied: "was ROWS_PER_TASK set by the caller?" cannot be
+# asked after the ${VAR:-default} assignment, because that always leaves it set.
+ROWS_PER_TASK_SET="${ROWS_PER_TASK+set}"
+ROWS_PER_TASK="${ROWS_PER_TASK:-28}"
 MODALITY_CLASS="${MODALITY_CLASS:-big}"
 ANCHOR="${ANCHOR:-treatment}"
 PARTITION="${PARTITION:-}"
@@ -58,24 +75,39 @@ MAX_TASK=$(( N_TASKS - 1 ))
 
 echo "Manifest:      $MANIFEST"
 echo "Rows:          $N_ROWS"
-echo "Rows per task: $ROWS_PER_TASK"
-echo "Array tasks:   $N_TASKS  (--array=0-${MAX_TASK})"
+# Rows-per-task and the resulting array size are per-class (see rows_for_class below), so
+# they are reported by submit_class rather than here; MODALITY_CLASS=all uses these.
+echo "Rows per task: $ROWS_PER_TASK (default; per-class values reported below)"
 
 # See launch_full_cohort.sh for why --output/--error are overridden here with absolute paths
 # rather than left to the array script's relative #SBATCH directives.
 mkdir -p "$PROJECT_ROOT/slurm/array_feature_comp/output" "$PROJECT_ROOT/slurm/array_feature_comp/error"
 
+# ROWS_PER_TASK defaults per class (see SCHEDULER SIZING); an explicit ROWS_PER_TASK in the
+# environment wins. Recomputed per class because the array size depends on it.
+rows_for_class () {
+    if [[ -n "$ROWS_PER_TASK_SET" ]]; then echo "$ROWS_PER_TASK"; return; fi
+    case "$1" in
+        big)   echo 10 ;;
+        small) echo 28 ;;
+        *)     echo "$ROWS_PER_TASK" ;;
+    esac
+}
+
 submit_class () {
     local class="$1" cpus="$2" mem="$3"
-    echo "Submitting MODALITY_CLASS=${class} (--cpus-per-task=${cpus} --mem=${mem})"
+    local rows; rows=$(rows_for_class "$class")
+    local n_tasks=$(( (N_ROWS + rows - 1) / rows ))
+    local max_task=$(( n_tasks - 1 ))
+    echo "Submitting MODALITY_CLASS=${class} (--cpus-per-task=${cpus} --mem=${mem}, ${rows} rows/task, ${n_tasks} tasks)"
     sbatch \
         ${SBATCH_PARTITION_ARGS[@]+"${SBATCH_PARTITION_ARGS[@]}"} \
-        --array="0-${MAX_TASK}" \
+        --array="0-${max_task}" \
         --cpus-per-task="$cpus" \
         --mem="$mem" \
         --output="$PROJECT_ROOT/slurm/array_feature_comp/output/%A_%a.out" \
         --error="$PROJECT_ROOT/slurm/array_feature_comp/error/%A_%a.err" \
-        --export=ALL,PROJECT_ROOT="$PROJECT_ROOT",MANIFEST="$MANIFEST",ROWS_PER_TASK="$ROWS_PER_TASK",MODALITY_CLASS="$class",ANCHOR="$ANCHOR" \
+        --export=ALL,PROJECT_ROOT="$PROJECT_ROOT",MANIFEST="$MANIFEST",ROWS_PER_TASK="$rows",MODALITY_CLASS="$class",ANCHOR="$ANCHOR" \
         "$PROJECT_ROOT/slurm/array_feature_comp.sh"
 }
 

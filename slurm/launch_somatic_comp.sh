@@ -11,6 +11,19 @@
 # panel of data-dependent width, so it is worth a cluster slot even though its penalized
 # column count is modest.
 #
+# Array sizing targets the scheduler, not the node. Observed cost is ~20-60m per row
+# (mean ~45m), so ROWS_PER_TASK defaults to 28 -- roughly 21h of a 24h wall (~88%
+# utilization) -- rather than the feature-comp default of 7, which would fill only ~5h and
+# submit 4x as many array tasks. On the current 1978-row manifest that is 71 tasks instead
+# of 283. array_somatic_comp.sh is deadline-guarded, so a task that runs slow stops
+# dispatching and defers its remaining rows instead of being killed mid-row; re-running the
+# same array picks them up, since completed rows are skipped.
+#
+# If your partition has a shorter wall than 24h, set TIME and ROWS_PER_TASK together, e.g.
+#   TIME=12:00:00 ROWS_PER_TASK=14 bash launch_somatic_comp.sh
+# The array script reads its actual limit from Slurm at runtime, so the guard adapts even
+# if the two are set inconsistently -- it will just defer more rows.
+#
 # Skip behavior: run_feature_comp_task.py skips any scheme/event whose somatic outputs
 # already exist unless OVERWRITE=1, so this is safe to run alongside (or after)
 # array_feature_comp.sh -- each skips what the other already finished. Pass OVERWRITE=1
@@ -18,24 +31,26 @@
 #
 # Env vars (same names/meanings as launch_feature_comp.sh):
 #   PROJECT_ROOT, MANIFEST, ROWS_PER_TASK, OVERWRITE, COXNET_MAX_ITER, COXNET_BACKEND,
-#   ANCHOR, PARTITION, CPUS, MEM, THROTTLE
+#   ANCHOR, PARTITION, CPUS, MEM, THROTTLE, TIME, SAFETY_MIN, ROW_BUDGET_MIN
 # If PARTITION is unset, Slurm uses the cluster/account default partition.
 #
 # Usage:
 #   bash launch_somatic_comp.sh                     # somatic for every manifest row
 #   OVERWRITE=1 bash launch_somatic_comp.sh         # force recompute
-#   ROWS_PER_TASK=5 bash launch_somatic_comp.sh     # smaller, more numerous array tasks
+#   ROWS_PER_TASK=40 bash launch_somatic_comp.sh    # pack more rows per array task
+#   TIME=12:00:00 ROWS_PER_TASK=14 bash launch_somatic_comp.sh   # shorter-wall partition
 #   THROTTLE=20 bash launch_somatic_comp.sh         # at most 20 array tasks running at once
 #   ANCHOR=sequencing bash launch_somatic_comp.sh   # sequencing-anchored manifest/results
 
 set -euo pipefail
 
 PROJECT_ROOT="${PROJECT_ROOT:-/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project}"
-ROWS_PER_TASK="${ROWS_PER_TASK:-7}"
+ROWS_PER_TASK="${ROWS_PER_TASK:-28}"
 ANCHOR="${ANCHOR:-treatment}"
 PARTITION="${PARTITION:-}"
 CPUS="${CPUS:-5}"
 MEM="${MEM:-16G}"
+TIME_LIMIT="${TIME_LIMIT:-24:00:00}"
 THROTTLE="${THROTTLE:-}"
 
 SBATCH_PARTITION_ARGS=()
@@ -68,6 +83,7 @@ echo "Manifest:      $MANIFEST"
 echo "Rows:          $N_ROWS"
 echo "Rows per task: $ROWS_PER_TASK"
 echo "Modality:      somatic (only)"
+echo "Time limit:    $TIME_LIMIT"
 echo "Array tasks:   $N_TASKS  (--array=${ARRAY_SPEC})"
 
 # See launch_full_cohort.sh for why --output/--error are overridden here with absolute paths
@@ -80,6 +96,7 @@ sbatch \
     --array="$ARRAY_SPEC" \
     --cpus-per-task="$CPUS" \
     --mem="$MEM" \
+    --time="$TIME_LIMIT" \
     --output="$PROJECT_ROOT/slurm/array_somatic_comp/output/%A_%a.out" \
     --error="$PROJECT_ROOT/slurm/array_somatic_comp/error/%A_%a.err" \
     --export=ALL,PROJECT_ROOT="$PROJECT_ROOT",MANIFEST="$MANIFEST",ROWS_PER_TASK="$ROWS_PER_TASK",ANCHOR="$ANCHOR" \

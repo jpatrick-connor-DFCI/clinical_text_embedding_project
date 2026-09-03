@@ -30,7 +30,7 @@ ANCHOR=${ANCHOR:-treatment}
 PROJECT_ROOT=${PROJECT_ROOT:-/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project}
 if [[ "$ANCHOR" == "treatment" ]]; then ANCHOR_SUFFIX=""; else ANCHOR_SUFFIX="__${ANCHOR}"; fi
 MANIFEST=${MANIFEST:-$PROJECT_ROOT/slurm/slurm_manifests/full_cohort_tasks${ANCHOR_SUFFIX}.tsv}
-ROWS_PER_TASK=${ROWS_PER_TASK:-20}
+ROWS_PER_TASK=${ROWS_PER_TASK:-16}
 
 if [[ ! -d "$PROJECT_ROOT" ]]; then
   echo "project root not found: $PROJECT_ROOT"
@@ -87,11 +87,55 @@ export CTEP_DATA_PATH=${CTEP_DATA_PATH:-${DATA_PATH:-/data/gusev/USERS/jpconnor/
 RESULTS_ROOT="$CTEP_DATA_PATH/time-to-event_analysis/results"
 FAILED_ROWS=0
 
+# --- Deadline guard ------------------------------------------------------------------
+# Packing rows to fill the wall only pays off if a task that runs long stops cleanly rather
+# than being killed mid-row. Before each row the task checks elapsed time plus an estimate
+# of the next row's cost against its limit; if it does not fit, it stops dispatching and
+# reports the deferred rows. Re-running the array picks them up, since completed rows are
+# skipped. TIME_LIMIT_MIN is read from Slurm at runtime, so the guard stays correct even if
+# ROWS_PER_TASK and --time are set inconsistently.
+TIME_LIMIT_MIN="${TIME_LIMIT_MIN:-}"
+if [[ -z "$TIME_LIMIT_MIN" ]] && command -v squeue >/dev/null 2>&1 && [[ -n "${SLURM_JOB_ID:-}" ]]; then
+  _tl=$(squeue -h -j "$SLURM_JOB_ID" -O TimeLimit 2>/dev/null | tr -d ' ' || true)
+  if [[ "$_tl" =~ ^[0-9]+-([0-9]+):([0-9]+):([0-9]+)$ ]]; then
+    _d=${_tl%%-*}; _rest=${_tl#*-}
+    TIME_LIMIT_MIN=$(( _d * 1440 + 10#${_rest%%:*} * 60 + 10#$(echo "$_rest" | cut -d: -f2) ))
+  elif [[ "$_tl" =~ ^([0-9]+):([0-9]+):([0-9]+)$ ]]; then
+    TIME_LIMIT_MIN=$(( 10#${_tl%%:*} * 60 + 10#$(echo "$_tl" | cut -d: -f2) ))
+  fi
+fi
+TIME_LIMIT_MIN="${TIME_LIMIT_MIN:-1440}"          # default: the 24h #SBATCH --time above
+SAFETY_MIN="${SAFETY_MIN:-20}"
+ROW_BUDGET_MIN="${ROW_BUDGET_MIN:-75}"          # prior estimate; see SCHEDULER SIZING
+DEADLINE_MIN=$(( TIME_LIMIT_MIN - SAFETY_MIN ))
+TASK_START=$SECONDS
+ROWS_DONE=0
+MAX_ROW_MIN=0          # slowest row seen so far; the guard budgets on this, not the mean
+DEFERRED_ROWS=()
+
+echo "Deadline guard: limit=${TIME_LIMIT_MIN}m safety=${SAFETY_MIN}m usable=${DEADLINE_MIN}m, initial per-row budget=${ROW_BUDGET_MIN}m"
+
 for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
   TASK_LINE=$(sed -n "${LINE_NUM}p" "$MANIFEST")
   if [[ -z "${TASK_LINE}" ]]; then
     echo "Skipping empty manifest row ${LINE_NUM}"
     continue
+  fi
+
+  ELAPSED_MIN=$(( (SECONDS - TASK_START) / 60 ))
+  if [[ "$ROWS_DONE" -gt 0 ]]; then
+    # Budget on the slowest row observed, not the mean: a mean dragged down by fast rows
+    # would green-light a slow row that cannot finish inside the wall.
+    EST_MIN="$MAX_ROW_MIN"
+    [[ "$EST_MIN" -lt 1 ]] && EST_MIN=1
+  else
+    EST_MIN="$ROW_BUDGET_MIN"
+  fi
+  if [[ $(( ELAPSED_MIN + EST_MIN )) -gt "$DEADLINE_MIN" ]]; then
+    for DEFER in $(seq "$LINE_NUM" "$END_LINE"); do DEFERRED_ROWS+=("$DEFER"); done
+    echo "[deadline] ${ELAPSED_MIN}m elapsed + ~${EST_MIN}m for the next row exceeds ${DEADLINE_MIN}m usable;" \
+         "deferring rows ${LINE_NUM}-${END_LINE} (re-run this array to pick them up)"
+    break
   fi
 
   IFS=$'\t' read -r RAW_SCHEME EVENT EXTRA_FIELD <<< "${TASK_LINE}"
@@ -126,6 +170,7 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
   mkdir -p "$RESULTS_ROOT/$ANCHOR_SUBDIR/full_cohort_risk_scores/$EVENT"
 
   echo "Running row ${LINE_NUM}: scheme=${SCHEME}, event=${EVENT}, anchor=${ANCHOR}"
+  ROW_START=$SECONDS
   if ! "$PYTHON_BIN" -m pipelines.training.run_full_cohort_risk_scores \
     --scheme "$SCHEME" \
     --event "$EVENT" \
@@ -137,7 +182,16 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
     echo "[error] row ${LINE_NUM} failed: scheme=${SCHEME}, event=${EVENT}"
     FAILED_ROWS=$((FAILED_ROWS + 1))
   fi
+  ROW_MIN=$(( (SECONDS - ROW_START) / 60 ))
+  [[ "$ROW_MIN" -gt "$MAX_ROW_MIN" ]] && MAX_ROW_MIN="$ROW_MIN"
+  ROWS_DONE=$((ROWS_DONE + 1))
 done
+
+echo "Task ${SLURM_ARRAY_TASK_ID}: completed ${ROWS_DONE} row(s) in $(( (SECONDS - TASK_START) / 60 ))m"
+if [[ "${#DEFERRED_ROWS[@]}" -gt 0 ]]; then
+  _last_idx=$(( ${#DEFERRED_ROWS[@]} - 1 ))
+  echo "[deadline] ${#DEFERRED_ROWS[@]} row(s) deferred to a future run: ${DEFERRED_ROWS[0]}-${DEFERRED_ROWS[$_last_idx]}"
+fi
 
 if [[ "$FAILED_ROWS" -gt 0 ]]; then
   echo "$FAILED_ROWS manifest row(s) failed"

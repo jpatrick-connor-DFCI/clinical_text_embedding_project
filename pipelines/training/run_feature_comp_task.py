@@ -44,7 +44,24 @@ ALL_MODALITIES = ["stage", "treatment", "somatic", "prs", "text", "metburden"]
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run one feature-comparison modality for one endpoint event.")
     parser.add_argument("--scheme", required=True, choices=sorted(SCHEMES.keys()))
-    parser.add_argument("--event", required=True)
+    # --event and --events are mutually exclusive but jointly required, so every existing
+    # caller (--event <one>) keeps working verbatim; --events is purely additive.
+    event_group = parser.add_mutually_exclusive_group(required=True)
+    event_group.add_argument("--event")
+    event_group.add_argument(
+        "--events",
+        nargs="+",
+        metavar="EVENT",
+        help=(
+            "Run several endpoints in ONE process, reusing a single load of the feature "
+            "frame. load_feature_modalities_df does not depend on the event, so batching "
+            "here avoids re-reading the embedding/cancer-type/modality files and "
+            "recomputing the common-MRN intersection once per event. Each event is "
+            "isolated by try/except, exactly as --modality all isolates each modality: "
+            "one failing event does not stop the rest, and the process still exits "
+            "non-zero if any failed."
+        ),
+    )
     parser.add_argument(
         "--modality",
         required=True,
@@ -219,20 +236,18 @@ def _run_one_modality(
     print(f"[done] {args.scheme}:{args.event}:{modality} -> {out_dir}")
 
 
-def main() -> None:
-    args = _parse_args()
-    os.environ["JOBLIB_DEFAULT_WORKER_TIMEOUT"] = "600"
+def _run_all_modalities_for_event(
+    args: argparse.Namespace,
+    full_prediction_df: pl.DataFrame,
+    type_cols: list[str],
+    modality_cfg: dict,
+) -> list[str]:
+    """Run the requested modality (or every modality) for ``args.event``.
 
-    full_prediction_df, type_cols, _, modality_cfg, _ = load_feature_modalities_df(
-        args.scheme, modality=args.modality, anchor=args.anchor
-    )
-    events = get_events_from_df(full_prediction_df)
-    if args.event not in events:
-        raise ValueError(
-            f"Event '{args.event}' not found for scheme '{args.scheme}'. "
-            f"Found {len(events)} events."
-        )
-
+    Returns the list of modality names that failed; the caller decides whether a failure
+    is fatal. Extracted from main() unchanged so that the per-event batching loop and the
+    original single-event path share exactly one code path.
+    """
     if args.modality == "all":
         failures = []
         for modality in ALL_MODALITIES:
@@ -240,12 +255,82 @@ def main() -> None:
                 _run_one_modality(args, modality, full_prediction_df, type_cols, modality_cfg)
             except Exception as e:
                 print(f"[error] {args.scheme}:{args.event}:{modality} failed: {e}")
-                failures.append((modality, str(e)))
+                failures.append(modality)
+        return failures
+    _run_one_modality(args, args.modality, full_prediction_df, type_cols, modality_cfg)
+    return []
+
+
+def main() -> None:
+    args = _parse_args()
+    os.environ["JOBLIB_DEFAULT_WORKER_TIMEOUT"] = "600"
+
+    # --events is the batched form; --event is the original single-endpoint form. Both
+    # normalize to a list here so there is one downstream code path. argparse guarantees
+    # exactly one of the two is set.
+    requested_events = args.events if args.events else [args.event]
+
+    # Loaded ONCE for every event in the batch: load_feature_modalities_df reads the
+    # embedding frame, cancer-type file and modality feature files and computes the
+    # common-MRN intersection, none of which depend on the event.
+    full_prediction_df, type_cols, _, modality_cfg, _ = load_feature_modalities_df(
+        args.scheme, modality=args.modality, anchor=args.anchor
+    )
+    events = get_events_from_df(full_prediction_df)
+
+    missing = [e for e in requested_events if e not in events]
+    if missing:
+        # Single-event form keeps its original message and fails fast. Batched form skips
+        # the unknown endpoints and still runs the rest, then reports them at the end.
+        if not args.events:
+            raise ValueError(
+                f"Event '{args.event}' not found for scheme '{args.scheme}'. "
+                f"Found {len(events)} events."
+            )
+        for event in missing:
+            print(f"[skip-data] {args.scheme}:{event} — not found for this scheme")
+
+    runnable = [e for e in requested_events if e in events]
+    if not runnable:
+        raise ValueError(
+            f"None of the requested events exist for scheme '{args.scheme}'. "
+            f"Found {len(events)} events."
+        )
+
+    if not args.events:
+        # Original single-event behaviour, byte-for-byte: failures propagate as before.
+        failures = _run_all_modalities_for_event(args, full_prediction_df, type_cols, modality_cfg)
         if failures:
-            failed_names = ", ".join(modality for modality, _ in failures)
-            raise RuntimeError(f"Failed modalities: {failed_names}")
-    else:
-        _run_one_modality(args, args.modality, full_prediction_df, type_cols, modality_cfg)
+            raise RuntimeError(f"Failed modalities: {', '.join(failures)}")
+        return
+
+    # Batched form: isolate each event so one bad endpoint does not lose the whole
+    # process's remaining work (the array script's rows-per-task is sized on the
+    # assumption that a task keeps going).
+    failed_events: list[str] = []
+    for i, event in enumerate(runnable, start=1):
+        # Per-event shallow copy: _run_one_modality reads args.event throughout, and
+        # mutating the shared namespace in place would leak state between iterations.
+        event_args = copy.copy(args)
+        event_args.event = event
+        print(f"[event {i}/{len(runnable)}] {args.scheme}:{event}")
+        try:
+            failures = _run_all_modalities_for_event(
+                event_args, full_prediction_df, type_cols, modality_cfg
+            )
+            if failures:
+                failed_events.append(event)
+        except Exception as e:
+            print(f"[error] {args.scheme}:{event} failed: {e}")
+            failed_events.append(event)
+
+    if failed_events or missing:
+        parts = []
+        if failed_events:
+            parts.append(f"failed events: {', '.join(failed_events)}")
+        if missing:
+            parts.append(f"unknown events: {', '.join(missing)}")
+        raise RuntimeError("; ".join(parts))
 
 
 if __name__ == "__main__":

@@ -27,6 +27,33 @@
 # Manifest: two tab-separated fields per row (scheme, event) -- the same
 # feature_comp_tasks.tsv the feature-comp array reads. A third "modality" field, if
 # present, is ignored here: this script is somatic-only by construction.
+#
+# SCHEDULER SIZING. The binding constraint is the scheduler, not the node: many short jobs
+# queue worse than a few long ones. Observed per-modality cost on the "big" class is
+# ~2.5-11m grid search + ~16-49m held-out risk, i.e. ~20-60m per row, mean ~45m. Against
+# the 24h wall that puts ROWS_PER_TASK at 28 rows (~21h, ~88% utilization), versus the
+# feature-comp default of 7 (~5h, ~20%) -- and takes a 1978-row manifest from 283 array
+# tasks down to 71.
+#
+# A fixed row count alone is unsafe at that utilization: a run of slow rows would overrun
+# the wall and lose the in-flight row's work. So the loop below is deadline-guarded -- it
+# stops dispatching once the elapsed time plus a running estimate of the next row's cost
+# would exceed the task's time limit, and reports the rows it deferred. Re-running the same
+# array picks those up, since run_feature_comp_task.py skips completed rows. Set
+# ROW_BUDGET_MIN to override the per-row estimate used before any row has finished.
+#
+# BATCHING. run_feature_comp_task.py loads its data once per *process*. Invoking it once per
+# row (as array_feature_comp.sh does) re-reads the embedding frame, cancer-type file, somatic
+# file and re-computes the 4-way MRN intersection for every row -- the repeated
+# "Common feature cohort: N patients" line in the logs. This script instead groups the task's
+# rows by scheme and passes each group's endpoints to --events, so that load happens once per
+# scheme-group rather than once per row. With ROWS_PER_TASK=28 and a manifest sorted by
+# scheme, that is typically one load per task instead of 28.
+#
+# --events is optional and additive on the Python side: array_feature_comp.sh and any job
+# already sitting in the queue still use --event and are completely unaffected. Set
+# BATCH_EVENTS=0 here to fall back to one process per row (the old behaviour) if a batched
+# task ever misbehaves.
 
 # ANCHOR selects the time-zero anchor (see anchors.py): "treatment" (default) or
 # "sequencing". Forwarded to run_feature_comp_task.py as --anchor; non-default anchors
@@ -36,7 +63,7 @@ ANCHOR=${ANCHOR:-treatment}
 PROJECT_ROOT=${PROJECT_ROOT:-/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project}
 if [[ "$ANCHOR" == "treatment" ]]; then ANCHOR_SUFFIX=""; else ANCHOR_SUFFIX="__${ANCHOR}"; fi
 MANIFEST=${MANIFEST:-$PROJECT_ROOT/slurm/slurm_manifests/feature_comp_tasks${ANCHOR_SUFFIX}.tsv}
-ROWS_PER_TASK=${ROWS_PER_TASK:-7}
+ROWS_PER_TASK=${ROWS_PER_TASK:-28}
 
 if [[ ! -d "$PROJECT_ROOT" ]]; then
   echo "project root not found: $PROJECT_ROOT"
@@ -93,6 +120,45 @@ export CTEP_DATA_PATH=${CTEP_DATA_PATH:-${DATA_PATH:-/data/gusev/USERS/jpconnor/
 RESULTS_ROOT="$CTEP_DATA_PATH/time-to-event_analysis/results"
 FAILED_ROWS=0
 
+# --- Deadline guard ------------------------------------------------------------------
+# Stop starting new rows when the next one is unlikely to finish inside the wall clock.
+# TIME_LIMIT_MIN is read from Slurm when available; SAFETY_MIN is held back for the final
+# row's writes and the epilog. ROW_BUDGET_MIN seeds the per-row estimate, which is then
+# replaced by the observed mean once rows start completing.
+TIME_LIMIT_MIN="${TIME_LIMIT_MIN:-}"
+if [[ -z "$TIME_LIMIT_MIN" ]] && command -v squeue >/dev/null 2>&1 && [[ -n "${SLURM_JOB_ID:-}" ]]; then
+  # TimeLimit as raw minutes; squeue prints "UNLIMITED" for jobs without one.
+  _tl=$(squeue -h -j "$SLURM_JOB_ID" -O TimeLimit 2>/dev/null | tr -d ' ' || true)
+  if [[ "$_tl" =~ ^[0-9]+-([0-9]+):([0-9]+):([0-9]+)$ ]]; then
+    _d=${_tl%%-*}; _rest=${_tl#*-}
+    TIME_LIMIT_MIN=$(( _d * 1440 + 10#${_rest%%:*} * 60 + 10#$(echo "$_rest" | cut -d: -f2) ))
+  elif [[ "$_tl" =~ ^([0-9]+):([0-9]+):([0-9]+)$ ]]; then
+    TIME_LIMIT_MIN=$(( 10#${_tl%%:*} * 60 + 10#$(echo "$_tl" | cut -d: -f2) ))
+  fi
+fi
+TIME_LIMIT_MIN="${TIME_LIMIT_MIN:-1440}"          # default: the 24h #SBATCH --time above
+SAFETY_MIN="${SAFETY_MIN:-20}"
+ROW_BUDGET_MIN="${ROW_BUDGET_MIN:-45}"            # prior estimate; see SCHEDULER SIZING
+BATCH_EVENTS="${BATCH_EVENTS:-1}"                 # 0 = one process per row (pre-batching)
+DEADLINE_MIN=$(( TIME_LIMIT_MIN - SAFETY_MIN ))
+TASK_START=$SECONDS
+ROWS_DONE=0
+MAX_ROW_MIN=0          # slowest row seen so far; the guard budgets on this, not the mean
+DEFERRED_ROWS=()
+
+echo "Deadline guard: limit=${TIME_LIMIT_MIN}m safety=${SAFETY_MIN}m usable=${DEADLINE_MIN}m, initial per-row budget=${ROW_BUDGET_MIN}m"
+
+# --- Phase 1: parse + validate every assigned row, grouping consecutive rows by scheme --
+# Grouping is what makes batching pay off: run_feature_comp_task.py loads per process and
+# the load depends on the scheme (and anchor), not the event, so all endpoints sharing a
+# scheme can be handed to one process via --events. Validation happens up front so a
+# malformed manifest row fails the task before any compute is spent.
+GROUP_SCHEMES=()      # scheme for each group
+GROUP_EVENTS=()       # space-separated events for each group
+GROUP_FIRST_ROW=()    # first manifest line number in each group (for deadline reporting)
+GROUP_NROWS=()        # how many manifest rows each group covers
+PREV_SCHEME=""
+
 for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
   TASK_LINE=$(sed -n "${LINE_NUM}p" "$MANIFEST")
   if [[ -z "${TASK_LINE}" ]]; then
@@ -132,23 +198,94 @@ for LINE_NUM in $(seq "$START_LINE" "$END_LINE"); do
   fi
   mkdir -p "$RESULTS_ROOT/$ANCHOR_SUBDIR/feature_comps/$EVENT"
 
-  echo "Running row ${LINE_NUM}: scheme=${SCHEME}, event=${EVENT}, modality=somatic, anchor=${ANCHOR}"
+  # BATCH_EVENTS=0 forces one group per row, i.e. one process per row as before.
+  if [[ "$BATCH_EVENTS" == "1" && "$SCHEME" == "$PREV_SCHEME" ]]; then
+    _gi=$(( ${#GROUP_SCHEMES[@]} - 1 ))
+    GROUP_EVENTS[$_gi]="${GROUP_EVENTS[$_gi]} $EVENT"
+    GROUP_NROWS[$_gi]=$(( ${GROUP_NROWS[$_gi]} + 1 ))
+  else
+    GROUP_SCHEMES+=("$SCHEME")
+    GROUP_EVENTS+=("$EVENT")
+    GROUP_FIRST_ROW+=("$LINE_NUM")
+    GROUP_NROWS+=(1)
+  fi
+  PREV_SCHEME="$SCHEME"
+done
+
+N_GROUPS=${#GROUP_SCHEMES[@]}
+if [[ "$N_GROUPS" -eq 0 ]]; then
+  echo "No usable rows assigned to task ${SLURM_ARRAY_TASK_ID}"
+  exit 0
+fi
+echo "Task ${SLURM_ARRAY_TASK_ID}: $((END_LINE - START_LINE + 1)) row(s) in ${N_GROUPS} scheme-group(s); BATCH_EVENTS=${BATCH_EVENTS}"
+
+# --- Phase 2: one process per scheme-group -------------------------------------------
+for (( GI=0; GI<N_GROUPS; GI++ )); do
+  SCHEME="${GROUP_SCHEMES[$GI]}"
+  # shellcheck disable=SC2206  # deliberate word-split: events were joined on spaces above
+  EVENTS=(${GROUP_EVENTS[$GI]})
+  GROUP_ROWS=${GROUP_NROWS[$GI]}
+
+  # The deadline guard budgets per ROW, so a group of N rows needs N row-budgets. Groups
+  # are not split: a group is either started whole or deferred whole.
+  ELAPSED_MIN=$(( (SECONDS - TASK_START) / 60 ))
+  if [[ "$ROWS_DONE" -gt 0 ]]; then
+    # Budget on the slowest row observed, not the mean: per-row cost spans ~20-60m, so a
+    # mean dragged down by fast rows would green-light a slow row that cannot finish.
+    EST_ROW_MIN="$MAX_ROW_MIN"
+    [[ "$EST_ROW_MIN" -lt 1 ]] && EST_ROW_MIN=1
+  else
+    EST_ROW_MIN="$ROW_BUDGET_MIN"
+  fi
+  EST_MIN=$(( EST_ROW_MIN * GROUP_ROWS ))
+  if [[ $(( ELAPSED_MIN + EST_MIN )) -gt "$DEADLINE_MIN" ]]; then
+    FIRST_DEFERRED=${GROUP_FIRST_ROW[$GI]}
+    for DEFER in $(seq "$FIRST_DEFERRED" "$END_LINE"); do DEFERRED_ROWS+=("$DEFER"); done
+    echo "[deadline] ${ELAPSED_MIN}m elapsed + ~${EST_MIN}m for the next group (${GROUP_ROWS} row(s))" \
+         "exceeds ${DEADLINE_MIN}m usable; deferring rows ${FIRST_DEFERRED}-${END_LINE}" \
+         "(re-run this array to pick them up)"
+    break
+  fi
+
+  echo "Running group $((GI + 1))/${N_GROUPS}: scheme=${SCHEME}, ${GROUP_ROWS} event(s)=${EVENTS[*]}, modality=somatic, anchor=${ANCHOR}"
+  GROUP_START=$SECONDS
+
+  if [[ "${#EVENTS[@]}" -gt 1 ]]; then
+    EVENT_ARGS=(--events "${EVENTS[@]}")
+  else
+    # Single-endpoint groups use --event, the long-standing form, so the common case is
+    # byte-identical to what array_feature_comp.sh runs.
+    EVENT_ARGS=(--event "${EVENTS[0]}")
+  fi
 
   if ! "$PYTHON_BIN" -m pipelines.training.run_feature_comp_task \
     --scheme "$SCHEME" \
-    --event "$EVENT" \
+    "${EVENT_ARGS[@]}" \
     --modality somatic \
     --anchor "$ANCHOR" \
     --n-jobs "${SLURM_CPUS_PER_TASK:-1}" \
     --max-iter "${COXNET_MAX_ITER:-1000}" \
     --backend "${COXNET_BACKEND:-threading}" \
     ${OVERWRITE_FLAG[@]+"${OVERWRITE_FLAG[@]}"}; then
-    echo "[error] row ${LINE_NUM} failed: scheme=${SCHEME}, event=${EVENT}, modality=somatic"
+    echo "[error] group $((GI + 1)) failed: scheme=${SCHEME}, events=${EVENTS[*]}, modality=somatic"
+    # run_feature_comp_task.py isolates each event internally, so a non-zero exit means at
+    # least one endpoint in the group failed, not necessarily all of them.
     FAILED_ROWS=$((FAILED_ROWS + 1))
   fi
+
+  GROUP_MIN=$(( (SECONDS - GROUP_START) / 60 ))
+  ROW_MIN=$(( GROUP_MIN / GROUP_ROWS ))
+  [[ "$ROW_MIN" -gt "$MAX_ROW_MIN" ]] && MAX_ROW_MIN="$ROW_MIN"
+  ROWS_DONE=$(( ROWS_DONE + GROUP_ROWS ))
 done
 
+echo "Task ${SLURM_ARRAY_TASK_ID}: completed ${ROWS_DONE} row(s) in $(( (SECONDS - TASK_START) / 60 ))m"
+if [[ "${#DEFERRED_ROWS[@]}" -gt 0 ]]; then
+  _last_idx=$(( ${#DEFERRED_ROWS[@]} - 1 ))
+  echo "[deadline] ${#DEFERRED_ROWS[@]} row(s) deferred to a future run: ${DEFERRED_ROWS[0]}-${DEFERRED_ROWS[$_last_idx]}"
+fi
+
 if [[ "$FAILED_ROWS" -gt 0 ]]; then
-  echo "$FAILED_ROWS somatic run(s) failed"
+  echo "$FAILED_ROWS somatic group(s) failed"
   exit 1
 fi
