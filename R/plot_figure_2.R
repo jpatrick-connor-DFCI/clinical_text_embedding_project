@@ -425,22 +425,14 @@ build_scheme_event_km <- function(km_data, topk, category, rank_n) {
 # ============================================================================
 metrics <- load_figure_data("fig2_full_cohort_metrics.csv")
 
-# Panels A/B only: drop the single ICD10 Level 3 event whose delta performance (text - base)
-# is a large negative outlier. It compresses the scatter/violin scale and is not
-# representative of the scheme; removed here so it doesn't distort both panels.
-# Determine the outlier using the active metric.
-if (nrow(metrics) > 0 && any(metrics$scheme == "icd3_post")) {
-  .text_col <- if (METRIC == "cindex") "text_cindex" else "text_auc"
-  .base_col <- if (METRIC == "cindex") "base_cindex" else "base_auc"
-  .delta <- metrics[[.text_col]] - metrics[[.base_col]]
-  .icd3  <- metrics$scheme == "icd3_post"
-  .out   <- which(.icd3 & .delta == min(.delta[.icd3], na.rm = TRUE))
-  if (length(.out)) {
-    message(sprintf("fig2 A/B: dropping ICD10 (Level 3) outlier '%s' (delta %s = %.3f)",
-                    metrics$event[.out[1]], METRIC, .delta[.out[1]]))
-    metrics <- metrics[-.out[1], , drop = FALSE]
-  }
-}
+# Events where the text model is substantially worse than base in the full cohort
+# are dropped from EVERY figure (see figure_utils.R::excluded_event_keys). This
+# replaces the former hand-picked "drop the worst ICD10 Level 3 outlier from
+# panels A/B" rule: the exclusion is now threshold-based, applies to all panels
+# rather than just A/B, and is computed once here so the supplementary scripts
+# can reuse the identical set.
+EXCLUDED_EVENTS <- excluded_event_keys(metrics)
+metrics <- drop_excluded_events(metrics, EXCLUDED_EVENTS)
 
 p2a <- build_fig2a(metrics)
 p2b <- build_fig2b(metrics)
@@ -454,6 +446,12 @@ p2_quart <- e_panels$quartile              # G: survival by text risk-score quar
 # Per-scheme metric-delta barplots + top-1 event KM.
 scheme_topk <- load_figure_data(paste0("fig2_scheme_delta_topk_", METRIC, ".csv"))
 scheme_km   <- load_figure_data(paste0("fig2_scheme_event_km_", METRIC, ".csv"))
+
+# Apply the same exclusion to the per-event panels. topk is re-ranked so the
+# rank-1 KM panels (K/L/M) fall through to the next-best surviving event rather
+# than disappearing when the original rank-1 event was excluded.
+scheme_topk <- drop_excluded_events_reranked(scheme_topk, EXCLUDED_EVENTS)
+scheme_km   <- drop_excluded_events(scheme_km, EXCLUDED_EVENTS)
 
 p2_bars <- build_scheme_delta_bars(scheme_topk)
 

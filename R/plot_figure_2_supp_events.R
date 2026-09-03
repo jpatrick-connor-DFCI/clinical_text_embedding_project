@@ -86,6 +86,14 @@ build_event_km_panel <- function(km_data, topk, category, rank_n) {
 topk    <- load_figure_data(paste0("fig2_scheme_delta_topk_", METRIC, ".csv"))
 km_data <- load_figure_data(paste0("fig2_scheme_event_km_", METRIC, ".csv"))
 
+# Recompute the shared exclusion set from the full-cohort metrics (this script
+# runs as its own process, so it cannot inherit figure 2's EXCLUDED_EVENTS) and
+# apply it identically. Re-ranking keeps the ranks 2-3 panels here backfilled by
+# the next-best surviving events, matching the main figure's rank-1 panels.
+EXCLUDED_EVENTS <- excluded_event_keys(load_figure_data("fig2_full_cohort_metrics.csv"))
+topk    <- drop_excluded_events_reranked(topk, EXCLUDED_EVENTS)
+km_data <- drop_excluded_events(km_data, EXCLUDED_EVENTS)
+
 pS_mets2     <- build_event_km_panel(km_data, topk, "mets", 2)
 pS_mets3     <- build_event_km_panel(km_data, topk, "mets", 3)
 pS_icd2      <- build_event_km_panel(km_data, topk, "ICD10", 2)

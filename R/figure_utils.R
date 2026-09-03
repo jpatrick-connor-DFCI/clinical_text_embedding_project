@@ -178,6 +178,79 @@ compact_panels <- function(panels) {
 
 
 # ----------------------------------------------------------------------------
+# Under-performing-event exclusion
+#
+# Events where the text model does substantially WORSE than the base model in
+# the full cohort are dropped from every figure, so a reader never sees an
+# event in one panel that was filtered out of another. The rule is
+# one-directional: an event is excluded only when
+#
+#     base_cindex - text_cindex > EVENT_EXCLUSION_DELTA
+#
+# i.e. only when text is worse by more than the threshold. Events where text
+# wins are always kept, by any margin.
+#
+# The comparison is always on the C-index, regardless of the active METRIC:
+# the exclusion set must be identical across the cindex and auc renders, or the
+# two figure sets would disagree about which events exist.
+# ----------------------------------------------------------------------------
+EVENT_EXCLUSION_DELTA <- 0.05
+# Strictly-greater-than comparisons on doubles need slack: 0.65 - 0.60 evaluates
+# to 0.05000000000000004, so an event sitting exactly on the threshold would be
+# dropped by a bare `> 0.05`. Compare against the threshold plus one ulp-ish
+# tolerance so "worse by exactly 0.05" is kept, as the rule specifies.
+EVENT_EXCLUSION_TOL <- 1e-9
+
+# Key an event by scheme + event name; both are needed since the same event
+# label can appear under more than one coding scheme.
+.event_key <- function(scheme, event) paste(scheme, event, sep = "\u001f")
+
+# Returns the character vector of scheme/event keys to exclude, given the
+# full-cohort metrics frame. Empty vector when the frame lacks the C-index
+# columns (nothing can be judged, so nothing is dropped).
+excluded_event_keys <- function(metrics) {
+  if (is.null(metrics) || nrow(metrics) == 0) return(character(0))
+  if (!all(c("base_cindex", "text_cindex", "scheme", "event") %in% names(metrics))) {
+    return(character(0))
+  }
+  drop <- (metrics$base_cindex - metrics$text_cindex) >
+    (EVENT_EXCLUSION_DELTA + EVENT_EXCLUSION_TOL)
+  drop[is.na(drop)] <- FALSE
+  if (!any(drop)) return(character(0))
+  keys <- .event_key(metrics$scheme[drop], metrics$event[drop])
+  message(sprintf(
+    "[exclude] %d event(s) dropped from all figures (base C-index beats text by > %.2f): %s",
+    length(keys), EVENT_EXCLUSION_DELTA,
+    paste(sprintf("%s/%s (delta %.3f)", metrics$scheme[drop], metrics$event[drop],
+                  (metrics$text_cindex - metrics$base_cindex)[drop]),
+          collapse = "; ")))
+  unique(keys)
+}
+
+# Drop excluded events from any scheme+event-keyed frame. A frame without both
+# key columns is returned untouched.
+drop_excluded_events <- function(df, keys) {
+  if (length(keys) == 0 || is.null(df) || nrow(df) == 0) return(df)
+  if (!all(c("scheme", "event") %in% names(df))) return(df)
+  df[!(.event_key(df$scheme, df$event) %in% keys), , drop = FALSE]
+}
+
+# Drop excluded events from a top-k frame, then renumber `rank` densely (1..n)
+# within each category so the rank-1/2/3 panels stay filled by the next-best
+# surviving events instead of leaving holes where an excluded event ranked.
+drop_excluded_events_reranked <- function(topk, keys) {
+  if (is.null(topk) || nrow(topk) == 0) return(topk)
+  out <- drop_excluded_events(topk, keys)
+  if (nrow(out) == 0 || !all(c("category", "rank") %in% names(out))) return(out)
+  out %>%
+    dplyr::group_by(category) %>%
+    dplyr::arrange(rank, .by_group = TRUE) %>%
+    dplyr::mutate(rank = dplyr::row_number()) %>%
+    dplyr::ungroup()
+}
+
+
+# ----------------------------------------------------------------------------
 # Stats helpers (significance stars + Wilcoxon/Kruskal vs 0 / omnibus)
 # ----------------------------------------------------------------------------
 p_to_stars <- function(p) {

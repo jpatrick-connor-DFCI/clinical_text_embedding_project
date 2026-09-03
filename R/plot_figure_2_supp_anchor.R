@@ -72,6 +72,10 @@ build_delta_panel <- function(wide, metric = METRIC) {
 # ============================================================================
 sens <- load_figure_data("fig2_anchor_sensitivity.csv")
 
+# Same full-cohort exclusion as figure 2, recomputed here (separate process).
+sens <- drop_excluded_events(
+  sens, excluded_event_keys(load_figure_data("fig2_full_cohort_metrics.csv")))
+
 wide <- tibble::tibble()
 if (nrow(sens) > 0) {
   text_intersection <- sens %>% filter(model == "text", cohort == "intersection")

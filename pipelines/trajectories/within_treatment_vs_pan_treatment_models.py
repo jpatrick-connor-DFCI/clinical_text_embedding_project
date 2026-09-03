@@ -1,9 +1,9 @@
 """Within Treatment Vs Pan Treatment Models script for model evaluation workflows."""
 
 # === Imports ===
-import hashlib
+import concurrent.futures
+import multiprocessing
 import os
-import time
 import warnings
 
 import numpy as np
@@ -14,10 +14,14 @@ from tqdm import tqdm
 
 from config import FEATURE_PATH, RESULTS_PATH
 from schemes import load_embedding_prediction_df
-from survival import (RunCheckpoint, dataframe_fingerprint,
-                      fit_predict_external_CoxPH, get_nested_heldout_risk_scores_CoxPH,
-                      run_grid_CoxPH_parallel)
+from survival import RunCheckpoint, dataframe_fingerprint
+from pipelines.trajectories.within_vs_pan_worker import fit_stratum
+from shared.parallel_utils import resolve_workers, set_single_thread_env
 from shared.polars_utils import filter_finite_rows
+
+# Per-worker RAM budget for auto-sizing the stratum pool. A worker holds one class's train
+# subset plus a matched-pan subsample of the same size, both dense embedding frames.
+WORKER_MEM_GB = float(os.environ.get("WITHIN_PAN_WORKER_MEM_GB", "8"))
 
 
 def main() -> None:
@@ -147,8 +151,8 @@ def main() -> None:
     l1_ratios = [0.5, 1.0]
 
     # No single full-cohort pan model is fit here: every pan comparator is a size-matched
-    # per-stratum fit (see _fit_matched_pan below), so the pan arm never simply benefits from
-    # more training data than the within arm it's compared against.
+    # per-stratum fit (see fit_stratum in within_vs_pan_worker), so the pan arm never simply
+    # benefits from more training data than the within arm it's compared against.
 
     def _provisional_cindex(held_within_df, matched_pan_held_df):
         """Reference-free per-stratum held-out C-index (size-matched pan vs within) for the
@@ -169,151 +173,172 @@ def main() -> None:
             return None, None, len(m)
         return float(cp), float(cw), len(m)
 
-    def _fit_matched_pan(treatment, n_match, seed):
-        """Fit a pan model on a random subsample of train_df, excluding this treatment class's
-        own patients and sized to match the within-class train N, so the pan-vs-within
-        comparison isn't confounded by the pan arm simply having more training data.
-        Checkpointed under a distinct per-class key via RunCheckpoint.save_stratum/
-        load_stratum (RunCheckpoint's pan-specific save_pan/load_pan/pan_done slot is unused
-        here — there is no single full-cohort pan model to cache)."""
-        pan_pool = train_df.filter(pl.col('TREATMENT_CLASSIFICATION') != treatment)
-        n_match = min(n_match, len(pan_pool))
-        matched_pan_train = pan_pool.sample(n=n_match, seed=seed)
-
-        _, matched_val, matched_model = run_grid_CoxPH_parallel(
-            matched_pan_train, base_vars, continuous_vars, embed_cols,
-            l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}', max_iter=3000
-        )
-        if matched_model is None:
-            return None, None, None
-
-        _best = filter_finite_rows(matched_val, ['mean_auc(t)']).sort(
-            'mean_auc(t)', descending=True
-        ).row(0, named=True)
-        matched_l1, matched_alpha = _best['l1_ratio'], _best['alpha']
-        trained_matched_pan = (
-            get_nested_heldout_risk_scores_CoxPH(
-                matched_pan_train, base_vars, continuous_vars, embed_cols,
-                l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}',
-                max_iter=3000, backend="threading")
-            .rename({'risk_score': 'pan_treatment_risk_score'})
-        )
-        trained_matched_pan = trained_matched_pan.with_columns(pl.lit(treatment).alias('STRATUM'))
-        matched_pan_held = pl.DataFrame({
-            'DFCI_MRN': held_df['DFCI_MRN'],
-            'pan_treatment_risk_score': fit_predict_external_CoxPH(
-                matched_pan_train, held_df, base_vars, continuous_vars, embed_cols,
-                event_col=event, tstop_col=f'tt_{event}', l1_ratio=matched_l1,
-                alpha=matched_alpha, max_iter=3000,
-            ),
-        }).with_columns(pl.lit(treatment).alias('STRATUM'))
-        return trained_matched_pan, matched_pan_held, (float(matched_l1), float(matched_alpha))
-
     # === Train + score within-treatment models (single resumable pass) ===
     # Each stratum's train OOF scores AND held-out predictions are written to disk as it completes,
     # so a crashed/interrupted run reloads finished strata instead of refitting them. A size-matched
     # pan model (same train N as the class, that class's own patients excluded) is fit alongside
     # each within model so the held-out comparison isn't confounded by unequal training-set sizes.
+    #
+    # Classes are fit in a process pool. They are mutually independent -- each within model sees
+    # only its own class, and each matched-pan model samples from everything except that class --
+    # so the only ordering that ever mattered was the checkpoint write, which stays in this
+    # process (see below). The previous serial loop left the machine almost idle: the only
+    # fan-out was joblib over 5 CV folds, and with l1_ratios of length 2 the grid's
+    # parallel_axis="auto" resolves to "fold", so nothing above that inner loop overlapped.
     train_score_frames, held_score_frames = [], []
     matched_pan_train_frames, matched_pan_held_frames = [], []
 
-    for treatment in tqdm(treatment_types, mininterval=30):
+    spec = {
+        'stratum_col': 'TREATMENT_CLASSIFICATION',
+        'within_score_col': 'within_treatment_risk_score',
+        'pan_score_col': 'pan_treatment_risk_score',
+        'event': event,
+        # base_vars already carries the cancer-type dummies here, and both arms use them, so
+        # the within and matched-pan feature sets are identical (unlike the cancer script).
+        'base_cols': base_vars,
+        'continuous_vars': continuous_vars,
+        'embed_cols': embed_cols,
+        'l1_ratios': l1_ratios,
+        'alphas_to_test': alphas_to_test,
+        'max_iter': 3000,
+    }
+
+    # Decide what each class still needs BEFORE dispatching, so a resumed run ships only the
+    # missing halves to the pool and reloads the rest from disk here.
+    pending, reloaded = [], []
+    for treatment in treatment_types:
         if treatment not in within_eligible:
             continue
 
         matched_pan_key = f'{treatment}__matched_pan__'
-
         within_status = ckpt.status(treatment)
         matched_pan_status = ckpt.status(matched_pan_key)
         if within_status == 'skipped' or matched_pan_status == 'skipped':
             continue
 
-        sub_df = train_df.filter(pl.col('TREATMENT_CLASSIFICATION') == treatment)
-        if len(sub_df) < MIN_TRAIN_N:
-            ckpt.mark_skipped(treatment, 'too_small', meta={'n_train': int(len(sub_df))})
+        n_sub = int(train_df.filter(pl.col('TREATMENT_CLASSIFICATION') == treatment).height)
+        if n_sub < MIN_TRAIN_N:
+            ckpt.mark_skipped(treatment, 'too_small', meta={'n_train': n_sub})
             continue
 
-        _t0 = time.time()
-        if ckpt.stratum_done(treatment):
+        need_within = not ckpt.stratum_done(treatment)
+        need_matched_pan = not ckpt.stratum_done(matched_pan_key)
+        if need_within and within_status == 'done':
+            ckpt.log(f"incomplete within checkpoint for {treatment}; refitting within model")
+        if need_matched_pan and matched_pan_status == 'done':
+            ckpt.log(f"incomplete matched-pan checkpoint for {treatment}; "
+                     "refitting matched-pan model")
+
+        if need_within or need_matched_pan:
+            pending.append((treatment, need_within, need_matched_pan, n_sub))
+        else:
+            reloaded.append(treatment)
+
+    # Fully checkpointed classes never reach the pool.
+    for treatment in reloaded:
+        trained_sub, held_sub = ckpt.load_stratum(treatment)
+        trained_matched_pan, matched_pan_held = ckpt.load_stratum(f'{treatment}__matched_pan__')
+        train_score_frames.append(trained_sub)
+        held_score_frames.append(held_sub)
+        matched_pan_train_frames.append(trained_matched_pan)
+        matched_pan_held_frames.append(matched_pan_held)
+
+    # Largest classes first: cost scales with train N, so starting the longest tasks first keeps
+    # the pool from ending with one big fit running alone.
+    pending.sort(key=lambda task: task[3], reverse=True)
+
+    def _apply_result(result):
+        """Checkpoint one worker's class and fold it into the accumulators.
+
+        Runs in the parent only. RunCheckpoint holds in-memory manifest state and appends to a
+        single CSV, so concurrent writers would interleave rows and diverge; keeping every
+        save/skip call here preserves the serial version's on-disk semantics exactly.
+        """
+        treatment = result['stratum']
+        matched_pan_key = f'{treatment}__matched_pan__'
+
+        if result['error'] is not None:
+            ckpt.mark_skipped(treatment, 'error')
+            ckpt.log(f"class {treatment} failed: {result['error']}")
+            return
+        if result['within_skip'] is not None:
+            reason, n_train = result['within_skip']
+            ckpt.mark_skipped(treatment, reason, meta={'n_train': n_train})
+            return
+        if result['matched_pan_skip'] is not None:
+            reason, n_train = result['matched_pan_skip']
+            ckpt.mark_skipped(matched_pan_key, reason, meta={'n_train': n_train})
+            return
+
+        if result['within'] is not None:
+            trained_sub = result['within']['train']
+            held_sub = result['within']['held']
+            ckpt.save_stratum(treatment, trained_sub, held_sub, meta=result['within']['meta'])
+        else:
             trained_sub, held_sub = ckpt.load_stratum(treatment)
-        else:
-            if within_status == 'done':
-                ckpt.log(f"incomplete within checkpoint for {treatment}; refitting within model")
-            cur_test, cur_val, cur_model = run_grid_CoxPH_parallel(
-                sub_df, base_vars, continuous_vars, embed_cols,
-                l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}', max_iter=3000
-            )
 
-            # Skip strata whose final model failed to converge (returned None).
-            if cur_model is None:
-                ckpt.mark_skipped(treatment, 'no_converge', meta={'n_train': int(len(sub_df))})
-                continue
-
-            _best = filter_finite_rows(cur_val, ['mean_auc(t)']).sort(
-                'mean_auc(t)', descending=True
-            ).row(0, named=True)
-            best_l1, best_alpha = _best['l1_ratio'], _best['alpha']
-            trained_sub = get_nested_heldout_risk_scores_CoxPH(
-                sub_df, base_vars, continuous_vars, embed_cols,
-                l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}',
-                max_iter=3000, backend="threading"
-            ).rename({'risk_score': 'within_treatment_risk_score'})
-            trained_sub = trained_sub.with_columns(pl.lit(treatment).alias('STRATUM'))
-
-            # Held-out predictions for this stratum, taken now while the model is in memory.
-            sub_held = held_df.filter(pl.col('TREATMENT_CLASSIFICATION') == treatment)
-            held_sub = pl.DataFrame({
-                'DFCI_MRN': sub_held['DFCI_MRN'],
-                'within_treatment_risk_score': fit_predict_external_CoxPH(
-                    sub_df, sub_held, base_vars, continuous_vars, embed_cols,
-                    event_col=event, tstop_col=f'tt_{event}', l1_ratio=best_l1,
-                    alpha=best_alpha, max_iter=3000,
-                ),
-            }).with_columns(pl.lit(treatment).alias('STRATUM'))
-
-            # Persist the within half before starting the matched-pan fit. If the process is
-            # interrupted below, the next run reloads this work and starts at matched-pan.
-            ckpt.save_stratum(treatment, trained_sub, held_sub,
-                              meta={'n_train': int(len(sub_df)), 'n_held': int(len(held_sub)),
-                                    'l1': float(best_l1), 'alpha': float(best_alpha),
-                                    'elapsed_s': round(time.time() - _t0, 1)})
-
-        # Size-matched pan comparator: same train N as this class, class's own patients
-        # excluded. Seeded off the base seed + class name so it's reproducible per-class.
-        # Tagged with the same STRATUM so downstream merges key on (DFCI_MRN, STRATUM) — a
-        # patient can appear in more than one class's matched-pan pool (only their own class
-        # is excluded), so DFCI_MRN alone is not unique across matched_pan_*_all.
-        matched_seed = 1234 + int(hashlib.md5(treatment.encode('utf-8')).hexdigest()[:8], 16) % 10_000
-        if ckpt.stratum_done(matched_pan_key):
-            trained_matched_pan, matched_pan_held = ckpt.load_stratum(matched_pan_key)
-        else:
-            if matched_pan_status == 'done':
-                ckpt.log(f"incomplete matched-pan checkpoint for {treatment}; refitting matched-pan model")
-            trained_matched_pan, matched_pan_held, matched_hp = _fit_matched_pan(
-                treatment, n_match=len(sub_df), seed=matched_seed
-            )
-            if trained_matched_pan is None:
-                ckpt.mark_skipped(matched_pan_key, 'no_converge',
-                                  meta={'n_train': int(len(sub_df))})
-                continue
+        if result['matched_pan'] is not None:
+            trained_matched_pan = result['matched_pan']['train']
+            matched_pan_held = result['matched_pan']['held']
             c_pan, c_within, n_held = _provisional_cindex(held_sub, matched_pan_held)
-            ckpt.save_stratum(matched_pan_key, trained_matched_pan, matched_pan_held,
-                              meta={'n_train': int(len(sub_df)), 'n_held': int(n_held),
-                                    'l1': matched_hp[0], 'alpha': matched_hp[1],
-                                    'c_pan': c_pan, 'c_within': c_within,
-                                    'elapsed_s': round(time.time() - _t0, 1)})
-        # Complete the within row's comparison metadata after both independent stages exist.
-        # This also repairs the small crash window after matched-pan was saved but before the
-        # parent row could be finalized.
+            meta = dict(result['matched_pan']['meta'])
+            meta.update({'n_held': int(n_held), 'c_pan': c_pan, 'c_within': c_within})
+            ckpt.save_stratum(matched_pan_key, trained_matched_pan, matched_pan_held, meta=meta)
+        else:
+            trained_matched_pan, matched_pan_held = ckpt.load_stratum(matched_pan_key)
+
+        # Complete the within row's comparison metadata once both halves exist. Also repairs the
+        # crash window where matched-pan was saved but the parent row was never finalized.
         if ckpt.metadata(treatment).get('c_pan') is None:
             c_pan, c_within, n_held = _provisional_cindex(held_sub, matched_pan_held)
             ckpt.update_stratum_meta(treatment, {
                 'n_held': int(n_held), 'c_pan': c_pan, 'c_within': c_within,
             })
+
         train_score_frames.append(trained_sub)
         held_score_frames.append(held_sub)
         matched_pan_train_frames.append(trained_matched_pan)
         matched_pan_held_frames.append(matched_pan_held)
+
+    if pending:
+        n_workers = resolve_workers(len(pending), env_var='WITHIN_PAN_WORKERS',
+                                    worker_mem_gb=WORKER_MEM_GB)
+        print(f"fitting {len(pending)} treatment class(es) across {n_workers} worker(s), "
+              f"1 thread each ({len(reloaded)} reloaded from checkpoints)", flush=True)
+
+        if n_workers == 1:
+            # Explicit serial path, no pool: the fallback if a worker is OOM-killed.
+            for treatment, need_within, need_matched_pan, _n in tqdm(pending, mininterval=30):
+                _apply_result(fit_stratum(treatment, spec, train_df, held_df,
+                                          need_within, need_matched_pan))
+        else:
+            # Set BEFORE the pool exists: a spawned child builds its polars/Rayon and BLAS pools
+            # while importing them, which happens before any initializer we could pass runs.
+            # Without this each of N workers sizes those pools to the whole machine and the run
+            # dies on RLIMIT_NPROC rather than merely thrashing.
+            set_single_thread_env()
+            with concurrent.futures.ProcessPoolExecutor(
+                max_workers=n_workers,
+                mp_context=multiprocessing.get_context('spawn'),
+            ) as pool:
+                in_flight = {
+                    pool.submit(fit_stratum, treatment, spec, train_df, held_df,
+                                need_within, need_matched_pan): treatment
+                    for treatment, need_within, need_matched_pan, _n in pending
+                }
+                n_done = 0
+                try:
+                    for future in concurrent.futures.as_completed(in_flight):
+                        _apply_result(future.result())
+                        n_done += 1
+                        print(f"  [{n_done}/{len(pending)} classes complete]", flush=True)
+                except KeyboardInterrupt:
+                    # Without this, pool shutdown blocks on every queued task. Classes already
+                    # applied above are checkpointed, so a resume picks up from them.
+                    for future in in_flight:
+                        future.cancel()
+                    print("\nInterrupted — cancelled queued classes, waiting for in-flight ones.")
+                    raise
 
     if not train_score_frames:
         raise RuntimeError("No within-treatment stratum completed successfully.")

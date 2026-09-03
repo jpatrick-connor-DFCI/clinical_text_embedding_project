@@ -258,6 +258,12 @@ class LandmarkCheckpoint:
 
     A failed landmark is recorded as 'failed' rather than left absent, so a resumed run does not
     silently retry a fit that will fail the same way. Pass ``retry_failed=True`` to refit those.
+
+    Besides the per-landmark scores this store holds one small extra record: the month-0
+    hyperparameters (``save_hyperparams``/``load_hyperparams``). They are the output of a grid
+    search that is separate from — and additional to — the month-0 score column, so without them
+    a resume still paid for the search before it could refit the model every landmark scores
+    with. Two floats are enough because that model is refit from them cheaply.
     """
 
     def __init__(self, checkpoint_dir, fingerprint, resume=True, retry_failed=False):
@@ -272,6 +278,7 @@ class LandmarkCheckpoint:
 
         self._manifest = {}
         self._resumed, self._fit, self._failed = set(), set(), set()
+        self._resumed_hyperparams = False
 
         stale = False
         if resume and os.path.exists(self.manifest_path) and os.path.exists(self.meta_path):
@@ -289,6 +296,9 @@ class LandmarkCheckpoint:
                 self.log("WARNING: checkpoint fingerprint mismatch — ignoring stale checkpoints, "
                          "starting fresh")
             self._manifest = {}
+            # The hyperparameters are derived from the same cohort the fingerprint covers, so
+            # they are only valid alongside the manifest being cleared here.
+            self._reset_hyperparams()
             with open(self.meta_path, 'w') as fh:
                 json.dump({'fingerprint': fingerprint,
                            'created': datetime.now().isoformat(timespec='seconds')}, fh, indent=2)
@@ -322,6 +332,64 @@ class LandmarkCheckpoint:
 
     def _scores_path(self, month):
         return os.path.join(self.dir, f'landmark_{int(month):03d}_scores.csv')
+
+    # ---- month-0 hyperparameters ---------------------------------------------
+    # The month-0 grid search is a separate expense from the month-0 score column and was the
+    # one un-checkpointed stage left: a resume reloaded the nested-CV scores but still spent the
+    # full grid search re-deriving the two floats below, because only CSVs of scores were ever
+    # persisted (never the fitted object).  The model carried to every landmark is refit from
+    # these two numbers in ~90s, so storing them is enough to skip the search entirely.
+    #
+    # Staleness is handled by the same fingerprint gate as the manifest: this file lives in the
+    # checkpoint dir, and a fingerprint mismatch clears the dir's manifest and rewrites meta,
+    # so a stale hyperparameter file is discarded with everything else (see _reset_hyperparams).
+    def _hyperparams_path(self):
+        return os.path.join(self.dir, 'month0_hyperparams.json')
+
+    def load_hyperparams(self):
+        """Reload the checkpointed month-0 (l1_ratio, alpha, mean_auc), or None.
+
+        Returns None whenever the file is absent, unreadable or missing either hyperparameter,
+        so a corrupt file costs a grid search rather than a wrong model.
+        """
+        path = self._hyperparams_path()
+        if not os.path.isfile(path):
+            return None
+        try:
+            with open(path) as fh:
+                rec = json.load(fh)
+            l1, alpha = float(rec['l1_ratio']), float(rec['alpha'])
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+            self.log("month-0 hyperparameter checkpoint unreadable — rerunning the grid search")
+            return None
+        auc = rec.get('mean_auc')
+        self._resumed_hyperparams = True
+        self.log(f"resumed: month-0 hyperparameters (l1_ratio={l1}, alpha={alpha:.3e})")
+        return l1, alpha, (float(auc) if auc is not None else None)
+
+    def save_hyperparams(self, l1_ratio, alpha, mean_auc=None, elapsed_s=None):
+        """Persist the selected month-0 hyperparameters for later resumes."""
+        payload = {'l1_ratio': float(l1_ratio), 'alpha': float(alpha),
+                   'mean_auc': None if mean_auc is None else float(mean_auc),
+                   'elapsed_s': None if elapsed_s is None else round(float(elapsed_s), 1),
+                   'ts': datetime.now().isoformat(timespec='seconds')}
+        path = self._hyperparams_path()
+        fd, tmp_path = tempfile.mkstemp(dir=self.dir, prefix='.hyperparams-', suffix='.json')
+        try:
+            with os.fdopen(fd, 'w') as fh:
+                json.dump(payload, fh, indent=2)
+            os.replace(tmp_path, path)
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+        self.log(f"saved: month-0 hyperparameters (l1_ratio={payload['l1_ratio']}, "
+                 f"alpha={payload['alpha']:.3e})")
+
+    def _reset_hyperparams(self):
+        """Drop a stale/ignored hyperparameter checkpoint alongside the manifest reset."""
+        path = self._hyperparams_path()
+        if os.path.exists(path):
+            os.unlink(path)
 
     # ---- query ---------------------------------------------------------------
     def status(self, month):

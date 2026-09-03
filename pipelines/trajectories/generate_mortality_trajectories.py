@@ -360,25 +360,39 @@ def main() -> None:
     #
     # Tuning uses the full-cohort grid search; the reported month-0 column stays the nested-CV
     # held-out score, so no patient's own outcome informs their own month-0 value.
-    _stage(f"landmark 0/{len(months_to_test)} (month 0, baseline): "
-           f"selecting hyperparameters on {full_prediction_df.height:,} patients ...")
-    _t0 = time.time()
-    _, month0_val, month0_model = run_grid_CoxPH_parallel(
-        full_prediction_df, base_vars + type_cols, continuous_vars, embed_cols,
-        l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}',
-        max_iter=max_iter, adaptive_low_alphas=low_alphas,
-    )
-    if month0_model is None:
-        raise RuntimeError(
-            "Month-0 grid search did not converge on any hyperparameter pair, so there is no "
-            "model to carry forward to the later landmarks."
+    # The search itself is checkpointed, separately from the month-0 score column below: they are
+    # two independent expenses, and only the column used to be saved. The model every landmark
+    # scores with is refit from these two floats in ~90s further down, so reloading them skips
+    # the search outright on a resume.
+    _hp = ckpt.load_hyperparams() if RESUME else None
+    if _hp is not None:
+        best_l1, best_alpha, _hp_auc = _hp
+        _stage(f"landmark 0/{len(months_to_test)} (month 0, baseline): reusing checkpointed "
+               f"hyperparameters l1_ratio={best_l1}, alpha={best_alpha:.3e}"
+               + (f" (mean_auc(t)={_hp_auc:.4f})" if _hp_auc is not None else ""))
+    else:
+        _stage(f"landmark 0/{len(months_to_test)} (month 0, baseline): "
+               f"selecting hyperparameters on {full_prediction_df.height:,} patients ...")
+        _t0 = time.time()
+        _, month0_val, month0_model = run_grid_CoxPH_parallel(
+            full_prediction_df, base_vars + type_cols, continuous_vars, embed_cols,
+            l1_ratios, alphas_to_test, event_col=event, tstop_col=f'tt_{event}',
+            max_iter=max_iter, adaptive_low_alphas=low_alphas,
         )
-    _best = filter_finite_rows(month0_val, ['mean_auc(t)']).sort(
-        'mean_auc(t)', descending=True
-    ).row(0, named=True)
-    best_l1, best_alpha = float(_best['l1_ratio']), float(_best['alpha'])
-    _stage(f"  selected l1_ratio={best_l1}, alpha={best_alpha:.3e} "
-           f"(mean_auc(t)={_best['mean_auc(t)']:.4f}) in {(time.time() - _t0) / 60:.1f} min")
+        if month0_model is None:
+            raise RuntimeError(
+                "Month-0 grid search did not converge on any hyperparameter pair, so there is no "
+                "model to carry forward to the later landmarks."
+            )
+        _best = filter_finite_rows(month0_val, ['mean_auc(t)']).sort(
+            'mean_auc(t)', descending=True
+        ).row(0, named=True)
+        best_l1, best_alpha = float(_best['l1_ratio']), float(_best['alpha'])
+        _hp_elapsed = time.time() - _t0
+        ckpt.save_hyperparams(best_l1, best_alpha, mean_auc=_best['mean_auc(t)'],
+                              elapsed_s=_hp_elapsed)
+        _stage(f"  selected l1_ratio={best_l1}, alpha={best_alpha:.3e} "
+               f"(mean_auc(t)={_best['mean_auc(t)']:.4f}) in {_hp_elapsed / 60:.1f} min")
 
     # Month 0's own column: nested-CV held-out scores under the same grid.
     if ckpt.landmark_done(0):

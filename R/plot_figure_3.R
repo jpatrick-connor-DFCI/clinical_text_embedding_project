@@ -110,11 +110,39 @@ friedman_p <- function(ranks_long) {
   tryCatch(stats::friedman.test(mat)$p.value, error = function(e) NA_real_)
 }
 
+# Re-aggregate per-modality mean/SEM rank from the long per-endpoint ranks.
+# Mirrors figures/prep/figure3.py::_modality_avg_rank so a filtered 3C matches
+# what the Python tier would have produced from the surviving endpoints:
+# mean over endpoints, SEM = sd(ddof=1)/sqrt(n_events), 0 when n_events <= 1.
+avg_rank_from_long <- function(ranks_long) {
+  if (is.null(ranks_long) || nrow(ranks_long) == 0) return(tibble::tibble())
+  if (!all(c("modality", "rank") %in% names(ranks_long))) return(tibble::tibble())
+  n_events <- dplyr::n_distinct(ranks_long[, c("scheme", "event")])
+  ranks_long %>%
+    group_by(modality) %>%
+    summarise(mean_rank = mean(rank, na.rm = TRUE),
+              sem_rank = if (dplyr::n() > 1) stats::sd(rank, na.rm = TRUE) / sqrt(dplyr::n()) else 0,
+              .groups = "drop") %>%
+    mutate(n_events = n_events)
+}
+
+
 # ============================================================================
 # fig3c: average modality rank across endpoints (1 = best)
 # ============================================================================
-build_fig3c <- function(metric = METRIC) {
-  d <- load_figure_data(sprintf("fig3_modality_avg_rank_%s.csv", metric_suffix(metric)))
+build_fig3c <- function(metric = METRIC, excluded = EXCLUDED_EVENTS) {
+  ranks_long <- drop_excluded_events(
+    load_figure_data(sprintf("fig3_modality_ranks_long_%s.csv", metric_suffix(metric))),
+    excluded)
+  # fig3_modality_avg_rank_*.csv is pre-aggregated per modality in the Python tier
+  # and carries no event column, so it cannot be filtered directly. When events are
+  # disqualified, re-derive the mean/SEM from the (filtered) long companion, which
+  # is the same complete-case rank matrix the aggregate was built from -- otherwise
+  # 3C would still be averaging over events no other panel reports.
+  d <- avg_rank_from_long(ranks_long)
+  if (nrow(d) == 0) {
+    d <- load_figure_data(sprintf("fig3_modality_avg_rank_%s.csv", metric_suffix(metric)))
+  }
   if (nrow(d) == 0) return(placeholder_panel("fig3_modality_avg_rank_*.csv empty"))
   # Drop MODALITY_ORDER levels this run has no rank for, so a modality that
   # never ran leaves no empty slot on the axis; ranked_mods also sizes the
@@ -126,7 +154,6 @@ build_fig3c <- function(metric = METRIC) {
     arrange(mean_rank) %>%
     mutate(modality = fct_reorder(modality, mean_rank, .desc = TRUE))
 
-  ranks_long <- load_figure_data(sprintf("fig3_modality_ranks_long_%s.csv", metric_suffix(metric)))
   fp <- friedman_p(ranks_long)
   stars <- p_to_stars(fp)
   lbl <- metric_label(metric)
@@ -243,7 +270,14 @@ build_fig3d <- function(betas) {
 # ============================================================================
 # Compose
 # ============================================================================
-betas <- load_figure_data("fig3_joint_betas.csv")
+# Disqualified events (text much worse than base in the full cohort) are removed
+# from every figure, so drop them here before anything else reads `betas`.
+# Filtering precedes bh_within_cell() so no disqualified endpoint is corrected or
+# counted; BH runs within each (scheme, event) cell, so the surviving cells'
+# q-values are the same either way.
+EXCLUDED_EVENTS <- excluded_event_keys(load_figure_data("fig2_full_cohort_metrics.csv"))
+
+betas <- drop_excluded_events(load_figure_data("fig3_joint_betas.csv"), EXCLUDED_EVENTS)
 if (nrow(betas) > 0 && "p_value" %in% names(betas)) betas <- bh_within_cell(betas)
 
 p3a <- build_fig3a(betas)
