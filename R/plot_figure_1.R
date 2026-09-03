@@ -80,8 +80,33 @@ build_fig1a <- function() {
 # ============================================================================
 # fig1b: endpoint counts per scheme
 # ============================================================================
+# Counts per scheme, recounted from the per-event full-cohort metrics after the
+# same exclusion the rest of the manuscript applies. fig1_endpoint_counts.csv is
+# pre-aggregated in the Python tier (scheme -> n_endpoints, no event column), so
+# it cannot be trimmed in place -- reporting it unchanged would have this panel
+# claim more endpoints than any downstream figure actually shows.
+#
+# Note the two files are not interchangeable: _endpoint_counts() counts every
+# trained event, while _full_cohort_metrics() skips events whose result files are
+# missing. Recounting therefore also drops those unusable events, which is the
+# intended reading of "endpoints this manuscript reports".
+trimmed_endpoint_counts <- function() {
+  m <- load_figure_data("fig2_full_cohort_metrics.csv")
+  if (nrow(m) == 0 || !all(c("scheme", "event") %in% names(m))) return(tibble::tibble())
+  m <- drop_excluded_events(m, excluded_event_keys(m))
+  if (nrow(m) == 0) return(tibble::tibble())
+  m %>%
+    distinct(scheme, event) %>%
+    count(scheme, name = "n_endpoints")
+}
+
 build_fig1b <- function() {
-  d <- load_figure_data("fig1_endpoint_counts.csv")
+  d <- trimmed_endpoint_counts()
+  if (nrow(d) == 0) {
+    # Fallback: no per-event metrics available, so report the untrimmed counts
+    # rather than blanking the panel.
+    d <- load_figure_data("fig1_endpoint_counts.csv")
+  }
   if (nrow(d) == 0) return(placeholder_panel("fig1_endpoint_counts.csv empty"))
   d <- d %>%
     mutate(scheme = factor(scheme, levels = names(SCHEME_LABELS))) %>%
@@ -210,7 +235,10 @@ p1a <- build_fig1a(); p1b <- build_fig1b(); p1c <- build_fig1c()
 p1d <- build_fig1d(); p1e <- build_fig1e(); p1f <- build_fig1f()
 
 save_panel(p1a, "fig1a", group = "figure1", width = 11.0, height = 6.4)
-save_panel(p1b, "fig1b", group = "figure1", width = 7.2, height = 5.4)
+# fig1b's counts now depend on the event-exclusion set, which is judged on the
+# active metric -- so the cindex and auc renders differ and need distinct names.
+# The other figure-1 panels have no event dimension and stay untagged.
+save_panel(p1b, paste0("fig1b", metric_tag(METRIC)), group = "figure1", width = 7.2, height = 5.4)
 save_panel(p1c, "fig1c", group = "figure1", width = 8.4, height = 5.4)
 save_panel(p1d, "fig1d", group = "figure1", width = 8.4, height = 6.2)
 save_panel(p1e, "fig1e", group = "figure1", width = 7.2, height = 5.4)

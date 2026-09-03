@@ -355,11 +355,16 @@ build_fig2e <- function(metric = METRIC) {
 
 
 # ============================================================================
-# Combined metric-delta barplot (Mets / ICD10 events, grouped by code type) +
-# top-event KM panels. Ranking follows MANUSCRIPT_METRIC and reads the matching
-# cindex/auc prep outputs.
+# Combined metric-delta barplot (Mets / ICD10 / phecode events, grouped by code
+# type) + top-event KM panels. Ranking follows MANUSCRIPT_METRIC and reads the
+# matching cindex/auc prep outputs.
 # ============================================================================
-SCHEME_CATEGORY_TITLES <- c(mets = "Mets", ICD10 = "ICD10")
+# Must cover every category the prep tier emits (CATEGORY_ORDER in
+# figures/prep/figure2.py): build_scheme_delta_bars filters to these names, so a
+# category missing here is dropped from the panel without warning. "phecodes" was
+# absent, which silently discarded its top-3 events even though the rest of the
+# figure (fig2m) and the supplement both report that category.
+SCHEME_CATEGORY_TITLES <- c(mets = "Mets", ICD10 = "ICD10", phecodes = "PhecodeX")
 
 build_scheme_delta_bars <- function(topk) {
   # An empty frame (missing CSV) has no columns, so emptiness must be tested
@@ -388,8 +393,14 @@ build_scheme_delta_bars <- function(topk) {
     geom_text(aes(label = sprintf("%.3f", metric_value)),
               position = position_dodge(width = 0.7),
               vjust = -0.4, size = MANUSCRIPT_SMALL_TEXT_SIZE) +
+    # Wrap hard. facet_grid(space = "free_x") splits width by bar count, not by
+    # label length, so every facet gets the same room however long its labels
+    # are -- widening the device scales the facets and leaves the text the same
+    # size, and the longest labels (mets runs to ~70 characters) keep colliding
+    # with their neighbours. The wrap width, not the canvas, is what separates
+    # adjacent tick labels here.
     scale_x_discrete(
-      labels = setNames(stringr::str_wrap(as.character(d$event_lbl), width = 30), d$row_key)
+      labels = setNames(stringr::str_wrap(as.character(d$event_lbl), width = 22), d$row_key)
     ) +
     scale_fill_manual(values = MODEL_COLORS, labels = c(text = "Text", base = "Base"), name = NULL) +
     scale_y_continuous(limits = c(lo, NA), oob = scales::squish,
@@ -467,7 +478,11 @@ save_panel(p2_wt, paste0("fig2d", .tag), group = "figure2", width = 11.5, height
 save_panel(p2d,       paste0("fig2e", .tag), group = "figure2", width = 7.6, height = 6.0)
 save_panel(p2_stage,  paste0("fig2f", .tag), group = "figure2", width = 7.6, height = 6.0)
 save_panel(p2_quart,  paste0("fig2g", .tag), group = "figure2", width = 7.6, height = 6.0)
-save_panel(p2_bars, paste0("fig2h", .tag), group = "figure2", width = 12.5, height = 6.6)
+# Widest panel in the set: up to 3 events x 3 code-type facets (mets / ICD10 /
+# phecodes), each x-label a wrapped multi-line event description. Width is driven
+# by label crowding, not by the bars; the extra height is headroom for labels that
+# wrap to four lines.
+save_panel(p2_bars, paste0("fig2h", .tag), group = "figure2", width = 18.0, height = 7.6)
 save_panel(p2_km_mets1, paste0("fig2k", .tag), group = "figure2", width = 7.6, height = 6.0)
 save_panel(p2_km_icd1, paste0("fig2l", .tag), group = "figure2", width = 7.6, height = 6.0)
 save_panel(p2_km_phecodes1, paste0("fig2m", .tag), group = "figure2", width = 7.6, height = 6.0)
