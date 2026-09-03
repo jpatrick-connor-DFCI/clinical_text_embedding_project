@@ -389,7 +389,7 @@ build_scheme_delta_bars <- function(topk) {
               position = position_dodge(width = 0.7),
               vjust = -0.4, size = MANUSCRIPT_SMALL_TEXT_SIZE) +
     scale_x_discrete(
-      labels = setNames(stringr::str_wrap(as.character(d$event_lbl), width = 18), d$row_key)
+      labels = setNames(stringr::str_wrap(as.character(d$event_lbl), width = 30), d$row_key)
     ) +
     scale_fill_manual(values = MODEL_COLORS, labels = c(text = "Text", base = "Base"), name = NULL) +
     scale_y_continuous(limits = c(lo, NA), oob = scales::squish,
@@ -416,7 +416,7 @@ build_scheme_event_km <- function(km_data, topk, category, rank_n) {
   km <- km_data %>% filter(category == !!category, scheme == ev$scheme[1], event == ev$event[1])
   if (nrow(km) == 0) return(placeholder_panel(sprintf("%s: no held-out risk scores yet", ev$event_lbl[1])))
   km_tertile_panel(km, "tt", "event_flag",
-                   sprintf("%s\n(text solid, base dashed)", ev$event_lbl[1]))
+                   wrap_title_suffix(ev$event_lbl[1], "(text solid, base dashed)"))
 }
 
 
@@ -460,14 +460,14 @@ p2_km_icd1      <- build_scheme_event_km(scheme_km, scheme_topk, "ICD10", 1)
 p2_km_phecodes1 <- build_scheme_event_km(scheme_km, scheme_topk, "phecodes", 1)
 
 .tag <- metric_tag(METRIC)
-save_panel(p2a, paste0("fig2a", .tag), group = "figure2", width = 6.4, height = 5.0)
-save_panel(p2b, paste0("fig2b", .tag), group = "figure2", width = 6.5, height = 4.8)
-save_panel(p2_wc, paste0("fig2c", .tag), group = "figure2", width = 7.0,  height = 4.6)
-save_panel(p2_wt, paste0("fig2d", .tag), group = "figure2", width = 9.6, height = 4.6)
-save_panel(p2d,       paste0("fig2e", .tag), group = "figure2", width = 5.6, height = 4.6)
-save_panel(p2_stage,  paste0("fig2f", .tag), group = "figure2", width = 5.6, height = 4.6)
-save_panel(p2_quart,  paste0("fig2g", .tag), group = "figure2", width = 5.6, height = 4.6)
-save_panel(p2_bars, paste0("fig2h", .tag), group = "figure2", width = 9.6, height = 5.2)
-save_panel(p2_km_mets1, paste0("fig2k", .tag), group = "figure2", width = 5.6, height = 4.6)
-save_panel(p2_km_icd1, paste0("fig2l", .tag), group = "figure2", width = 5.6, height = 4.6)
-save_panel(p2_km_phecodes1, paste0("fig2m", .tag), group = "figure2", width = 5.6, height = 4.6)
+save_panel(p2a, paste0("fig2a", .tag), group = "figure2", width = 7.8, height = 6.0)
+save_panel(p2b, paste0("fig2b", .tag), group = "figure2", width = 7.8, height = 5.8)
+save_panel(p2_wc, paste0("fig2c", .tag), group = "figure2", width = 8.6,  height = 5.8)
+save_panel(p2_wt, paste0("fig2d", .tag), group = "figure2", width = 11.5, height = 5.8)
+save_panel(p2d,       paste0("fig2e", .tag), group = "figure2", width = 7.6, height = 6.0)
+save_panel(p2_stage,  paste0("fig2f", .tag), group = "figure2", width = 7.6, height = 6.0)
+save_panel(p2_quart,  paste0("fig2g", .tag), group = "figure2", width = 7.6, height = 6.0)
+save_panel(p2_bars, paste0("fig2h", .tag), group = "figure2", width = 12.5, height = 6.6)
+save_panel(p2_km_mets1, paste0("fig2k", .tag), group = "figure2", width = 7.6, height = 6.0)
+save_panel(p2_km_icd1, paste0("fig2l", .tag), group = "figure2", width = 7.6, height = 6.0)
+save_panel(p2_km_phecodes1, paste0("fig2m", .tag), group = "figure2", width = 7.6, height = 6.0)

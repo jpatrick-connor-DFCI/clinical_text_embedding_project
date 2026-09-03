@@ -55,4 +55,4 @@ build_fig0a <- function() {
 # ============================================================================
 p0a <- build_fig0a()
 
-save_panel(p0a, "fig0a", group = "figure0", width = 8.0, height = 5.2)
+save_panel(p0a, "fig0a", group = "figure0", width = 9.5, height = 6.2)

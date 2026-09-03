@@ -76,7 +76,7 @@ build_event_km_panel <- function(km_data, topk, category, rank_n) {
   km <- km_data %>% filter(category == !!category, scheme == ev$scheme[1], event == ev$event[1])
   if (nrow(km) == 0) return(placeholder_panel(sprintf("%s: no held-out risk scores yet", ev$event_lbl[1])))
   km_tertile_panel(km, "tt", "event_flag",
-                   sprintf("%s\n(text solid, base dashed)", ev$event_lbl[1]))
+                   wrap_title_suffix(ev$event_lbl[1], "(text solid, base dashed)"))
 }
 
 
@@ -102,9 +102,9 @@ pS_phecodes2 <- build_event_km_panel(km_data, topk, "phecodes", 2)
 pS_phecodes3 <- build_event_km_panel(km_data, topk, "phecodes", 3)
 
 .tag <- metric_tag(METRIC)
-save_panel(pS_mets2, paste0("figS_scheme_km_mets2", .tag), group = "figure2", width = 5.6, height = 4.6)
-save_panel(pS_mets3, paste0("figS_scheme_km_mets3", .tag), group = "figure2", width = 5.6, height = 4.6)
-save_panel(pS_icd2, paste0("figS_scheme_km_icd2", .tag), group = "figure2", width = 5.6, height = 4.6)
-save_panel(pS_icd3, paste0("figS_scheme_km_icd3", .tag), group = "figure2", width = 5.6, height = 4.6)
-save_panel(pS_phecodes2, paste0("figS_scheme_km_phecodes2", .tag), group = "figure2", width = 5.6, height = 4.6)
-save_panel(pS_phecodes3, paste0("figS_scheme_km_phecodes3", .tag), group = "figure2", width = 5.6, height = 4.6)
+save_panel(pS_mets2, paste0("figS_scheme_km_mets2", .tag), group = "figure2", width = 7.6, height = 6.0)
+save_panel(pS_mets3, paste0("figS_scheme_km_mets3", .tag), group = "figure2", width = 7.6, height = 6.0)
+save_panel(pS_icd2, paste0("figS_scheme_km_icd2", .tag), group = "figure2", width = 7.6, height = 6.0)
+save_panel(pS_icd3, paste0("figS_scheme_km_icd3", .tag), group = "figure2", width = 7.6, height = 6.0)
+save_panel(pS_phecodes2, paste0("figS_scheme_km_phecodes2", .tag), group = "figure2", width = 7.6, height = 6.0)
+save_panel(pS_phecodes3, paste0("figS_scheme_km_phecodes3", .tag), group = "figure2", width = 7.6, height = 6.0)

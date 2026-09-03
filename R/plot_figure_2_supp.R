@@ -86,5 +86,5 @@ pS_i_ii <- build_stage_panel(
   "Stages I-II: survival by overall risk-score quartile")
 
 .tag <- metric_tag(METRIC)
-save_panel(pS_iv, paste0("figS2_stage4_by_risk", .tag), group = "figure2", width = 7.2, height = 6.0)
-save_panel(pS_i_ii, paste0("figS2_stage1_2_by_risk", .tag), group = "figure2", width = 7.2, height = 6.0)
+save_panel(pS_iv, paste0("figS2_stage4_by_risk", .tag), group = "figure2", width = 8.6, height = 7.2)
+save_panel(pS_i_ii, paste0("figS2_stage1_2_by_risk", .tag), group = "figure2", width = 8.6, height = 7.2)

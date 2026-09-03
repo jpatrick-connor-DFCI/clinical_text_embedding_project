@@ -199,6 +199,6 @@ pS_crossed <- build_crossed_dynamics_panel(
   ),
   title_text = "Stage I-II Rising Risk vs. Stage IV Falling Risk")
 
-save_panel(pS_iv, "figS_stage4_by_dynamics", group = "figure4", width = 7.2, height = 6.0)
-save_panel(pS_i_ii, "figS_stage1_2_by_dynamics", group = "figure4", width = 7.2, height = 6.0)
-save_panel(pS_crossed, "figS_stage_dynamics_crossed", group = "figure4", width = 7.2, height = 6.0)
+save_panel(pS_iv, "figS_stage4_by_dynamics", group = "figure4", width = 8.6, height = 7.2)
+save_panel(pS_i_ii, "figS_stage1_2_by_dynamics", group = "figure4", width = 8.6, height = 7.2)
+save_panel(pS_crossed, "figS_stage_dynamics_crossed", group = "figure4", width = 8.6, height = 7.2)

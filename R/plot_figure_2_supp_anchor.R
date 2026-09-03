@@ -88,5 +88,5 @@ if (nrow(sens) > 0) {
 pS_scatter <- build_scatter_panel(wide)
 pS_delta   <- build_delta_panel(wide)
 
-save_panel(pS_scatter, "figS_anchor_scatter", group = "figure2", width = 5.2, height = 5.2)
-save_panel(pS_delta,   "figS_anchor_delta",   group = "figure2", width = 6.4, height = 4.2)
+save_panel(pS_scatter, "figS_anchor_scatter", group = "figure2", width = 6.4, height = 6.4)
+save_panel(pS_delta,   "figS_anchor_delta",   group = "figure2", width = 7.8, height = 5.2)

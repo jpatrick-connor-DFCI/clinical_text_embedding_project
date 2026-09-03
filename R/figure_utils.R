@@ -85,6 +85,21 @@ MANUSCRIPT_TEXT_SIZE <- 3.6
 MANUSCRIPT_SMALL_TEXT_SIZE <- 3.2
 MANUSCRIPT_CAPTION_SIZE <- 8
 
+# ggplot never wraps a title, so a long interpolated label (event descriptions run
+# well past 60 characters in the real data) is drawn as one line and silently
+# clipped at the device edge. Wrap every variable-length label before it reaches
+# labs(). `width` is in characters and is deliberately conservative: at base_size
+# the bold title face fits roughly 2.2 characters per 0.1 inch of panel width.
+wrap_title <- function(x, width = 42) {
+  if (is.null(x) || length(x) == 0) return(x)
+  stringr::str_wrap(as.character(x), width = width)
+}
+
+# Wraps the label but keeps a fixed suffix (e.g. a legend hint) on its own line.
+wrap_title_suffix <- function(x, suffix, width = 42) {
+  paste0(wrap_title(x, width = width), "\n", suffix)
+}
+
 theme_manuscript <- function(base_size = MANUSCRIPT_BASE_SIZE) {
   theme_classic(base_size = base_size) +
     theme(
@@ -97,7 +112,9 @@ theme_manuscript <- function(base_size = MANUSCRIPT_BASE_SIZE) {
       legend.key       = element_blank(),
       strip.background = element_rect(fill = "#F5F5F5", color = NA),
       strip.text       = element_text(size = base_size - 1, face = "bold"),
-      plot.margin      = margin(4, 6, 4, 6)
+      # Roomier than the original margin(4, 6, 4, 6): rotated axis text and the
+      # last tick label on a wide axis were being trimmed at the device edge.
+      plot.margin      = margin(8, 12, 8, 12)
     )
 }
 
