@@ -56,6 +56,9 @@ logrank_p_lt <- function(df, start_col, time_col, event_col, group_col) {
 # One KM panel: a stage-defined stratum, conditional on the landmark, by cluster
 # ============================================================================
 build_stage_dynamics_panel <- function(df, stage_values, stage_label, title_text) {
+  # See note in plot_figure_2_supp.R: an empty frame has no `stage` column, so
+  # the emptiness check has to come before the filter.
+  if (nrow(df) == 0) return(placeholder_panel(paste0("no ", stage_label, " patients")))
   sub <- df %>% filter(stage %in% stage_values)
   if (nrow(sub) == 0) return(placeholder_panel(paste0("no ", stage_label, " patients")))
 
@@ -108,6 +111,11 @@ build_stage_dynamics_panel <- function(df, stage_values, stage_label, title_text
 # distinct from cluster_label() since these strata mix stage and dynamics.
 # ============================================================================
 build_crossed_dynamics_panel <- function(df, arms, title_text) {
+  # An empty frame (missing CSV) has no columns, so emptiness must be tested
+  # before the per-arm filter() below names one.
+  if (nrow(df) == 0) {
+    return(placeholder_panel("one or both crossed strata have no patients"))
+  }
   parts <- lapply(arms, function(a) {
     df %>% filter(stage %in% a$stage_values, cluster_id == a$cluster_id) %>%
       mutate(strat = a$label)

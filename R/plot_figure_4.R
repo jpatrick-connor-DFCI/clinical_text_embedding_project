@@ -282,8 +282,13 @@ build_fig4c <- function() {
     if (isTRUE(spec$is_pct)) p <- p + coord_cartesian(ylim = c(0, 100))
     p
   }
-  ps <- lapply(characteristics, panel_for)
-  wrap_plots(ps, nrow = 2, ncol = 2) +
+  # Only characteristics with data get a cell; if none do, skip the figure.
+  ps <- compact_panels(lapply(characteristics, panel_for))
+  if (is.null(ps)) return(placeholder_panel("no severity characteristics with data"))
+  # Shape the grid to how many panels survived, so a partial set fills the space
+  # instead of leaving blank cells in a fixed 2x2.
+  n_col <- if (length(ps) <= 3) length(ps) else 2
+  wrap_plots(ps, ncol = n_col) +
     plot_annotation(title = "Disease-Severity Characteristics by Risk-Dynamics Group") &
     theme(plot.title = element_text(size = 13, face = "bold", hjust = 0.5))
 }

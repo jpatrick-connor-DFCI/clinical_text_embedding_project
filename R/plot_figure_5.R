@@ -281,7 +281,10 @@ build_fig5d <- function() {
     ttl <- if (nrow(meta) > 0) sprintf("%s\n%s", meta$marker[1], meta$cancer[1]) else "Top hit"
     panels[[1]] <- km_panel(km_top, ttl)
   }
-  while (length(panels) < 3) panels[[length(panels) + 1]] <- placeholder_panel("no additional example")
+  # Render however many examples actually have data -- the grid narrows rather
+  # than padding out to three with empty panels.
+  panels <- compact_panels(panels)
+  if (is.null(panels)) return(placeholder_panel("no KM examples with data"))
   panels[[1]] <- panels[[1]] + labs(y = "Survival Probability")
 
   pgrid <- wrap_plots(panels, nrow = 1)

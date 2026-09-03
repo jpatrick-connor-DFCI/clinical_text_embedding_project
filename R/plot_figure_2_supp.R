@@ -26,6 +26,10 @@ RISK_QUARTILE_COLORS <- setNames(ORDINAL4, c("Q1", "Q2", "Q3", "Q4"))
 
 build_stage_panel <- function(df, perf_df, stage_values, stage_label, perf_group,
                               title_text, metric = METRIC) {
+  # Test the input frame before filtering: an empty tibble from a missing CSV has
+  # no columns at all, so filter(stage_group %in% ...) would error on the absent
+  # column rather than falling through to the skip below.
+  if (nrow(df) == 0) return(placeholder_panel(paste0("no ", stage_label, " patients")))
   sub <- df %>% filter(stage_group %in% stage_values)
   if (nrow(sub) == 0) return(placeholder_panel(paste0("no ", stage_label, " patients")))
   sub <- sub %>% mutate(risk_quartile = factor(risk_quartile,

@@ -362,6 +362,9 @@ build_fig2e <- function(metric = METRIC) {
 SCHEME_CATEGORY_TITLES <- c(mets = "Mets", ICD10 = "ICD10")
 
 build_scheme_delta_bars <- function(topk) {
+  # An empty frame (missing CSV) has no columns, so emptiness must be tested
+  # before any filter() that names one.
+  if (nrow(topk) == 0) return(placeholder_panel("no positive-delta events"))
   d <- topk %>% filter(category %in% names(SCHEME_CATEGORY_TITLES)) %>%
     arrange(category, delta)
   if (nrow(d) == 0) return(placeholder_panel("no positive-delta events"))
@@ -405,6 +408,9 @@ build_scheme_delta_bars <- function(topk) {
 }
 
 build_scheme_event_km <- function(km_data, topk, category, rank_n) {
+  # An empty frame (missing CSV) has no columns, so emptiness must be tested
+  # before any filter() that names one.
+  if (nrow(topk) == 0) return(placeholder_panel(sprintf("no rank-%d %s event", rank_n, category)))
   ev <- topk %>% filter(category == !!category, rank == rank_n)
   if (nrow(ev) == 0) return(placeholder_panel(sprintf("no rank-%d %s event", rank_n, category)))
   km <- km_data %>% filter(category == !!category, scheme == ev$scheme[1], event == ev$event[1])

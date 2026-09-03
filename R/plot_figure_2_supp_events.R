@@ -68,6 +68,9 @@ km_tertile_panel <- function(km, time_col, event_col, title) {
 }
 
 build_event_km_panel <- function(km_data, topk, category, rank_n) {
+  # An empty frame (missing CSV) has no columns, so emptiness must be tested
+  # before any filter() that names one.
+  if (nrow(topk) == 0) return(placeholder_panel(sprintf("no rank-%d %s event", rank_n, category)))
   ev <- topk %>% filter(category == !!category, rank == rank_n)
   if (nrow(ev) == 0) return(placeholder_panel(sprintf("no rank-%d %s event", rank_n, category)))
   km <- km_data %>% filter(category == !!category, scheme == ev$scheme[1], event == ev$event[1])

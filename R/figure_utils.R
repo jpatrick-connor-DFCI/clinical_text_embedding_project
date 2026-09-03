@@ -122,6 +122,19 @@ load_figure_data <- function(name) {
 # default local=FALSE), so a lexical default couldn't see a caller-defined
 # constant from the sys.source()-ed plot script's own environment.
 save_panel <- function(plot, name, group, width = 6.0, height = 4.8) {
+  # A skipped panel (no underlying data) is not written at all -- an absent file
+  # is a clearer signal to downstream assembly than a page reading "csv empty".
+  if (is_skipped_panel(plot)) {
+    message(sprintf("[panel] SKIPPED %s/%s - %s", group, name, skip_reason(plot)))
+    return(invisible(character(0)))
+  }
+  # A NULL here means a panel was built by adding layers to a skipped sentinel
+  # (see the dispatch note by placeholder_panel); fail loudly rather than
+  # letting ggsave report something unrelated.
+  if (is.null(plot)) {
+    stop(sprintf("save_panel(%s/%s): plot is NULL - a skipped panel was likely passed to `+`",
+                 group, name))
+  }
   png_dir <- file.path(PNG_OUT_DIR, group)
   pdf_dir <- file.path(PDF_OUT_DIR, group)
   dir.create(png_dir, showWarnings = FALSE, recursive = TRUE)
@@ -134,12 +147,33 @@ save_panel <- function(plot, name, group, width = 6.0, height = 4.8) {
   invisible(c(out_png, out_pdf))
 }
 
+# A panel with no data to draw. Returns a sentinel rather than a ggplot: rather
+# than emitting a figure whose only content is an error string, save_panel()
+# declines to write the file and logs why. Composition helpers below drop these
+# from multi-panel grids, so a partially-available figure still renders the
+# panels it does have.
 placeholder_panel <- function(msg) {
-  ggplot() +
-    annotate("text", x = 0.5, y = 0.5, label = msg, color = "#777777",
-             hjust = 0.5, vjust = 0.5, size = MANUSCRIPT_TEXT_SIZE) +
-    theme_void() +
-    xlim(0, 1) + ylim(0, 1)
+  structure(list(reason = msg), class = "skipped_panel")
+}
+
+is_skipped_panel <- function(x) inherits(x, "skipped_panel")
+
+skip_reason <- function(x) if (is_skipped_panel(x)) x$reason else NA_character_
+
+# NOTE: a sentinel must never be fed to `+`. No `+.skipped_panel` method can fix
+# this -- the right operand (labs(), theme(), ...) carries ggplot2's "gg" class,
+# so both that method and `+.gg` apply, and R resolves the ambiguity by warning
+# "incompatible methods" and returning NULL. Every `p <- p + ...` site in the
+# plot scripts therefore sits after its function's early return, and any site
+# decorating a maybe-skipped panel must call compact_panels() first (see
+# build_fig5d). Check with is_skipped_panel() before adding layers.
+
+# Drop skipped panels from a list bound for wrap_plots(); returns NULL when
+# nothing is left to draw, so the caller can propagate a single skip upward.
+compact_panels <- function(panels) {
+  kept <- Filter(function(p) !is_skipped_panel(p), panels)
+  if (length(kept) == 0) return(NULL)
+  kept
 }
 
 
