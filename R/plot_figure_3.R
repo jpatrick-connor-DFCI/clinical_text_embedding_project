@@ -35,20 +35,29 @@ bh_within_cell <- function(betas) {
 # ============================================================================
 # fig3a: significant endpoints per modality (complete-case only)
 # ============================================================================
-build_fig3a <- function(betas) {
-  if (nrow(betas) == 0 || !"sig" %in% names(betas))
-    return(placeholder_panel("fig3_joint_betas.csv missing p-values"))
-
-  # Complete-case endpoints = (scheme, event) groups with all modalities fit.
-  # "All" means every modality present somewhere in this run, not every modality
-  # in MODALITY_ORDER: one that never fit anywhere (its feature-comp tasks did
-  # not finish) would otherwise disqualify every endpoint and blank the panel.
+# Complete-case endpoints = (scheme, event) groups with all modalities fit.
+# "All" means every modality present somewhere in this run, not every modality
+# in MODALITY_ORDER: one that never fit anywhere (its feature-comp tasks did
+# not finish) would otherwise disqualify every endpoint and blank the panel.
+#
+# 3A and 3D share this so the joint-Cox panels report one endpoint set. An
+# endpoint missing a modality is not comparable across modalities: counting it
+# in 3D's per-modality violins while 3A excludes it made the two panels describe
+# different endpoints from the same file.
+complete_case_events <- function(betas) {
   fitted_mods <- intersect(MODALITY_ORDER, unique(betas$modality[!is.na(betas$beta)]))
-  present <- betas %>% filter(!is.na(beta)) %>%
+  betas %>% filter(!is.na(beta)) %>%
     group_by(scheme, event) %>%
     summarise(mods = list(unique(modality)), .groups = "drop") %>%
     filter(vapply(mods, function(s) all(fitted_mods %in% s), logical(1))) %>%
     select(scheme, event)
+}
+
+build_fig3a <- function(betas) {
+  if (nrow(betas) == 0 || !"sig" %in% names(betas))
+    return(placeholder_panel("fig3_joint_betas.csv missing p-values"))
+
+  present <- complete_case_events(betas)
   cc <- betas %>% inner_join(present, by = c("scheme", "event"))
   counts <- cc %>%
     group_by(modality) %>%
@@ -64,7 +73,8 @@ build_fig3a <- function(betas) {
     scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
     labs(x = NULL,
          y = sprintf("# endpoints (joint Cox BH-FDR < %.2f)", FDR_ALPHA),
-         title = "Significant Endpoints per Modality") +
+         title = "Significant Endpoints per Modality",
+         subtitle = sprintf("%d complete-case endpoints", nrow(present))) +
     theme_manuscript() +
     theme(axis.text.x = element_text(angle = 0, hjust = 0.5),
           panel.grid.major.y = element_line(color = "grey90"))
@@ -171,7 +181,8 @@ build_fig3c <- function(metric = METRIC, excluded = EXCLUDED_EVENTS) {
     coord_cartesian(xlim = c(0.5, length(ranked_mods) + 0.5)) +
     labs(x = sprintf("Average rank across endpoints (1 = best, ranked by %s)", lbl), y = NULL,
          title = "Average Modality Rank",
-         caption = sprintf("Friedman test across modalities: p=%s  %s",
+         caption = sprintf("%s endpoints  |  Friedman test across modalities: p=%s  %s",
+                           if ("n_events" %in% names(d)) d$n_events[1] else "?",
                            ifelse(is.na(fp), "n/a", sprintf("%.1e", fp)), stars)) +
     theme_manuscript() +
     theme(panel.grid.major.x = element_line(color = "grey90"),
@@ -195,9 +206,15 @@ tukey_trim <- function(x, k = IQR_WHISKER) {
 build_fig3d <- function(betas) {
   if (nrow(betas) == 0)
     return(placeholder_panel("fig3_joint_betas.csv empty"))
+  # Same complete-case endpoint set as 3A, so both joint-Cox panels summarise
+  # the same endpoints (see complete_case_events).
+  cc_events <- complete_case_events(betas)
   d <- betas %>%
+    inner_join(cc_events, by = c("scheme", "event")) %>%
     mutate(z = beta / se) %>%
     filter(is.finite(z))
+  if (nrow(d) == 0)
+    return(placeholder_panel("no complete-case endpoints with finite beta/se"))
 
   trimmed <- d %>% group_by(modality) %>%
     summarise(t = list(tukey_trim(z)), .groups = "drop") %>%
@@ -255,7 +272,8 @@ build_fig3d <- function(betas) {
     scale_x_discrete(labels = MODALITY_DISPLAY) +
     labs(x = NULL, y = "Joint Cox standardized coefficient (z = β/SE)",
          title = "Joint Cox Model: Standardized Coefficient by Modality",
-         caption = paste0("Mean z by modality: ", means_str, "\n",
+         caption = paste0(sprintf("%d complete-case endpoints.  ", nrow(cc_events)),
+                          "Mean z by modality: ", means_str, "\n",
                           "z from L2-penalized fit; ±1.96 lines are descriptive, not an exact test.",
                           "  Stars: Wilcoxon vs z=0  (*<.05, **<.01, ***<.001, ****<1e-4).",
                           "  Diamond ± bar: mean ± SD.")) +
