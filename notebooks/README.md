@@ -31,7 +31,7 @@ disk rather than assuming the run it just did is the only one that has happened.
 | # | Notebook | Tier | Notes |
 |---|---|---|---|
 | 01 | [`3_biomarkers/01_pipeline.ipynb`](3_biomarkers/01_pipeline.ipynb) | cluster CPU | Cohort construction through compiled hits, one subprocess per `pipelines.biomarkers.*` stage, with stage toggles. Stage 5 (`run_IPTW_analysis`) is long-running. Needs `2_models/04`'s full-cohort risk scores; must run **before** `4_figures/02` — `figures.prep.figure5` reads its output. |
-| 02 | [`3_biomarkers/02_hit_km_curves.ipynb`](3_biomarkers/02_hit_km_curves.ipynb) | local / cluster | KM curves for the compiled biomarker hits. |
+| 02 | [`3_biomarkers/02_hit_km_curves.Rmd`](3_biomarkers/02_hit_km_curves.Rmd) | local / cluster (R) | Unweighted and IPTW-weighted KM curves for the compiled biomarker hits. Also writes compiled curve, at-risk, and audit-manifest CSVs. Render with `rmarkdown::render()` from the repo root. |
 
 ## 4_figures — manuscript figures
 

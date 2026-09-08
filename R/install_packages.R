@@ -1,4 +1,4 @@
-# Install R packages required by the manuscript-figure rendering pipeline.
+# Install R packages required by the manuscript-figure and biomarker-KM rendering pipelines.
 #
 # One-time bootstrap; safe to re-run (skips already-installed packages).
 #   Rscript R/install_packages.R   (run from the repo root)
@@ -9,7 +9,7 @@ required <- c(
   # Core ggplot stack
   "ggplot2", "patchwork", "scales",
   # Tidyverse data wrangling + IO
-  "dplyr", "tidyr", "readr", "forcats", "tibble", "stringr", "purrr",
+  "dplyr", "tidyr", "readr", "forcats", "tibble", "stringr", "purrr", "arrow",
   # Survival (KMs for Figs 2D, 2E, 4B, 5D)
   "survival", "ggsurvfit",
   # Significance stars / brackets (Figs 1C, 2B, 3D)

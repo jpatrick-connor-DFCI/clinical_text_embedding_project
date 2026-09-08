@@ -1,0 +1,425 @@
+---
+title: "Biomarker hits: Kaplan-Meier curves"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+This report renders every FDR-significant marker-by-ICI hit twice: an unweighted
+Kaplan-Meier estimate and a stabilized, truncated ATE-weighted estimate on the
+same common-support-trimmed population used by the biomarker screen. In addition
+to the PNGs, it writes compiled, long-format CSVs for every curve and at-risk
+table, plus an export manifest.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+find_repo_root <- function(start = getwd()) {
+  candidate <- normalizePath(start, mustWork = TRUE)
+  repeat {
+    if (file.exists(file.path(candidate, "config.py")) &&
+        dir.exists(file.path(candidate, "pipelines"))) return(candidate)
+    parent <- dirname(candidate)
+    if (identical(parent, candidate)) stop("Could not find repository root from ", start)
+    candidate <- parent
+  }
+}
+
+REPO_ROOT <- find_repo_root()
+knitr::opts_knit$set(root.dir = REPO_ROOT)
+setwd(REPO_ROOT)
+
+suppressPackageStartupMessages({
+  library(arrow)
+  library(dplyr)
+  library(ggplot2)
+  library(patchwork)
+  library(readr)
+  library(survival)
+  library(tidyr)
+})
+source("R/config.R")
+
+BIOMARKER_PATH <- file.path(DATA_PATH, "biomarker_analysis")
+COMPILED_DIR <- file.path(BIOMARKER_PATH, "compiled_results")
+HITS_FILE <- file.path(COMPILED_DIR, "track2_all_significant_hits.csv")
+KM_OUT_DIR <- Sys.getenv(
+  "KM_OUT_DIR",
+  unset = file.path(FIGURE_OUT_DIR, "figure5", "KM_curves")
+)
+
+COMMON_SUPPORT_PCT <- c(0.5, 99.5)
+IPTW_TRUNC_PCT <- c(1, 99)
+TIME_DIVISOR <- 30.44
+MAX_FOLLOWUP <- 60
+RISK_TIMES <- seq(0, MAX_FOLLOWUP, length.out = 6)
+DPI <- 200
+OVERWRITE <- tolower(Sys.getenv("KM_OVERWRITE", "true")) %in% c("1", "true", "yes")
+
+GROUP_LEVELS <- c(
+  "marker- / non-ICI", "marker+ / non-ICI",
+  "marker- / ICI", "marker+ / ICI"
+)
+GROUP_COLORS <- c("marker-" = "#4C72B0", "marker+" = "#C44E52")
+GROUP_LINES <- c("non-ICI" = "dashed", "ICI" = "solid")
+
+dir.create(KM_OUT_DIR, recursive = TRUE, showWarnings = FALSE)
+```
+
+## Inputs and hit consolidation
+
+One panel is generated per unique `(marker, cancer_type, cohort, ps_model)`.
+When both weighted screens call the same hit, `sig_in` records both calls.
+
+```{r inputs}
+if (!file.exists(HITS_FILE)) {
+  stop(HITS_FILE, " not found. Run stage 6 (compile_IPTW_results) first.")
+}
+
+hits <- tryCatch(readr::read_csv(HITS_FILE, show_col_types = FALSE),
+                 error = function(e) tibble())
+
+if (nrow(hits) == 0) {
+  panels <- tibble()
+} else {
+  if (!"extreme_hr_flag" %in% names(hits)) hits$extreme_hr_flag <- FALSE
+  panels <- hits %>%
+    mutate(HR_markerxICI = as.numeric(HR_markerxICI),
+           p_markerxICI = as.numeric(p_markerxICI)) %>%
+    group_by(marker, cancer_type, cohort, ps_model) %>%
+    summarise(
+      sig_in = paste(sort(unique(weight_type)), collapse = "+"),
+      min_p = suppressWarnings(min(p_markerxICI, na.rm = TRUE)),
+      HR_first = first(HR_markerxICI),
+      extreme_hr = any(extreme_hr_flag, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(min_p = ifelse(is.infinite(min_p), NA_real_, min_p)) %>%
+    arrange(min_p)
+}
+
+cat(nrow(panels), "unique hit panels\n")
+```
+
+## Population reconstruction
+
+For cancer-specific hits, the propensity score is recalibrated within cancer
+type by fitting treatment on the original propensity score. Both arms are then
+restricted to their overlapping 0.5th--99.5th percentile support. Stabilized ATE
+weights are truncated at their 1st and 99th percentiles. These constants match
+`pipelines/biomarkers/run_IPTW_analysis.py`.
+
+```{r helpers}
+safe_name <- function(x) gsub("[^[:alnum:]_.-]", "_", as.character(x))
+
+effective_sample_size <- function(w) {
+  denom <- sum(w ^ 2)
+  if (denom > 0) sum(w) ^ 2 / denom else 0
+}
+
+group_label <- function(marker_value, treated) {
+  paste0(ifelse(marker_value == 1, "marker+", "marker-"), " / ",
+         ifelse(treated == 1, "ICI", "non-ICI"))
+}
+
+load_hit_population <- function(marker, cancer_type, cohort, ps_model) {
+  fp <- file.path(BIOMARKER_PATH, paste0("IPTW_df_", cohort, "_", ps_model, ".parquet"))
+  if (!file.exists(fp)) stop(fp, " not found -- run stage 4 (generate_IPTW_df).")
+  df <- as.data.frame(arrow::read_parquet(fp))
+  if (!marker %in% names(df)) stop("marker '", marker, "' is absent from ", basename(fp))
+
+  n_full <- nrow(df)
+  if (cancer_type != "pan_cancer") {
+    ct_col <- paste0("CANCER_TYPE_", cancer_type)
+    if (!ct_col %in% names(df)) stop(ct_col, " is absent from ", basename(fp))
+    df <- df[!is.na(df[[ct_col]]) & as.logical(df[[ct_col]]), , drop = FALSE]
+  }
+  n_cancer_type <- nrow(df)
+
+  required <- c(marker, "PX_on_ICI", "tt_death", "death", "ICI_prediction")
+  for (nm in required) df[[nm]] <- suppressWarnings(as.numeric(df[[nm]]))
+  keep <- Reduce(`&`, lapply(df[required], is.finite)) & df$tt_death > 0
+  df <- df[keep, , drop = FALSE]
+  df$marker_value <- as.integer(df[[marker]] > 0)
+  n_model_frame <- nrow(df)
+  if (nrow(df) == 0 || length(unique(df$PX_on_ICI)) < 2) {
+    stop("no rows, or only one treatment arm, before trimming")
+  }
+
+  recalibrated <- FALSE
+  if (cancer_type != "pan_cancer" && nrow(df) > 10) {
+    ps_fit <- glm(PX_on_ICI ~ ICI_prediction, data = df, family = binomial())
+    df$ICI_prediction <- predict(ps_fit, newdata = df, type = "response")
+    recalibrated <- TRUE
+  }
+
+  ps_raw <- pmin(pmax(df$ICI_prediction, 1e-6), 1 - 1e-6)
+  ps_t <- ps_raw[df$PX_on_ICI == 1]
+  ps_c <- ps_raw[df$PX_on_ICI == 0]
+  lower <- max(quantile(ps_t, COMMON_SUPPORT_PCT[1] / 100, names = FALSE, type = 7),
+               quantile(ps_c, COMMON_SUPPORT_PCT[1] / 100, names = FALSE, type = 7))
+  upper <- min(quantile(ps_t, COMMON_SUPPORT_PCT[2] / 100, names = FALSE, type = 7),
+               quantile(ps_c, COMMON_SUPPORT_PCT[2] / 100, names = FALSE, type = 7))
+  if (!is.finite(lower) || !is.finite(upper) || lower >= upper) {
+    stop("no propensity overlap; cannot reproduce the analysis population")
+  }
+
+  df <- df[ps_raw >= lower & ps_raw <= upper, , drop = FALSE]
+  if (nrow(df) == 0 || length(unique(df$PX_on_ICI)) < 2) {
+    stop("no rows, or only one arm, after common-support trimming")
+  }
+
+  ps <- pmin(pmax(df$ICI_prediction, 1e-6), 1 - 1e-6)
+  p_treated <- mean(df$PX_on_ICI)
+  w <- ifelse(df$PX_on_ICI == 1, p_treated / ps, (1 - p_treated) / (1 - ps))
+  limits <- quantile(w, IPTW_TRUNC_PCT / 100, names = FALSE, type = 7)
+  df$IPTW_ATE <- pmin(pmax(w, limits[1]), limits[2])
+  df$time_months <- df$tt_death / TIME_DIVISOR
+  df$group <- factor(group_label(df$marker_value, df$PX_on_ICI), levels = GROUP_LEVELS)
+
+  counts <- df %>% count(group, name = "n") %>%
+    complete(group = factor(GROUP_LEVELS, levels = GROUP_LEVELS), fill = list(n = 0))
+  if (any(counts$n == 0)) {
+    stop("no patients in ", paste(as.character(counts$group[counts$n == 0]), collapse = ", "),
+         " after common-support trimming")
+  }
+
+  list(
+    data = df,
+    info = list(n_full = n_full, n_cancer_type = n_cancer_type,
+                n_model_frame = n_model_frame, n_analysis = nrow(df),
+                n_trimmed_out = n_model_frame - nrow(df), recalibrated = recalibrated,
+                ps_lower = lower, ps_upper = upper,
+                ess_treated = effective_sample_size(df$IPTW_ATE[df$PX_on_ICI == 1]),
+                ess_control = effective_sample_size(df$IPTW_ATE[df$PX_on_ICI == 0]))
+  )
+}
+
+fit_one_curve <- function(df, weighted, hit_keys) {
+  bind_rows(lapply(GROUP_LEVELS, function(g) {
+    sub <- df[df$group == g, , drop = FALSE]
+    weights <- if (weighted) sub$IPTW_ATE else rep(1, nrow(sub))
+    fit <- survfit(Surv(time_months, death) ~ 1, data = sub, weights = weights,
+                   conf.type = "log")
+    s <- summary(fit, censored = FALSE)
+    tibble(
+      !!!hit_keys,
+      weighting = ifelse(weighted, "IPTW_ATE", "unweighted"),
+      group = g,
+      time = c(0, s$time), survival = c(1, s$surv),
+      n_risk = c(nrow(sub), s$n.risk), n_event = c(0, s$n.event),
+      std_error = c(0, s$std.err), lower = c(1, s$lower), upper = c(1, s$upper)
+    )
+  }))
+}
+
+weighted_logrank <- function(df, weighted = FALSE) {
+  x <- df[df$PX_on_ICI == 1, , drop = FALSE]
+  if (length(unique(x$marker_value)) < 2) return(NA_real_)
+  w <- if (weighted) x$IPTW_ATE else rep(1, nrow(x))
+  event_times <- sort(unique(x$time_months[x$death == 1]))
+  score <- 0
+  variance <- 0
+  for (tt in event_times) {
+    at_risk <- x$time_months >= tt
+    at_event <- x$time_months == tt & x$death == 1
+    y1 <- sum(w[at_risk & x$marker_value == 1])
+    y0 <- sum(w[at_risk & x$marker_value == 0])
+    d1 <- sum(w[at_event & x$marker_value == 1])
+    d <- sum(w[at_event])
+    y <- y1 + y0
+    if (y > 0) score <- score + d1 - d * y1 / y
+    if (y > 1) variance <- variance + y1 * y0 * d * (y - d) / (y ^ 2 * (y - 1))
+  }
+  if (variance <= 0) NA_real_ else pchisq(score ^ 2 / variance, df = 1, lower.tail = FALSE)
+}
+
+make_at_risk <- function(df, hit_keys) {
+  bind_rows(lapply(GROUP_LEVELS, function(g) {
+    sub <- df[df$group == g, , drop = FALSE]
+    bind_rows(lapply(RISK_TIMES, function(tt) {
+      at_risk <- sub$time_months >= tt
+      tibble(!!!hit_keys, group = g, time = tt,
+             n_at_risk = sum(at_risk),
+             weighted_at_risk = sum(sub$IPTW_ATE[at_risk]))
+    }))
+  }))
+}
+
+render_hit <- function(df, curves, risk, row, info, p_unweighted, p_weighted, output_file) {
+  curves <- curves %>%
+    mutate(marker_status = ifelse(grepl("marker\\+", group), "marker+", "marker-"),
+           ici_status = ifelse(grepl("non-ICI", group), "non-ICI", "ICI"))
+
+  group_stats <- risk %>% filter(time == 0) %>% select(group, n_at_risk)
+  panel_plot <- function(weighting, p_value) {
+    dd <- curves %>% filter(.data$weighting == weighting) %>%
+      left_join(group_stats, by = "group")
+    labels <- setNames(vapply(GROUP_LEVELS, function(g) {
+      sub <- df[df$group == g, , drop = FALSE]
+      if (weighting == "IPTW_ATE") {
+        sprintf("%s (n=%d, ESS=%.0f, d=%d)", g, nrow(sub),
+                effective_sample_size(sub$IPTW_ATE), sum(sub$death))
+      } else {
+        sprintf("%s (n=%d, d=%d)", g, nrow(sub), sum(sub$death))
+      }
+    }, character(1)), GROUP_LEVELS)
+    group_colors <- setNames(ifelse(grepl("marker\\+", GROUP_LEVELS),
+                                    GROUP_COLORS[["marker+"]], GROUP_COLORS[["marker-"]]),
+                             GROUP_LEVELS)
+    group_lines <- setNames(ifelse(grepl("non-ICI", GROUP_LEVELS), "dashed", "solid"),
+                            GROUP_LEVELS)
+    ggplot(dd, aes(time, survival, color = group, linetype = group,
+                   group = group)) +
+      geom_step(linewidth = 0.8) +
+      scale_color_manual(values = group_colors, labels = labels) +
+      scale_linetype_manual(values = group_lines, labels = labels) +
+      coord_cartesian(xlim = c(0, MAX_FOLLOWUP), ylim = c(0, 1.02)) +
+      labs(x = "Time (months)", y = "Survival probability",
+           title = ifelse(weighting == "IPTW_ATE", "IPTW-weighted (ATE)", "Unweighted"),
+           subtitle = paste0("marker+/- within ICI: log-rank p=",
+                             ifelse(is.na(p_value), "n/a", format.pval(p_value, digits = 3))),
+           color = NULL, linetype = NULL) +
+      guides(linetype = "none",
+             color = guide_legend(override.aes = list(linetype = unname(group_lines)))) +
+      theme_bw(base_size = 10) + theme(legend.position = "bottom")
+  }
+
+  risk_plot <- risk %>%
+    mutate(group = factor(group, levels = rev(GROUP_LEVELS))) %>%
+    ggplot(aes(time, group, label = n_at_risk)) +
+    geom_text(size = 3) +
+    scale_x_continuous(limits = c(0, MAX_FOLLOWUP), breaks = RISK_TIMES) +
+    labs(x = "Time (months)", y = NULL, title = "Number at risk") +
+    theme_minimal(base_size = 9) +
+    theme(panel.grid = element_blank(), axis.text.y = element_text(hjust = 0))
+
+  title_bits <- c(
+    paste0(row$marker, " — ", row$cancer_type),
+    paste0(row$cohort, " / ", row$ps_model,
+           " | HR(marker×ICI)=", ifelse(is.finite(row$HR_first), sprintf("%.2f", row$HR_first), "n/a"),
+           " | p=", ifelse(is.finite(row$min_p), format.pval(row$min_p, digits = 2), "n/a"),
+           " | FDR-sig in: ", row$sig_in),
+    paste0("n=", info$n_analysis, " after common-support trim (-", info$n_trimmed_out,
+           " of ", info$n_model_frame, ")")
+  )
+  composed <- (panel_plot("unweighted", p_unweighted) |
+                 panel_plot("IPTW_ATE", p_weighted)) /
+    risk_plot +
+    plot_layout(heights = c(4, 1.35)) +
+    plot_annotation(title = paste(title_bits, collapse = "\n"))
+  ggsave(output_file, composed, width = 13.5, height = 7.2, dpi = DPI, bg = "white")
+}
+```
+
+## Export
+
+The long-format CSVs are regenerated atomically at the end of each successful
+report run:
+
+- `KM_compiled_curves.csv`: survival estimates and uncertainty at every event time.
+- `KM_compiled_at_risk.csv`: unweighted and weighted at-risk totals at fixed plot times.
+- `KM_export_manifest.csv`: one row per requested hit, including skips, group support,
+  effective sample size, propensity support, and within-ICI log-rank p-values.
+
+```{r export}
+curve_parts <- list()
+risk_parts <- list()
+manifest_parts <- list()
+
+for (i in seq_len(nrow(panels))) {
+  row <- panels[i, , drop = FALSE]
+  keys <- as.list(row[c("marker", "cancer_type", "cohort", "ps_model")])
+  spec <- paste(row$cohort, row$ps_model, sep = "_")
+  spec_dir <- file.path(KM_OUT_DIR, spec)
+  output_file <- file.path(spec_dir, paste0("KM_", safe_name(row$marker), "_",
+                                            safe_name(row$cancer_type), ".png"))
+  base_record <- row %>% transmute(
+    marker, cancer_type, cohort, ps_model, sig_in,
+    HR_markerxICI = HR_first, p_markerxICI = min_p,
+    extreme_hr_flag = extreme_hr
+  )
+
+  result <- tryCatch(load_hit_population(row$marker, row$cancer_type,
+                                         row$cohort, row$ps_model),
+                     error = function(e) e)
+  if (inherits(result, "error")) {
+    manifest_parts[[length(manifest_parts) + 1]] <- base_record %>%
+      mutate(status = "skipped", reason = conditionMessage(result), file = NA_character_)
+    message(sprintf("[%d/%d] SKIP %s/%s/%s: %s", i, nrow(panels), spec,
+                    row$marker, row$cancer_type, conditionMessage(result)))
+    next
+  }
+
+  df <- result$data
+  info <- result$info
+  curves <- bind_rows(fit_one_curve(df, FALSE, keys), fit_one_curve(df, TRUE, keys))
+  risk <- make_at_risk(df, keys)
+  p_unweighted <- weighted_logrank(df, FALSE)
+  p_weighted <- weighted_logrank(df, TRUE)
+
+  status <- "written"
+  if (!OVERWRITE && file.exists(output_file)) {
+    status <- "existing"
+  } else {
+    dir.create(spec_dir, recursive = TRUE, showWarnings = FALSE)
+    render_hit(df, curves, risk, row, info, p_unweighted, p_weighted, output_file)
+  }
+
+  group_summary <- df %>% group_by(group) %>%
+    summarise(n = n(), deaths = sum(death), .groups = "drop")
+  get_group <- function(g, field) group_summary[[field]][match(g, group_summary$group)]
+
+  manifest_parts[[length(manifest_parts) + 1]] <- base_record %>% mutate(
+    status = status, reason = NA_character_, file = file.path(spec, basename(output_file)),
+    n_analysis = info$n_analysis, n_trimmed_out = info$n_trimmed_out,
+    propensity_recalibrated = info$recalibrated,
+    propensity_support_lower = info$ps_lower, propensity_support_upper = info$ps_upper,
+    ess_treated = info$ess_treated, ess_control = info$ess_control,
+    logrank_p_unweighted = p_unweighted, logrank_p_IPTW_ATE = p_weighted,
+    n_marker_neg_nonICI = get_group("marker- / non-ICI", "n"),
+    n_marker_pos_nonICI = get_group("marker+ / non-ICI", "n"),
+    n_marker_neg_ICI = get_group("marker- / ICI", "n"),
+    n_marker_pos_ICI = get_group("marker+ / ICI", "n"),
+    d_marker_neg_nonICI = get_group("marker- / non-ICI", "deaths"),
+    d_marker_pos_nonICI = get_group("marker+ / non-ICI", "deaths"),
+    d_marker_neg_ICI = get_group("marker- / ICI", "deaths"),
+    d_marker_pos_ICI = get_group("marker+ / ICI", "deaths")
+  )
+  curve_parts[[length(curve_parts) + 1]] <- curves
+  risk_parts[[length(risk_parts) + 1]] <- risk
+  message(sprintf("[%d/%d] %s %s/%s", i, nrow(panels), status, spec, basename(output_file)))
+}
+
+curves_compiled <- if (length(curve_parts)) bind_rows(curve_parts) else tibble(
+  marker = character(), cancer_type = character(), cohort = character(), ps_model = character(),
+  weighting = character(), group = character(), time = double(), survival = double(),
+  n_risk = double(), n_event = double(), std_error = double(), lower = double(), upper = double()
+)
+at_risk_compiled <- if (length(risk_parts)) bind_rows(risk_parts) else tibble(
+  marker = character(), cancer_type = character(), cohort = character(), ps_model = character(),
+  group = character(), time = double(), n_at_risk = integer(), weighted_at_risk = double()
+)
+manifest <- if (length(manifest_parts)) bind_rows(manifest_parts) else tibble(
+  marker = character(), cancer_type = character(), cohort = character(), ps_model = character(),
+  sig_in = character(), HR_markerxICI = double(), p_markerxICI = double(),
+  extreme_hr_flag = logical(), status = character(), reason = character(), file = character()
+)
+
+readr::write_csv(curves_compiled, file.path(KM_OUT_DIR, "KM_compiled_curves.csv"))
+readr::write_csv(at_risk_compiled, file.path(KM_OUT_DIR, "KM_compiled_at_risk.csv"))
+readr::write_csv(manifest, file.path(KM_OUT_DIR, "KM_export_manifest.csv"))
+
+if (nrow(manifest)) print(manifest %>% count(cohort, ps_model, status))
+cat("Output directory:", KM_OUT_DIR, "\n")
+```
+
+## Interpretation
+
+The interaction HR is a ratio of marker hazard ratios under ICI versus non-ICI;
+it is not a direct contrast between any two displayed curves. The log-rank values
+shown in each panel compare marker-positive with marker-negative patients only
+within the ICI arm and are descriptive, especially for the weighted estimate.
+Check the at-risk counts and effective sample sizes before interpreting tail
+separation or an extreme interaction HR.
