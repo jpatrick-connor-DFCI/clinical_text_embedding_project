@@ -254,3 +254,283 @@ def test_treat_col_none_excludes_the_constant_treatment_column():
     with pytest.raises(ValueError, match="PX_on_ICI"):
         assert_base_design_is_identifiable(df, kept, "spec/single_arm")
     assert_base_design_is_identifiable(df, kept, "spec/single_arm", treat_col=None)
+
+
+# ---------------------------------------------------------------------------
+# D4 -- four-cell support gate for the marker x ICI interaction
+# ---------------------------------------------------------------------------
+
+def _support_frame(n_per_cell=40, events_per_cell=(25, 25, 25, 25), marker="TP53_SNV"):
+    """Balanced 2x2 (arm x marker) frame with per-cell event counts.
+
+    Cells are ordered (arm, marker) = (0,0), (0,1), (1,0), (1,1) to match
+    `events_per_cell`.
+    """
+    arm, mk, death = [], [], []
+    for (a, m), n_events in zip([(0, 0), (0, 1), (1, 0), (1, 1)], events_per_cell):
+        arm += [a] * n_per_cell
+        mk += [m] * n_per_cell
+        death += [1] * n_events + [0] * (n_per_cell - n_events)
+    n = len(arm)
+    return pl.DataFrame({
+        "tt_death": [float(i % 50 + 1) for i in range(n)],
+        "death": death,
+        "PX_on_ICI": arm,
+        marker: mk,
+    })
+
+
+def test_support_gate_accepts_a_well_populated_two_by_two():
+    from pipelines.biomarkers.run_IPTW_analysis import marker_has_within_arm_support
+    assert marker_has_within_arm_support(_support_frame(), "TP53_SNV")
+
+
+def test_support_gate_rejects_too_few_marker_positives_in_one_arm():
+    """The head-count gate bites independently of the events floor.
+
+    The ICI/marker+ cell holds MIN_MARKER_POS_PER_ARM - 1 patients who are *all*
+    deaths, and `min_events_per_group` is lowered so that cell clears the events
+    check outright -- leaving the count check as the only gate that can reject.
+    (At the shipped defaults the two floors are equal, so they cannot be
+    separated without overriding one.)
+    """
+    from pipelines.biomarkers.run_IPTW_analysis import (
+        MIN_MARKER_POS_PER_ARM, marker_has_within_arm_support,
+    )
+    n_pos = MIN_MARKER_POS_PER_ARM - 1
+    df = _support_frame()
+    ici_pos = df.filter((pl.col("PX_on_ICI") == 1) & (pl.col("TP53_SNV") == 1))
+    shrunk = ici_pos.head(n_pos).with_columns(
+        pl.lit(1, dtype=ici_pos.schema["death"]).alias("death"))
+    df = pl.concat([
+        df.filter(~((pl.col("PX_on_ICI") == 1) & (pl.col("TP53_SNV") == 1))),
+        shrunk,
+    ])
+    assert not marker_has_within_arm_support(
+        df, "TP53_SNV", min_events_per_group=n_pos)
+    # ... and the same frame passes once the count floor is what admits it.
+    assert marker_has_within_arm_support(
+        df, "TP53_SNV", min_pos_per_arm=n_pos, min_events_per_group=n_pos)
+
+
+def test_support_gate_rejects_too_few_events_among_marker_positives():
+    from pipelines.biomarkers.run_IPTW_analysis import marker_has_within_arm_support
+    df = _support_frame(events_per_cell=(25, 25, 25, 3))
+    assert not marker_has_within_arm_support(df, "TP53_SNV")
+
+
+def test_support_gate_rejects_too_few_events_among_marker_negatives():
+    """The marker- cells are checked too; the interaction contrast needs all four.
+
+    This is the D4 addition -- the old gate looked only at marker+ cells, so a
+    marker whose comparison group carried three deaths still reached FDR.
+    """
+    from pipelines.biomarkers.run_IPTW_analysis import marker_has_within_arm_support
+    df = _support_frame(events_per_cell=(25, 25, 3, 25))
+    assert not marker_has_within_arm_support(df, "TP53_SNV")
+
+
+def test_support_thresholds_are_set_for_interaction_tests():
+    """Pins the D4 floors: an interaction needs ~4x the events of a main effect."""
+    from pipelines.biomarkers.run_IPTW_analysis import (
+        MIN_EVENTS_PER_MARKER_GROUP, MIN_MARKER_NEG_PER_ARM, MIN_MARKER_POS_PER_ARM,
+    )
+    assert MIN_MARKER_POS_PER_ARM >= 20
+    assert MIN_MARKER_NEG_PER_ARM >= 20
+    assert MIN_EVENTS_PER_MARKER_GROUP >= 20
+
+
+# ---------------------------------------------------------------------------
+# D4 -- extreme interaction HRs are excluded before FDR, not annotated after
+# ---------------------------------------------------------------------------
+
+def _t2_row(marker, hr, p):
+    return {
+        "marker": marker, "HR_markerxICI": hr, "p_markerxICI": p,
+        "p_marker_ICI": p, "p_marker_nonICI": p,
+        "HR_marker_ICI": hr, "HR_marker_nonICI": 1.0,
+    }
+
+
+def test_extreme_hrs_are_dropped_before_the_fdr_denominator():
+    from pipelines.biomarkers.run_IPTW_analysis import (
+        HR_EXTREME_THRESHOLD, add_track2_fdr_and_labels,
+    )
+    df = pl.DataFrame([
+        _t2_row("TP53_SNV", 1.4, 0.01),
+        _t2_row("KRAS_SNV", 0.7, 0.02),
+        _t2_row("EGFR_SNV", HR_EXTREME_THRESHOLD * 10, 0.001),      # separation
+        _t2_row("BRAF_SNV", 1.0 / (HR_EXTREME_THRESHOLD * 10), 0.001),
+    ])
+    out = add_track2_fdr_and_labels(df)
+    assert sorted(out["marker"].to_list()) == ["KRAS_SNV", "TP53_SNV"]
+    # Every surviving row is non-extreme by construction.
+    assert not any(out["extreme_hr_flag"].to_list())
+    # FDR was computed over 2 markers, not 4: BH on the smaller p of two.
+    assert out.filter(pl.col("marker") == "TP53_SNV")["FDR_markerxICI"].item() == pytest.approx(0.02)
+
+
+def test_non_finite_interaction_hrs_are_also_excluded():
+    from pipelines.biomarkers.run_IPTW_analysis import add_track2_fdr_and_labels
+    df = pl.DataFrame([
+        _t2_row("TP53_SNV", 1.4, 0.01),
+        _t2_row("KRAS_SNV", float("inf"), 0.001),
+        _t2_row("EGFR_SNV", float("nan"), 0.001),
+    ])
+    out = add_track2_fdr_and_labels(df)
+    assert out["marker"].to_list() == ["TP53_SNV"]
+
+
+def test_all_extreme_returns_an_empty_frame_with_the_full_schema():
+    """An all-separation spec must not crash the FDR step."""
+    from pipelines.biomarkers.run_IPTW_analysis import (
+        HR_EXTREME_THRESHOLD, add_track2_fdr_and_labels,
+    )
+    df = pl.DataFrame([_t2_row("TP53_SNV", HR_EXTREME_THRESHOLD * 10, 0.001)])
+    out = add_track2_fdr_and_labels(df)
+    assert out.is_empty()
+    for col in ("mutation_type", "classifier", "extreme_hr_flag"):
+        assert col in out.columns
+
+
+# ---------------------------------------------------------------------------
+# D6 -- unpenalized inferential fit, penalized only as a convergence fallback
+# ---------------------------------------------------------------------------
+
+def test_fit_reports_convergence_on_a_well_behaved_frame():
+    from lifelines import CoxPHFitter
+    from pipelines.biomarkers.run_IPTW_analysis import fit_cph_log_warnings
+    import numpy as np
+
+    rng = np.random.default_rng(0)
+    n = 300
+    x = rng.normal(size=n)
+    df_fit = pl.DataFrame({
+        "tt_death": rng.exponential(scale=np.exp(-0.3 * x)) + 0.1,
+        "death": rng.integers(0, 2, n),
+        "x": x,
+    }).to_pandas()
+    _, converged = fit_cph_log_warnings(
+        CoxPHFitter(), df_fit, "tt_death", "death", robust=False,
+        marker_name="x", return_converged=True)
+    assert converged
+
+
+def test_fit_reports_non_convergence_under_separation():
+    """A perfectly separating covariate warns rather than raising.
+
+    This is why D6's fallback keys on `converged` and not on an exception: an
+    exception-only check would have silently kept the unconverged unpenalized fit.
+    """
+    from lifelines import CoxPHFitter
+    from pipelines.biomarkers.run_IPTW_analysis import fit_cph_log_warnings
+
+    n = 60
+    # x == death: the covariate perfectly predicts the event.
+    df_fit = pl.DataFrame({
+        "tt_death": [float(i + 1) for i in range(n)],
+        "death": [1] * (n // 2) + [0] * (n // 2),
+        "x": [1.0] * (n // 2) + [0.0] * (n // 2),
+    }).to_pandas()
+    _, converged = fit_cph_log_warnings(
+        CoxPHFitter(), df_fit, "tt_death", "death", robust=False,
+        marker_name="x", return_converged=True)
+    assert not converged
+
+
+def _track2_frame(n=400, separating=False, seed=0):
+    """Cohort frame for `_fit_track2_marker`: one covariate, one binary marker."""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    arm = rng.integers(0, 2, n)
+    marker = rng.integers(0, 2, n)
+    if separating:
+        # Every marker+ ICI patient dies, none of them are censored: the
+        # interaction term is perfectly separating.
+        death = ((arm == 1) & (marker == 1)).astype(int)
+        tt = np.where(death == 1, rng.uniform(0.5, 2.0, n), rng.uniform(5.0, 20.0, n))
+    else:
+        tt = rng.exponential(scale=np.exp(-0.2 * arm - 0.2 * marker)) + 0.1
+        death = rng.integers(0, 2, n)
+    return pl.DataFrame({
+        "tt_death": tt.astype(float),
+        "death": death.astype(int),
+        "PX_on_ICI": arm.astype(int),
+        "AGE": rng.normal(60, 10, n),
+        "TP53_SNV": marker.astype(int),
+    })
+
+
+def test_track2_uses_an_unpenalized_fit_when_the_model_converges():
+    """D6: p-values that feed FDR must come from an unpenalized fit by default."""
+    from pipelines.biomarkers.run_IPTW_analysis import _fit_track2_marker
+    res = _fit_track2_marker(_track2_frame(), "TP53_SNV", ["AGE"], None)
+    assert res["penalized_fit"] is False
+    assert res["p_markerxICI"] == pytest.approx(res["p_markerxICI"])  # finite, not NaN
+    assert 0.0 <= res["p_markerxICI"] <= 1.0
+
+
+def test_track2_falls_back_to_a_penalized_fit_under_separation():
+    """Near-separation surfaces as a warning, not an exception -- the fallback
+    keys on convergence so an unconverged unpenalized estimate is never kept."""
+    from pipelines.biomarkers.run_IPTW_analysis import _fit_track2_marker
+    res = _fit_track2_marker(
+        _track2_frame(separating=True), "TP53_SNV", ["AGE"], None)
+    assert res["penalized_fit"] is True
+
+
+# ---------------------------------------------------------------------------
+# D2 -- balance diagnostics carry the covariate family through the long form
+# ---------------------------------------------------------------------------
+
+def _write_balance_parquet(tmp_path, keys):
+    from pipelines.biomarkers.run_IPTW_analysis import _melt_diagnostic
+    wide = pl.DataFrame({
+        "covariate": keys,
+        "smd_unweighted": [0.30, 0.25][: len(keys)],
+        "smd_weighted": [0.04, 0.13][: len(keys)],
+    })
+    path = str(tmp_path / "LUNG_diagnostics.parquet")
+    _melt_diagnostic(wide, "balance_ATE", key_col="covariate").write_parquet(path)
+    return path
+
+
+def test_balance_section_round_trips_the_family_prefixed_key(tmp_path):
+    from pipelines.biomarkers.run_IPTW_analysis import read_diagnostic_section
+    path = _write_balance_parquet(tmp_path, ["structured|AGE", "embedding|emb_7"])
+    wide = read_diagnostic_section(path, "balance_ATE")
+    assert "key" not in wide.columns
+    got = dict(zip(wide["covariate"].to_list(), wide["covariate_family"].to_list()))
+    assert got == {"AGE": "structured", "emb_7": "embedding"}
+    # The embedding dimension is the one that trips the D5 gate; without D2 it
+    # was never measured at all.
+    emb = wide.filter(pl.col("covariate") == "emb_7")
+    assert emb["smd_weighted"].item() == pytest.approx(0.13)
+
+
+def test_legacy_unprefixed_balance_files_still_read(tmp_path):
+    """Diagnostics written before D2 have no '|' in the key; keep reading them."""
+    from pipelines.biomarkers.run_IPTW_analysis import read_diagnostic_section
+    path = _write_balance_parquet(tmp_path, ["AGE", "GENDER"])
+    wide = read_diagnostic_section(path, "balance_ATE")
+    assert "key" in wide.columns
+    assert "covariate_family" not in wide.columns
+    assert sorted(wide["key"].to_list()) == ["AGE", "GENDER"]
+
+
+def test_missing_section_returns_an_empty_frame(tmp_path):
+    from pipelines.biomarkers.run_IPTW_analysis import read_diagnostic_section
+    path = _write_balance_parquet(tmp_path, ["structured|AGE"])
+    assert read_diagnostic_section(path, "cohort").is_empty()
+
+
+# ---------------------------------------------------------------------------
+# D5 -- analyzability gate thresholds
+# ---------------------------------------------------------------------------
+
+def test_analyzability_thresholds_are_preregistered():
+    from pipelines.biomarkers.run_IPTW_analysis import (
+        MAX_SMD_FOR_ANALYSIS, MIN_ESS_FRACTION,
+    )
+    assert MAX_SMD_FOR_ANALYSIS == pytest.approx(0.1)
+    assert 0.0 < MIN_ESS_FRACTION < 1.0

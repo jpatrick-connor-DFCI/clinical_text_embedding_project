@@ -98,9 +98,15 @@ MIN_CANCER_TYPE_N = 100      # minimum total patients to run cancer-type-specifi
 MIN_PER_ARM_CANCER_TYPE = 25 # minimum patients in each treatment arm for cancer-type-specific
 COMMON_SUPPORT_PCT = (0.5, 99.5)
 IPTW_TRUNC_PCT = (1, 99)
-MIN_MARKER_POS_PER_ARM = 5
-MIN_MARKER_NEG_PER_ARM = 5
-MIN_EVENTS_PER_MARKER_GROUP = 5   # minimum deaths among marker+ patients
+# Support floors for the marker x ICI interaction test. The estimand is a
+# predictive (effect-modifying) biomarker, which needs roughly 4x the events of a
+# main effect, so these are deliberately far above what a main-effect screen would
+# require: >=20 events in EACH of the four marker x arm cells. At the previous
+# floor of 5 the screen admitted markers whose interaction HR was determined by a
+# handful of deaths, which is what produced the extreme-HR flags below.
+MIN_MARKER_POS_PER_ARM = 20
+MIN_MARKER_NEG_PER_ARM = 20
+MIN_EVENTS_PER_MARKER_GROUP = 20  # minimum deaths in each marker x arm cell
 MIN_MARKERS_TO_TEST = 1
 EXCLUDE_TYPES = {'OTHER', 'CUP'}
 # Cancer-type-specific screens are restricted to these types. `pan_cancer` always
@@ -109,6 +115,15 @@ EXCLUDE_TYPES = {'OTHER', 'CUP'}
 # the MIN_CANCER_TYPE_N / MIN_PER_ARM_CANCER_TYPE gates instead.
 INCLUDE_TYPES = {'KIDNEY', 'LUNG', 'SKIN'}
 HR_EXTREME_THRESHOLD = 50
+
+# === Analyzability gate ===
+# Balance and ESS are preregistered gates, not annotations: a specification that
+# fails either is marked not-analyzable and screens no markers, so no hit can come
+# from a weighting that did not work. 0.1 is the conventional SMD ceiling; the ESS
+# floor keeps a specification that bought balance with variance (a sharp propensity
+# model producing extreme weights) from contributing underpowered estimates.
+MAX_SMD_FOR_ANALYSIS = float(os.getenv("IPTW_MAX_SMD", "0.1"))
+MIN_ESS_FRACTION = float(os.getenv("IPTW_MIN_ESS_FRACTION", "0.30"))
 
 # === Smoke-test toggle: cap how many markers are screened ===
 # A full pan-cancer screen is ~1500 markers x 4 screens and runs for hours, which
@@ -330,8 +345,16 @@ def assert_model_covariates_numeric(df, cols, context):
 
 
 def marker_has_within_arm_support(df, marker, treat_col='PX_on_ICI',
-                                  min_pos_per_arm=10, min_neg_per_arm=10,
-                                  min_events_per_group=5):
+                                  min_pos_per_arm=MIN_MARKER_POS_PER_ARM,
+                                  min_neg_per_arm=MIN_MARKER_NEG_PER_ARM,
+                                  min_events_per_group=MIN_EVENTS_PER_MARKER_GROUP):
+    """Whether a marker has enough support in all four marker x arm cells.
+
+    The interaction is identified by the contrast of marker effects across arms,
+    so every one of the four cells has to carry events -- not just the marker+
+    ones. Requiring events in the marker- cells too is what stops a marker whose
+    entire signal rests on a handful of deaths from reaching the FDR step.
+    """
     marker_bin = df.select((finite_or_zero(marker) > 0).cast(pl.Int64)).to_series().to_numpy()
     treatment = df.select(finite_or_zero(treat_col).cast(pl.Int64)).to_series().to_numpy()
     death = df['death'].to_numpy()
@@ -344,7 +367,8 @@ def marker_has_within_arm_support(df, marker, treat_col='PX_on_ICI',
         if arm_pos < min_pos_per_arm or arm_neg < min_neg_per_arm:
             return False
         events_pos = int(death[arm_mask & (marker_bin == 1)].sum())
-        if events_pos < min_events_per_group:
+        events_neg = int(death[arm_mask & (marker_bin == 0)].sum())
+        if events_pos < min_events_per_group or events_neg < min_events_per_group:
             return False
     return True
 
@@ -393,17 +417,28 @@ def recalibrate_propensity_within_subset(df, ps_col='ICI_prediction', treat_col=
 
 
 def fit_cph_log_warnings(cph, df_fit, duration_col, event_col,
-                          weights_col=None, robust=True, marker_name=""):
+                          weights_col=None, robust=True, marker_name="",
+                          return_converged=False):
+    """Fit a Cox model, logging convergence/linear-algebra warnings.
+
+    With `return_converged=True` returns `(cph, converged)`, where `converged` is
+    False if lifelines emitted a ConvergenceWarning or LinAlgWarning. Callers use
+    that to fall back to a penalized fit: near-separation usually surfaces as a
+    warning rather than an exception, so an exception-only check would silently
+    keep an unconverged unpenalized estimate.
+    """
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
         fit_kwargs = dict(duration_col=duration_col, event_col=event_col, robust=robust)
         if weights_col is not None:
             fit_kwargs['weights_col'] = weights_col
         cph.fit(df_fit, **fit_kwargs)
+    converged = True
     for w in caught:
         if issubclass(w.category, (ConvergenceWarning, LinAlgWarning)):
             logger.warning("marker=%s: %s: %s", marker_name, w.category.__name__, w.message)
-    return cph
+            converged = False
+    return (cph, converged) if return_converged else cph
 
 
 def _fdr_within_mutation_type(results_df, p_col, fdr_col, sig_col):
@@ -457,9 +492,25 @@ def _fit_track2_marker(df, marker, base_vars, weights_col):
     mx = f"{marker}_x_ICI"
     df_fit[mx] = df_fit['PX_on_ICI'] * df_fit[marker]
 
-    cph = CoxPHFitter(penalizer=0.01)
-    cph = fit_cph_log_warnings(cph, df_fit, 'tt_death', 'death',
-                                weights_col=weights_col, robust=True, marker_name=marker)
+    # Unpenalized for inference. A penalized fit shrinks coefficients toward zero
+    # and its naive Wald SEs are not valid for the p-values that feed FDR, so the
+    # ridge is now only a fallback for fits that fail to converge (near-separation
+    # on a sparse marker). `penalized_fit` records which path produced the estimate
+    # so the two are never silently pooled downstream.
+    penalized_fit = False
+    try:
+        cph, converged = fit_cph_log_warnings(
+            CoxPHFitter(), df_fit, 'tt_death', 'death', weights_col=weights_col,
+            robust=True, marker_name=marker, return_converged=True)
+    except Exception as e:                       # noqa: BLE001 - fall back on any fit failure
+        logger.warning("marker=%s: unpenalized fit raised %s: %s",
+                       marker, type(e).__name__, e)
+        cph, converged = None, False
+    if not converged:
+        penalized_fit = True
+        cph = fit_cph_log_warnings(
+            CoxPHFitter(penalizer=0.01), df_fit, 'tt_death', 'death',
+            weights_col=weights_col, robust=True, marker_name=marker)
 
     summ = cph.summary.reset_index()
     V = cph.variance_matrix_
@@ -500,6 +551,7 @@ def _fit_track2_marker(df, marker, base_vars, weights_col):
         "CI95_marker_nonICI_low": ci_nonici[0], "CI95_marker_nonICI_high": ci_nonici[1],
         "p_marker_nonICI": p_m,
         "beta_ICI_at_marker0": beta_IO0, "p_ICI_at_marker0": p_IO0,
+        "penalized_fit": penalized_fit,
     }
     result.update(event_counts)
     return result
@@ -510,11 +562,37 @@ def add_track2_fdr_and_labels(results_df):
         return results_df.with_columns([
             pl.lit(None, dtype=pl.Utf8).alias('mutation_type'),
             pl.lit(None, dtype=pl.Utf8).alias('classifier'),
+            pl.lit(False).alias('extreme_hr_flag'),
         ])
 
     results_df = results_df.with_columns(
         pl.col('marker').map_elements(get_mutation_type, return_dtype=pl.Utf8).alias('mutation_type')
     )
+
+    # Drop extreme interaction HRs BEFORE the FDR step. These indicate model
+    # separation rather than a real effect, so leaving them in both admits
+    # uninterpretable "hits" and inflates the multiple-testing denominator that
+    # every other marker is corrected against. Previously this was only an
+    # annotation applied after FDR.
+    extreme = (
+        (~pl.col('HR_markerxICI').is_finite()) |
+        (pl.col('HR_markerxICI') > HR_EXTREME_THRESHOLD) |
+        (pl.col('HR_markerxICI') < 1.0 / HR_EXTREME_THRESHOLD)
+    )
+    n_extreme = int(results_df.select(extreme.sum()).item())
+    if n_extreme > 0:
+        logger.warning(
+            f"  {n_extreme} markers EXCLUDED for extreme interaction HRs "
+            f"(>{HR_EXTREME_THRESHOLD} or <{1/HR_EXTREME_THRESHOLD:.4f}); "
+            "likely model separation, so they are dropped before FDR"
+        )
+        results_df = results_df.filter(~extreme)
+    if results_df.is_empty():
+        return results_df.with_columns([
+            pl.lit(None, dtype=pl.Utf8).alias('classifier'),
+            pl.lit(False).alias('extreme_hr_flag'),
+        ])
+
     results_df = _fdr_within_mutation_type(results_df, 'p_markerxICI', 'FDR_markerxICI', 'significant_predictive')
     results_df = _fdr_within_mutation_type(results_df, 'p_marker_ICI', 'FDR_marker_ICI', 'significant_in_ICI')
     results_df = _fdr_within_mutation_type(results_df, 'p_marker_nonICI', 'FDR_marker_nonICI',
@@ -522,17 +600,9 @@ def add_track2_fdr_and_labels(results_df):
     classifier_values = [classify(row) for row in results_df.iter_rows(named=True)]
     results_df = results_df.with_columns(pl.Series('classifier', classifier_values, dtype=pl.Utf8))
 
-    # Flag extreme HRs indicating possible model separation
-    results_df = results_df.with_columns(
-        (
-            (~pl.col('HR_markerxICI').is_finite()) |
-            (pl.col('HR_markerxICI') > HR_EXTREME_THRESHOLD) |
-            (pl.col('HR_markerxICI') < 1.0 / HR_EXTREME_THRESHOLD)
-        ).alias('extreme_hr_flag')
-    )
-    n_extreme = int(results_df['extreme_hr_flag'].sum())
-    if n_extreme > 0:
-        logger.warning(f"  {n_extreme} markers flagged with extreme interaction HRs (>{HR_EXTREME_THRESHOLD} or <{1/HR_EXTREME_THRESHOLD:.4f})")
+    # Retained for schema stability: extreme HRs are now excluded above, so every
+    # surviving row is non-extreme by construction.
+    results_df = results_df.with_columns(pl.lit(False).alias('extreme_hr_flag'))
 
     return results_df
 
@@ -608,11 +678,21 @@ def read_diagnostic_section(path, section):
     Consumers that want a specific diagnostic (compile_IPTW_results wants the
     cohort counts) should go through this rather than re-deriving the unpivot.
     Returns an empty frame if the section is absent.
+
+    For 'balance_ATE' the key is written as "family|covariate" (family being
+    'structured' or 'embedding'), so it is split back into `covariate_family` and
+    `covariate` columns here.
     """
     long = pl.read_parquet(path).filter(pl.col('section') == section)
     if long.is_empty():
         return pl.DataFrame()
-    return long.pivot(on='metric', index='key', values='value')
+    wide = long.pivot(on='metric', index='key', values='value')
+    if section == 'balance_ATE' and wide['key'].str.contains(r'\|').all():
+        wide = wide.with_columns(
+            pl.col('key').str.split_exact('|', 1).struct.rename_fields(
+                ['covariate_family', 'covariate']).alias('_parts')
+        ).unnest('_parts').drop('key')
+    return wide
 
 
 # =============================================
@@ -748,10 +828,16 @@ def main() -> None:
                       f"Results are NOT valid (FDR is computed over the subset); "
                       f"writing to a _smoke directory. ***")
 
-            # === Identify embedding columns for prognostic score ===
+            # === Identify embedding columns for the balance check ===
+            # Text enters the analysis ONLY through the propensity weights -- it is
+            # deliberately not in `base_vars`, so there is no prognostic score and
+            # the outcome model sees no embeddings. These columns are used to assess
+            # post-weighting balance on the dimensions the weights were actually
+            # built from (see the balance block below). An outcome model that also
+            # used them would be the doubly-robust extension, which is not this.
             embedding_cols = [col for col in full_df.columns
                               if ('IMAGING' in col) or ('PATHOLOGY' in col) or ('CLINICIAN' in col)]
-            print(f"  {len(embedding_cols)} embedding columns found for prognostic score")
+            print(f"  {len(embedding_cols)} embedding columns found (balance assessment)")
 
             # === Cancer types to test ===
             available_types = {col.replace('CANCER_TYPE_', '') for col in cancer_type_cols}
@@ -889,6 +975,23 @@ def main() -> None:
                           f"{', '.join(constant_after_trim)}")
                     base_vars = [c for c in base_vars if c not in constant_after_trim]
 
+                # --- Re-calibrate the propensity within the trimmed population ---
+                # The trim changes the population the weights are meant to balance,
+                # but the scores were estimated on the untrimmed one. Weighting the
+                # trimmed cohort by pre-trim propensities targets a population that
+                # is no longer there, and leaves the trimmed-away tails' influence
+                # baked into every weight. Recalibrate on the survivors, mirroring
+                # what already happens for cancer-type subsets above.
+                if type_df['PX_on_ICI'].n_unique() >= 2 and len(type_df) > 10:
+                    ps_pre_trim_mean = float(type_df['ICI_prediction'].mean())
+                    type_df = type_df.with_columns(
+                        pl.Series('ICI_prediction',
+                                  recalibrate_propensity_within_subset(type_df))
+                    )
+                    print(f"  Recalibrated PS within trimmed population "
+                          f"(mean {ps_pre_trim_mean:.3f} -> "
+                          f"{float(type_df['ICI_prediction'].mean()):.3f})")
+
                 ps = type_df['ICI_prediction'].clip(eps, 1 - eps).to_numpy()
                 treat_mask = (type_df['PX_on_ICI'] == 1).to_numpy()
                 p_treated = float(type_df['PX_on_ICI'].mean())
@@ -954,22 +1057,85 @@ def main() -> None:
                     'ESS_ATE_treated': ess_t, 'ESS_ATE_control': ess_c,
                 }]), 'cohort'))
 
-                balance_covars = base_covars + line_cols + [
+                structured_covars = base_covars + line_cols + [
                     c for c in type_df.columns
                     if c.startswith('CANCER_TYPE_') or c.upper().startswith('PANEL_VERSION_')]
+                # When the propensity model is covariates_plus_embeddings the weights
+                # are driven by the embedding dimensions, so balance has to be assessed
+                # on them too. Measuring only the structured covariates would claim
+                # embeddings improve confounding control while checking balance solely
+                # on the variables the OTHER model used.
+                embedding_balance_cols = [c for c in embedding_cols if c in type_df.columns]
+                balance_covars = structured_covars + embedding_balance_cols
                 smd_ate = compute_smd(type_df, balance_covars, weights=w_ate_trunc)
+                smd_ate = smd_ate.with_columns(
+                    pl.when(pl.col('covariate').is_in(embedding_balance_cols))
+                      .then(pl.lit('embedding'))
+                      .otherwise(pl.lit('structured'))
+                      .alias('covariate_family')
+                )
+                # _melt_diagnostic casts every non-key column to Float64, so the
+                # family is carried in the key as "family|covariate" rather than as
+                # its own column. read_diagnostic_section splits it back out.
                 diag_frames.append(_melt_diagnostic(
-                    smd_ate, 'balance_ATE', key_col='covariate'))
+                    smd_ate.select(
+                        (pl.col('covariate_family') + pl.lit('|') + pl.col('covariate'))
+                            .alias('covariate'),
+                        pl.exclude('covariate', 'covariate_family'),
+                    ),
+                    'balance_ATE', key_col='covariate'))
 
-                # Max SMD check (balance quality indicator)
+                # Max SMD check (balance quality indicator), reported per family so a
+                # well-balanced structured set cannot mask embedding imbalance.
                 max_smd_ate = float(smd_ate['SMD_weighted'].abs().max())
                 n_imbalanced_ate = int((smd_ate['SMD_weighted'].abs() > 0.1).sum())
-                print(f"  ATE balance: max|SMD|={max_smd_ate:.4f}, {n_imbalanced_ate}/{len(smd_ate)} covariates with |SMD|>0.1")
+                print(f"  ATE balance: max|SMD|={max_smd_ate:.4f}, "
+                      f"{n_imbalanced_ate}/{len(smd_ate)} covariates with |SMD|>0.1")
+                for family in ('structured', 'embedding'):
+                    fam = smd_ate.filter(pl.col('covariate_family') == family)
+                    if fam.is_empty():
+                        continue
+                    fam_max = float(fam['SMD_weighted'].abs().max())
+                    fam_n = int((fam['SMD_weighted'].abs() > 0.1).sum())
+                    print(f"    {family:<10} max|SMD|={fam_max:.4f}, {fam_n}/{len(fam)} with |SMD|>0.1")
+
+                # === Analyzability gate (balance + ESS) ===
+                # Balance and ESS used to be reported and then ignored, so a
+                # specification whose weighting had failed still emitted hits that
+                # looked identical to hits from a well-balanced one. Gate on them:
+                # a spec that fails is marked not-analyzable and screens nothing.
+                ess_frac = ((ess_t + ess_c) / max(n_treated + n_control, 1))
+                gate_failures = []
+                if max_smd_ate > MAX_SMD_FOR_ANALYSIS:
+                    gate_failures.append(
+                        f"max|SMD|={max_smd_ate:.4f} > {MAX_SMD_FOR_ANALYSIS}")
+                if ess_frac < MIN_ESS_FRACTION:
+                    gate_failures.append(
+                        f"ESS fraction={ess_frac:.3f} < {MIN_ESS_FRACTION}")
+                analyzable = not gate_failures
+
+                diag_frames.append(_melt_diagnostic(pl.DataFrame([{
+                    'analyzable': float(analyzable),
+                    'max_smd_ate': max_smd_ate,
+                    'n_imbalanced_ate': float(n_imbalanced_ate),
+                    'ESS_fraction': ess_frac,
+                }]), 'analyzability'))
 
                 pl.concat(diag_frames).with_columns(
                     pl.lit(cancer_type, dtype=pl.Utf8).alias('cancer_type')
                 ).select('cancer_type', 'section', 'key', 'metric', 'value').write_parquet(
                     os.path.join(RUN_PATH, f'{cancer_type}_diagnostics.parquet'))
+
+                if not analyzable:
+                    # Diagnostics are still written above so the failure is
+                    # inspectable; only the results file is withheld, so nothing
+                    # downstream can compile hits from a spec whose weighting failed.
+                    logger.warning(
+                        f"  SPEC NOT ANALYZABLE {SPEC_LABEL}/{cancer_type}: "
+                        + "; ".join(gate_failures)
+                        + ". No marker screen run; no results file written."
+                    )
+                    continue
 
                 assert_model_covariates_numeric(
                     type_df, base_vars + ['tt_death', 'death', 'PX_on_ICI'],
