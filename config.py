@@ -33,6 +33,10 @@ FIGURE_DATA_DIR = os.environ.get(
 )
 BIOMARKER_PATH = os.path.join(DATA_PATH, "biomarker_analysis/")
 MATCHED_COHORT_PATH = os.path.join(BIOMARKER_PATH, "matched_cohorts/")
+# Exploratory unsupervised arm: patients clustered on their pooled note
+# embeddings rather than on a model-derived quantity.  Subdirectories
+# (features/, clusters/, results/, figures/) are created by semantic_search.common.
+SEMANTIC_SEARCH_PATH = os.path.join(DATA_PATH, "semantic_search/")
 MED_CLASSES_FILE = os.path.join(DATA_PATH, "GPT_generated_med_classes.csv")
 
 # --- Figure rendering output (Python figure-data prep + R plotting share this) ---
