@@ -648,7 +648,7 @@ def _run_track2_screen(type_df, cancer_type, base_vars, biomarker_cols, n_jobs):
 # Per-cancer-type diagnostics, one long-format file
 # =============================================
 
-DIAGNOSTIC_SECTIONS = ('propensity_score', 'cohort', 'balance_ATE')
+DIAGNOSTIC_SECTIONS = ('propensity_score', 'cohort', 'balance_ATE', 'analyzability')
 
 
 def _melt_diagnostic(wide, section, key_col=None):
