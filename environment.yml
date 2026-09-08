@@ -30,7 +30,6 @@ dependencies:
   - scikit-survival
   - lifelines
   - statsmodels
-  - python-docx
   - tslearn
   - matplotlib-venn
   - polars

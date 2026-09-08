@@ -3,7 +3,8 @@
 # A propensity ROC curves (covariates-only vs covariates+embeddings),
 # B covariate-balance love plot (SMD before vs after IPTW),
 # C cohort-grouped biomarker robustness dot-matrix + definitions caption,
-# D 3-panel marker × ICI KM strip with carried-through interaction HR.
+# D 3-panel marker × ICI KM strip with carried-through interaction HR,
+# E forest of interaction estimates for the stability-selected markers.
 
 suppressPackageStartupMessages({
   library(ggplot2); library(patchwork); library(dplyr); library(tidyr)
@@ -304,90 +305,59 @@ build_fig5d <- function() {
 
 
 # ============================================================================
-# fig5e: synthesis forest — T1 (prognostic-in-ICI) vs T2 (predictive-of-ICI)
-# for the headline gene set, with literature-validation strip on the right.
+# fig5e: forest of marker x ICI interaction estimates for the markers meeting
+# the pre-registered stability criterion (>=2 specifications, direction-
+# consistent), ranked by primary-spec interaction p-value.
 #
-# T1 and T2 brackets are both genuine Wald 95% CIs from the primary spec
-# (T2: se_mx = sqrt(V[mx, mx]) on the marker x ICI interaction term, computed
-# in run_IPTW_analysis._fit_track2_marker and propagated as
-# CI95_markerxICI_low/high). No longer an inter-spec range.
+# Brackets are genuine Wald 95% CIs from the primary spec (se_mx =
+# sqrt(V[mx, mx]) on the interaction term, computed in
+# run_IPTW_analysis._fit_track2_marker and propagated as
+# CI95_markerxICI_low/high), not an inter-spec range.
+#
+# There is no literature-validation annotation: markers are selected by a
+# statistical rule, so the claim this panel makes is about stability, not about
+# agreement with prior literature.
 # ============================================================================
-TRACK_LABEL  <- c(T1_prognostic_in_ICI = "T1 · Prognostic within ICI",
-                  T2_predictive_of_ICI = "T2 · Predictive of ICI benefit")
-TRACK_COLORS <- c(`T1 · Prognostic within ICI` = BENEFIT_COLOR,
-                  `T2 · Predictive of ICI benefit` = HARM_COLOR)
-TRACK_SHAPES <- c(`T1 · Prognostic within ICI` = 16,
-                  `T2 · Predictive of ICI benefit` = 17)
-# 7-tier validation ramp (Very Strong → No Evidence). Use a sequential blue so
-# strong-evidence rows pop and absent-evidence rows are faint.
-VAL_LEVELS <- c("Very Strong","Strong","Moderate","Partial","Weak","Indirect","No Evidence")
-VAL_COLORS <- c("#0B3D91","#1F5FBF","#3A82DC","#79A8E7","#B0CBED","#D4E2F4","#EFEFEF")
+DIRECTION_LABEL  <- c(benefit = "HR < 1 · greater ICI benefit",
+                      harm    = "HR > 1 · reduced ICI benefit")
+DIRECTION_COLORS <- c(`HR < 1 · greater ICI benefit` = BENEFIT_COLOR,
+                      `HR > 1 · reduced ICI benefit` = HARM_COLOR)
 
 build_fig5e <- function() {
   d <- load_figure_data("fig5_forest_headline.csv")
   if (nrow(d) == 0) return(placeholder_panel("fig5_forest_headline.csv empty"))
   d <- d %>%
-    mutate(track_lbl = TRACK_LABEL[as.character(track)],
-           track_lbl = factor(track_lbl, levels = unname(TRACK_LABEL)),
-           # Row label = gene with cohort tag (cohort 2 = validation).
-           # Compose order matches HEADLINE_FOREST in prep_figure_5.py — display
-           # MET first as the protagonist, then T1-replication genes, then T2-only.
+    mutate(dir_lbl = DIRECTION_LABEL[ifelse(HR < 1, "benefit", "harm")],
+           dir_lbl = factor(dir_lbl, levels = unname(DIRECTION_LABEL)),
+           # Row label = gene with cohort tag (cohort 2 = validation cohort).
            row_lbl = sprintf("%s · %s · %s", label, cancer,
                              ifelse(cohort == "cohort2", "C2", "C1"))) %>%
     arrange(desc(row_number()))                      # patchwork plots bottom-up
   row_order <- unique(d$row_lbl)
   d$row_lbl <- factor(d$row_lbl, levels = row_order)
 
-  # Validation strip: one tile per row at fixed x position, colored by level
-  val_df <- d %>% distinct(row_lbl, validation_level) %>%
-    mutate(validation_level = ifelse(is.na(validation_level) | validation_level == "",
-                                     "No Evidence", validation_level),
-           validation_level = factor(validation_level, levels = VAL_LEVELS))
-
-  # Dodge T1 / T2 within each row so they don't sit on top of each other
-  dodge <- position_dodge(width = 0.55)
   xmin <- min(c(d$CI95_low, d$HR), na.rm = TRUE) * 0.85
   xmax <- max(c(d$CI95_high, d$HR), na.rm = TRUE) * 1.15
 
-  forest <- ggplot(d, aes(x = HR, y = row_lbl,
-                          color = track_lbl, shape = track_lbl)) +
+  ggplot(d, aes(x = HR, y = row_lbl, color = dir_lbl)) +
     geom_vline(xintercept = 1, linetype = "dashed", color = "#777777") +
     geom_errorbarh(aes(xmin = CI95_low, xmax = CI95_high),
-                   height = 0.25, linewidth = 0.55, position = dodge) +
-    geom_point(size = 2.6, position = dodge) +
-    scale_color_manual(values = TRACK_COLORS, name = NULL,
-                       breaks = unname(TRACK_LABEL)) +
-    scale_shape_manual(values = TRACK_SHAPES, name = NULL,
-                       breaks = unname(TRACK_LABEL)) +
+                   height = 0.25, linewidth = 0.55) +
+    geom_point(size = 2.6, shape = 17) +
+    scale_color_manual(values = DIRECTION_COLORS, name = NULL,
+                       breaks = unname(DIRECTION_LABEL), drop = FALSE) +
     scale_x_log10(limits = c(xmin, xmax),
                   breaks = c(0.1, 0.25, 0.5, 1, 2, 4, 10),
                   oob = scales::squish) +
-    labs(x = "Hazard ratio (log scale, 95% CI)\nT1: Cox HR · T2: interaction HR",
+    labs(x = "Marker × ICI interaction HR (log scale, 95% CI)",
          y = NULL,
-         title = "Synthesis · Prognostic vs Predictive Signal for Headline Markers") +
+         title = "Stability-Selected Markers · Interaction with ICI Exposure") +
     theme_manuscript() +
     theme(legend.position = "top",
           plot.title = element_text(size = 12, face = "bold"),
           panel.grid.major.y = element_line(color = "grey92"),
           axis.title.x = element_text(size = 10),
           axis.text.y = element_text(size = 10))
-
-  strip <- ggplot(val_df, aes(x = 1, y = row_lbl, fill = validation_level)) +
-    geom_tile(color = "white", linewidth = 0.6) +
-    geom_text(aes(label = validation_level),
-              size = 3.0, color = ifelse(val_df$validation_level %in% c("Very Strong","Strong"),
-                                          "white", "#222222")) +
-    scale_fill_manual(values = VAL_COLORS, name = NULL, drop = FALSE) +
-    scale_x_continuous(expand = c(0, 0)) +
-    labs(x = NULL, y = NULL, title = "Literature\nvalidation") +
-    theme_void() +
-    theme(plot.title = element_text(size = 10, face = "bold", hjust = 0.5,
-                                    margin = margin(b = 4)),
-          axis.text.y = element_blank(),
-          legend.position = "none",
-          plot.margin = margin(0, 4, 0, 0))
-
-  forest + strip + plot_layout(widths = c(5, 1))
 }
 
 

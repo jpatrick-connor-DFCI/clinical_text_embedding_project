@@ -36,19 +36,19 @@ build_fig1a <- function() {
     0.02, 0.72, 0.16, 0.13, "#D6E4F0", "Clinician\nNotes",
     0.02, 0.46, 0.16, 0.13, "#FCE5CD", "Imaging\nReports",
     0.02, 0.20, 0.16, 0.13, "#FFD8A8", "Pathology\nReports",
-    0.31, 0.40, 0.20, 0.30, "#9CCBE8", "Clinical-Longformer",
+    0.31, 0.40, 0.20, 0.30, "#9CCBE8", "Clinical ModernBERT",
     0.66, 0.66, 0.30, 0.18, "#E6F1FA", "Survival\nPrediction",
     0.66, 0.16, 0.30, 0.18, "#E8F5E9", "ICI Biomarker\nDiscovery"
   )
   arrows <- tibble::tribble(
     ~x,   ~y,    ~xend, ~yend,
-    0.18, 0.785, 0.31,  0.55,   # clinician -> longformer
-    0.18, 0.525, 0.31,  0.55,   # imaging -> longformer
-    0.18, 0.265, 0.31,  0.55,   # pathology -> longformer
-    0.51, 0.55,  0.66,  0.75,   # longformer -> survival
-    0.51, 0.55,  0.66,  0.25    # longformer -> biomarker
+    0.18, 0.785, 0.31,  0.55,   # clinician -> ModernBERT
+    0.18, 0.525, 0.31,  0.55,   # imaging -> ModernBERT
+    0.18, 0.265, 0.31,  0.55,   # pathology -> ModernBERT
+    0.51, 0.55,  0.66,  0.75,   # ModernBERT -> survival
+    0.51, 0.55,  0.66,  0.25    # ModernBERT -> biomarker
   )
-  # Embedding-cluster dots inside the Longformer box (suggesting 768-dim embedding)
+  # Embedding-cluster dots inside the ModernBERT box (suggesting 768-dim embedding)
   set.seed(0)
   dots <- tibble::tibble(
     x = stats::runif(60, 0.34, 0.48),

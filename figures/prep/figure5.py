@@ -9,13 +9,19 @@ Writes to FIGURE_DATA_DIR:
                                   direction_consistent
 - fig5_km_top_hit.csv             DFCI_MRN, marker_value, PX_on_ICI, death, tt_death
 - fig5_km_examples.csv            example_id, title, marker, cancer, marker_value, PX_on_ICI,
-                                  death, tt_death — KMs for HEADLINE_KM_PANELS
+                                  death, tt_death — KMs for the top stability-selected hits
 - fig5_top_hit_meta.csv           marker, cancer, ps_model
 - fig5_love_smd.csv               covariate, smd_unweighted, smd_weighted  (primary-spec balance)
-- fig5_forest_headline.csv        gene, cancer, cohort, track, HR, CI95_low/high,
-                                  p_value, n_pos, n_specs, validation_level — feeds
-                                  the new fig5E synthesis forest panel (T1 prognostic-
-                                  in-ICI side-by-side with T2 predictive-of-ICI)
+- fig5_forest_headline.csv        gene, cancer, cohort, mutation_type, label, HR,
+                                  CI95_low/high, p_value, n_pos, n_specs — the
+                                  marker×ICI interaction estimates for markers meeting
+                                  the pre-registered stability criterion
+
+Marker selection is pre-registered, not hand-curated: both the forest and the KM strip
+draw from `_robust_hits()` (>=2 specs, direction-consistent). There is no literature-
+validation annotation — the supplement's claim is statistical (how many markers exceed
+the permutation null, and how stably), so any discussion of specific genes belongs in
+the manuscript prose rather than in a figure column.
 """
 
 from __future__ import annotations
@@ -47,50 +53,27 @@ ROBUST_COLUMNS = [
 KM_COLUMNS = ["DFCI_MRN", "marker_value", "PX_on_ICI", "death", "tt_death"]
 KM_EXAMPLE_COLUMNS = [
     "DFCI_MRN", "example_id", "title", "marker", "cancer", "marker_value",
-    "PX_on_ICI", "death", "tt_death", "hr", "hr_label", "track",
+    "PX_on_ICI", "death", "tt_death", "hr", "hr_label",
 ]
 TOP_HIT_META_COLUMNS = ["marker", "cancer", "cohort", "ps_model", "weight_type"]
 LOVE_SMD_COLUMNS = ["covariate", "smd_unweighted", "smd_weighted"]
 LOVE_TOP_N = 15  # covariates shown beyond the always-kept demographics
 
 # ---------------------------------------------------------------------------
-# Headline gene set for the synthesis forest panel (fig5e) + KM panels (fig5d)
+# Marker selection for the forest panel (fig5e) + KM strip (fig5d).
 #
-# Hand-curated from a manual literature-triage of the compiled IPTW hits
-# (the one-off triage script that produced this shortlist has been removed;
-# recover it from git history at commit 8774b85 if the selection needs revisiting):
-#   - MET: only Tier-A gene (T1+T2 robust, both-benefit, Moderate validation)
-#   - STK11, KEAP1, ARID1A, CD274, PDCD1LG2: Tier-B T1-robust with Strong+ prior
-#     literature support (pipeline replicates known ICI biomarkers)
-#   - PTPRD, CSF1R: T2-only predictive signal with Strong+ prior support
+# Both are chosen by the pre-registered stability criterion in `_robust_hits()`
+# (significant in >=2 specifications with a consistent direction), ranked by
+# primary-spec interaction p-value. The previous hand-curated shortlist was
+# dropped: it was selected via a literature triage (script removed at commit
+# 8774b85), which made any subsequent literature agreement circular.
 # ---------------------------------------------------------------------------
-HEADLINE_FOREST = [
-    # gene             cancer       cohort     mutation_type  pretty_label
-    # Mutation types pulled from the primary-spec hit row in the compiled CSVs.
-    # Note: STK11 alterations appear as structural variants (`_SV`) in the primary
-    # spec; KEAP1 / CD274 / PDCD1LG2 / PTPRD as deletions; MET/ARID1A/CSF1R as SNV.
-    ("MET",      "pan_cancer",  "cohort2",  "SNV",  "MET (SNV)"),
-    ("STK11",    "LUNG",        "cohort1",  "SV",   "STK11 (SV)"),
-    ("STK11",    "pan_cancer",  "cohort2",  "SV",   "STK11 (SV)"),
-    ("KEAP1",    "pan_cancer",  "cohort2",  "DEL",  "KEAP1 (DEL)"),
-    ("ARID1A",   "pan_cancer",  "cohort2",  "SNV",  "ARID1A (SNV)"),
-    ("CD274",    "pan_cancer",  "cohort2",  "DEL",  "CD274 / PD-L1 (DEL)"),
-    ("PDCD1LG2", "pan_cancer",  "cohort2",  "DEL",  "PDCD1LG2 / PD-L2 (DEL)"),
-    ("PTPRD",    "BRAIN",       "cohort1",  "DEL",  "PTPRD (DEL)"),
-    ("CSF1R",    "pan_cancer",  "cohort2",  "SNV",  "CSF1R (SNV)"),
-]
-# Subset used as the 3-panel KM strip in fig5D — protagonist + lung-NSCLC
-# replication + brain-cancer extension.
-HEADLINE_KM_PANELS = [
-    ("MET",   "pan_cancer", "cohort2", "SNV"),
-    ("STK11", "LUNG",       "cohort1", "SV"),
-    ("PTPRD", "BRAIN",      "cohort1", "DEL"),
-]
+MAX_FOREST_MARKERS = 12
+MAX_KM_PANELS = 3
 
 FOREST_COLUMNS = [
-    "gene", "cancer", "cohort", "mutation_type", "label", "track",
+    "gene", "cancer", "cohort", "mutation_type", "label",
     "HR", "CI95_low", "CI95_high", "p_value", "n_pos", "n_specs",
-    "validation_level", "narrative_role",
 ]
 
 
@@ -155,15 +138,22 @@ def _ps_predictions() -> pl.DataFrame:
     return pl.concat(rows, how="diagonal_relaxed")
 
 
-def _robust_hits() -> pl.DataFrame:
-    fp = os.path.join(COMPILED_DIR, "track2_all_significant_hits.csv")
-    if not os.path.exists(fp):
-        print(f"  missing {fp}")
-        return pl.DataFrame(schema={c: pl.Float64 for c in ROBUST_COLUMNS})
-    try:
-        hits = pl.read_csv(fp)
-    except pl.exceptions.NoDataError:
-        return pl.DataFrame(schema={c: pl.Float64 for c in ROBUST_COLUMNS})
+def _robust_hits(hits: pl.DataFrame | None = None) -> pl.DataFrame:
+    """Hits meeting the pre-registered stability criterion (>=2 clean specs,
+    direction-consistent).
+
+    `hits` may be supplied by a caller that has already read the compiled CSV
+    (`_stable_markers`), so the criterion has exactly one implementation.
+    """
+    if hits is None:
+        fp = os.path.join(COMPILED_DIR, "track2_all_significant_hits.csv")
+        if not os.path.exists(fp):
+            print(f"  missing {fp}")
+            return pl.DataFrame(schema={c: pl.Float64 for c in ROBUST_COLUMNS})
+        try:
+            hits = pl.read_csv(fp)
+        except pl.exceptions.NoDataError:
+            return pl.DataFrame(schema={c: pl.Float64 for c in ROBUST_COLUMNS})
     if hits.is_empty():
         return pl.DataFrame(schema={c: pl.Float64 for c in ROBUST_COLUMNS})
     hits = hits.with_columns(
@@ -280,105 +270,60 @@ def _km_top_hit() -> tuple[pl.DataFrame, pl.DataFrame]:
     return km, meta
 
 
+_KM_SELECTION_SCHEMA = ["marker", "cancer_type", "cohort", "ps_model",
+                         "weight_type", "hr", "hr_label"]
+
+
+def _stable_markers(t2_hits: pl.DataFrame) -> pl.DataFrame:
+    """Markers meeting the pre-registered stability criterion, best p-value first.
+
+    Reuses `_robust_hits()` (>=2 clean specs, direction-consistent) so the forest
+    and the KM strip select on the same rule the supplement reports, rather than
+    on a hand-picked list. Returns one row per (marker, cancer_type, cohort) with
+    the primary-spec estimate, ordered by interaction p-value.
+    """
+    robust = _robust_hits(t2_hits)
+    if robust.is_empty():
+        return pl.DataFrame(schema={c: pl.Float64 for c in _KM_SELECTION_SCHEMA})
+
+    keys = robust.select(["marker", "cancer_type"]).unique()
+    sub = t2_hits.join(keys, on=["marker", "cancer_type"], how="inner")
+    if sub.is_empty():
+        return pl.DataFrame(schema={c: pl.Float64 for c in _KM_SELECTION_SCHEMA})
+
+    # Prefer the primary specification; fall back to the best p-value within the
+    # marker when the primary spec produced no row for it.
+    is_primary = ((pl.col("ps_model") == PRIMARY_PS_MODEL)
+                  & (pl.col("weight_type").str.to_uppercase() == TRACK2_WEIGHT.upper()))
+    sub = sub.with_columns((~is_primary).cast(pl.Int8).alias("_not_primary"))
+    best = (sub.sort(["_not_primary", "p_markerxICI"])
+               .group_by(["marker", "cancer_type", "cohort"], maintain_order=True)
+               .first())
+    return best.sort("p_markerxICI").with_columns(
+        pl.col("HR_markerxICI").cast(pl.Float64).alias("hr"),
+        pl.lit("HR(marker×ICI)").alias("hr_label"),
+    ).select(_KM_SELECTION_SCHEMA)
+
+
 def _select_km_example_hits(t2_hits: pl.DataFrame,
-                             max_examples: int = 3) -> pl.DataFrame:
-    """Return one row per (marker, cancer, cohort) in HEADLINE_KM_PANELS, in order.
+                             max_examples: int = MAX_KM_PANELS) -> pl.DataFrame:
+    """Top `max_examples` stability-selected markers for the KM strip.
 
-    Selects the Track 2 interaction hit, so the KM title carries the interaction
-    HR. Panels whose gene has no interaction hit are omitted. The output keeps
-    the track-agnostic schema:
+    The KM title carries the interaction HR. Output schema:
 
-        marker, cancer_type, cohort, ps_model, weight_type, track, hr, hr_label
-
-    so `_km_examples()` can iterate uniformly.
+        marker, cancer_type, cohort, ps_model, weight_type, hr, hr_label
     """
-    chosen = []
-
-    def _best(sub: pl.DataFrame, p_col: str) -> dict | None:
-        primary = sub.filter((pl.col("ps_model") == PRIMARY_PS_MODEL)
-                              & (pl.col("weight_type").str.to_uppercase() == TRACK2_WEIGHT.upper()))
-        if primary.is_empty():
-            primary = sub.sort(p_col)
-        return primary.row(0, named=True) if not primary.is_empty() else None
-
-    for gene, cancer, cohort, mut in HEADLINE_KM_PANELS:
-        marker = f"{gene}_{mut}"
-        # Interaction HR is the headline number for fig5D
-        t2_sub = t2_hits.filter((pl.col("marker") == marker)
-                                 & (pl.col("cancer_type") == cancer)
-                                 & (pl.col("cohort") == cohort))
-        t2_row = _best(t2_sub, "p_markerxICI") if not t2_sub.is_empty() else None
-        if t2_row is not None:
-            chosen.append({
-                "marker":     t2_row["marker"],
-                "cancer_type": t2_row["cancer_type"],
-                "cohort":     t2_row["cohort"],
-                "ps_model":   t2_row["ps_model"],
-                "weight_type": t2_row["weight_type"],
-                "track":      2,
-                "hr":         float(t2_row["HR_markerxICI"]),
-                "hr_label":   "HR(marker×ICI)",
-            })
-            continue
-
-        print(f"  KM headline {marker}/{cancer}/{cohort}: no compiled hit; skipping")
-
-    if not chosen:
-        return pl.DataFrame(schema={c: pl.Float64 for c in
-                                     ["marker","cancer_type","cohort","ps_model",
-                                      "weight_type","track","hr","hr_label"]})
-    return pl.DataFrame(chosen)[:max_examples]
+    stable = _stable_markers(t2_hits)
+    if stable.is_empty():
+        print("  no markers meet the stability criterion; KM strip will be empty")
+        return stable
+    return stable.head(max_examples)
 
 
 # ---------------------------------------------------------------------------
-# Forest panel (fig5e): T2 (predictive-of-ICI) interaction estimates for the
-# headline gene set, with literature-validation strip.
+# Forest panel (fig5e): marker×ICI interaction estimates for the markers meeting
+# the pre-registered stability criterion.
 # ---------------------------------------------------------------------------
-_VALIDATION_FILENAMES = (
-    "all_findings_with_validation.csv.gz",
-    "all_findings_with_validation.csv",
-)
-
-
-def _load_validation_lookup() -> dict[tuple[str, str, str], tuple[str, str]]:
-    """{(gene, cancer, cohort) → (validation_level, validation_notes)}.
-
-    Tries .gz then plain .csv in COMPILED_DIR. Returns empty dict if absent.
-    """
-    for name in _VALIDATION_FILENAMES:
-        fp = os.path.join(COMPILED_DIR, name)
-        if os.path.exists(fp):
-            try:
-                d = pl.read_csv(fp)
-            except (pl.exceptions.NoDataError, OSError) as e:
-                print(f"  validation CSV present but unreadable ({e}); no annotation")
-                return {}
-            cols = {"gene", "cancer_type", "cohort", "validation_level"}
-            if not cols.issubset(d.columns):
-                return {}
-            d = d.drop_nulls(subset=["validation_level"])
-            d = d.unique(subset=["gene", "cancer_type", "cohort"], keep="first")
-            return {
-                (r["gene"], r["cancer_type"], r["cohort"]):
-                    (r["validation_level"], r.get("validation_notes", ""))
-                for r in d.iter_rows(named=True)
-            }
-    return {}
-
-
-def _narrative_role(t2_robust: bool, validation: str) -> str:
-    """Classify a finding from interaction robustness plus literature validation.
-
-    Previously this also weighed a Track-1 (prognostic-in-ICI) estimate; with the
-    prognostic screen removed, robustness is the interaction alone -- a hit
-    replicating across >=2 specifications.
-    """
-    strong = validation in ("Strong", "Very Strong", "Moderate")
-    if t2_robust:
-        return "Replication of known biology" if strong else "Novel discovery"
-    return "Lower-confidence"
-
-
 def _track2_row(t2: pl.DataFrame, marker: str, cancer: str, cohort: str) -> dict | None:
     """Primary-spec Track-2 interaction estimate, with the real Wald CI95.
 
@@ -405,26 +350,50 @@ def _track2_row(t2: pl.DataFrame, marker: str, cancer: str, cohort: str) -> dict
     }
 
 
+def _split_marker(marker: str) -> tuple[str, str]:
+    """`{GENE}_{SNV|SV|FUSION|DEL|AMP}` → (gene, mutation_type)."""
+    for tag in ("SNV", "SV", "FUSION", "DEL", "AMP"):
+        suffix = f"_{tag}"
+        if marker.upper().endswith(suffix):
+            return marker[: -len(suffix)], tag
+    return marker, "OTHER"
+
+
 def _forest_headline() -> pl.DataFrame:
+    """Interaction estimates for the stability-selected markers.
+
+    Selection is the pre-registered `_robust_hits()` rule, ranked by primary-spec
+    interaction p-value and capped at MAX_FOREST_MARKERS — no hand-curated list
+    and no literature annotation.
+    """
     t2_fp = os.path.join(COMPILED_DIR, "track2_all_significant_hits.csv")
     if not os.path.exists(t2_fp):
         print(f"  missing compiled interaction hits at {COMPILED_DIR}; forest empty")
         return pl.DataFrame(schema={c: pl.Float64 for c in FOREST_COLUMNS})
-    t2 = pl.read_csv(t2_fp)
-    validation = _load_validation_lookup()
+    try:
+        t2 = pl.read_csv(t2_fp)
+    except pl.exceptions.NoDataError:
+        t2 = pl.DataFrame()
+    if t2.is_empty():
+        return pl.DataFrame(schema={c: pl.Float64 for c in FOREST_COLUMNS})
+
+    selected = _stable_markers(t2).head(MAX_FOREST_MARKERS)
+    if selected.is_empty():
+        print("  no markers meet the stability criterion; forest empty")
+        return pl.DataFrame(schema={c: pl.Float64 for c in FOREST_COLUMNS})
 
     rows = []
-    for gene, cancer, cohort, mut, label in HEADLINE_FOREST:
-        marker = f"{gene}_{mut}"
+    for sel in selected.iter_rows(named=True):
+        marker, cancer, cohort = sel["marker"], sel["cancer_type"], sel["cohort"]
         t2_row = _track2_row(t2, marker, cancer, cohort)
-        val_level, _ = validation.get((gene, cancer, cohort), ("", ""))
-        t2_robust = t2_row is not None and t2_row["n_specs"] >= 2
-        role = _narrative_role(t2_robust, val_level)
-        base = dict(gene=gene, cancer=cancer, cohort=cohort,
-                    mutation_type=mut, label=label,
-                    validation_level=val_level, narrative_role=role)
-        if t2_row is not None:
-            rows.append({**base, "track": "T2_predictive_of_ICI", **t2_row})
+        if t2_row is None:
+            continue
+        gene, mut = _split_marker(marker)
+        label = f"{gene} ({mut})" if mut != "OTHER" else gene
+        rows.append({
+            "gene": gene, "cancer": cancer, "cohort": cohort,
+            "mutation_type": mut, "label": label, **t2_row,
+        })
     if not rows:
         return pl.DataFrame(schema={c: pl.Float64 for c in FOREST_COLUMNS})
     return pl.DataFrame(rows).select(FOREST_COLUMNS)
@@ -454,7 +423,6 @@ def _km_examples() -> pl.DataFrame:
         ps_model = row["ps_model"]
         hr = float(row["hr"])
         hr_label = row["hr_label"]
-        track = int(row["track"])
         iptw_fp = os.path.join(BIOMARKER_PATH, f"IPTW_df_{cohort}_{ps_model}.parquet")
         if not os.path.exists(iptw_fp):
             print(f"  missing {iptw_fp}")
@@ -470,14 +438,8 @@ def _km_examples() -> pl.DataFrame:
         cur = filter_finite_rows(iptw, required).filter(pl.col("tt_death") > 0)
         if cur.is_empty():
             continue
-        # Track 2 (interaction) → ICI Benefit / ICI Harm; Track 1 fallback is
-        # a prognostic-within-ICI story, so title differently.
-        if track == 2:
-            direction = "ICI Benefit" if hr < 1 else "ICI Harm"
-            title = f"{marker} — {direction}"
-        else:
-            direction = "Prognostic (lower risk)" if hr < 1 else "Prognostic (higher risk)"
-            title = f"{marker} — {direction} within ICI"
+        direction = "ICI Benefit" if hr < 1 else "ICI Harm"
+        title = f"{marker} — {direction}"
         cur = cur.select(["DFCI_MRN", marker, "PX_on_ICI", "death", "tt_death"]).rename(
             {marker: "marker_value"}
         )
@@ -488,14 +450,11 @@ def _km_examples() -> pl.DataFrame:
             pl.lit(cancer).alias("cancer"),
             pl.lit(hr).alias("hr"),
             pl.lit(hr_label).alias("hr_label"),
-            pl.lit(track).alias("track"),
         ])
         frames.append(cur)
     if not frames:
         return pl.DataFrame(schema={c: pl.Float64 for c in KM_EXAMPLE_COLUMNS})
-    out = pl.concat(frames, how="diagonal_relaxed")
-    # Preserve forward-compat schema (Track 1 rows carry extra columns)
-    return out
+    return pl.concat(frames, how="diagonal_relaxed")
 
 
 def _smd(x: np.ndarray, treat: np.ndarray, w: np.ndarray | None = None) -> float:
