@@ -96,7 +96,7 @@ build_fig3b <- function() {
   mat <- mat[mods, mods, drop = FALSE]
   mat[!is.finite(mat)] <- NA_real_
 
-  ggcorrplot::ggcorrplot(mat, lab = TRUE, lab_size = MANUSCRIPT_TEXT_SIZE,
+  ggcorrplot::ggcorrplot(mat, type = "lower", lab = TRUE, lab_size = MANUSCRIPT_TEXT_SIZE,
                          colors = c("#2E86C1", "#FFFFFF", "#E74C3C"),
                          outline.color = "white") +
     scale_x_discrete(labels = MODALITY_DISPLAY) +
@@ -133,7 +133,8 @@ avg_rank_from_long <- function(ranks_long) {
   ranks_long %>%
     group_by(modality) %>%
     summarise(mean_rank = mean(rank, na.rm = TRUE),
-              sem_rank = if (dplyr::n() > 1) stats::sd(rank, na.rm = TRUE) / sqrt(dplyr::n()) else 0,
+              q25_rank = quantile(rank, .25, na.rm = TRUE),
+              q75_rank = quantile(rank, .75, na.rm = TRUE),
               .groups = "drop") %>%
     mutate(n_events = n_events)
 }
@@ -142,10 +143,15 @@ avg_rank_from_long <- function(ranks_long) {
 # ============================================================================
 # fig3c: average modality rank across endpoints (1 = best)
 # ============================================================================
-build_fig3c <- function(metric = METRIC, excluded = EXCLUDED_EVENTS) {
+build_fig3c <- function(betas, metric = METRIC, excluded = EXCLUDED_EVENTS) {
   ranks_long <- drop_excluded_events(
     load_figure_data(sprintf("fig3_modality_ranks_long_%s.csv", metric_suffix(metric))),
     excluded)
+  # Use the exact joint-Cox complete-case endpoint set reported in panels A/D.
+  if (!is.null(betas) && nrow(betas) > 0 && nrow(ranks_long) > 0) {
+    ranks_long <- ranks_long %>%
+      inner_join(complete_case_events(betas), by = c("scheme", "event"))
+  }
   # fig3_modality_avg_rank_*.csv is pre-aggregated per modality in the Python tier
   # and carries no event column, so it cannot be filtered directly. When events are
   # disqualified, re-derive the mean/SEM from the (filtered) long companion, which
@@ -158,6 +164,8 @@ build_fig3c <- function(metric = METRIC, excluded = EXCLUDED_EVENTS) {
     d <- load_figure_data(sprintf("fig3_modality_avg_rank_%s.csv", metric_suffix(metric)))
   }
   if (nrow(d) == 0) return(placeholder_panel("fig3_modality_avg_rank_*.csv empty"))
+  if (!"q25_rank" %in% names(d)) d$q25_rank <- d$mean_rank - d$sem_rank
+  if (!"q75_rank" %in% names(d)) d$q75_rank <- d$mean_rank + d$sem_rank
   # Drop MODALITY_ORDER levels this run has no rank for, so a modality that
   # never ran leaves no empty slot on the axis; ranked_mods also sizes the
   # x-range below, which is 1..n over what was actually ranked.
@@ -168,26 +176,22 @@ build_fig3c <- function(metric = METRIC, excluded = EXCLUDED_EVENTS) {
     arrange(mean_rank) %>%
     mutate(modality = fct_reorder(modality, mean_rank, .desc = TRUE))
 
-  fp <- friedman_p(ranks_long)
-  stars <- p_to_stars(fp)
   lbl <- metric_label(metric)
 
   ggplot(d, aes(mean_rank, modality, fill = as.character(modality))) +
     geom_col(width = 0.62, color = "white") +
-    geom_errorbarh(aes(xmin = mean_rank - sem_rank,
-                       xmax = mean_rank + sem_rank),
+    geom_errorbarh(aes(xmin = q25_rank, xmax = q75_rank),
                    height = 0.25, color = "#222222", linewidth = 0.5) +
     geom_text(aes(label = sprintf("%.2f", mean_rank),
-                  x = mean_rank + sem_rank + 0.05),
+                  x = q75_rank + 0.05),
               hjust = 0, size = MANUSCRIPT_SMALL_TEXT_SIZE) +
     scale_fill_manual(values = MODALITY_COLORS, guide = "none") +
     scale_y_discrete(labels = MODALITY_DISPLAY) +
     coord_cartesian(xlim = c(0.5, length(ranked_mods) + 0.5)) +
     labs(x = sprintf("Average rank across endpoints (1 = best, ranked by %s)", lbl), y = NULL,
          title = "Average Modality Rank",
-         caption = sprintf("%s endpoints  |  Friedman test across modalities: p=%s  %s",
-                           if ("n_events" %in% names(d)) d$n_events[1] else "?",
-                           ifelse(is.na(fp), "n/a", sprintf("%.1e", fp)), stars)) +
+         caption = sprintf("%s joint-Cox complete-case endpoints; bars show mean rank and IQR across correlated endpoints.",
+                           if ("n_events" %in% names(d)) d$n_events[1] else "?")) +
     theme_manuscript() +
     theme(panel.grid.major.x = element_line(color = "grey90"),
           plot.caption = element_text(size = MANUSCRIPT_CAPTION_SIZE, hjust = 1,
@@ -239,12 +243,12 @@ build_fig3d <- function(betas) {
 
   ann <- trimmed %>%
     rowwise() %>%
-    mutate(p = wilcoxon_vs0(unlist(kept)),
-           stars = p_to_stars(p),
-           mean_beta = mean(unlist(kept), na.rm = TRUE),
-           sd_beta = sd(unlist(kept), na.rm = TRUE)) %>%
+    mutate(mean_beta = mean(unlist(kept), na.rm = TRUE),
+           median_beta = median(unlist(kept), na.rm = TRUE),
+           q25 = quantile(unlist(kept), .25, na.rm = TRUE),
+           q75 = quantile(unlist(kept), .75, na.rm = TRUE)) %>%
     ungroup() %>%
-    select(modality, stars, mean_beta, sd_beta)
+    select(modality, mean_beta, median_beta, q25, q75)
 
   # Order the x-axis by mean standardized coefficient, descending left-to-right.
   mod_order <- ann %>% arrange(desc(mean_beta)) %>% pull(modality) %>% as.character()
@@ -260,15 +264,11 @@ build_fig3d <- function(betas) {
                 show.legend = FALSE) +
     geom_hline(yintercept = 0, color = "#333333", linetype = "dashed") +
     geom_errorbar(data = ann,
-                  aes(x = modality, y = mean_beta,
-                      ymin = mean_beta - sd_beta, ymax = mean_beta + sd_beta),
+                  aes(x = modality, y = median_beta, ymin = q25, ymax = q75),
                   inherit.aes = FALSE, width = 0.15, linewidth = 0.6, color = "#111111") +
-    geom_point(data = ann, aes(x = modality, y = mean_beta),
+    geom_point(data = ann, aes(x = modality, y = median_beta),
               inherit.aes = FALSE, shape = 23, size = 2.2,
               fill = "white", color = "#111111", stroke = 0.7) +
-    geom_text(data = ann, aes(modality, ymax * 1.04, label = stars),
-              inherit.aes = FALSE,
-              size = MANUSCRIPT_TEXT_SIZE, fontface = "bold", color = "#222222") +
     scale_fill_manual(values = MODALITY_COLORS, guide = "none") +
     scale_color_manual(values = MODALITY_COLORS, guide = "none") +
     scale_x_discrete(labels = MODALITY_DISPLAY) +
@@ -277,8 +277,7 @@ build_fig3d <- function(betas) {
          caption = paste0(sprintf("%d complete-case endpoints.  ", nrow(cc_events)),
                           "Mean β by modality: ", means_str, "\n",
                           "Unpenalized coefficients; ridge estimates are retained as sensitivity output.",
-                          "  Diamond \u00B1 bar: mean \u00B1 SD.\n",
-                          "Stars: Wilcoxon vs β=0  (*<.05, **<.01, ***<.001, ****<1e-4).")) +
+                          "  Diamond and bar: median and IQR across correlated endpoints.")) +
     theme_manuscript() +
     theme(axis.text.x = element_text(angle = 0, hjust = 0.5),
           plot.caption = element_text(size = MANUSCRIPT_CAPTION_SIZE, hjust = 0,
@@ -307,7 +306,7 @@ if (nrow(betas) > 0 && "p_value" %in% names(betas)) betas <- bh_within_cell(beta
 
 p3a <- build_fig3a(betas)
 p3b <- build_fig3b()
-p3c <- build_fig3c()
+p3c <- build_fig3c(betas)
 p3d <- build_fig3d(betas)
 
 .tag <- metric_tag(METRIC)
@@ -319,4 +318,4 @@ p3d <- build_fig3d(betas)
 save_panel(p3a, paste0("fig3a", .tag), group = "figure3", width = 7.2, height = 5.8)
 save_panel(p3b, "fig3b", group = "figure3", width = 7.2, height = 6.0)
 save_panel(p3c, paste0("fig3c", .tag), group = "figure3", width = 7.2, height = 6.0)
-save_panel(p3d, paste0("fig3d", .tag), group = "figure3", width = 7.8, height = 6.0)
+save_panel(p3d, paste0("fig3d", .tag), group = "figure3", width = 9.2, height = 6.4)

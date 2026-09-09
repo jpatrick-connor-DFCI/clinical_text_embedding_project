@@ -324,7 +324,9 @@ def _cluster_severity(traj_sub: pl.DataFrame, treatment_df: pl.DataFrame) -> pl.
     """Per-cluster disease-severity metrics for the Fig 4C characteristics panel.
 
     - mean_met_sites: mean number of distinct metastasis sites per patient (0-7).
-    - rmst_months:    cluster restricted mean survival time over [0, RMST_TAU_MONTHS].
+    - rmst_months:    cluster restricted mean survival time conditional on being
+                      alive at the trajectory landmark, from that landmark to
+                      RMST_TAU_MONTHS.
     - pct_stage_iv:   % of cluster patients whose raw stage normalizes to IV.
     - pct_ici:        % of cluster patients ever treated with ICI (any line).
     - mean_slope:     mean per-patient risk-trajectory slope (risk/month) — the
@@ -380,15 +382,22 @@ def _cluster_severity(traj_sub: pl.DataFrame, treatment_df: pl.DataFrame) -> pl.
 
     rows = []
     for (k,), sub in merged.group_by(["cluster"], maintain_order=True):
-        valid = filter_finite_rows(sub, ["death", "tt_death"]).filter(pl.col("tt_death") > 0)
+        landmark = float(SLOPE_LANDMARK_MONTHS)
+        valid = filter_finite_rows(sub, ["death", "tt_death"]).filter(
+            (pl.col("tt_death") / 30.44) > landmark
+        )
         rmst = np.nan
         rmst_low = rmst_high = np.nan
         if not valid.is_empty():
-            valid_time = valid["tt_death"].to_numpy() / 30.44
+            # Reset the clock at the landmark. Using time from treatment start
+            # among patients selected for survival to the landmark would bake an
+            # immortal period into every group's RMST.
+            valid_time = valid["tt_death"].to_numpy() / 30.44 - landmark
             valid_event = valid["death"].to_numpy()
             kmf = KaplanMeierFitter().fit(valid_time, valid_event)
+            conditional_tau = max(0.0, RMST_TAU_MONTHS - landmark)
             try:
-                rmst = float(restricted_mean_survival_time(kmf, t=RMST_TAU_MONTHS))
+                rmst = float(restricted_mean_survival_time(kmf, t=conditional_tau))
             except Exception as e:  # pragma: no cover - defensive
                 print(f"  RMST failed for cluster {k}: {e}")
                 rmst = np.nan
@@ -399,7 +408,7 @@ def _cluster_severity(traj_sub: pl.DataFrame, treatment_df: pl.DataFrame) -> pl.
                     for _ in range(int(os.getenv("FIG4_BOOTSTRAP_REPS", "200"))):
                         idx = rng.integers(0, len(valid_time), len(valid_time))
                         km_boot = KaplanMeierFitter().fit(valid_time[idx], valid_event[idx])
-                        boot.append(float(restricted_mean_survival_time(km_boot, t=RMST_TAU_MONTHS)))
+                        boot.append(float(restricted_mean_survival_time(km_boot, t=conditional_tau)))
                     rmst_low, rmst_high = np.quantile(boot, [0.025, 0.975])
                 except Exception as e:  # pragma: no cover - defensive
                     print(f"  RMST bootstrap failed for cluster {k}: {e}")

@@ -56,7 +56,7 @@ ROBUST_COLUMNS = [
 KM_COLUMNS = ["DFCI_MRN", "marker_value", "PX_on_ICI", "death", "tt_death"]
 KM_EXAMPLE_COLUMNS = [
     "DFCI_MRN", "example_id", "title", "marker", "cancer", "marker_value",
-    "PX_on_ICI", "death", "tt_death", "hr", "hr_label",
+    "PX_on_ICI", "death", "tt_death", "hr", "hr_low", "hr_high", "hr_p", "hr_label",
 ]
 TOP_HIT_META_COLUMNS = ["marker", "cancer", "cohort", "ps_model", "weight_type"]
 LOVE_SMD_COLUMNS = ["covariate", "covariate_family", "smd_unweighted", "smd_weighted"]
@@ -274,7 +274,7 @@ def _km_top_hit() -> tuple[pl.DataFrame, pl.DataFrame]:
 
 
 _KM_SELECTION_SCHEMA = ["marker", "cancer_type", "cohort", "ps_model",
-                         "weight_type", "hr", "hr_label"]
+                         "weight_type", "hr", "hr_low", "hr_high", "hr_p", "hr_label"]
 
 
 def _stable_markers(t2_hits: pl.DataFrame) -> pl.DataFrame:
@@ -304,6 +304,9 @@ def _stable_markers(t2_hits: pl.DataFrame) -> pl.DataFrame:
                .first())
     return best.sort("p_markerxICI").with_columns(
         pl.col("HR_markerxICI").cast(pl.Float64).alias("hr"),
+        pl.col("CI95_markerxICI_low").cast(pl.Float64).alias("hr_low"),
+        pl.col("CI95_markerxICI_high").cast(pl.Float64).alias("hr_high"),
+        pl.col("p_markerxICI").cast(pl.Float64).alias("hr_p"),
         pl.lit("HR(marker×ICI)").alias("hr_label"),
     ).select(_KM_SELECTION_SCHEMA)
 
@@ -358,7 +361,11 @@ def _split_marker(marker: str) -> tuple[str, str]:
     for tag in ("SNV", "SV", "FUSION", "DEL", "AMP"):
         suffix = f"_{tag}"
         if marker.upper().endswith(suffix):
-            return marker[: -len(suffix)], tag
+            gene = marker[: -len(suffix)]
+            pieces = gene.split("_")
+            if len(pieces) > 1 and len(set(pieces)) == 1:
+                gene = pieces[0]
+            return gene, tag
     return marker, "OTHER"
 
 
@@ -425,6 +432,9 @@ def _km_examples() -> pl.DataFrame:
         cohort = row["cohort"]
         ps_model = row["ps_model"]
         hr = float(row["hr"])
+        hr_low = float(row["hr_low"])
+        hr_high = float(row["hr_high"])
+        hr_p = float(row["hr_p"])
         hr_label = row["hr_label"]
         iptw_fp = os.path.join(BIOMARKER_PATH, f"IPTW_df_{cohort}_{ps_model}.parquet")
         if not os.path.exists(iptw_fp):
@@ -452,6 +462,9 @@ def _km_examples() -> pl.DataFrame:
             pl.lit(marker).alias("marker"),
             pl.lit(cancer).alias("cancer"),
             pl.lit(hr).alias("hr"),
+            pl.lit(hr_low).alias("hr_low"),
+            pl.lit(hr_high).alias("hr_high"),
+            pl.lit(hr_p).alias("hr_p"),
             pl.lit(hr_label).alias("hr_label"),
         ])
         frames.append(cur)
@@ -480,9 +493,35 @@ def _smd(x: np.ndarray, treat: np.ndarray, w: np.ndarray | None = None) -> float
 def _love_smd() -> pl.DataFrame:
     """Covariate balance (SMD) before vs after IPTW for the primary spec, for the love plot.
 
-    Recomputes stabilized ATE weights from the held-out propensity (ICI_prediction) so the panel
-    is self-contained, mirroring run_IPTW_analysis.compute_smd + the ATE-weight formula.
+    Prefer the exact post-common-support, recalibrated, truncated analysis
+    diagnostics written by run_IPTW_analysis. Fall back to reconstruction only
+    for legacy runs that predate those diagnostics.
     """
+    diag_fp = os.path.join(PRIMARY_SPEC_DIR, "pan_cancer_diagnostics.parquet")
+    if os.path.exists(diag_fp):
+        long = pl.read_parquet(diag_fp).filter(pl.col("section") == "balance_ATE")
+        if not long.is_empty():
+            exact = long.pivot(on="metric", index="key", values="value")
+            if exact["key"].str.contains(r"\|").all():
+                exact = exact.with_columns(
+                    pl.col("key").str.split_exact("|", 1).struct.rename_fields(
+                        ["covariate_family", "covariate"]
+                    ).alias("_parts")
+                ).unnest("_parts").drop("key")
+            rename = {}
+            if "SMD_unweighted" in exact.columns:
+                rename["SMD_unweighted"] = "smd_unweighted"
+            if "SMD_weighted" in exact.columns:
+                rename["SMD_weighted"] = "smd_weighted"
+            exact = exact.rename(rename)
+            if set(LOVE_SMD_COLUMNS).issubset(exact.columns):
+                out = exact.select(LOVE_SMD_COLUMNS)
+                structured = out.filter(pl.col("covariate_family") == "structured")
+                embedding_top = (out.filter(pl.col("covariate_family") == "embedding")
+                                 .sort(pl.col("smd_weighted").abs(), descending=True).head(10))
+                return pl.concat([structured, embedding_top], how="diagonal_relaxed")
+
+    print("  WARN: exact pan-cancer balance diagnostics unavailable; reconstructing love plot")
     fp = os.path.join(BIOMARKER_PATH, f"IPTW_df_{COHORT}_{PRIMARY_PS_MODEL}.parquet")
     if not os.path.exists(fp):
         print(f"  no IPTW df at {fp}; emitting empty love-plot data")

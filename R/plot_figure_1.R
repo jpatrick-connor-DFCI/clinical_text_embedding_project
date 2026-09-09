@@ -41,6 +41,9 @@ build_fig1a <- function() {
              all = "#333333")
   d <- d %>% mutate(stage = factor(stage, levels = order)) %>% arrange(stage) %>%
     filter(!(as.character(stage) == "metburden" & n_patients == lead(n_patients, default = -1))) %>%
+    # Availability steps with no attrition add no information to a cumulative
+    # flow and make the central stack unnecessarily tall.
+    filter(row_number() == 1 | n_patients != lag(n_patients)) %>%
     mutate(y = rev(seq_len(n())), previous_n = lag(n_patients, default = first(n_patients)),
            retained = 100 * n_patients / previous_n,
            total_pct = 100 * n_patients / first(n_patients),
@@ -200,14 +203,17 @@ build_fig1e <- function() {
   if (nrow(d) == 0) return(placeholder_panel("fig1_stage_counts.csv empty"))
   d <- d %>%
     mutate(label = stage_label(category)) %>%
-    arrange(n) %>% mutate(label = factor(label, levels = label))
+    mutate(label = factor(label, levels = paste("Stage", c("I", "II", "III", "IV")))) %>%
+    arrange(label)
+  stage_n <- sum(d$n, na.rm = TRUE)
   ggplot(d, aes(x = label, y = n)) +
     geom_col(fill = "#5B8DB8", color = "white", width = 0.65) +
     geom_text(aes(label = scales::comma(n)), vjust = -0.3,
               size = MANUSCRIPT_TEXT_SIZE) +
     scale_y_continuous(expand = expansion(mult = c(0, 0.12)),
                        labels = scales::comma) +
-    labs(x = NULL, y = "Patients", title = "Cancer Stage Breakdown") +
+    labs(x = NULL, y = "Patients", title = "Cancer Stage Breakdown",
+         subtitle = sprintf("Patients with a recognized major stage (N=%s)", comma(stage_n))) +
     theme_manuscript() +
     theme(panel.grid.major.y = element_line(color = "grey90"))
 }
@@ -224,9 +230,11 @@ build_fig1f <- function() {
     arrange(n) %>% mutate(label = factor(label, levels = label))
   ggplot(d, aes(x = n, y = label)) +
     geom_col(fill = "#E8A33D", color = "white", width = 0.65) +
+    geom_text(aes(label = comma(n)), hjust = -0.15, size = MANUSCRIPT_SMALL_TEXT_SIZE) +
     scale_x_continuous(expand = expansion(mult = c(0, 0.08)),
                        labels = scales::comma) +
-    labs(x = "Patients", y = NULL, title = "First-line Treatment Breakdown") +
+    labs(x = "Patients", y = NULL, title = "First-line Treatment Breakdown",
+         subtitle = "Patients with recorded exposure; categories are not mutually exclusive") +
     theme_manuscript() +
     theme(panel.grid.major.x = element_line(color = "grey90"),
           axis.line.y = element_blank(), axis.ticks.y = element_blank(),

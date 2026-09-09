@@ -46,8 +46,8 @@ build_stage_panel <- function(df, perf_df, stage_values, stage_label, perf_group
   # matching whichever metric is active (MANUSCRIPT_METRIC=cindex|auc).
   perf_col <- if (metric == "cindex") "cindex" else "mean_auc"
   perf <- if (nrow(perf_df) > 0) perf_df[[perf_col]][perf_df$stage_group == perf_group][1] else NA_real_
-  ann <- sprintf("n=%s\n%s=%.3f\nlog-rank p=%s",
-                 scales::comma(nrow(sub)), metric_label(metric), perf, format_p_value(lr))
+  ann <- sprintf("n=%s\n%s=%.3f\nlog-rank %s",
+                 scales::comma(nrow(sub)), metric_label(metric), perf, format_p_inline(lr))
 
   ggplot(td, aes(time, estimate, color = stratum)) +
     geom_rect(data = td_ci,

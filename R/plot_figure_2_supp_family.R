@@ -18,12 +18,12 @@ if (nrow(metrics) == 0 || !all(c(base_col, text_col) %in% names(metrics))) {
     mutate(delta = .data[[text_col]] - .data[[base_col]],
            family = factor(scheme, levels = names(SCHEME_LABELS)))
   ann <- d %>% group_by(family) %>%
-    summarise(n = n(), median = median(delta), p = wilcoxon_vs0(delta), .groups = "drop") %>%
-    mutate(label = sprintf("n=%d\nmedian=%+.3f\np=%s", n, median,
-                           vapply(p, format_p_value, character(1))))
+    summarise(n = n(), median = median(delta), .groups = "drop") %>%
+    mutate(label = sprintf("n=%d\nmedian=%+.3f", n, median))
   label_y <- max(d$delta, na.rm = TRUE) + 0.10 * diff(range(d$delta, na.rm = TRUE))
   p <- ggplot(d, aes(family, delta, fill = family)) +
-    geom_violin(scale = "width", alpha = 0.45, color = "grey30") +
+    geom_violin(data = filter(d, ave(delta, family, FUN = length) >= 10),
+                scale = "width", alpha = 0.45, color = "grey30") +
     geom_boxplot(width = 0.13, outlier.shape = NA, fill = "white", alpha = 0.85) +
     geom_jitter(width = 0.14, size = 0.65, alpha = 0.28) +
     geom_hline(yintercept = 0, linetype = "dashed") +
@@ -33,7 +33,7 @@ if (nrow(metrics) == 0 || !all(c(base_col, text_col) %in% names(metrics))) {
     scale_x_discrete(labels = SCHEME_LABELS) +
     labs(x = NULL, y = sprintf("Delta %s (Text - Base)", metric_label(METRIC)),
          title = "Paired Improvement by Endpoint Coding Family",
-         caption = "Median and two-sided paired Wilcoxon signed-rank p value shown for each family.") +
+         caption = "Endpoint-level distributions are descriptive because endpoints are correlated; violins are omitted when n<10.") +
     theme_manuscript() + theme(panel.grid.major.y = element_line(color = "grey90"))
 }
 

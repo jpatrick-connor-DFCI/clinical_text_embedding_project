@@ -263,6 +263,27 @@ format_p_value <- function(p, digits = 2L, floor = 1e-300) {
   sub("^0", "", sprintf(paste0("%.", digits + 1L, "f"), p))
 }
 
+# Complete inline p-value expression. Keeping the comparison operator here
+# prevents constructions such as `p=<1e-300` at call sites.
+format_p_inline <- function(p, digits = 2L, floor = 1e-300) {
+  value <- format_p_value(p, digits = digits, floor = floor)
+  if (identical(value, "n/a")) return("p=n/a")
+  paste0("p", if (startsWith(value, "<")) "" else "=", value)
+}
+
+# Censoring can occur at thousands of unique times. Plotting every mark turns a
+# KM curve into an opaque band, so retain an evenly spaced display-only sample.
+# This never changes the fitted curve, confidence interval, or risk table.
+thin_censor_rows <- function(df, groups, max_per_group = 80L) {
+  if (is.null(df) || nrow(df) == 0 || !"n.censor" %in% names(df)) return(df[0, , drop = FALSE])
+  df %>%
+    dplyr::filter(n.censor > 0) %>%
+    dplyr::group_by(dplyr::across(dplyr::all_of(groups))) %>%
+    dplyr::arrange(time, .by_group = TRUE) %>%
+    dplyr::slice(unique(round(seq(1, dplyr::n(), length.out = min(dplyr::n(), max_per_group))))) %>%
+    dplyr::ungroup()
+}
+
 # Drop excluded events from any scheme+event-keyed frame. A frame without both
 # key columns is returned untouched.
 drop_excluded_events <- function(df, keys) {

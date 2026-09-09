@@ -106,7 +106,9 @@ build_fig4a <- function() {
                color = "white", linewidth = 0.6) +
     labs(x = "Months post-treatment", y = NULL,
          title = "Mortality-Risk Trajectories by Dynamics Group",
-         subtitle = "Display-stratified random sample (up to 500 patients/group); group labels report full N") +
+         subtitle = stringr::str_wrap(
+           "Display-stratified random sample (up to 500 patients/group); group labels report full analytic-cohort N",
+           width = 78)) +
     theme_manuscript() +
     theme(panel.grid = element_blank(),
           axis.ticks.y = element_blank(),
@@ -183,19 +185,16 @@ build_fig4b <- function() {
                                       fill = label),
                                   color = NA, alpha = 0.15, inherit.aes = FALSE) } +
     geom_step(linewidth = 0.9) +
-    geom_point(data = td %>% filter(n.censor > 0), shape = 3, size = 1.2) +
+    geom_point(data = thin_censor_rows(td, "label", 60), shape = 3, size = 1.0) +
     scale_color_manual(values = pal, name = NULL, drop = FALSE) +
     scale_fill_manual(values = pal, guide = "none", drop = FALSE) +
     coord_cartesian(xlim = c(LANDMARK, 120)) +
-    annotate("text", x = LANDMARK + 2, y = 0.05,
-             label = sprintf("Landmark score-test p=%s\n%s%s", format_p_value(lp),
-                             ifelse(stage_adjusted, "Stage-adjusted ", ""), hr_text),
-             hjust = 0, size = MANUSCRIPT_SMALL_TEXT_SIZE,
-             fontface = "italic", color = "#444444") +
     labs(x = "Months from first treatment",
          y = sprintf(paste0("Overall Survival Probability\n",
                            "(conditional on survival to month %s)"), LANDMARK),
-         title = "KM Overall Survival by Risk-Dynamics Group") +
+         title = "KM Overall Survival by Risk-Dynamics Group",
+         subtitle = sprintf("Landmark-eligible cohort: N=%s; follow-up conditional on survival to month %s",
+                            comma(nrow(km)), LANDMARK)) +
     theme_manuscript() +
     theme(legend.position = c(0.02, 0.18), legend.justification = c(0, 0),
           legend.background = element_rect(fill = "white", color = NA))
@@ -210,7 +209,16 @@ build_fig4b <- function() {
     scale_x_continuous(limits = c(LANDMARK, 120), breaks = risk_times) +
     labs(x = NULL, y = "Number at risk") + theme_void(base_size = 9) +
     theme(axis.text.y = element_text(), axis.title.y = element_text(angle = 90))
-  main / risk_table + plot_layout(heights = c(4.2, 1.1))
+  stats_text <- sprintf("Landmark score test: %s. %s%s",
+                        format_p_inline(lp),
+                        ifelse(stage_adjusted, "Stage-adjusted ", ""),
+                        gsub("\n", "; ", hr_text))
+  stats_panel <- ggplot() +
+    annotate("text", x = 0, y = 1, label = stringr::str_wrap(stats_text, width = 105),
+             hjust = 0, vjust = 1, size = MANUSCRIPT_SMALL_TEXT_SIZE,
+             fontface = "italic", color = "#444444") +
+    xlim(0, 1) + ylim(0, 1) + theme_void()
+  main / stats_panel / risk_table + plot_layout(heights = c(4.0, 0.55, 1.1))
 }
 
 
@@ -242,7 +250,7 @@ build_fig4d <- function() {
     geom_line(data = grp, aes(month, mean_risk, color = group_lab), linewidth = 0.9) +
     scale_color_manual(values = setNames(unname(pal), lab_by_id), name = NULL, drop = FALSE) +
     scale_fill_manual(values = setNames(unname(pal), lab_by_id), guide = "none", drop = FALSE) +
-    labs(x = "Months post-treatment", y = "Model mortality risk (raw)",
+    labs(x = "Months post-treatment", y = "Cox linear predictor (log relative hazard)",
          title = "Mean Risk Trajectory by Dynamics Group",
          subtitle = "Descriptive trajectories; ribbons are within-group IQRs") +
     theme_manuscript() +
@@ -265,6 +273,11 @@ build_fig4e <- function() {
   if (nrow(d) == 0) return(placeholder_panel("no recognized stages in fig4_slope_by_stage.csv"))
 
   pal <- setNames(GROUP_COLORS[seq_len(N_SLOPE_GROUPS)], GROUP_NAMES)
+  tab <- xtabs(n_patients ~ stage + group_lab, d)
+  chi <- suppressWarnings(chisq.test(tab, correct = FALSE))
+  total_n <- sum(tab)
+  cramer_v <- sqrt(unname(chi$statistic) /
+                   (total_n * min(nrow(tab) - 1, ncol(tab) - 1)))
 
   ggplot(d, aes(stage, n_patients, fill = group_lab)) +
     geom_col(position = "fill", width = 0.7, color = "white") +
@@ -272,8 +285,8 @@ build_fig4e <- function() {
     scale_y_continuous(labels = scales::percent) +
     labs(x = "Stage", y = "Proportion of stage",
          title = "Risk-Dynamics Composition by Stage",
-         subtitle = sprintf("Stage × dynamics-group association p=%s",
-                            format_p_value(chisq.test(xtabs(n_patients ~ stage + group_lab, d))$p.value))) +
+         subtitle = sprintf("N=%s; Cramér's V=%.3f (descriptive association)",
+                            comma(total_n), cramer_v)) +
     theme_manuscript()
 }
 
@@ -302,7 +315,7 @@ build_fig4c <- function() {
          low = by_id("pct_stage_iv_low"), high = by_id("pct_stage_iv_high"), is_pct = TRUE),
     list(title = "Mean # met sites", units = "Sites (0-7)", vals = by_id("mean_met_sites"),
          low = by_id("mean_met_sites_low"), high = by_id("mean_met_sites_high"), is_pct = FALSE),
-    list(title = "10-yr RMST", units = "Months", vals = by_id("rmst_months"),
+    list(title = "Conditional RMST: month 12–120", units = "Months after landmark", vals = by_id("rmst_months"),
          low = by_id("rmst_months_low"), high = by_id("rmst_months_high"), is_pct = FALSE),
     list(title = "Mean risk slope", units = "Risk / month", vals = by_id("mean_slope"),
          low = by_id("mean_slope_low"), high = by_id("mean_slope_high"), is_pct = FALSE)
@@ -384,8 +397,8 @@ p4e <- build_fig4e()
 p4c <- build_fig4c()
 pS1 <- build_figS1a()
 
-save_panel(p4a, "fig4a",  group = "figure4", width = 7.8, height = 5.8)
-save_panel(p4b, "fig4b",  group = "figure4", width = 7.8, height = 5.8)
+save_panel(p4a, "fig4a",  group = "figure4", width = 8.8, height = 5.8)
+save_panel(p4b, "fig4b",  group = "figure4", width = 9.8, height = 7.0)
 save_panel(p4d, "fig4d",  group = "figure4", width = 7.8, height = 5.8)
 save_panel(p4e, "fig4e",  group = "figure4", width = 7.2, height = 5.4)
 save_panel(p4c, "fig4c",  group = "figure4", width = 9.6, height = 8.4)

@@ -32,6 +32,20 @@ compute_roc <- function(y, score) {
   list(fpr = fpr, tpr = tpr, auc = auc)
 }
 
+bootstrap_auc_ci <- function(y, score, reps = 500L, seed = 5105L) {
+  ok <- is.finite(y) & is.finite(score)
+  y <- y[ok]; score <- score[ok]
+  if (length(y) < 20 || length(unique(y)) < 2) return(c(NA_real_, NA_real_))
+  set.seed(seed)
+  pos <- which(y == 1); neg <- which(y == 0)
+  vals <- replicate(reps, {
+    idx <- c(sample(pos, length(pos), replace = TRUE),
+             sample(neg, length(neg), replace = TRUE))
+    compute_roc(y[idx], score[idx])$auc
+  })
+  unname(stats::quantile(vals, c(.025, .975), na.rm = TRUE))
+}
+
 
 # ============================================================================
 # fig5a: propensity-score ROC curves
@@ -49,8 +63,11 @@ build_fig5a <- function() {
     sub <- ps[ps$ps_model == m, ]
     if (nrow(sub) == 0) return(NULL)
     r <- compute_roc(sub$ground_truth, sub$model_probs)
+    ci <- bootstrap_auc_ci(sub$ground_truth, sub$model_probs,
+                           seed = 5105L + match(m, model_order))
     tibble::tibble(model = m, fpr = r$fpr, tpr = r$tpr,
-                   label = sprintf("%s (AUC=%.2f)", pretty_model(m), r$auc))
+                   label = sprintf("%s (AUC %.2f, 95%% CI %.2f–%.2f)",
+                                   pretty_model(m), r$auc, ci[1], ci[2]))
   }))
   legend_labels <- roc_df %>% distinct(model, label) %>%
     arrange(match(model, model_order))
@@ -109,10 +126,10 @@ build_fig5b <- function() {
                        name = NULL) +
     labs(x = "Absolute standardized mean difference", y = NULL,
          title = "Covariate Balance: Before vs After IPTW",
-         subtitle = sprintf("All structured + 10 worst-balanced embedding dimensions · max shown weighted |SMD| = %.3f%s",
+         subtitle = stringr::str_wrap(sprintf("All structured + 10 worst-balanced embedding dimensions · max shown weighted |SMD| = %.3f%s",
                             max(d$smd_weighted, na.rm = TRUE),
                             ifelse(max(d$smd_weighted, na.rm = TRUE) > 0.10,
-                                   " (exceeds 0.10)", ""))) +
+                                   " (exceeds 0.10)", "")), width = 72)) +
     theme_manuscript() +
     theme(legend.position = c(0.98, 0.05),
           legend.justification = c(1, 0),
@@ -243,7 +260,13 @@ build_fig5d <- function() {
     # which estimate is being shown (interaction vs prognostic-within-ICI).
     lbl <- if ("hr_label" %in% names(d) && !is.na(d$hr_label[1]) && nzchar(d$hr_label[1]))
              d$hr_label[1] else "HR"
-    sprintf("\n%s=%.2f", lbl, d$hr[1])
+    if (all(c("hr_low", "hr_high", "hr_p") %in% names(d)) &&
+        all(is.finite(c(d$hr_low[1], d$hr_high[1], d$hr_p[1])))) {
+      return(sprintf("\n%s %.2f (95%% CI %.2f–%.2f); %s",
+                     lbl, d$hr[1], d$hr_low[1], d$hr_high[1],
+                     format_p_inline(d$hr_p[1])))
+    }
+    sprintf("\n%s %.2f (CI unavailable)", lbl, d$hr[1])
   }
 
   km_panel <- function(data, title) {
@@ -273,13 +296,13 @@ build_fig5d <- function() {
                                ymin = conf.low, ymax = conf.high, fill = stratum),
                 inherit.aes = FALSE, alpha = 0.12, color = NA) +
       geom_step(linewidth = 0.9) +
-      geom_point(data = td %>% filter(n.censor > 0), shape = 3, size = 1.1) +
+      geom_point(data = thin_censor_rows(td, "stratum", 45), shape = 3, size = 1.0) +
       scale_color_manual(values = pal, name = NULL) +
       scale_fill_manual(values = pal, guide = "none") +
       coord_cartesian(xlim = c(0, 60), ylim = c(0, 1.02)) +
       labs(x = "Months", y = NULL, title = title) +
       theme_manuscript() +
-      theme(plot.title = element_text(size = 11, face = "bold"),
+      theme(plot.title = element_text(size = 10, face = "bold"),
             legend.position = c(0.98, 0.95),
             legend.justification = c(1, 1),
             legend.background = element_rect(fill = "white", color = NA),
@@ -346,9 +369,7 @@ build_fig5e <- function() {
   d <- d %>%
     mutate(dir_lbl = DIRECTION_LABEL[ifelse(HR < 1, "benefit", "harm")],
            dir_lbl = factor(dir_lbl, levels = unname(DIRECTION_LABEL)),
-           # Row label = gene with cohort tag (cohort 2 = validation cohort).
-           row_lbl = sprintf("%s · %s · %s", label, cancer,
-                             ifelse(cohort == "cohort2", "C2", "C1"))) %>%
+           row_lbl = sprintf("%s · %s · %s", label, cancer, cohort_label(cohort))) %>%
     arrange(desc(row_number()))                      # patchwork plots bottom-up
   row_order <- unique(d$row_lbl)
   d$row_lbl <- factor(d$row_lbl, levels = row_order)
@@ -368,13 +389,16 @@ build_fig5e <- function() {
                   oob = scales::squish) +
     labs(x = "Marker × ICI interaction HR (log scale, 95% CI)",
          y = NULL,
-         title = "Stability-Selected Markers · Interaction with ICI Exposure") +
+         title = "Stability-Selected Markers · Interaction with ICI Exposure",
+         caption = "Primary-specification estimates among direction-consistent markers supported in ≥2 specifications; selected estimates are exploratory and subject to winner's curse.") +
     theme_manuscript() +
     theme(legend.position = "top",
           plot.title = element_text(size = 12, face = "bold"),
           panel.grid.major.y = element_line(color = "grey92"),
           axis.title.x = element_text(size = 10),
-          axis.text.y = element_text(size = 10))
+          axis.text.y = element_text(size = 10),
+          plot.caption = element_text(size = MANUSCRIPT_CAPTION_SIZE, hjust = 0,
+                                      color = "#555555"))
 }
 
 
@@ -387,6 +411,8 @@ build_figS5a <- function() {
   ess <- d %>% group_by(arm) %>%
     summarise(n = n(), ess = sum(weight)^2 / sum(weight^2), .groups = "drop")
   ess_txt <- paste(sprintf("%s: n=%s, ESS=%.0f", ess$arm, comma(ess$n), ess$ess), collapse = " · ")
+  weight_txt <- sprintf("Display weights reconstructed from held-out PS and trimmed at the 1st/99th percentiles; range %.2f–%.2f",
+                        min(d$weight, na.rm = TRUE), max(d$weight, na.rm = TRUE))
   p_overlap <- ggplot(d, aes(propensity, color = arm, fill = arm)) +
     geom_density(alpha = 0.18, linewidth = 0.9) +
     scale_color_manual(values = c(Control = HARM_COLOR, ICI = TEAL), name = NULL) +
@@ -398,7 +424,7 @@ build_figS5a <- function() {
     scale_fill_manual(values = c(Control = HARM_COLOR, ICI = TEAL), name = NULL) +
     labs(x = "Trimmed stabilized ATE weight", y = "Patients", title = "Weight Distribution") +
     theme_manuscript() + theme(legend.position = "top")
-  (p_overlap | p_weight) + plot_annotation(subtitle = ess_txt)
+  (p_overlap | p_weight) + plot_annotation(subtitle = paste(ess_txt, weight_txt, sep = "\n"))
 }
 
 
@@ -413,8 +439,8 @@ p5e <- build_fig5e()
 pS5a <- build_figS5a()
 
 save_panel(p5a, "fig5a", group = "figure5", width = 9.6, height = 7.2)
-save_panel(p5b, "fig5b", group = "figure5", width = 7.8, height = 7.2)
-save_panel(p5c, "fig5c", group = "figure5", width = 10.8, height = 7.8)
-save_panel(p5d, "fig5d", group = "figure5", width = 17.0, height = 6.2)
+save_panel(p5b, "fig5b", group = "figure5", width = 9.0, height = 7.2)
+save_panel(p5c, "fig5c", group = "figure5", width = 12.0, height = 8.2)
+save_panel(p5d, "fig5d", group = "figure5", width = 18.0, height = 6.8)
 save_panel(p5e, "fig5e", group = "figure5", width = 13.0, height = 7.0)
 save_panel(pS5a, "figS5a_weight_diagnostics", group = "figure5", width = 13.0, height = 5.8)
