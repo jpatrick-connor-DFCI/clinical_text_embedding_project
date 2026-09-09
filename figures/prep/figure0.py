@@ -1,7 +1,7 @@
 """Pre-compute inputs for Figure 0 (cohort data-availability cascade).
 
 A CONSORT-style attrition panel run just ahead of Figure 1: starting from the
-full cancer-type cohort, how many patients have each successive modality
+eligible oncology cohort, how many patients have cancer type and each successive modality
 available, down to how many pass every data-availability threshold at once
 (the set actually usable for the full multi-modal comparison in Figures 3+).
 
@@ -9,7 +9,8 @@ All modalities are sourced from the raw feature files under
 clinical_and_genomic_features/ (FEATURE_PATH) — the same files
 generate_all_non_text_covariates.py writes — rather than any downstream,
 event-specific held-out risk-score files:
-- cohort/cancer type: cancer_type_df.csv.gz     (also the Fig 1 cohort source)
+- cohort denominator: SURV_PATH/cohort_df.parquet
+- cancer type:        cancer_type_df.csv.gz
 - stage:              cancer_stage_df.csv.gz (raw CANCER_STAGE column)
 - treatment:          categorical_treatment_data_by_line.csv.gz
 - somatic:            complete_somatic_data_df.csv.gz
@@ -31,7 +32,7 @@ import os
 
 import polars as pl
 
-from config import FEATURE_PATH
+from config import FEATURE_PATH, SURV_PATH
 from figures.io import save_figure_data
 from pipelines.preprocessing.data_availability import (
     MODALITY_ORDER,
@@ -43,6 +44,7 @@ from pipelines.preprocessing.data_availability import (
 DATA_AVAILABILITY_COLUMNS = ["stage", "label", "n_patients", "n_total"]
 
 _MODALITY_LABELS = {
+    "cancer_type": "Cancer type available",
     "text": "With Text",
     "stage": "With Stage",
     "treatment": "With Treatment",
@@ -53,18 +55,21 @@ _MODALITY_LABELS = {
 
 
 def _data_availability() -> tuple[pl.DataFrame, pl.DataFrame]:
-    # Full cohort + cancer type, same source used as the Fig 1 cohort denominator.
-    cancer_type_df = pl.read_csv(os.path.join(FEATURE_PATH, "cancer_type_df.csv.gz"),
-                                 columns=["DFCI_MRN"])
-    cohort_mrns = set(cancer_type_df["DFCI_MRN"])
+    # Start before cancer-type restriction so cancer-type availability is an
+    # explicit eligibility step rather than an invisible denominator choice.
+    cohort_df = pl.read_parquet(os.path.join(SURV_PATH, "cohort_df.parquet"),
+                                columns=["DFCI_MRN"])
+    cohort_mrns = set(cohort_df["DFCI_MRN"])
     n_total = len(cohort_mrns)
 
     modality_sets = modality_mrn_sets(cohort_mrns)
-    all_thresholds = set.intersection(*modality_sets.values()) if modality_sets else set()
-
-    rows = [("full_cohort", "Full Cohort", cohort_mrns)]
-    rows += [(m, _MODALITY_LABELS[m], modality_sets[m]) for m in MODALITY_ORDER]
-    rows.append(("all", "Passes All Thresholds", all_thresholds))
+    # True cumulative attrition: every box is a subset of the preceding box.
+    rows = [("full_cohort", "Eligible oncology cohort", cohort_mrns)]
+    running = set(cohort_mrns)
+    for modality in MODALITY_ORDER:
+        running &= modality_sets[modality]
+        rows.append((modality, _MODALITY_LABELS[modality], set(running)))
+    rows.append(("all", "Final complete-case cohort", set(running)))
 
     cascade_df = pl.DataFrame(
         [{"stage": s, "label": lbl, "n_patients": len(mrns), "n_total": n_total}

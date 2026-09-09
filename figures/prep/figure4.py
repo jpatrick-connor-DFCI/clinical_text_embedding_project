@@ -70,7 +70,11 @@ HEATMAP_ROWS_PER_CLUSTER = 500
 
 KM_COLUMNS = ["DFCI_MRN", "cluster", "death", "tt_death", "stage", "landmark_month"]
 SEVERITY_COLUMNS = ["cluster", "mean_met_sites", "rmst_months",
-                    "pct_stage_iv", "pct_ici", "mean_slope", "n_patients"]
+                    "pct_stage_iv", "pct_ici", "mean_slope", "n_patients",
+                    "mean_met_sites_low", "mean_met_sites_high",
+                    "pct_stage_iv_low", "pct_stage_iv_high",
+                    "mean_slope_low", "mean_slope_high",
+                    "rmst_months_low", "rmst_months_high"]
 GROUP_TRAJECTORY_COLUMNS = ["group", "month", "mean_risk", "q25", "q75"]
 SLOPE_BY_STAGE_COLUMNS = ["stage", "cluster", "n_patients", "mean_slope"]
 SILHOUETTE_COLUMNS = ["k", "silhouette"]
@@ -378,13 +382,40 @@ def _cluster_severity(traj_sub: pl.DataFrame, treatment_df: pl.DataFrame) -> pl.
     for (k,), sub in merged.group_by(["cluster"], maintain_order=True):
         valid = filter_finite_rows(sub, ["death", "tt_death"]).filter(pl.col("tt_death") > 0)
         rmst = np.nan
+        rmst_low = rmst_high = np.nan
         if not valid.is_empty():
-            kmf = KaplanMeierFitter().fit(valid["tt_death"].to_numpy() / 30.44, valid["death"].to_numpy())
+            valid_time = valid["tt_death"].to_numpy() / 30.44
+            valid_event = valid["death"].to_numpy()
+            kmf = KaplanMeierFitter().fit(valid_time, valid_event)
             try:
                 rmst = float(restricted_mean_survival_time(kmf, t=RMST_TAU_MONTHS))
             except Exception as e:  # pragma: no cover - defensive
                 print(f"  RMST failed for cluster {k}: {e}")
                 rmst = np.nan
+            if np.isfinite(rmst):
+                try:
+                    rng = np.random.default_rng(10_000 + int(k))
+                    boot = []
+                    for _ in range(int(os.getenv("FIG4_BOOTSTRAP_REPS", "200"))):
+                        idx = rng.integers(0, len(valid_time), len(valid_time))
+                        km_boot = KaplanMeierFitter().fit(valid_time[idx], valid_event[idx])
+                        boot.append(float(restricted_mean_survival_time(km_boot, t=RMST_TAU_MONTHS)))
+                    rmst_low, rmst_high = np.quantile(boot, [0.025, 0.975])
+                except Exception as e:  # pragma: no cover - defensive
+                    print(f"  RMST bootstrap failed for cluster {k}: {e}")
+        n_sub = len(sub)
+        def _mean_ci(column: str, scale: float = 1.0) -> tuple[float, float]:
+            values = sub[column].cast(pl.Float64, strict=False).drop_nulls().to_numpy()
+            values = values[np.isfinite(values)]
+            if values.size < 2:
+                return np.nan, np.nan
+            estimate = scale * float(values.mean())
+            half_width = 1.96 * scale * float(values.std(ddof=1)) / np.sqrt(values.size)
+            return estimate - half_width, estimate + half_width
+
+        met_low, met_high = _mean_ci("n_met_sites")
+        stage_low, stage_high = _mean_ci("is_stage_iv", scale=100.0)
+        slope_low, slope_high = _mean_ci("slope")
         rows.append({
             "cluster": int(k),
             "mean_met_sites": float(sub["n_met_sites"].mean()) if sub["n_met_sites"].mean() is not None else np.nan,
@@ -392,7 +423,12 @@ def _cluster_severity(traj_sub: pl.DataFrame, treatment_df: pl.DataFrame) -> pl.
             "pct_stage_iv": 100.0 * float(sub["is_stage_iv"].mean()) if sub["is_stage_iv"].mean() is not None else np.nan,
             "pct_ici":      100.0 * float(sub["ever_ici"].mean()) if sub["ever_ici"].mean() is not None else np.nan,
             "mean_slope":   float(sub["slope"].mean()) if sub["slope"].mean() is not None else np.nan,
-            "n_patients": int(len(sub)),
+            "n_patients": int(n_sub),
+            "mean_met_sites_low": met_low, "mean_met_sites_high": met_high,
+            "pct_stage_iv_low": max(0.0, stage_low) if np.isfinite(stage_low) else np.nan,
+            "pct_stage_iv_high": min(100.0, stage_high) if np.isfinite(stage_high) else np.nan,
+            "mean_slope_low": slope_low, "mean_slope_high": slope_high,
+            "rmst_months_low": rmst_low, "rmst_months_high": rmst_high,
         })
     return pl.DataFrame(rows).select(SEVERITY_COLUMNS) if rows else pl.DataFrame(schema={c: pl.Float64 for c in SEVERITY_COLUMNS})
 

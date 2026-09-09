@@ -3,7 +3,7 @@
 # A complete-case significant endpoints per modality (joint Cox BH-FDR<.05),
 # B modality risk-score correlation heatmap (death endpoint),
 # C average modality rank across endpoints (1 = best),
-# D Wald-z violins (β/SE) + Wilcoxon-vs-0 stars + Tukey-IQR trim.
+# D unpenalized standardized-beta violins + paired endpoint summaries.
 #
 # Metric switch: panel C is ranked by whichever metric MANUSCRIPT_METRIC selects
 # (see figure_utils.R::METRIC) — "cindex" (Harrell's C-index) or "auc" (mean AUC(t)).
@@ -196,7 +196,7 @@ build_fig3c <- function(metric = METRIC, excluded = EXCLUDED_EVENTS) {
 
 
 # ============================================================================
-# fig3d: Wald-z (β/SE) violins by modality + Tukey-trim + Wilcoxon-vs-0 stars
+# fig3d: unpenalized β violins by modality + Tukey trim + Wilcoxon-vs-0
 # ============================================================================
 tukey_trim <- function(x, k = IQR_WHISKER) {
   qs <- stats::quantile(x, c(0.25, 0.75), na.rm = TRUE)
@@ -215,18 +215,17 @@ build_fig3d <- function(betas) {
   cc_events <- complete_case_events(betas)
   d <- betas %>%
     inner_join(cc_events, by = c("scheme", "event")) %>%
-    mutate(z = beta / se) %>%
-    filter(is.finite(z))
+    filter(is.finite(beta))
   if (nrow(d) == 0)
-    return(placeholder_panel("no complete-case endpoints with finite beta/se"))
+    return(placeholder_panel("no complete-case endpoints with finite beta"))
 
   trimmed <- d %>% group_by(modality) %>%
-    summarise(t = list(tukey_trim(z)), .groups = "drop") %>%
+    summarise(t = list(tukey_trim(beta)), .groups = "drop") %>%
     mutate(kept = purrr::map(t, "kept"), n_trim = purrr::map_int(t, "n_trim"))
   # purrr may not be loaded; fall back to base
   if (!requireNamespace("purrr", quietly = TRUE)) {
     trimmed <- d %>% group_by(modality) %>%
-      do(tibble(t = list(tukey_trim(.$z)))) %>%
+      do(tibble(t = list(tukey_trim(.$beta)))) %>%
       mutate(kept = lapply(t, function(x) x$kept),
              n_trim = vapply(t, function(x) x$n_trim, integer(1))) %>%
       ungroup() %>% select(modality, kept, n_trim)
@@ -235,37 +234,36 @@ build_fig3d <- function(betas) {
   plot_df <- trimmed %>%
     select(modality, kept) %>%
     tidyr::unnest(kept) %>%
-    rename(z = kept) %>%
+    rename(beta = kept) %>%
     mutate(modality = factor(modality, levels = FIG3_MODALITIES))
 
   ann <- trimmed %>%
     rowwise() %>%
     mutate(p = wilcoxon_vs0(unlist(kept)),
            stars = p_to_stars(p),
-           mean_z = mean(unlist(kept), na.rm = TRUE),
-           sd_z = sd(unlist(kept), na.rm = TRUE)) %>%
+           mean_beta = mean(unlist(kept), na.rm = TRUE),
+           sd_beta = sd(unlist(kept), na.rm = TRUE)) %>%
     ungroup() %>%
-    select(modality, stars, mean_z, sd_z)
+    select(modality, stars, mean_beta, sd_beta)
 
   # Order the x-axis by mean standardized coefficient, descending left-to-right.
-  mod_order <- ann %>% arrange(desc(mean_z)) %>% pull(modality) %>% as.character()
+  mod_order <- ann %>% arrange(desc(mean_beta)) %>% pull(modality) %>% as.character()
   plot_df <- plot_df %>% mutate(modality = factor(as.character(modality), levels = mod_order))
   ann      <- ann      %>% mutate(modality = factor(as.character(modality), levels = mod_order))
-  means_str <- paste(sprintf("%s: %.2f", MODALITY_DISPLAY[as.character(ann$modality)], ann$mean_z),
+  means_str <- paste(sprintf("%s: %.2f", MODALITY_DISPLAY[as.character(ann$modality)], ann$mean_beta),
                      collapse = "   ")
 
-  ymax <- max(plot_df$z, na.rm = TRUE)
-  ggplot(plot_df, aes(modality, z, fill = modality)) +
+  ymax <- max(plot_df$beta, na.rm = TRUE)
+  ggplot(plot_df, aes(modality, beta, fill = modality)) +
     geom_violin(scale = "width", alpha = 0.45, color = "#444444", linewidth = 0.4) +
     geom_jitter(aes(color = modality), width = 0.18, size = 0.7, alpha = 0.30,
                 show.legend = FALSE) +
     geom_hline(yintercept = 0, color = "#333333", linetype = "dashed") +
-    geom_hline(yintercept = c(-1.96, 1.96), color = "#999999",
-               linetype = "dotted") +
     geom_errorbar(data = ann,
-                  aes(x = modality, y = mean_z, ymin = mean_z - sd_z, ymax = mean_z + sd_z),
+                  aes(x = modality, y = mean_beta,
+                      ymin = mean_beta - sd_beta, ymax = mean_beta + sd_beta),
                   inherit.aes = FALSE, width = 0.15, linewidth = 0.6, color = "#111111") +
-    geom_point(data = ann, aes(x = modality, y = mean_z),
+    geom_point(data = ann, aes(x = modality, y = mean_beta),
               inherit.aes = FALSE, shape = 23, size = 2.2,
               fill = "white", color = "#111111", stroke = 0.7) +
     geom_text(data = ann, aes(modality, ymax * 1.04, label = stars),
@@ -274,13 +272,13 @@ build_fig3d <- function(betas) {
     scale_fill_manual(values = MODALITY_COLORS, guide = "none") +
     scale_color_manual(values = MODALITY_COLORS, guide = "none") +
     scale_x_discrete(labels = MODALITY_DISPLAY) +
-    labs(x = NULL, y = "Joint Cox standardized coefficient (z = β/SE)",
-         title = "Joint Cox Model: Standardized Coefficient by Modality",
+    labs(x = NULL, y = "Joint Cox coefficient β per 1-SD risk score",
+         title = "Unpenalized Joint Cox Model: Coefficients by Modality",
          caption = paste0(sprintf("%d complete-case endpoints.  ", nrow(cc_events)),
-                          "Mean z by modality: ", means_str, "\n",
-                          "z from L2-penalized fit; \u00B11.96 lines are descriptive, not an exact test.",
+                          "Mean β by modality: ", means_str, "\n",
+                          "Unpenalized coefficients; ridge estimates are retained as sensitivity output.",
                           "  Diamond \u00B1 bar: mean \u00B1 SD.\n",
-                          "Stars: Wilcoxon vs z=0  (*<.05, **<.01, ***<.001, ****<1e-4).")) +
+                          "Stars: Wilcoxon vs β=0  (*<.05, **<.01, ***<.001, ****<1e-4).")) +
     theme_manuscript() +
     theme(axis.text.x = element_text(angle = 0, hjust = 0.5),
           plot.caption = element_text(size = MANUSCRIPT_CAPTION_SIZE, hjust = 0,
@@ -300,6 +298,11 @@ build_fig3d <- function(betas) {
 EXCLUDED_EVENTS <- excluded_event_keys(load_figure_data("fig2_full_cohort_metrics.csv"))
 
 betas <- drop_excluded_events(load_figure_data("fig3_joint_betas.csv"), EXCLUDED_EVENTS)
+if (nrow(betas) > 0) {
+  if (!"fit_variant" %in% names(betas)) betas$fit_variant <- "legacy_ridge_0.01"
+  requested_variant <- Sys.getenv("MANUSCRIPT_JOINT_COX_VARIANT", unset = "unpenalized")
+  betas <- betas %>% filter(fit_variant == requested_variant)
+}
 if (nrow(betas) > 0 && "p_value" %in% names(betas)) betas <- bh_within_cell(betas)
 
 p3a <- build_fig3a(betas)

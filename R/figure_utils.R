@@ -69,10 +69,10 @@ LIGHT_GRAY    <- "#EAEAEA"
 # Cohort labels / definitions (Fig 5)
 COHORT_LABELS <- c(cohort1 = "Cohort 1", cohort2 = "Cohort 2")
 COHORT_SHORT  <- c(cohort1 = "first-line, unmatched",
-                   cohort2 = "lines 1-3, 1:1 matched")
+                   cohort2 = "first-line, 1:1 matched")
 COHORT_DEFS   <- c(
   cohort1 = "Cohort 1: first-line ICI vs. all never-ICI controls (unmatched, discovery)",
-  cohort2 = "Cohort 2: ICI lines 1-3 vs. 1:1 matched controls (matched, validation)"
+  cohort2 = "Cohort 2: first-line ICI vs. 1:1 matched first-line controls (matched, validation)"
 )
 
 
@@ -215,6 +215,9 @@ compact_panels <- function(panels) {
 # intended: an event is judged by the metric the figure actually reports.
 # ----------------------------------------------------------------------------
 EVENT_EXCLUSION_DELTA <- 0.05
+FILTER_UNDERPERFORMING_ENDPOINTS <- tolower(Sys.getenv(
+  "MANUSCRIPT_FILTER_UNDERPERFORMING_ENDPOINTS", unset = "false"
+)) %in% c("1", "true", "yes", "on")
 # Strictly-greater-than comparisons on doubles need slack: 0.65 - 0.60 evaluates
 # to 0.05000000000000004, so an event sitting exactly on the threshold would be
 # dropped by a bare `> 0.05`. Compare against the threshold plus one ulp-ish
@@ -230,6 +233,7 @@ EVENT_EXCLUSION_TOL <- 1e-9
 # Empty vector when the frame lacks that metric's columns (nothing can be
 # judged, so nothing is dropped).
 excluded_event_keys <- function(metrics, metric = METRIC) {
+  if (!FILTER_UNDERPERFORMING_ENDPOINTS) return(character(0))
   if (is.null(metrics) || nrow(metrics) == 0) return(character(0))
   base_col <- paste0("base_", metric_suffix(metric))
   text_col <- paste0("text_", metric_suffix(metric))
@@ -249,6 +253,14 @@ excluded_event_keys <- function(metrics, metric = METRIC) {
                   (text_val - base_val)[drop]),
           collapse = "; ")))
   unique(keys)
+}
+
+# Compact, non-underflowing manuscript p-value formatter.
+format_p_value <- function(p, digits = 2L, floor = 1e-300) {
+  if (length(p) == 0 || is.na(p) || !is.finite(p)) return("n/a")
+  if (p < floor) return(sprintf("<%s", format(floor, scientific = TRUE, digits = 1)))
+  if (p < 0.001) return(format(p, scientific = TRUE, digits = digits))
+  sub("^0", "", sprintf(paste0("%.", digits + 1L, "f"), p))
 }
 
 # Drop excluded events from any scheme+event-keyed frame. A frame without both

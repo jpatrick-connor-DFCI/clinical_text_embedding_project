@@ -27,53 +27,41 @@ stage_label <- function(x) {
 
 
 # ============================================================================
-# fig1a: pipeline schematic (cowplot::ggdraw + grid primitives)
+# fig1a: cumulative cohort flow (cancer-type availability explicit)
 # ============================================================================
 build_fig1a <- function() {
-  # Layout in [0,1] x [0,1] axes coords.
-  boxes <- tibble::tribble(
-    ~x,   ~y,    ~w,    ~h,   ~fill,     ~label,
-    0.02, 0.72, 0.16, 0.13, "#D6E4F0", "Clinician\nNotes",
-    0.02, 0.46, 0.16, 0.13, "#FCE5CD", "Imaging\nReports",
-    0.02, 0.20, 0.16, 0.13, "#FFD8A8", "Pathology\nReports",
-    0.31, 0.40, 0.20, 0.30, "#9CCBE8", "Clinical ModernBERT",
-    0.66, 0.66, 0.30, 0.18, "#E6F1FA", "Survival\nPrediction",
-    0.66, 0.16, 0.30, 0.18, "#E8F5E9", "ICI Biomarker\nDiscovery"
-  )
-  arrows <- tibble::tribble(
-    ~x,   ~y,    ~xend, ~yend,
-    0.18, 0.785, 0.31,  0.55,   # clinician -> ModernBERT
-    0.18, 0.525, 0.31,  0.55,   # imaging -> ModernBERT
-    0.18, 0.265, 0.31,  0.55,   # pathology -> ModernBERT
-    0.51, 0.55,  0.66,  0.75,   # ModernBERT -> survival
-    0.51, 0.55,  0.66,  0.25    # ModernBERT -> biomarker
-  )
-  # Embedding-cluster dots inside the ModernBERT box (suggesting 768-dim embedding)
-  set.seed(0)
-  dots <- tibble::tibble(
-    x = stats::runif(60, 0.34, 0.48),
-    y = stats::runif(60, 0.44, 0.66),
-    g = sample(LETTERS[1:5], 60, replace = TRUE)
-  )
-
-  ggplot() +
-    geom_rect(data = boxes,
-              aes(xmin = x, xmax = x + w, ymin = y, ymax = y + h),
-              fill = boxes$fill, color = "#3B3B3B", linewidth = 0.5) +
-    geom_text(data = boxes,
-              aes(x = x + w / 2, y = y + h / 2, label = label),
-              size = 4.0, fontface = "bold", lineheight = 0.95) +
-    geom_segment(data = arrows,
-                 aes(x = x, y = y, xend = xend, yend = yend),
-                 arrow = arrow(length = unit(0.12, "inches"), type = "closed"),
-                 linewidth = 0.55, color = "#3B3B3B") +
-    geom_point(data = dots, aes(x = x, y = y, color = g),
-               size = 1.3, alpha = 0.85, show.legend = FALSE) +
-    annotate("text", x = 0.41, y = 0.36, label = "768-dim patient embeddings",
-             size = MANUSCRIPT_TEXT_SIZE, fontface = "italic", color = "#444444") +
-    scale_color_manual(values = unname(MODALITY_COLORS)) +
-    coord_cartesian(xlim = c(0, 1), ylim = c(0, 1), expand = FALSE) +
-    theme_void()
+  d <- load_figure_data("fig0_data_availability.csv")
+  if (nrow(d) == 0) return(placeholder_panel("fig0_data_availability.csv empty"))
+  order <- c("full_cohort", "cancer_type", "text", "treatment", "stage",
+             "prs", "somatic", "metburden", "all")
+  fills <- c(full_cohort = "#5B8DB8", cancer_type = "#4E79A7",
+             text = MODALITY_COLORS[["text"]], treatment = MODALITY_COLORS[["treatment"]],
+             stage = MODALITY_COLORS[["stage"]], prs = MODALITY_COLORS[["prs"]],
+             somatic = MODALITY_COLORS[["somatic"]], metburden = MODALITY_COLORS[["metburden"]],
+             all = "#333333")
+  d <- d %>% mutate(stage = factor(stage, levels = order)) %>% arrange(stage) %>%
+    filter(!(as.character(stage) == "metburden" & n_patients == lead(n_patients, default = -1))) %>%
+    mutate(y = rev(seq_len(n())), previous_n = lag(n_patients, default = first(n_patients)),
+           retained = 100 * n_patients / previous_n,
+           total_pct = 100 * n_patients / first(n_patients),
+           box_label = sprintf("%s\n%s · %.1f%% of start", label, comma(n_patients), total_pct),
+           arrow_label = ifelse(row_number() == 1, "", sprintf("%.1f%% retained", retained)))
+  ggplot(d) +
+    geom_segment(data = d %>% filter(row_number() > 1),
+                 aes(x = .5, xend = .5, y = y + .72, yend = y + .32),
+                 arrow = arrow(length = unit(.08, "inches"), type = "closed"), color = "grey35") +
+    geom_label(aes(.5, y, label = box_label, fill = as.character(stage)),
+               size = MANUSCRIPT_TEXT_SIZE, fontface = "bold", lineheight = .95) +
+    geom_text(data = d %>% filter(row_number() > 1),
+              aes(.70, y + .51, label = arrow_label), hjust = 0,
+              size = MANUSCRIPT_SMALL_TEXT_SIZE, color = "grey35") +
+    scale_fill_manual(values = fills, guide = "none") +
+    coord_cartesian(xlim = c(0, 1), ylim = c(.5, max(d$y) + .5), clip = "off") +
+    labs(title = "Cohort Eligibility and Data Availability",
+         subtitle = "Cumulative flow; each box is a subset of the preceding box") +
+    theme_void(base_size = MANUSCRIPT_BASE_SIZE) +
+    theme(plot.title = element_text(face = "bold", size = 13),
+          plot.subtitle = element_text(color = "grey35"))
 }
 
 

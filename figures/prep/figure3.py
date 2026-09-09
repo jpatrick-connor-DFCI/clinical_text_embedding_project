@@ -9,7 +9,7 @@ Writes to FIGURE_DATA_DIR:
 - fig3_modality_ranks_long_auc.csv    scheme, event, modality, rank  (per-endpoint, AUC(t)-ranked)
                                   (the two ranks_long files let the R tier run a Friedman test across
                                   modalities for whichever metric is active)
-- fig3_joint_betas.csv            scheme, event, modality, beta, se, hr, p_value, n, n_events
+- fig3_joint_betas.csv            scheme, event, fit_variant, modality, beta, se, hr, p_value, n, n_events
 - fig3_risk_score_corr.csv        modality x modality correlation, plus n_patients in metadata row
 """
 
@@ -65,7 +65,7 @@ MODALITY_CINDEX_COLUMNS = ["scheme", "event", "modality", "cindex", "auc"]
 MODALITY_AVG_RANK_COLUMNS = ["modality", "mean_rank", "sem_rank", "n_events"]
 MODALITY_RANKS_LONG_COLUMNS = ["scheme", "event", "modality", "rank"]
 JOINT_BETA_COLUMNS = [
-    "scheme", "event", "modality",
+    "scheme", "event", "fit_variant", "modality",
     "beta", "se", "hr", "p_value", "n", "n_events",
 ]
 RISK_SCORE_CORR_COLUMNS = ["modality", *MODALITY_ORDER, "n_patients"]
@@ -235,43 +235,31 @@ def _joint_betas(scheme: str) -> pl.DataFrame:
         fit_df = pd.DataFrame(X, columns=risk_cols)
         fit_df[event] = merged[event].cast(pl.Int64).to_numpy()
         fit_df[f"tt_{event}"] = merged[f"tt_{event}"].cast(pl.Float64).to_numpy()
-        # Small L2 ridge stabilizes the fit on highly-collinear modality risk
-        # scores. Without it, near-rank-deficient designs produce huge
-        # cancelling betas (|beta| > 1e4) and meaningless p-values. With a
-        # penalty of 1e-2 on standardized features, well-identified coefficients
-        # are essentially unchanged while pathological events stay finite.
-        cph = CoxPHFitter(penalizer=1e-2, l1_ratio=0.0)
-        # lifelines wraps several upstream failure modes (collinearity,
-        # remaining NaNs slipping through, Newton-step singularities) in a mix
-        # of ConvergenceError / TypeError / ValueError / LinAlgError. Catch all
-        # of them so one pathological event can't kill the entire scheme.
-        try:
-            cph.fit(fit_df, duration_col=f"tt_{event}", event_col=event)
-        except (ConvergenceError, TypeError, ValueError,
-                np.linalg.LinAlgError) as exc:
-            print(f"  [{scheme}/{event}] CoxPH refit failed: {type(exc).__name__}: {exc}")
-            continue
-        summary = cph.summary
-        # Backstop: even with the ridge, drop the (scheme, event) entirely if
-        # any coefficient is clearly numerical breakdown rather than biology.
-        # On standardized features, |beta| > 5 (HR > ~150 per SD) is implausible
-        # and almost always reflects residual separation / collinearity.
-        if (summary["coef"].abs() > 5).any():
-            offenders = summary.loc[summary["coef"].abs() > 5, "coef"].to_dict()
-            print(f"  [{scheme}/{event}] dropping fit with pathological betas: {offenders}")
-            continue
-        for risk_col, srow in summary.iterrows():
-            rows.append({
-                "scheme": scheme,
-                "event": event,
-                "modality": str(risk_col).replace("_risk_score", ""),
-                "beta": float(srow["coef"]),
-                "se": float(srow["se(coef)"]),
-                "hr": float(srow["exp(coef)"]),
-                "p_value": float(srow["p"]),
-                "n": n,
-                "n_events": n_events,
-            })
+        # The unpenalized model is the inferential/reporting analysis. Ridge is
+        # retained explicitly as a sensitivity variant and is never substituted
+        # for a failed unpenalized fit.
+        for fit_variant, penalizer in (("unpenalized", 0.0), ("ridge_0.01", 1e-2)):
+            cph = CoxPHFitter(penalizer=penalizer, l1_ratio=0.0)
+            try:
+                cph.fit(fit_df, duration_col=f"tt_{event}", event_col=event)
+            except (ConvergenceError, TypeError, ValueError,
+                    np.linalg.LinAlgError) as exc:
+                print(f"  [{scheme}/{event}/{fit_variant}] CoxPH refit failed: "
+                      f"{type(exc).__name__}: {exc}")
+                continue
+            summary = cph.summary
+            if (summary["coef"].abs() > 5).any():
+                offenders = summary.loc[summary["coef"].abs() > 5, "coef"].to_dict()
+                print(f"  [{scheme}/{event}/{fit_variant}] dropping pathological fit: {offenders}")
+                continue
+            for risk_col, srow in summary.iterrows():
+                rows.append({
+                    "scheme": scheme, "event": event, "fit_variant": fit_variant,
+                    "modality": str(risk_col).replace("_risk_score", ""),
+                    "beta": float(srow["coef"]), "se": float(srow["se(coef)"]),
+                    "hr": float(srow["exp(coef)"]), "p_value": float(srow["p"]),
+                    "n": n, "n_events": n_events,
+                })
     if rows:
         return pl.DataFrame(rows).select(JOINT_BETA_COLUMNS)
     return pl.DataFrame(schema={c: pl.Float64 for c in JOINT_BETA_COLUMNS})

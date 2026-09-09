@@ -74,9 +74,14 @@ build_fig4a <- function() {
   # Boundaries between cluster blocks
   bounds <- d %>% count(cluster) %>% arrange(cluster) %>%
     mutate(top = cumsum(n), mid = top - n / 2 + 0.5)
+  full_n <- load_figure_data("fig4_cluster_severity.csv")
+  if (nrow(full_n) > 0 && all(c("cluster", "n_patients") %in% names(full_n))) {
+    bounds <- bounds %>% left_join(full_n %>% select(cluster, full_n = n_patients), by = "cluster")
+  } else bounds$full_n <- NA_integer_
 
   yticks <- bounds$mid
-  ylabs  <- cluster_label(bounds$cluster, bounds$n)
+  ylabs <- sprintf("%s\nshown %s / full %s", cluster_label(bounds$cluster),
+                   comma(bounds$n), ifelse(is.na(bounds$full_n), "NA", comma(bounds$full_n)))
 
   # The prep z-scores each month column across the cohort (StandardScaler), so
   # `risk` is a signed Z-score in roughly [-3, 3]. A diverging palette centered
@@ -100,7 +105,8 @@ build_fig4a <- function() {
                aes(yintercept = top + 0.5),
                color = "white", linewidth = 0.6) +
     labs(x = "Months post-treatment", y = NULL,
-         title = "Mortality-Risk Trajectories by Dynamics Group") +
+         title = "Mortality-Risk Trajectories by Dynamics Group",
+         subtitle = "Display-stratified random sample (up to 500 patients/group); group labels report full N") +
     theme_manuscript() +
     theme(panel.grid = element_blank(),
           axis.ticks.y = element_blank(),
@@ -151,19 +157,39 @@ build_fig4b <- function() {
   pal <- setNames(unname(colors_by_id), unname(labels_by_id))
   lp  <- logrank_p(km, "months", "death", "strat", start_col = "entry")
   ci  <- step_ci_df(td, "label")
+  ref_id <- if ("1" %in% as.character(cluster_ids)) "1" else as.character(cluster_ids[1])
+  km$strat <- relevel(factor(km$strat), ref = ref_id)
+  known_stage <- km %>% filter(stage %in% c("I", "II", "III", "IV")) %>%
+    mutate(stage = factor(stage, levels = c("I", "II", "III", "IV")))
+  stage_adjusted <- nrow(known_stage) >= 20 && n_distinct(known_stage$stage) >= 2
+  cx_data <- if (stage_adjusted) known_stage else km
+  cx_formula <- if (stage_adjusted) Surv(entry, months, death) ~ strat + stage
+                else Surv(entry, months, death) ~ strat
+  cx <- tryCatch(coxph(cx_formula, data = cx_data), error = function(e) NULL)
+  hr_text <- "HR unavailable"
+  if (!is.null(cx)) {
+    cs <- summary(cx)$conf.int
+    cs <- cs[grepl("^strat", rownames(cs)), , drop = FALSE]
+    hr_text <- paste(sprintf("%s vs %s: HR %.2f (95%% CI %.2f–%.2f)",
+                             labels_by_id[sub("^strat", "", rownames(cs))],
+                             labels_by_id[ref_id], cs[, "exp(coef)"],
+                             cs[, "lower .95"], cs[, "upper .95"]), collapse = "\n")
+  }
 
-  ggplot(td, aes(time, estimate, color = label)) +
+  main <- ggplot(td, aes(time, estimate, color = label)) +
     { if (nrow(ci) > 0) geom_rect(data = ci,
                                   aes(xmin = time, xmax = time_next,
                                       ymin = conf.low, ymax = conf.high,
                                       fill = label),
                                   color = NA, alpha = 0.15, inherit.aes = FALSE) } +
     geom_step(linewidth = 0.9) +
+    geom_point(data = td %>% filter(n.censor > 0), shape = 3, size = 1.2) +
     scale_color_manual(values = pal, name = NULL, drop = FALSE) +
     scale_fill_manual(values = pal, guide = "none", drop = FALSE) +
     coord_cartesian(xlim = c(LANDMARK, 120)) +
     annotate("text", x = LANDMARK + 2, y = 0.05,
-             label = sprintf("Log-rank p=%.1e", lp),
+             label = sprintf("Landmark score-test p=%s\n%s%s", format_p_value(lp),
+                             ifelse(stage_adjusted, "Stage-adjusted ", ""), hr_text),
              hjust = 0, size = MANUSCRIPT_SMALL_TEXT_SIZE,
              fontface = "italic", color = "#444444") +
     labs(x = "Months from first treatment",
@@ -173,6 +199,18 @@ build_fig4b <- function() {
     theme_manuscript() +
     theme(legend.position = c(0.02, 0.18), legend.justification = c(0, 0),
           legend.background = element_rect(fill = "white", color = NA))
+
+  risk_times <- seq(LANDMARK, 120, 12)
+  s <- summary(fit, times = risk_times, extend = TRUE)
+  rt <- tibble(time = s$time, n.risk = s$n.risk,
+               strat_id = sub("^[^=]+=", "", s$strata)) %>%
+    mutate(row = factor(labels_by_id[strat_id], levels = rev(unname(labels_by_id))))
+  risk_table <- ggplot(rt, aes(time, row, label = comma(n.risk), color = row)) +
+    geom_text(size = 3) + scale_color_manual(values = pal, guide = "none") +
+    scale_x_continuous(limits = c(LANDMARK, 120), breaks = risk_times) +
+    labs(x = NULL, y = "Number at risk") + theme_void(base_size = 9) +
+    theme(axis.text.y = element_text(), axis.title.y = element_text(angle = 90))
+  main / risk_table + plot_layout(heights = c(4.2, 1.1))
 }
 
 
@@ -205,7 +243,8 @@ build_fig4d <- function() {
     scale_color_manual(values = setNames(unname(pal), lab_by_id), name = NULL, drop = FALSE) +
     scale_fill_manual(values = setNames(unname(pal), lab_by_id), guide = "none", drop = FALSE) +
     labs(x = "Months post-treatment", y = "Model mortality risk (raw)",
-         title = "Mean Risk Trajectory by Dynamics Group") +
+         title = "Mean Risk Trajectory by Dynamics Group",
+         subtitle = "Descriptive trajectories; ribbons are within-group IQRs") +
     theme_manuscript() +
     theme(legend.position = c(0.02, 0.98), legend.justification = c(0, 1),
           legend.background = element_rect(fill = "white", color = NA))
@@ -232,7 +271,9 @@ build_fig4e <- function() {
     scale_fill_manual(values = pal, name = NULL, drop = FALSE) +
     scale_y_continuous(labels = scales::percent) +
     labs(x = "Stage", y = "Proportion of stage",
-         title = "Risk-Dynamics Composition by Stage") +
+         title = "Risk-Dynamics Composition by Stage",
+         subtitle = sprintf("Stage × dynamics-group association p=%s",
+                            format_p_value(chisq.test(xtabs(n_patients ~ stage + group_lab, d))$p.value))) +
     theme_manuscript()
 }
 
@@ -257,18 +298,26 @@ build_fig4c <- function() {
   }
 
   characteristics <- list(
-    list(title = "% Stage IV",       units = "Percentage (%)", vals = by_id("pct_stage_iv"),   is_pct = TRUE),
-    list(title = "Mean # met sites", units = "Sites (0-7)",    vals = by_id("mean_met_sites"), is_pct = FALSE),
-    list(title = "10-yr RMST",       units = "Months",         vals = by_id("rmst_months"),    is_pct = FALSE),
-    list(title = "Mean risk slope",  units = "Risk / month",   vals = by_id("mean_slope"),     is_pct = FALSE)
+    list(title = "% Stage IV", units = "Percentage (%)", vals = by_id("pct_stage_iv"),
+         low = by_id("pct_stage_iv_low"), high = by_id("pct_stage_iv_high"), is_pct = TRUE),
+    list(title = "Mean # met sites", units = "Sites (0-7)", vals = by_id("mean_met_sites"),
+         low = by_id("mean_met_sites_low"), high = by_id("mean_met_sites_high"), is_pct = FALSE),
+    list(title = "10-yr RMST", units = "Months", vals = by_id("rmst_months"),
+         low = by_id("rmst_months_low"), high = by_id("rmst_months_high"), is_pct = FALSE),
+    list(title = "Mean risk slope", units = "Risk / month", vals = by_id("mean_slope"),
+         low = by_id("mean_slope_low"), high = by_id("mean_slope_high"), is_pct = FALSE)
   )
 
   panel_for <- function(spec) {
     if (is.null(spec$vals)) return(placeholder_panel(paste("no data:", spec$title)))
     df <- tibble::tibble(cluster = clusters,
-                         value = unname(spec$vals[as.character(clusters)]))
+                         value = unname(spec$vals[as.character(clusters)]),
+                         low = if (is.null(spec$low)) NA_real_ else unname(spec$low[as.character(clusters)]),
+                         high = if (is.null(spec$high)) NA_real_ else unname(spec$high[as.character(clusters)]))
     p <- ggplot(df, aes(factor(cluster), value, fill = factor(cluster))) +
       geom_col(width = 0.65, color = "white") +
+      geom_errorbar(data = filter(df, is.finite(low), is.finite(high)),
+                    aes(ymin = low, ymax = high), width = 0.15, linewidth = 0.6) +
       scale_fill_manual(values = setNames(GROUP_COLORS[clusters + 1],
                                           as.character(clusters)),
                         guide = "none") +

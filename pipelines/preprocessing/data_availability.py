@@ -20,7 +20,18 @@ import polars as pl
 from config import FEATURE_PATH, NOTES_PATH
 from shared.stages import load_stage_map, normalize_stage
 
-MODALITY_ORDER = ["text", "stage", "treatment", "somatic", "prs", "metburden"]
+MODALITY_ORDER = ["cancer_type", "text", "treatment", "stage", "prs", "somatic", "metburden"]
+
+
+def _mrns_with_cancer_type(cohort_mrns: set[int]) -> set[int]:
+    path = os.path.join(FEATURE_PATH, "cancer_type_df.csv.gz")
+    if not os.path.exists(path):
+        print(f"  missing {path}")
+        return set()
+    d = pl.read_csv(path)
+    if "CANCER_TYPE" in d.columns:
+        d = d.filter(pl.col("CANCER_TYPE").is_not_null())
+    return set(d.get_column("DFCI_MRN")) & cohort_mrns
 
 
 def _mrns_with_stage(cohort_mrns: set[int]) -> set[int]:
@@ -74,6 +85,7 @@ def modality_mrn_sets(cohort_mrns: set[int]) -> dict[str, set[int]]:
     so it is expected to read ~100% here - that is not a bug, and does not
     move the "all thresholds" intersection row."""
     return {
+        "cancer_type": _mrns_with_cancer_type(cohort_mrns),
         "text": _mrns_with_text(cohort_mrns),
         "stage": _mrns_with_stage(cohort_mrns),
         "treatment": _mrns_with_treatment(cohort_mrns),

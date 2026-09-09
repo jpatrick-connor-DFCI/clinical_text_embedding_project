@@ -11,7 +11,10 @@ Writes to FIGURE_DATA_DIR:
 - fig5_km_examples.csv            example_id, title, marker, cancer, marker_value, PX_on_ICI,
                                   death, tt_death — KMs for the top stability-selected hits
 - fig5_top_hit_meta.csv           marker, cancer, ps_model
-- fig5_love_smd.csv               covariate, smd_unweighted, smd_weighted  (primary-spec balance)
+- fig5_love_smd.csv               covariate, covariate_family, smd_unweighted,
+                                  smd_weighted (primary-spec balance)
+- fig5_weight_diagnostics.csv     patient-level treatment, propensity, and trimmed stabilized
+                                  ATE weight for overlap/ESS diagnostics
 - fig5_forest_headline.csv        gene, cancer, cohort, mutation_type, label, HR,
                                   CI95_low/high, p_value, n_pos, n_specs — the
                                   marker×ICI interaction estimates for markers meeting
@@ -56,8 +59,8 @@ KM_EXAMPLE_COLUMNS = [
     "PX_on_ICI", "death", "tt_death", "hr", "hr_label",
 ]
 TOP_HIT_META_COLUMNS = ["marker", "cancer", "cohort", "ps_model", "weight_type"]
-LOVE_SMD_COLUMNS = ["covariate", "smd_unweighted", "smd_weighted"]
-LOVE_TOP_N = 15  # covariates shown beyond the always-kept demographics
+LOVE_SMD_COLUMNS = ["covariate", "covariate_family", "smd_unweighted", "smd_weighted"]
+WEIGHT_DIAGNOSTIC_COLUMNS = ["DFCI_MRN", "treatment", "propensity", "weight"]
 
 # ---------------------------------------------------------------------------
 # Marker selection for the forest panel (fig5e) + KM strip (fig5d).
@@ -498,7 +501,9 @@ def _love_smd() -> pl.DataFrame:
     base = [c for c in ("GENDER", "AGE_AT_TREATMENTSTART") if c in df.columns]
     prefixed = [c for c in df.columns
                 if c.startswith(("LINE_", "CANCER_TYPE_", "PANEL_VERSION_"))]
-    covars = base + prefixed
+    embedding = [c for c in df.columns
+                 if ("IMAGING" in c) or ("PATHOLOGY" in c) or ("CLINICIAN" in c)]
+    covars = base + prefixed + embedding
     if not covars:
         return pl.DataFrame(schema={c: pl.Float64 for c in LOVE_SMD_COLUMNS})
 
@@ -516,17 +521,41 @@ def _love_smd() -> pl.DataFrame:
             continue
         rows.append({
             "covariate": cov,
+            "covariate_family": "embedding" if cov in embedding else "structured",
             "smd_unweighted": _smd(x, treat),
             "smd_weighted": _smd(x, treat, w),
         })
     if not rows:
         return pl.DataFrame(schema={c: pl.Float64 for c in LOVE_SMD_COLUMNS})
     out = pl.DataFrame(rows).select(LOVE_SMD_COLUMNS)
-    # Keep demographics + the most-imbalanced covariates for a readable love plot
-    out = out.with_columns(pl.col("smd_unweighted").abs().alias("_abs"))
-    keep_base = out.filter(pl.col("covariate").is_in(base))
-    keep_top = out.filter(~pl.col("covariate").is_in(base)).sort("_abs", descending=True).head(LOVE_TOP_N)
-    return pl.concat([keep_base, keep_top], how="diagonal_relaxed").drop("_abs")
+    # Display every structured covariate plus the ten embedding dimensions with
+    # the largest residual weighted imbalance. This preserves the worst-case
+    # embedding diagnostic without making a 2,000+-row love plot unreadable.
+    structured = out.filter(pl.col("covariate_family") == "structured")
+    embedding_top = (out.filter(pl.col("covariate_family") == "embedding")
+                     .sort(pl.col("smd_weighted").abs(), descending=True).head(10))
+    return pl.concat([structured, embedding_top], how="diagonal_relaxed")
+
+
+def _weight_diagnostics() -> pl.DataFrame:
+    """Patient-level overlap and trimmed stabilized-ATE weights for audit plots."""
+    fp = os.path.join(BIOMARKER_PATH, f"IPTW_df_{COHORT}_{PRIMARY_PS_MODEL}.parquet")
+    if not os.path.exists(fp):
+        return pl.DataFrame(schema={c: pl.Float64 for c in WEIGHT_DIAGNOSTIC_COLUMNS})
+    df = pl.read_parquet(fp)
+    if not {"DFCI_MRN", "PX_on_ICI", "ICI_prediction"}.issubset(df.columns):
+        return pl.DataFrame(schema={c: pl.Float64 for c in WEIGHT_DIAGNOSTIC_COLUMNS})
+    df = filter_finite_rows(df, ["PX_on_ICI", "ICI_prediction"])
+    treatment = df["PX_on_ICI"].cast(pl.Int64).to_numpy()
+    propensity = df["ICI_prediction"].clip(1e-6, 1 - 1e-6).to_numpy()
+    prevalence = treatment.mean()
+    weight = np.where(treatment == 1, prevalence / propensity,
+                      (1 - prevalence) / (1 - propensity))
+    lo, hi = np.percentile(weight, [1, 99])
+    return pl.DataFrame({
+        "DFCI_MRN": df["DFCI_MRN"], "treatment": treatment,
+        "propensity": propensity, "weight": np.clip(weight, lo, hi),
+    }).select(WEIGHT_DIAGNOSTIC_COLUMNS)
 
 
 def main() -> None:
@@ -537,6 +566,7 @@ def main() -> None:
     save_figure_data(_km_examples(), "fig5_km_examples.csv")
     save_figure_data(meta, "fig5_top_hit_meta.csv")
     save_figure_data(_love_smd(), "fig5_love_smd.csv")
+    save_figure_data(_weight_diagnostics(), "fig5_weight_diagnostics.csv")
     save_figure_data(_forest_headline(), "fig5_forest_headline.csv")
 
 

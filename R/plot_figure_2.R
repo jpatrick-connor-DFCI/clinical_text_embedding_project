@@ -1,6 +1,6 @@
 # Render Figure 2 (text vs base, full cohort) in ggplot2 + patchwork.
 #
-# A scatter (text vs base performance), B delta-performance violins + Wilcoxon stars,
+# A scatter (text vs base performance), B delta-performance violins + paired Wilcoxon p values,
 # C pan vs within-cancer model (dumbbell), D pan vs within-treatment model,
 # E KM by risk-score tertile (text solid / base dashed),
 # F survival by cancer stage, G survival by text risk-score quartile.
@@ -86,7 +86,7 @@ build_fig2a <- function(metrics, metric = METRIC) {
 
 
 # ============================================================================
-# fig2b: delta-performance violins by scheme + Wilcoxon-vs-0 stars
+# fig2b: delta-performance violins by scheme + paired Wilcoxon summaries
 # ============================================================================
 build_fig2b <- function(metrics, metric = METRIC) {
   if (nrow(metrics) == 0) return(placeholder_panel("fig2_full_cohort_metrics.csv empty"))
@@ -100,11 +100,13 @@ build_fig2b <- function(metrics, metric = METRIC) {
   ann <- d %>% group_by(scheme) %>%
     summarise(n = n(),
               mean_delta = mean(delta),
+              median_delta = median(delta),
               sd_delta = sd(delta),
               p = wilcoxon_vs0(delta),
               .groups = "drop") %>%
-    mutate(stars = vapply(p, p_to_stars, character(1)),
-           label = sprintf("n=%d\nmean=%+.3f\n%s", n, mean_delta, stars))
+    mutate(label = sprintf("n=%d\nmedian=%+.3f\nmean=%+.3f\np=%s",
+                           n, median_delta, mean_delta,
+                           vapply(p, format_p_value, character(1))))
   ymax <- max(d$delta, na.rm = TRUE) * 1.20
 
   ggplot(d, aes(x = scheme, y = delta, fill = scheme)) +
@@ -127,8 +129,8 @@ build_fig2b <- function(metrics, metric = METRIC) {
     scale_x_discrete(labels = SCHEME_LABELS) +
     labs(x = NULL, y = sprintf("Delta %s (Text - Base)", lbl),
          title = sprintf("%s Improvement by Scheme", lbl),
-         caption = paste("Stars: Wilcoxon signed-rank vs Δ=0  (*<.05, **<.01, ***<.001, ****<1e-4).",
-                         "Diamond ± bar: mean ± SD.")) +
+         caption = paste("Paired Wilcoxon signed-rank test vs Δ=0.",
+                         "Diamond ± bar: mean ± SD; annotation also reports median.")) +
     theme_manuscript() +
     theme(plot.caption = element_text(size = MANUSCRIPT_CAPTION_SIZE, hjust = 1,
                                       face = "italic", color = "#666666"),
@@ -238,6 +240,24 @@ km_tertile_panel <- function(km, time_col, event_col, title) {
   lr_t <- logrank_p(km, "months", ".event", "text_tertile")
   lr_b <- logrank_p(km, "months", ".event", "base_tertile")
 
+  high_low_hr <- function(group_col) {
+    dd <- km %>% filter(.data[[group_col]] %in% c("low", "high")) %>%
+      mutate(.grp = relevel(factor(.data[[group_col]]), ref = "low"))
+    fit <- tryCatch(coxph(Surv(months, .event) ~ .grp, data = dd), error = function(e) NULL)
+    if (is.null(fit)) return("HR n/a")
+    sm <- summary(fit)$conf.int[1, ]
+    sprintf("HR high vs low %.2f (95%% CI %.2f–%.2f)", sm["exp(coef)"], sm["lower .95"], sm["upper .95"])
+  }
+  hr_t <- high_low_hr("text_tertile")
+  hr_b <- high_low_hr("base_tertile")
+
+  n_t <- km %>% count(text_tertile) %>% mutate(model = "text") %>% rename(stratum = text_tertile)
+  n_b <- km %>% count(base_tertile) %>% mutate(model = "base") %>% rename(stratum = base_tertile)
+  n_labels <- bind_rows(n_t, n_b) %>%
+    mutate(key = paste(model, stratum), display = sprintf("%s %s (n=%s)", model, stratum, comma(n)))
+  td <- td %>% mutate(key = paste(model, as.character(stratum)),
+                      display = factor(n_labels$display[match(key, n_labels$key)], levels = n_labels$display))
+
   td_ci <- step_ci_df(td, c("stratum", "model"))
 
   # Zoom the probability axis to the data's own range: events with low incidence
@@ -248,17 +268,19 @@ km_tertile_panel <- function(km, time_col, event_col, title) {
   y_hi <- 1.03
   ann_y <- y_lo + 0.06 * (y_hi - y_lo)
 
-  ggplot(td, aes(x = time, y = estimate, color = stratum, linetype = model)) +
+  main <- ggplot(td, aes(x = time, y = estimate, color = stratum, linetype = model)) +
     geom_rect(data = td_ci,
               aes(xmin = time, xmax = time_next, ymin = conf.low, ymax = conf.high, fill = stratum),
               inherit.aes = FALSE, alpha = 0.12, color = NA) +
     geom_step(linewidth = 0.9) +
+    geom_point(data = td %>% filter(n.censor > 0), shape = 3, size = 1.2, stroke = 0.5) +
     scale_color_manual(values = RISK_COLORS, name = NULL) +
     scale_fill_manual(values = RISK_COLORS, guide = "none") +
     scale_linetype_manual(values = c(text = "solid", base = "dashed"), guide = "none") +
     coord_cartesian(xlim = c(0, 60), ylim = c(y_lo, y_hi)) +
     annotate("text", x = 1, y = ann_y,
-             label = sprintf("text logrank p=%.1e\nbase logrank p=%.1e", lr_t, lr_b),
+             label = sprintf("Text: p=%s; %s\nBase: p=%s; %s",
+                             format_p_value(lr_t), hr_t, format_p_value(lr_b), hr_b),
              hjust = 0, vjust = 0, size = MANUSCRIPT_SMALL_TEXT_SIZE,
              fontface = "italic", color = "#444444") +
     labs(x = "Months from first treatment", y = "Event-free survival", title = title) +
@@ -267,6 +289,26 @@ km_tertile_panel <- function(km, time_col, event_col, title) {
           legend.justification = c(1, 1),
           legend.background = element_rect(fill = "white", color = NA),
           legend.spacing.y = unit(0.05, "in"))
+
+  risk_times <- seq(0, 60, 12)
+  risk_rows <- function(fit, model) {
+    s <- summary(fit, times = risk_times, extend = TRUE)
+    tibble(time = s$time, n.risk = s$n.risk,
+           stratum = sub("^[^=]+=", "", s$strata), model = model)
+  }
+  rt <- bind_rows(risk_rows(fit_t, "text"), risk_rows(fit_b, "base")) %>%
+    mutate(key = paste(model, stratum),
+           row = factor(n_labels$display[match(key, n_labels$key)],
+                        levels = rev(n_labels$display)))
+  table <- ggplot(rt, aes(time, row, label = comma(n.risk), color = stratum)) +
+    geom_text(size = 3) +
+    scale_color_manual(values = RISK_COLORS, guide = "none") +
+    scale_x_continuous(limits = c(0, 60), breaks = risk_times) +
+    labs(x = NULL, y = "Number at risk") +
+    theme_void(base_size = 9) +
+    theme(axis.text.y = element_text(), axis.title.y = element_text(angle = 90),
+          plot.margin = margin(0, 5.5, 5.5, 5.5))
+  main / table + plot_layout(heights = c(4.2, 1.2))
 }
 
 
@@ -324,8 +366,8 @@ build_fig2e <- function(metric = METRIC) {
                        legend_pos = c(0.82, 0.80), legend_just = c(0.5, 0.5)) {
     ts2 <- td %>% mutate(stratum = factor(stratum, levels = names(palette)))
     td_ci <- step_ci_df(ts2, "stratum")
-    ann <- if (is.na(perf)) sprintf("logrank p=%.1e", lr_p)
-           else sprintf("%s=%.3f\nlogrank p=%.1e", lbl, perf, lr_p)
+    ann <- if (is.na(perf)) sprintf("log-rank p=%s", format_p_value(lr_p))
+           else sprintf("%s=%.3f\nlog-rank p=%s", lbl, perf, format_p_value(lr_p))
     ggplot(ts2, aes(time, estimate, color = stratum)) +
       geom_rect(data = td_ci,
                 aes(xmin = time, xmax = time_next, ymin = conf.low, ymax = conf.high, fill = stratum),
@@ -442,6 +484,52 @@ build_scheme_event_km <- function(km_data, topk, category, rank_n) {
 
 
 # ============================================================================
+# fig2i/j: cross-fitted 24-month calibration and decision-curve analysis
+# ============================================================================
+build_fig2i <- function() {
+  d <- load_figure_data("fig2_calibration.csv")
+  if (nrow(d) == 0) return(placeholder_panel("fig2_calibration.csv empty — outer folds required"))
+  d <- d %>% mutate(model = factor(model, levels = c("base", "text")))
+  ggplot(d, aes(mean_predicted, observed, color = model)) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "grey55") +
+    geom_errorbar(aes(ymin = pmax(0, observed - 1.96 * se),
+                      ymax = pmin(1, observed + 1.96 * se)), width = 0.008) +
+    geom_line(linewidth = 0.8) + geom_point(aes(size = n), alpha = 0.85) +
+    scale_color_manual(values = c(base = MODEL_COLORS[["base"]],
+                                  text = MODEL_COLORS[["text"]]),
+                       labels = c(base = "Base", text = "Text"), name = NULL) +
+    scale_size_continuous(range = c(2, 5), name = "Bin n") +
+    coord_equal(xlim = c(0, 1), ylim = c(0, 1)) +
+    labs(x = "Cross-fitted predicted 24-month mortality",
+         y = "Observed 24-month mortality",
+         title = "Calibration at 24 Months",
+         caption = "Equal-frequency bins; approximate 95% CIs. Cross-fitted IPCW accounts for censoring.") +
+    theme_manuscript() + theme(legend.position = "bottom")
+}
+
+build_fig2j <- function() {
+  d <- load_figure_data("fig2_decision_curve.csv")
+  if (nrow(d) == 0) return(placeholder_panel("fig2_decision_curve.csv empty — outer folds required"))
+  d <- d %>% mutate(model = factor(model,
+    levels = c("text", "base", "treat_all", "treat_none")))
+  cols <- c(text = MODEL_COLORS[["text"]], base = MODEL_COLORS[["base"]],
+            treat_all = "grey45", treat_none = "grey75")
+  types <- c(text = "solid", base = "solid", treat_all = "dashed", treat_none = "dotted")
+  ggplot(d, aes(threshold, net_benefit, color = model, linetype = model)) +
+    geom_line(linewidth = 0.9) +
+    scale_color_manual(values = cols,
+      labels = c(text = "Text", base = "Base", treat_all = "Treat all", treat_none = "Treat none"),
+      name = NULL) +
+    scale_linetype_manual(values = types, guide = "none") +
+    scale_x_continuous(labels = percent, limits = c(0.02, 0.50)) +
+    labs(x = "24-month mortality-risk threshold", y = "Net benefit",
+         title = "Decision-Curve Analysis at 24 Months",
+         caption = "Cross-fitted predictions; IPCW accounts for censoring.") +
+    theme_manuscript() + theme(legend.position = "bottom")
+}
+
+
+# ============================================================================
 # Compose Figure 2
 # ============================================================================
 metrics <- load_figure_data("fig2_full_cohort_metrics.csv")
@@ -463,6 +551,8 @@ p2d <- build_fig2d()                       # E: risk-score tertile KM (text vs b
 e_panels <- build_fig2e()
 p2_stage <- e_panels$stage                 # F: survival by cancer stage
 p2_quart <- e_panels$quartile              # G: survival by text risk-score quartile
+p2_cal <- build_fig2i()
+p2_dca <- build_fig2j()
 
 # Per-scheme metric-delta barplots + top-1 event KM.
 scheme_topk <- load_figure_data(paste0("fig2_scheme_delta_topk_", METRIC, ".csv"))
@@ -493,6 +583,8 @@ save_panel(p2_quart,  paste0("fig2g", .tag), group = "figure2", width = 7.6, hei
 # by label crowding, not by the bars; the extra height is headroom for labels that
 # wrap to four lines.
 save_panel(p2_bars, paste0("fig2h", .tag), group = "figure2", width = 18.0, height = 7.6)
+save_panel(p2_cal, paste0("fig2i", .tag), group = "figure2", width = 7.2, height = 6.0)
+save_panel(p2_dca, paste0("fig2j", .tag), group = "figure2", width = 7.2, height = 6.0)
 save_panel(p2_km_mets1, paste0("fig2k", .tag), group = "figure2", width = 7.6, height = 6.0)
 save_panel(p2_km_icd1, paste0("fig2l", .tag), group = "figure2", width = 7.6, height = 6.0)
 save_panel(p2_km_phecodes1, paste0("fig2m", .tag), group = "figure2", width = 7.6, height = 6.0)

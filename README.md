@@ -15,6 +15,12 @@ The tree is organized by pipeline stage rather than by file type:
 - `shared/` — palette and stage logic used across pipelines and figures
 - `data/` — versioned lookup tables and their loaders
 
+Figure rendering defaults to retaining every endpoint. To enable the optional
+one-sided sensitivity filter (exclude endpoints where base exceeds text by more
+than 0.05 on the active metric), set
+`MANUSCRIPT_FILTER_UNDERPERFORMING_ENDPOINTS=true`. The setting is shared by
+Figures 1–3 and their supplements.
+
 Single sources of truth: paths in `config.py`, the scheme registry in `schemes.py`, and the
 time-zero anchor registry in `anchors.py`.
 

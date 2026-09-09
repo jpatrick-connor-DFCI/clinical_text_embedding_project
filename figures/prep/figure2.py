@@ -22,7 +22,9 @@ Writes to FIGURE_DATA_DIR:
 - fig2_within_vs_pan_treatment.csv  stratum, auc_pan, auc_within, delta, cindex_pan, cindex_within,
                                     cindex_delta, n_heldout, is_overall
 - fig2_km_tertiles.csv              DFCI_MRN, text_risk_score, base_risk_score, death, tt_death,
-                                    text_tertile, base_tertile
+                                    outer_fold, text_tertile, base_tertile
+- fig2_calibration.csv              cross-fitted IPCW 24-month calibration bins
+- fig2_decision_curve.csv           cross-fitted IPCW 24-month net benefit by threshold
 - fig2_km_stage_vs_risk.csv         DFCI_MRN, tt_death, death, text_risk_score, stage_group,
                                     stage_ordinal, risk_quartile   (known-stage cohort)
 - fig2_stage_vs_risk_cindex.csv     predictor, cindex, n   (stage ordinal vs text risk score, OS)
@@ -58,9 +60,11 @@ import os
 import re
 
 import numpy as np
+import pandas as pd
 import polars as pl
 from sksurv.metrics import concordance_index_censored, cumulative_dynamic_auc
 from sksurv.util import Surv
+from sklearn.linear_model import LogisticRegression
 
 from config import CODE_PATH, RESULTS_PATH, SURV_PATH
 from figures.io import save_figure_data
@@ -434,8 +438,12 @@ _WITHIN_VS_PAN_SPEC = {
 }
 KM_TERTILE_COLUMNS = [
     "DFCI_MRN", "text_risk_score", "base_risk_score", "death", "tt_death",
-    "text_tertile", "base_tertile",
+    "outer_fold", "text_tertile", "base_tertile",
 ]
+CALIBRATION_COLUMNS = [
+    "model", "bin", "mean_predicted", "observed", "se", "n", "horizon_months",
+]
+DCA_COLUMNS = ["model", "threshold", "net_benefit", "n", "horizon_months"]
 STAGE_VS_RISK_COLUMNS = [
     "DFCI_MRN", "tt_death", "death", "text_risk_score",
     "outer_fold", "stage_group", "stage_ordinal", "risk_quartile",
@@ -525,8 +533,13 @@ def _merge_risk_with_surv(
         return None
     text_rs = pl.read_csv(tp)
     base_rs = pl.read_csv(bp)
+    survival_cols = ["DFCI_MRN", event, f"tt_{event}"]
+    if "outer_fold" in surv_df.columns:
+        survival_cols.append("outer_fold")
     merged = (text_rs.join(base_rs, on="DFCI_MRN")
-                     .join(surv_df.select(["DFCI_MRN", event, f"tt_{event}"]), on="DFCI_MRN"))
+                     .join(surv_df.select(survival_cols), on="DFCI_MRN"))
+    if "outer_fold" not in merged.columns:
+        merged = merged.with_columns(pl.lit(None, dtype=pl.Int64).alias("outer_fold"))
     merged = filter_finite_rows(
         merged, ["text_risk_score", "base_risk_score", event, f"tt_{event}"]
     ).filter(pl.col(f"tt_{event}") > 0)
@@ -563,6 +576,123 @@ def _km_tertiles(surv_df: pl.DataFrame) -> pl.DataFrame:
         _safe_tertiles(m["base_risk_score"], "base").alias("base_tertile"),
     ])
     return m.select(KM_TERTILE_COLUMNS)
+
+
+def _calibration_and_dca(km: pl.DataFrame, horizon_months: float = 24.0) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Cross-fitted fixed-horizon calibration and decision curves.
+
+    A Platt model is fit on every set of training folds and applied only to its
+    held-out fold. Fixed-horizon outcomes use inverse-probability-of-censoring
+    weights (IPCW), with the censoring distribution estimated on the training
+    folds, avoiding both in-sample calibration and complete-case censoring bias.
+    """
+    empty_cal = pl.DataFrame(schema={c: pl.Float64 for c in CALIBRATION_COLUMNS})
+    empty_dca = pl.DataFrame(schema={c: pl.Float64 for c in DCA_COLUMNS})
+    if km.is_empty() or "outer_fold" not in km.columns or km["outer_fold"].null_count() == km.height:
+        print("  [calibration/DCA] outer_fold unavailable; emitting empty cross-fitted outputs")
+        return empty_cal, empty_dca
+
+    pdf = km.to_pandas()
+    horizon_days = horizon_months * 30.44
+
+    def _censor_survival(train_all: pd.DataFrame, query_times: np.ndarray) -> np.ndarray:
+        """Kaplan-Meier G(t)=P(not censored through t), training fold only."""
+        times = train_all["tt_death"].to_numpy(dtype=float)
+        censored = (train_all["death"].to_numpy() == 0).astype(int)
+        order = np.argsort(times)
+        times, censored = times[order], censored[order]
+        unique_times = np.unique(times)
+        survival, values = 1.0, []
+        for time in unique_times:
+            at_risk = np.sum(times >= time)
+            n_censored = np.sum(censored[times == time])
+            if at_risk:
+                survival *= 1.0 - n_censored / at_risk
+            values.append(survival)
+        idx = np.searchsorted(unique_times, query_times, side="right") - 1
+        out = np.ones(len(query_times), dtype=float)
+        valid = idx >= 0
+        out[valid] = np.asarray(values)[idx[valid]]
+        return np.clip(out, 0.02, 1.0)
+
+    def _known_outcomes(frame: pd.DataFrame, censor_train: pd.DataFrame) -> pd.DataFrame:
+        known = ((frame["death"] == 1) & (frame["tt_death"] <= horizon_days)) | \
+                (frame["tt_death"] > horizon_days)
+        out = frame.loc[known].copy()
+        out["outcome"] = ((out["death"] == 1) &
+                          (out["tt_death"] <= horizon_days)).astype(int)
+        eval_time = np.minimum(out["tt_death"].to_numpy(dtype=float), horizon_days)
+        out["ipcw"] = 1.0 / _censor_survival(censor_train, eval_time)
+        return out
+
+    prediction_rows: list[pd.DataFrame] = []
+    for model in ("text", "base"):
+        score_col = f"{model}_risk_score"
+        for fold in sorted(pdf["outer_fold"].dropna().unique()):
+            train_all = pdf[pdf["outer_fold"] != fold]
+            test_all = pdf[pdf["outer_fold"] == fold]
+            train = _known_outcomes(train_all, train_all)
+            test = _known_outcomes(test_all, train_all)
+            if test.empty or train["outcome"].nunique() < 2:
+                continue
+            calibrator = LogisticRegression(penalty=None, solver="lbfgs", max_iter=2000)
+            calibrator.fit(train[[score_col]], train["outcome"], sample_weight=train["ipcw"])
+            prediction_rows.append(pd.DataFrame({
+                "model": model,
+                "predicted": calibrator.predict_proba(test[[score_col]])[:, 1],
+                "outcome": test["outcome"].to_numpy(),
+                "ipcw": test["ipcw"].to_numpy(),
+            }))
+    if not prediction_rows:
+        print("  [calibration/DCA] no estimable held-out folds")
+        return empty_cal, empty_dca
+    pred = pd.concat(prediction_rows, ignore_index=True)
+
+    cal_rows: list[dict[str, object]] = []
+    for model, sub in pred.groupby("model"):
+        # Quantile bins retain approximately equal precision; duplicate cut
+        # points are allowed to collapse when predictions are tied.
+        sub = sub.copy()
+        sub["bin"] = pd.qcut(sub["predicted"], q=10, labels=False, duplicates="drop") + 1
+        for bin_id, cell in sub.groupby("bin"):
+            observed = float(np.average(cell["outcome"], weights=cell["ipcw"]))
+            n = len(cell)
+            n_eff = float(cell["ipcw"].sum() ** 2 / np.square(cell["ipcw"]).sum())
+            cal_rows.append({
+                "model": model, "bin": int(bin_id),
+                "mean_predicted": float(np.average(cell["predicted"], weights=cell["ipcw"])),
+                "observed": observed,
+                "se": float(np.sqrt(observed * (1 - observed) / n_eff)),
+                "n": n, "horizon_months": horizon_months,
+            })
+
+    dca_rows: list[dict[str, object]] = []
+    thresholds = np.arange(0.02, 0.51, 0.01)
+    reference = pred[pred["model"] == "text"]
+    prevalence = float(np.average(reference["outcome"], weights=reference["ipcw"]))
+    for model, sub in pred.groupby("model"):
+        y = sub["outcome"].to_numpy()
+        p = sub["predicted"].to_numpy()
+        w = sub["ipcw"].to_numpy()
+        n = len(sub)
+        for threshold in thresholds:
+            positive = p >= threshold
+            tp = np.sum(w * (positive & (y == 1)))
+            fp = np.sum(w * (positive & (y == 0)))
+            nb = tp / np.sum(w) - fp / np.sum(w) * threshold / (1 - threshold)
+            dca_rows.append({"model": model, "threshold": threshold, "net_benefit": nb,
+                             "n": n, "horizon_months": horizon_months})
+    n_all = len(reference)
+    for threshold in thresholds:
+        dca_rows.extend([
+            {"model": "treat_all", "threshold": threshold,
+             "net_benefit": prevalence - (1 - prevalence) * threshold / (1 - threshold),
+             "n": n_all, "horizon_months": horizon_months},
+            {"model": "treat_none", "threshold": threshold, "net_benefit": 0.0,
+             "n": n_all, "horizon_months": horizon_months},
+        ])
+    return (pl.DataFrame(cal_rows).select(CALIBRATION_COLUMNS),
+            pl.DataFrame(dca_rows).select(DCA_COLUMNS))
 
 
 def _scheme_delta_topk(
@@ -853,7 +983,11 @@ def main() -> None:
     save_figure_data(full_cohort_metrics, "fig2_full_cohort_metrics.csv")
     save_figure_data(_within_vs_pan("cancer"), "fig2_within_vs_pan_cancer.csv")
     save_figure_data(_within_vs_pan("treatment"), "fig2_within_vs_pan_treatment.csv")
-    save_figure_data(_km_tertiles(surv_df), "fig2_km_tertiles.csv")
+    km_tertiles = _km_tertiles(surv_df)
+    save_figure_data(km_tertiles, "fig2_km_tertiles.csv")
+    calibration, dca = _calibration_and_dca(km_tertiles)
+    save_figure_data(calibration, "fig2_calibration.csv")
+    save_figure_data(dca, "fig2_decision_curve.csv")
 
     stage_vs_risk_df = _stage_vs_risk(surv_df)
     save_figure_data(stage_vs_risk_df, "fig2_km_stage_vs_risk.csv")

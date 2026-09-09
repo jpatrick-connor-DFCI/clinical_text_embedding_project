@@ -87,7 +87,9 @@ build_fig5b <- function() {
   d <- load_figure_data("fig5_love_smd.csv")
   if (nrow(d) == 0) return(placeholder_panel("fig5_love_smd.csv empty"))
   d <- d %>%
-    mutate(absu = abs(smd_unweighted)) %>%
+    mutate(smd_unweighted = abs(smd_unweighted),
+           smd_weighted = abs(smd_weighted),
+           absu = smd_unweighted) %>%
     arrange(absu) %>%
     mutate(covariate_lbl = gsub("_", " ", as.character(covariate)),
            covariate_lbl = factor(covariate_lbl, levels = covariate_lbl))
@@ -100,14 +102,17 @@ build_fig5b <- function() {
                size = 2.2) +
     geom_point(aes(x = smd_weighted, y = covariate_lbl, color = "IPTW-weighted"),
                size = 2.2) +
-    geom_vline(xintercept = 0, color = "#333333", linewidth = 0.4) +
-    geom_vline(xintercept = c(-0.1, 0.1), linetype = "dotted", color = "#999999") +
+    geom_vline(xintercept = 0.1, linetype = "dotted", color = "#999999") +
     scale_color_manual(values = c("Unweighted" = HARM_COLOR,
                                    "IPTW-weighted" = TEAL),
                        breaks = c("Unweighted", "IPTW-weighted"),
                        name = NULL) +
-    labs(x = "Standardized mean difference", y = NULL,
-         title = "Covariate Balance (SMD): before vs after IPTW") +
+    labs(x = "Absolute standardized mean difference", y = NULL,
+         title = "Covariate Balance: Before vs After IPTW",
+         subtitle = sprintf("All structured + 10 worst-balanced embedding dimensions · max shown weighted |SMD| = %.3f%s",
+                            max(d$smd_weighted, na.rm = TRUE),
+                            ifelse(max(d$smd_weighted, na.rm = TRUE) > 0.10,
+                                   " (exceeds 0.10)", ""))) +
     theme_manuscript() +
     theme(legend.position = c(0.98, 0.05),
           legend.justification = c(1, 0),
@@ -152,7 +157,9 @@ build_fig5c <- function() {
            spec = factor(spec, levels = specs),
            cohort_lbl = factor(cohort_label(spec_cohorts[match(spec, specs)]),
                                levels = cohort_label(cohorts_in_order)),
-           dir = ifelse(HR_markerxICI < 1, "Sig., ICI benefit", "Sig., ICI harm"))
+           dir = ifelse(HR_markerxICI < 1, "Sig., ICI benefit", "Sig., ICI harm"),
+           ci_excludes = is.finite(CI95_marker_ICI_low) & is.finite(CI95_marker_ICI_high) &
+                         (CI95_marker_ICI_low > 1 | CI95_marker_ICI_high < 1))
 
   # Grid base: empty cells in grey ns
   grid <- expand.grid(marker_key = factor(rev(markers), levels = rev(markers)),
@@ -180,18 +187,22 @@ build_fig5c <- function() {
   ggplot() +
     geom_point(data = grid, aes(spec, marker_key), shape = 21,
                fill = "white", color = NS_GRAY, size = 2.4) +
-    geom_point(data = sub, aes(spec, marker_key, color = dir, size = pmin(support, 4) + 1),
-               alpha = 0.95) +
+    geom_point(data = sub, aes(spec, marker_key, color = dir,
+                              size = abs(log(HR_markerxICI)),
+                              alpha = ci_excludes)) +
     scale_color_manual(values = c("Sig., ICI benefit" = BENEFIT_COLOR,
                                    "Sig., ICI harm" = HARM_COLOR),
                        name = NULL) +
-    scale_size_continuous(range = c(2, 7), guide = "none") +
+    scale_size_continuous(range = c(2, 7), name = "|log interaction HR|") +
+    scale_alpha_manual(values = c(`TRUE` = 1, `FALSE` = 0.35),
+                       labels = c(`TRUE` = "95% CI excludes 1", `FALSE` = "95% CI includes 1"),
+                       name = NULL) +
     scale_x_discrete(labels = pretty_x) +
     facet_grid(. ~ cohort_lbl, scales = "free_x", space = "free_x") +
     labs(x = NULL, y = NULL,
-         title = "Biomarker Association Robustness",
+         title = "Biomarker Specification Stability",
          subtitle = subtitle_txt,
-         caption = defn) +
+         caption = paste(defn, "Specification stability is not external replication.", sep = "\n")) +
     theme_manuscript() +
     theme(plot.subtitle = element_text(size = 9, color = "#666666"),
           plot.caption = element_text(size = MANUSCRIPT_CAPTION_SIZE, hjust = 0.5,
@@ -256,9 +267,15 @@ build_fig5d <- function() {
              stratum = factor(stratum, levels = n_by$stratum,
                               labels = n_by$label))
     pal <- setNames(strat_pal[n_by$stratum], n_by$label)
+    ci <- step_ci_df(td, "stratum")
     ggplot(td, aes(time, estimate, color = stratum)) +
+      geom_rect(data = ci, aes(xmin = time, xmax = time_next,
+                               ymin = conf.low, ymax = conf.high, fill = stratum),
+                inherit.aes = FALSE, alpha = 0.12, color = NA) +
       geom_step(linewidth = 0.9) +
+      geom_point(data = td %>% filter(n.censor > 0), shape = 3, size = 1.1) +
       scale_color_manual(values = pal, name = NULL) +
+      scale_fill_manual(values = pal, guide = "none") +
       coord_cartesian(xlim = c(0, 60), ylim = c(0, 1.02)) +
       labs(x = "Months", y = NULL, title = title) +
       theme_manuscript() +
@@ -296,7 +313,7 @@ build_fig5d <- function() {
                         cohort_label(m0$cohort), pretty_model(m0$ps_model),
                         toupper(as.character(m0$weight_type)))
     pgrid <- pgrid +
-      plot_annotation(title = sprintf("Representative marker × ICI interactions   (%s)",
+      plot_annotation(title = sprintf("Exploratory marker-stratified survival   (%s)",
                                       spec_txt)) &
       theme(plot.title = element_text(size = 12, face = "bold", hjust = 0.5))
   }
@@ -361,6 +378,30 @@ build_fig5e <- function() {
 }
 
 
+# Supplemental diagnostic: propensity overlap, weight tails, and effective N.
+build_figS5a <- function() {
+  d <- load_figure_data("fig5_weight_diagnostics.csv")
+  if (nrow(d) == 0) return(placeholder_panel("fig5_weight_diagnostics.csv empty"))
+  d <- d %>% mutate(arm = factor(treatment, levels = c(0, 1),
+                                 labels = c("Control", "ICI")))
+  ess <- d %>% group_by(arm) %>%
+    summarise(n = n(), ess = sum(weight)^2 / sum(weight^2), .groups = "drop")
+  ess_txt <- paste(sprintf("%s: n=%s, ESS=%.0f", ess$arm, comma(ess$n), ess$ess), collapse = " · ")
+  p_overlap <- ggplot(d, aes(propensity, color = arm, fill = arm)) +
+    geom_density(alpha = 0.18, linewidth = 0.9) +
+    scale_color_manual(values = c(Control = HARM_COLOR, ICI = TEAL), name = NULL) +
+    scale_fill_manual(values = c(Control = HARM_COLOR, ICI = TEAL), guide = "none") +
+    labs(x = "Held-out propensity score", y = "Density", title = "Propensity Overlap") +
+    theme_manuscript() + theme(legend.position = "top")
+  p_weight <- ggplot(d, aes(weight, fill = arm)) +
+    geom_histogram(bins = 40, position = "identity", alpha = 0.45) +
+    scale_fill_manual(values = c(Control = HARM_COLOR, ICI = TEAL), name = NULL) +
+    labs(x = "Trimmed stabilized ATE weight", y = "Patients", title = "Weight Distribution") +
+    theme_manuscript() + theme(legend.position = "top")
+  (p_overlap | p_weight) + plot_annotation(subtitle = ess_txt)
+}
+
+
 # ============================================================================
 # Compose Figure 5
 # ============================================================================
@@ -369,9 +410,11 @@ p5b <- build_fig5b()
 p5c <- build_fig5c()
 p5d <- build_fig5d()
 p5e <- build_fig5e()
+pS5a <- build_figS5a()
 
 save_panel(p5a, "fig5a", group = "figure5", width = 9.6, height = 7.2)
 save_panel(p5b, "fig5b", group = "figure5", width = 7.8, height = 7.2)
 save_panel(p5c, "fig5c", group = "figure5", width = 10.8, height = 7.8)
 save_panel(p5d, "fig5d", group = "figure5", width = 17.0, height = 6.2)
 save_panel(p5e, "fig5e", group = "figure5", width = 13.0, height = 7.0)
+save_panel(pS5a, "figS5a_weight_diagnostics", group = "figure5", width = 13.0, height = 5.8)
