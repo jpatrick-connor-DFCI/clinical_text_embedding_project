@@ -174,3 +174,106 @@ def test_legacy_diagnostics_without_an_analyzability_section_still_read(summariz
 def test_empty_tree_returns_an_empty_frame(summarizer):
     mod, _ = summarizer
     assert mod.collect().is_empty()
+
+
+# ---------------------------------------------------------------------------
+# Gate 2: are the compiled hits powered enough for a discovery framing?
+# ---------------------------------------------------------------------------
+
+def _write_hits(root, cells, extra_cols=True):
+    """Write a compiled hits CSV. `cells` is a list of per-hit 4-cell tuples."""
+    out = os.path.join(root, "compiled_results")
+    os.makedirs(out, exist_ok=True)
+    rows = []
+    for i, (ici_pos, ici_neg, non_pos, non_neg) in enumerate(cells):
+        row = {"marker": f"GENE{i}_SNV",
+               "events_ICI_pos": ici_pos, "events_ICI_neg": ici_neg,
+               "events_nonICI_pos": non_pos, "events_nonICI_neg": non_neg}
+        if extra_cols:
+            row |= {"cohort": "cohort1", "ps_model": "covariates_plus_embeddings",
+                    "weight_type": "ATE", "cancer_type": "LUNG"}
+        rows.append(row)
+    pl.DataFrame(rows).write_csv(
+        os.path.join(out, "track2_all_significant_hits.csv"))
+
+
+def test_hit_support_scores_on_the_smallest_of_the_four_cells(summarizer):
+    """A hit is only as identified as its scarcest marker x arm cell.
+
+    Three large cells cannot rescue an interaction determined by four deaths in
+    the fourth, so the binding quantity is the minimum, not the marker+ counts.
+    """
+    mod, root = summarizer
+    _write_hits(root, [(4, 200, 180, 220)])
+    per_hit, _ = mod.summarize_hit_support()
+    assert per_hit["min_cell_events"].item() == 4
+    assert per_hit["survives_floor"].item() is False
+
+
+def test_hit_support_flags_a_screen_that_cannot_survive_the_raised_floor(summarizer):
+    """The scenario the plan predicted: hits pinned at the old floor of 5."""
+    mod, root = summarizer
+    _write_hits(root, [(4, 50, 5, 60)] * 6)
+    per_hit, _ = mod.summarize_hit_support()
+    assert int(per_hit["survives_floor"].sum()) == 0
+    assert (per_hit["min_cell_events"] <= mod.LEGACY_EVENT_FLOOR).all()
+
+
+def test_hit_support_passes_a_well_supported_screen(summarizer):
+    mod, root = summarizer
+    _write_hits(root, [(30, 50, 28, 60)] * 6)
+    per_hit, _ = mod.summarize_hit_support()
+    assert int(per_hit["survives_floor"].sum()) == 6
+
+
+def test_hit_support_summarizes_per_specification(summarizer):
+    mod, root = summarizer
+    _write_hits(root, [(30, 50, 28, 60), (4, 50, 5, 60)])
+    _, summary = mod.summarize_hit_support()
+    row = summary.row(0, named=True)
+    assert row["n_hits"] == 2
+    assert row["n_survive_floor"] == 1
+    assert row["min_cell_events"] == 4
+
+
+def test_hit_support_is_silent_without_compiled_hits(summarizer):
+    mod, _ = summarizer
+    assert mod.summarize_hit_support() == (None, None)
+
+
+def test_hit_support_handles_an_empty_hits_table(summarizer):
+    mod, root = summarizer
+    _write_hits(root, [])
+    assert mod.summarize_hit_support() == (None, None)
+
+
+def test_hit_support_skips_a_hits_table_without_event_counts(summarizer):
+    """Older compiled tables may predate the per-cell counts; skip, don't crash."""
+    mod, root = summarizer
+    out = os.path.join(root, "compiled_results")
+    os.makedirs(out, exist_ok=True)
+    pl.DataFrame([{"marker": "G_SNV", "HR_markerxICI": 1.2}]).write_csv(
+        os.path.join(out, "track2_all_significant_hits.csv"))
+    assert mod.summarize_hit_support() == (None, None)
+
+
+def test_hit_support_uses_whatever_cells_are_present(summarizer):
+    """With only some cells recorded the floor is optimistic, and says so."""
+    mod, root = summarizer
+    out = os.path.join(root, "compiled_results")
+    os.makedirs(out, exist_ok=True)
+    pl.DataFrame([{"marker": "G_SNV", "events_ICI_pos": 7,
+                   "events_nonICI_pos": 9}]).write_csv(
+        os.path.join(out, "track2_all_significant_hits.csv"))
+    per_hit, _ = mod.summarize_hit_support()
+    assert per_hit["min_cell_events"].item() == 7
+
+
+def test_hit_support_floor_tracks_the_screen_constant(summarizer):
+    """The gate re-scores against the screen's live floor, not a copy of it."""
+    from pipelines.biomarkers.run_IPTW_analysis import MIN_EVENTS_PER_MARKER_GROUP
+    mod, root = summarizer
+    n = MIN_EVENTS_PER_MARKER_GROUP
+    _write_hits(root, [(n, n + 5, n + 5, n + 5), (n - 1, n + 5, n + 5, n + 5)])
+    per_hit, _ = mod.summarize_hit_support()
+    assert per_hit["survives_floor"].to_list() == [True, False]

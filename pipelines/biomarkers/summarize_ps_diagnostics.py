@@ -1,6 +1,19 @@
-"""Read-only diagnostic summary: does text actually improve confounding control?
+"""Read-only diagnostic summary: the two gates for Figure 5.
 
-This is the gate for the Figure 5 main panels. The biomarker arm's thesis-
+Two independent questions, each of which can sink the main-figure framing on
+its own:
+
+  1. Does text improve confounding control? (the AUC / ESS / balance table)
+  2. Is the discovery framing powered at all? (`summarize_hit_support`, which
+     re-scores already-compiled hits against the raised per-cell event floor)
+
+Gate 2 needs no re-run and can answer even when the diagnostics tree is absent:
+if most hits sit near the old floor of 5 events per marker x arm cell, raising
+that floor to 20 empties the hit list, and the genomic screen belongs in a
+permutation-calibrated supplement regardless of what the propensity diagnostics
+say.
+
+Gate 1 is the gate for the Figure 5 main panels. The biomarker arm's thesis-
 advancing claim is not the gene screen -- it is that embeddings of clinical
 notes capture confounding structure the structured covariates miss, which is
 what licenses everything downstream. That claim is testable directly from the
@@ -61,6 +74,17 @@ COHORT_METRICS = [
     'PS_AUC', 'N_treated', 'N_control', 'events_treated', 'events_control',
     'ESS_ATE_treated', 'ESS_ATE_control',
 ]
+
+# The second gate. Every hit records deaths in all four marker x arm cells, and
+# the interaction is identified by the contrast across them, so the binding
+# quantity is the SMALLEST of the four -- a hit whose scarcest cell holds three
+# deaths is determined by those three regardless of how large the other cells
+# are. The screen's floor is now 20 (MIN_EVENTS_PER_MARKER_GROUP); hits compiled
+# under the old floor of 5 are re-scored against it here, without re-running.
+EVENT_CELL_COLUMNS = [
+    'events_ICI_pos', 'events_ICI_neg', 'events_nonICI_pos', 'events_nonICI_neg',
+]
+LEGACY_EVENT_FLOOR = 5
 
 
 def _run_dir(cohort, ps_model):
@@ -245,6 +269,89 @@ def interpret(wide):
     return vdf
 
 
+def summarize_hit_support():
+    """Re-score already-compiled hits against the raised per-cell event floor.
+
+    Answers the question the AUC/ESS table cannot: even if the weighting works,
+    is the discovery framing powered? If most hits sit near the old floor of 5
+    events, raising it to 20 empties the hit list, and the genomic screen belongs
+    in a permutation-calibrated supplement rather than a discovery figure.
+
+    Returns (per_hit, summary) or (None, None) when no compiled hits exist.
+    """
+    fp = os.path.join(OUTPUT_DIR, 'track2_all_significant_hits.csv')
+    if not os.path.isfile(fp):
+        print(f"No compiled hits at {fp}; skipping the hit-support gate.")
+        return None, None
+
+    try:
+        hits = pl.read_csv(fp)
+    except pl.exceptions.NoDataError:
+        # A screen that found nothing writes a file with no rows at all -- not
+        # even a header -- which is a legitimate result, not a failure.
+        print("Compiled hits file has no rows; nothing to re-score.")
+        return None, None
+    if hits.is_empty():
+        print("Compiled hits table is empty; nothing to re-score.")
+        return None, None
+
+    present = [c for c in EVENT_CELL_COLUMNS if c in hits.columns]
+    if not present:
+        print("Compiled hits carry no per-cell event counts "
+              f"(expected any of {EVENT_CELL_COLUMNS}); skipping the hit-support gate.")
+        return None, None
+    if len(present) < len(EVENT_CELL_COLUMNS):
+        missing = sorted(set(EVENT_CELL_COLUMNS) - set(present))
+        print(f"  note: {missing} absent; min taken over {present} only, "
+              "so the floor below is optimistic.")
+
+    from pipelines.biomarkers.run_IPTW_analysis import MIN_EVENTS_PER_MARKER_GROUP
+
+    per_hit = hits.with_columns(
+        pl.min_horizontal([pl.col(c) for c in present]).alias('min_cell_events')
+    ).with_columns(
+        (pl.col('min_cell_events') >= MIN_EVENTS_PER_MARKER_GROUP).alias('survives_floor')
+    )
+
+    n = per_hit.height
+    n_survive = int(per_hit['survives_floor'].sum())
+    n_at_legacy = int((per_hit['min_cell_events'] <= LEGACY_EVENT_FLOOR).sum())
+    q = per_hit['min_cell_events'].quantile
+
+    print("\n" + "=" * 72)
+    print("HIT SUPPORT -- is the discovery framing powered?")
+    print("=" * 72)
+    print(f"  {n} compiled hit(s); smallest of the four marker x arm event cells:")
+    print(f"    min {int(per_hit['min_cell_events'].min())}, "
+          f"p25 {q(0.25):.0f}, median {q(0.5):.0f}, p75 {q(0.75):.0f}, "
+          f"max {int(per_hit['min_cell_events'].max())}")
+    print(f"  {n_at_legacy}/{n} ({n_at_legacy / n:.0%}) sit at or below the old floor "
+          f"of {LEGACY_EVENT_FLOOR} events")
+    print(f"  {n_survive}/{n} ({n_survive / n:.0%}) clear the current floor "
+          f"of {MIN_EVENTS_PER_MARKER_GROUP}")
+
+    if n_survive == 0:
+        print("\n  VERDICT: no compiled hit clears the raised floor. The discovery "
+              "framing is not supported;\n           the genomic screen belongs in the "
+              "permutation-calibrated supplement.")
+    elif n_survive / n < 0.25:
+        print(f"\n  VERDICT: only {n_survive / n:.0%} of hits survive. Report the screen "
+              "against a permutation null;\n           do not lead with a curated gene list.")
+    else:
+        print(f"\n  VERDICT: {n_survive}/{n} hits are adequately supported. A discovery "
+              "panel is defensible,\n           still reported against the permutation null.")
+
+    group_cols = [c for c in ('cohort', 'ps_model', 'weight_type', 'cancer_type')
+                  if c in per_hit.columns]
+    summary = (per_hit.group_by(group_cols)
+               .agg(pl.len().alias('n_hits'),
+                    pl.col('survives_floor').sum().alias('n_survive_floor'),
+                    pl.col('min_cell_events').min().alias('min_cell_events'),
+                    pl.col('min_cell_events').median().alias('median_min_cell_events'))
+               .sort(group_cols)) if group_cols else pl.DataFrame()
+    return per_hit, summary
+
+
 def main() -> None:
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -252,6 +359,9 @@ def main() -> None:
     if tidy.is_empty():
         print(f"No diagnostics found under {BIOMARKER_PATH}. "
               "Run the IPTW screen first (stages 1-5).")
+        # The hit-support gate reads the compiled hits, not the diagnostics, so
+        # it can still answer even when the diagnostics tree is absent.
+        summarize_hit_support()
         return
 
     wide = pivot_by_ps_model(tidy)
@@ -271,6 +381,12 @@ def main() -> None:
             print(f"  {row['cohort']}/{row['ps_model']}/{row['cancer_type']}: "
                   f"max|SMD|={row.get('max_smd_ate', float('nan')):.3f}, "
                   f"ESS fraction={row.get('ESS_fraction', float('nan')):.3f}")
+
+    per_hit, hit_summary = summarize_hit_support()
+    if per_hit is not None:
+        per_hit.write_csv(os.path.join(OUTPUT_DIR, 'hit_support_per_hit.csv'))
+        if hit_summary is not None and not hit_summary.is_empty():
+            hit_summary.write_csv(os.path.join(OUTPUT_DIR, 'hit_support_by_spec.csv'))
 
     print(f"\nOutputs saved to {OUTPUT_DIR}")
 
