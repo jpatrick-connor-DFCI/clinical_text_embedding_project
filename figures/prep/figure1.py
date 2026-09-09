@@ -3,7 +3,8 @@
 Writes to FIGURE_DATA_DIR:
 - fig1_endpoint_counts.csv        scheme → n_endpoints
 - fig1_cancer_type_counts.csv     category, n   (top-10 raw cancer types + pooled "Other";
-                                  restricted to the analysis cohort so n sums to the cohort N)
+                                  restricted to the exact cancer-type + text cohort shown
+                                  in the Figure 1 flowchart)
 - fig1_stage_counts.csv           category, n
 - fig1_treatment_counts.csv       category, n
 - fig1_notes_per_patient.csv      DFCI_MRN, note_type, n_notes  (per patient x note type)
@@ -17,10 +18,10 @@ import polars as pl
 
 from config import FEATURE_PATH, NOTES_PATH, SURV_PATH
 from figures.io import save_figure_data
-from schemes import SCHEMES, embedding_file, list_trained_events
+from pipelines.preprocessing.data_availability import modality_mrn_sets
+from schemes import SCHEMES, list_trained_events
 from shared.stages import STAGE_ORDER, load_stage_map, normalize_stage
 
-SCHEME_FOR_EMBED = "icd3_post"  # widest cohort
 ENDPOINT_COUNT_COLUMNS = ["scheme", "n_endpoints"]
 
 
@@ -66,11 +67,14 @@ def _cancer_type_counts(cancer_type_df: pl.DataFrame, cohort_mrns: set[int], top
 
     Uses the raw label (preserved by generate_all_non_text_covariates.py precisely so
     the drop_first reference category isn't lost, unlike summing the one-hot
-    CANCER_TYPE_* columns) and restricts to the analysis cohort so the reported total
-    matches the cohort N shown elsewhere (Fig 0). Rows beyond top_n are pooled into
-    "Other" so the counts still sum to the full cohort.
+    CANCER_TYPE_* columns) and restricts to the exact cancer-type + text intersection
+    used for the flowchart's text row. Rows beyond top_n are pooled into "Other" so
+    the counts still sum to that flowchart denominator.
     """
-    sub = cancer_type_df.filter(pl.col("DFCI_MRN").is_in(cohort_mrns))
+    sub = (cancer_type_df
+           .filter(pl.col("DFCI_MRN").is_in(cohort_mrns),
+                   pl.col("CANCER_TYPE").is_not_null())
+           .unique(subset=["DFCI_MRN"], keep="first"))
     vc = (sub.select(pl.col("CANCER_TYPE").cast(pl.Utf8))
           .group_by("CANCER_TYPE").agg(pl.len().alias("n"))
           .sort("n", descending=True))
@@ -99,18 +103,31 @@ def _endpoint_counts() -> pl.DataFrame:
 
 
 def main() -> None:
-    emb_df = pl.read_parquet(os.path.join(SURV_PATH, embedding_file(SCHEME_FOR_EMBED)))
+    eligible_df = pl.read_parquet(os.path.join(SURV_PATH, "cohort_df.parquet"),
+                                  columns=["DFCI_MRN"])
     cancer_type_df = pl.read_csv(os.path.join(FEATURE_PATH, "cancer_type_df.csv.gz"))
     treatment_df = pl.read_csv(os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv.gz"))
     notes_meta = pl.read_parquet(os.path.join(NOTES_PATH, "full_clinical_notes_embeddings_metadata.parquet"))
 
     tx_cols = [c for c in treatment_df.columns if c.startswith("PX_on_")]
     tx1 = treatment_df.filter(pl.col("treatment_line") == 1)
-    cohort_mrns = set(emb_df["DFCI_MRN"].to_list())
+    eligible_mrns = set(eligible_df["DFCI_MRN"].to_list())
+    availability = modality_mrn_sets(eligible_mrns)
+    # This is deliberately the same cumulative intersection as Figure 0/1A:
+    # eligible -> cancer type -> text. Do not substitute an event-specific
+    # embedding-prediction dataframe, which has additional downstream exclusions.
+    cohort_mrns = availability["cancer_type"] & availability["text"]
 
     save_figure_data(_endpoint_counts(), "fig1_endpoint_counts.csv")
-    save_figure_data(_cancer_type_counts(cancer_type_df, cohort_mrns, 10),
-                     "fig1_cancer_type_counts.csv")
+    cancer_counts = _cancer_type_counts(cancer_type_df, cohort_mrns, 10)
+    pie_n = int(cancer_counts["n"].sum()) if not cancer_counts.is_empty() else 0
+    if pie_n != len(cohort_mrns):
+        raise RuntimeError(
+            f"Cancer-type pie denominator ({pie_n}) does not equal the flowchart "
+            f"cancer-type + text denominator ({len(cohort_mrns)})"
+        )
+    print(f"  Figure 1 denominator check passed: cancer type + text N={pie_n:,}")
+    save_figure_data(cancer_counts, "fig1_cancer_type_counts.csv")
     save_figure_data(_stage_counts_from_pickle(cohort_mrns), "fig1_stage_counts.csv")
     save_figure_data(_composition_counts(tx1, tx_cols, "PX_on_", 15),
                      "fig1_treatment_counts.csv")

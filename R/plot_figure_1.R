@@ -188,7 +188,8 @@ build_fig1d <- function() {
               position = position_stack(vjust = 0.5),
               size = MANUSCRIPT_SMALL_TEXT_SIZE, color = "white", fontface = "bold") +
     scale_fill_manual(values = pal, name = NULL) +
-    labs(title = sprintf("Cohort Composition (N=%s)", scales::comma(total))) +
+    labs(title = sprintf("Cancer Types Among Patients with Text (N=%s)",
+                         scales::comma(total))) +
     theme_void() +
     theme(plot.title = element_text(size = 13, face = "bold", hjust = 0.5),
           legend.text = element_text(size = 9))

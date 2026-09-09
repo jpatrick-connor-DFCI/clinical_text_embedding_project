@@ -45,7 +45,7 @@ DATA_AVAILABILITY_COLUMNS = ["stage", "label", "n_patients", "n_total"]
 
 _MODALITY_LABELS = {
     "cancer_type": "Cancer type available",
-    "text": "With Text",
+    "text": "Cancer type + text available",
     "stage": "With Stage",
     "treatment": "With Treatment",
     "somatic": "With Somatic",
