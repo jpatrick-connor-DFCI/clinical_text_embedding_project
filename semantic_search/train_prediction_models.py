@@ -1,10 +1,8 @@
-"""Train clinical-label classifiers from each pooled embedding space.
+"""Train XGBoost clinical-label classifiers from pooled embeddings.
 
 The default is a retrospective experiment on the single 3 x 768 concatenated
-feature space using all available notes. Two nested-CV models are fit per target:
-
-* elastic-net multinomial logistic regression (scaled features)
-* histogram XGBoost classifier (inverse-frequency sample weights)
+feature space using all available notes. One nested-CV histogram XGBoost
+classifier is fit per target with inverse-frequency sample weights.
 
 For each setup the script writes out-of-fold predictions, a final model tuned
 on all available rows, and an auditable metadata JSON. Aggregate metrics and
@@ -21,12 +19,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.metadata
-import inspect
 import json
 import math
 import os
 import tempfile
-import warnings
 from collections import Counter
 from pathlib import Path
 
@@ -45,8 +41,6 @@ for _thread_var in (
 import joblib  # noqa: E402
 import numpy as np  # noqa: E402
 import polars as pl  # noqa: E402
-from sklearn.exceptions import ConvergenceWarning  # noqa: E402
-from sklearn.linear_model import LogisticRegression  # noqa: E402
 from sklearn.metrics import (  # noqa: E402
     accuracy_score,
     average_precision_score,
@@ -57,8 +51,7 @@ from sklearn.metrics import (  # noqa: E402
     roc_auc_score,
 )
 from sklearn.model_selection import GridSearchCV, StratifiedKFold  # noqa: E402
-from sklearn.pipeline import Pipeline  # noqa: E402
-from sklearn.preprocessing import LabelEncoder, StandardScaler, label_binarize  # noqa: E402
+from sklearn.preprocessing import LabelEncoder, label_binarize  # noqa: E402
 from sklearn.utils.class_weight import compute_sample_weight  # noqa: E402
 from tqdm.auto import tqdm  # noqa: E402
 from xgboost import XGBClassifier  # noqa: E402
@@ -83,13 +76,9 @@ from semantic_search.prediction_targets import (  # noqa: E402
     load_target,
 )
 
-MODELS = ["elastic_net", "xgboost"]
+MODELS = ["xgboost"]
 DEFAULT_SEED = 1234
 
-LR_GRID = {
-    "model__C": [0.01, 0.1, 1.0, 10.0],
-    "model__l1_ratio": [0.1, 0.5, 0.9],
-}
 XGB_GRID = {
     "max_depth": [3, 6],
     "min_child_weight": [1, 5],
@@ -184,11 +173,10 @@ def _run_signature(
         f"{mrn}\t{label}"
         for mrn, label in data.select(PATIENT_KEY, "label").sort(PATIENT_KEY).iter_rows()
     )
-    grid = LR_GRID if model == "elastic_net" else XGB_GRID
     return {
         "patient_label_sha256": hashlib.sha256(patient_labels.encode()).hexdigest(),
         "feature_columns_sha256": hashlib.sha256("\n".join(feature_cols).encode()).hexdigest(),
-        "hyperparameter_grid": grid,
+        "hyperparameter_grid": XGB_GRID,
         "outer_folds_requested": outer_folds,
         "inner_folds_requested": inner_folds,
         "seed": seed,
@@ -232,51 +220,26 @@ def _make_search(
     n_jobs: int,
 ) -> GridSearchCV:
     inner_cv = StratifiedKFold(n_splits=inner_folds, shuffle=True, random_state=seed)
-    if model == "elastic_net":
-        logistic_kwargs = {
-            "solver": "saga",
-            "class_weight": "balanced",
-            "max_iter": 4_000,
-            "tol": 1e-3,
-            "random_state": seed,
-        }
-        # sklearn <=1.7 requires the explicit penalty; 1.8+ infers it from
-        # l1_ratio and deprecates the argument itself.
-        penalty_default = inspect.signature(LogisticRegression).parameters["penalty"].default
-        if penalty_default != "deprecated":
-            logistic_kwargs["penalty"] = "elasticnet"
-        estimator = Pipeline(
-            [
-                ("scale", StandardScaler()),
-                (
-                    "model",
-                    LogisticRegression(**logistic_kwargs),
-                ),
-            ]
-        )
-        grid = LR_GRID
-    elif model == "xgboost":
-        kwargs = {
-            "objective": "binary:logistic" if n_classes == 2 else "multi:softprob",
-            "n_estimators": 300,
-            "learning_rate": 0.05,
-            "subsample": 0.8,
-            "colsample_bytree": 0.8,
-            "tree_method": "hist",
-            "eval_metric": "logloss" if n_classes == 2 else "mlogloss",
-            "random_state": seed,
-            "n_jobs": 1,
-        }
-        if n_classes > 2:
-            kwargs["num_class"] = n_classes
-        estimator = XGBClassifier(**kwargs)
-        grid = XGB_GRID
-    else:
+    if model != "xgboost":
         raise ValueError(f"Unknown model {model!r}; choose from {MODELS}")
+    kwargs = {
+        "objective": "binary:logistic" if n_classes == 2 else "multi:softprob",
+        "n_estimators": 300,
+        "learning_rate": 0.05,
+        "subsample": 0.8,
+        "colsample_bytree": 0.8,
+        "tree_method": "hist",
+        "eval_metric": "logloss" if n_classes == 2 else "mlogloss",
+        "random_state": seed,
+        "n_jobs": 1,
+    }
+    if n_classes > 2:
+        kwargs["num_class"] = n_classes
+    estimator = XGBClassifier(**kwargs)
 
     return GridSearchCV(
         estimator,
-        param_grid=grid,
+        param_grid=XGB_GRID,
         scoring="neg_log_loss",
         cv=inner_cv,
         n_jobs=n_jobs,
@@ -286,11 +249,8 @@ def _make_search(
     )
 
 
-def _fit_search(search: GridSearchCV, model: str, X: np.ndarray, y: np.ndarray) -> None:
-    if model == "xgboost":
-        search.fit(X, y, sample_weight=compute_sample_weight("balanced", y))
-    else:
-        search.fit(X, y)
+def _fit_search(search: GridSearchCV, X: np.ndarray, y: np.ndarray) -> None:
+    search.fit(X, y, sample_weight=compute_sample_weight("balanced", y))
 
 
 def _metric_bundle(y: np.ndarray, probabilities: np.ndarray) -> dict[str, float]:
@@ -453,7 +413,7 @@ def train_one(
                 seed=seed + fold,
                 n_jobs=n_jobs,
             )
-            _fit_search(search, model, X[train_idx], y[train_idx])
+            _fit_search(search, X[train_idx], y[train_idx])
             probabilities[test_idx] = search.predict_proba(X[test_idx])
             fold_ids[test_idx] = fold
             metrics = _metric_bundle(y[test_idx], probabilities[test_idx])
@@ -501,7 +461,7 @@ def train_one(
         n_jobs=n_jobs,
     )
     with tqdm(total=1, desc=f"{progress_label}: final refit", unit="search") as progress:
-        _fit_search(final_search, model, X, y)
+        _fit_search(final_search, X, y)
         progress.update()
 
     predicted = probabilities.argmax(axis=1)
@@ -588,6 +548,8 @@ def _merge_write(path: str, rows: list[dict], key_cols: list[str]) -> None:
         old = pl.read_csv(path)
         if "space" in old.columns:
             old = old.filter(pl.col("space").is_in(SPACES))
+        if "model" in old.columns:
+            old = old.filter(pl.col("model").is_in(MODELS))
         if all(column in old.columns for column in key_cols):
             keys = new.select(key_cols).unique()
             old = old.join(keys, on=key_cols, how="anti")
@@ -784,7 +746,6 @@ def main() -> None:
     if args.n_jobs < 1:
         parser.error("--n-jobs must be >= 1")
 
-    warnings.filterwarnings("ignore", category=ConvergenceWarning)
     if "alltime" in args.windows:
         print(
             "NOTE: alltime embeddings use the complete documented history. These runs measure "

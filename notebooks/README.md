@@ -51,7 +51,7 @@ it is an exploratory arm rather than a manuscript pipeline stage.
 | 01 | [`semantic_search/notebooks/01_aggregate.ipynb`](../semantic_search/notebooks/01_aggregate.ipynb) | cluster CPU | Mean-pools progress, imaging, and pathology notes separately, then concatenates the three 768-dimensional blocks. Writes one parquet per note window. Skip-if-exists resumable. |
 | 02 | [`semantic_search/notebooks/02_pcs.ipynb`](../semantic_search/notebooks/02_pcs.ipynb) | cluster CPU / local | L2 → StandardScaler → PCA for the 3×768 space. Writes patient scores, long-form loadings, the fitted transformer, and explained variance. |
 | 03 | [`semantic_search/notebooks/03_pc_correlations.ipynb`](../semantic_search/notebooks/03_pc_correlations.ipynb) | local / cluster | Tests retained PCs against continuous, categorical, and survival characteristics with family-wise BH-FDR and coverage reporting. |
-| 04 | [`semantic_search/notebooks/04_predict.ipynb`](../semantic_search/notebooks/04_predict.ipynb) | allocated Jupyter CPU session | Runs nested-CV elastic-net logistic regression and XGBoost for cancer type, stage, first-treatment category, and conventional/AVPC/NEPC using the all-time 3×768 representation. |
+| 04 | [`semantic_search/notebooks/04_predict.ipynb`](../semantic_search/notebooks/04_predict.ipynb) | allocated Jupyter CPU session | Runs nested-CV XGBoost for cancer type, stage, first-treatment category, and conventional/AVPC/NEPC using the all-time 3×768 representation. |
 
 Runs after [`1_data/03`](1_data/03_prediction_datasets.ipynb) — it needs the knitted embeddings —
 and **nothing depends on it downstream**. It is not part of the `4_figures` manuscript path and does

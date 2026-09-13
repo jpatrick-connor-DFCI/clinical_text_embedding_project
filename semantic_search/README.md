@@ -89,8 +89,8 @@ matched clinical family.
 
 ## Supervised prediction
 
-The prediction command defaults to `concat/alltime` and fits nested-CV elastic-net logistic
-regression and XGBoost models for:
+The prediction command defaults to `concat/alltime` and fits one nested-CV XGBoost model for each
+target:
 
 | Target | Label source |
 |---|---|

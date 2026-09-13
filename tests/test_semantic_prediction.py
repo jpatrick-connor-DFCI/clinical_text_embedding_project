@@ -212,8 +212,7 @@ def test_result_writer_replaces_matching_setup_and_preserves_other_runs(tmp_path
     ]
 
 
-@pytest.mark.parametrize("model", ["elastic_net", "xgboost"])
-def test_nested_cv_writes_oof_predictions_and_refit_model(tmp_path, monkeypatch, model):
+def test_nested_cv_writes_oof_predictions_and_refit_xgboost(tmp_path, monkeypatch):
     pytest.importorskip("sklearn")
     pytest.importorskip("xgboost")
     from semantic_search import train_prediction_models as training
@@ -221,11 +220,6 @@ def test_nested_cv_writes_oof_predictions_and_refit_model(tmp_path, monkeypatch,
     monkeypatch.setattr(training, "PREDICTIONS_DIR", str(tmp_path / "predictions"))
     monkeypatch.setattr(training, "MODELS_DIR", str(tmp_path / "models"))
     monkeypatch.setattr(training, "PREDICTION_META_DIR", str(tmp_path / "meta"))
-    monkeypatch.setattr(
-        training,
-        "LR_GRID",
-        {"model__C": [1.0], "model__l1_ratio": [0.5]},
-    )
     monkeypatch.setattr(
         training,
         "XGB_GRID",
@@ -246,6 +240,9 @@ def test_nested_cv_writes_oof_predictions_and_refit_model(tmp_path, monkeypatch,
             "label": y,
         }
     )
+
+    model = "xgboost"
+    assert training.MODELS == [model]
 
     meta, folds, by_class = training.train_one(
         data,
