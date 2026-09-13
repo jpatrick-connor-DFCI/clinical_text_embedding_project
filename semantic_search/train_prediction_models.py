@@ -29,8 +29,8 @@ import tempfile
 from collections import Counter
 from pathlib import Path
 
-# Bound native libraries before importing NumPy/scikit-learn/XGBoost. GridSearchCV
-# supplies the requested parallelism; nested native thread pools stay single-threaded.
+# Bound native libraries before importing NumPy/scikit-learn/XGBoost. Joblib
+# parallelizes independent XGBoost fits; nested native thread pools stay single-threaded.
 for _thread_var in (
     "OPENBLAS_NUM_THREADS",
     "OMP_NUM_THREADS",
@@ -55,7 +55,7 @@ from sklearn.metrics import (  # noqa: E402
 )
 from sklearn.compose import ColumnTransformer  # noqa: E402
 from sklearn.decomposition import PCA  # noqa: E402
-from sklearn.model_selection import GridSearchCV, StratifiedKFold  # noqa: E402
+from sklearn.model_selection import ParameterGrid, StratifiedKFold  # noqa: E402
 from sklearn.pipeline import Pipeline  # noqa: E402
 from sklearn.preprocessing import (  # noqa: E402
     LabelEncoder,
@@ -277,33 +277,11 @@ def _validate_pca_sample_size(y: np.ndarray, inner_folds: int) -> None:
         )
 
 
-def _make_search(
-    model: str,
-    *,
-    n_classes: int,
-    inner_folds: int,
-    seed: int,
-    n_jobs: int,
-    feature_blocks: dict[str, list[int]],
-    memory: str | None = None,
-) -> GridSearchCV:
-    inner_cv = StratifiedKFold(n_splits=inner_folds, shuffle=True, random_state=seed)
-    if model != "xgboost":
-        raise ValueError(f"Unknown model {model!r}; choose from {MODELS}")
-    kwargs = {
-        "objective": "binary:logistic" if n_classes == 2 else "multi:softprob",
-        "n_estimators": 300,
-        "learning_rate": 0.05,
-        "subsample": 0.8,
-        "colsample_bytree": 0.8,
-        "tree_method": "hist",
-        "eval_metric": "logloss" if n_classes == 2 else "mlogloss",
-        "random_state": seed,
-        "n_jobs": 1,
-    }
-    if n_classes > 2:
-        kwargs["num_class"] = n_classes
-    block_transformer = ColumnTransformer(
+def _make_block_transformer(
+    feature_blocks: dict[str, list[int]], seed: int
+) -> ColumnTransformer:
+    """Build one leakage-safe transform for the three embedding blocks."""
+    return ColumnTransformer(
         [
             (
                 note_type.lower(),
@@ -326,32 +304,200 @@ def _make_search(
         remainder="drop",
         sparse_threshold=0.0,
     )
-    estimator = Pipeline(
-        [
-            ("block_pca", block_transformer),
-            ("model", XGBClassifier(**kwargs)),
-        ],
-        memory=memory,
+
+
+def _make_xgboost(
+    *, n_classes: int, seed: int, params: dict[str, object]
+) -> XGBClassifier:
+    """Build a single-threaded XGBoost fit for outer joblib parallelism."""
+    kwargs = {
+        "objective": "binary:logistic" if n_classes == 2 else "multi:softprob",
+        "n_estimators": 300,
+        "learning_rate": 0.05,
+        "subsample": 0.8,
+        "colsample_bytree": 0.8,
+        "tree_method": "hist",
+        "eval_metric": "logloss" if n_classes == 2 else "mlogloss",
+        "random_state": seed,
+        "n_jobs": 1,
+    }
+    if n_classes > 2:
+        kwargs["num_class"] = n_classes
+    kwargs.update(
+        {
+            key.removeprefix("model__"): value
+            for key, value in params.items()
+        }
+    )
+    return XGBClassifier(**kwargs)
+
+
+def _fit_and_score_xgboost(
+    candidate_index: int,
+    inner_fold: int,
+    params: dict[str, object],
+    X_train_pc: np.ndarray,
+    y_train: np.ndarray,
+    train_weights: np.ndarray,
+    X_valid_pc: np.ndarray,
+    y_valid: np.ndarray,
+    *,
+    n_classes: int,
+    seed: int,
+) -> tuple[int, int, float]:
+    estimator = _make_xgboost(
+        n_classes=n_classes,
+        seed=seed,
+        params=params,
+    )
+    estimator.fit(
+        X_train_pc,
+        y_train,
+        sample_weight=train_weights,
+    )
+    probabilities = estimator.predict_proba(X_valid_pc)
+    loss = log_loss(y_valid, probabilities, labels=np.arange(n_classes))
+    return candidate_index, inner_fold, float(loss)
+
+
+def _fit_inner_pca(
+    inner_fold: int,
+    train_idx: np.ndarray,
+    valid_idx: np.ndarray,
+    X: np.ndarray,
+    y: np.ndarray,
+    sample_weights: np.ndarray,
+    *,
+    feature_blocks: dict[str, list[int]],
+    seed: int,
+) -> tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    transformer = _make_block_transformer(feature_blocks, seed)
+    X_train_pc = transformer.fit_transform(X[train_idx])
+    X_valid_pc = transformer.transform(X[valid_idx])
+    return (
+        inner_fold,
+        X_train_pc,
+        y[train_idx],
+        sample_weights[train_idx],
+        X_valid_pc,
+        y[valid_idx],
     )
 
-    return GridSearchCV(
-        estimator,
-        param_grid=XGB_GRID,
-        scoring="neg_log_loss",
-        cv=inner_cv,
+
+def _tune_xgboost(
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    n_classes: int,
+    inner_folds: int,
+    seed: int,
+    n_jobs: int,
+    feature_blocks: dict[str, list[int]],
+    progress_label: str,
+) -> tuple[dict[str, object], float]:
+    """Tune XGBoost while computing each inner-fold PCA only once in memory."""
+    inner_cv = StratifiedKFold(
+        n_splits=inner_folds,
+        shuffle=True,
+        random_state=seed,
+    )
+    sample_weights = compute_sample_weight("balanced", y)
+    split_indices = [
+        (inner_fold, train_idx, valid_idx)
+        for inner_fold, (train_idx, valid_idx) in enumerate(inner_cv.split(X, y))
+    ]
+    pca_parallel = joblib.Parallel(
         n_jobs=n_jobs,
-        refit=True,
-        error_score="raise",
-        return_train_score=False,
+        prefer="threads",
+        return_as="generator_unordered",
     )
+    pca_result_stream = pca_parallel(
+        joblib.delayed(_fit_inner_pca)(
+            inner_fold,
+            train_idx,
+            valid_idx,
+            X,
+            y,
+            sample_weights,
+            feature_blocks=feature_blocks,
+            seed=seed,
+        )
+        for inner_fold, train_idx, valid_idx in split_indices
+    )
+    fold_data = []
+    with tqdm(
+        total=inner_folds,
+        desc=f"{progress_label}: PCA",
+        unit="fold",
+        leave=False,
+    ) as progress:
+        for result in pca_result_stream:
+            fold_data.append(result)
+            progress.update()
+
+    candidates = list(ParameterGrid(XGB_GRID))
+    tasks = [
+        (candidate_index, params, fold)
+        for candidate_index, params in enumerate(candidates)
+        for fold in fold_data
+    ]
+    losses = np.full((len(candidates), inner_folds), np.nan, dtype=np.float64)
+    parallel = joblib.Parallel(
+        n_jobs=n_jobs,
+        prefer="threads",
+        return_as="generator_unordered",
+    )
+    result_stream = parallel(
+        joblib.delayed(_fit_and_score_xgboost)(
+            candidate_index,
+            fold[0],
+            params,
+            fold[1],
+            fold[2],
+            fold[3],
+            fold[4],
+            fold[5],
+            n_classes=n_classes,
+            seed=seed,
+        )
+        for candidate_index, params, fold in tasks
+    )
+    with tqdm(
+        total=len(tasks),
+        desc=f"{progress_label}: XGBoost",
+        unit="fit",
+        leave=False,
+    ) as progress:
+        for candidate_index, inner_fold, loss in result_stream:
+            losses[candidate_index, inner_fold] = loss
+            progress.update()
+
+    if np.isnan(losses).any():
+        raise RuntimeError("Inner CV did not score every XGBoost candidate/fold")
+    mean_losses = losses.mean(axis=1)
+    best_index = int(np.argmin(mean_losses))
+    return candidates[best_index], -float(mean_losses[best_index])
 
 
-def _fit_search(search: GridSearchCV, X: np.ndarray, y: np.ndarray) -> None:
-    search.fit(
-        X,
+def _fit_final_pipeline(
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    n_classes: int,
+    seed: int,
+    feature_blocks: dict[str, list[int]],
+    params: dict[str, object],
+) -> Pipeline:
+    """Fit the selected transform and classifier on an entire training partition."""
+    transformer = _make_block_transformer(feature_blocks, seed)
+    X_pc = transformer.fit_transform(X)
+    estimator = _make_xgboost(n_classes=n_classes, seed=seed, params=params)
+    estimator.fit(
+        X_pc,
         y,
-        model__sample_weight=compute_sample_weight("balanced", y),
+        sample_weight=compute_sample_weight("balanced", y),
     )
+    return Pipeline([("block_pca", transformer), ("model", estimator)])
 
 
 def _metric_bundle(y: np.ndarray, probabilities: np.ndarray) -> dict[str, float]:
@@ -442,11 +588,16 @@ def _prepare_one_dataset(
     return joined.sort(PATIENT_KEY), cols, collapsed
 
 
-def _shared_mrns(labels: pl.DataFrame, feature_frames: dict[str, pl.DataFrame]) -> pl.Series:
+def _shared_mrns(
+    labels: pl.DataFrame, feature_frames: dict[str, pl.DataFrame]
+) -> pl.DataFrame:
     shared = set(labels.get_column(PATIENT_KEY).to_list())
     for frame in feature_frames.values():
         shared.intersection_update(frame.get_column(PATIENT_KEY).to_list())
-    return pl.Series(PATIENT_KEY, sorted(shared), dtype=pl.Int64)
+    return pl.DataFrame(
+        {PATIENT_KEY: sorted(shared)},
+        schema={PATIENT_KEY: pl.Int64},
+    )
 
 
 def train_one(
@@ -509,21 +660,27 @@ def train_one(
             progress.set_postfix_str(f"outer fold {fold}/{n_outer}", refresh=True)
             n_inner = _inner_splits(y[train_idx], inner_folds)
             _validate_pca_sample_size(y[train_idx], n_inner)
-            with tempfile.TemporaryDirectory(
-                prefix=".block_pca_cache_",
-                dir=PREDICTION_META_DIR,
-            ) as cache_dir:
-                search = _make_search(
-                    model,
-                    n_classes=len(classes),
-                    inner_folds=n_inner,
-                    seed=seed + fold,
-                    n_jobs=n_jobs,
-                    feature_blocks=feature_blocks,
-                    memory=cache_dir,
-                )
-                _fit_search(search, X[train_idx], y[train_idx])
-            probabilities[test_idx] = search.predict_proba(X[test_idx])
+            if model != "xgboost":
+                raise ValueError(f"Unknown model {model!r}; choose from {MODELS}")
+            best_params, best_score = _tune_xgboost(
+                X[train_idx],
+                y[train_idx],
+                n_classes=len(classes),
+                inner_folds=n_inner,
+                seed=seed + fold,
+                n_jobs=n_jobs,
+                feature_blocks=feature_blocks,
+                progress_label=f"{progress_label} fold {fold}/{n_outer}",
+            )
+            outer_estimator = _fit_final_pipeline(
+                X[train_idx],
+                y[train_idx],
+                n_classes=len(classes),
+                seed=seed + fold,
+                feature_blocks=feature_blocks,
+                params=best_params,
+            )
+            probabilities[test_idx] = outer_estimator.predict_proba(X[test_idx])
             fold_ids[test_idx] = fold
             metrics = _metric_bundle(y[test_idx], probabilities[test_idx])
             fold_metrics.append(
@@ -541,8 +698,8 @@ def train_one(
                 {
                     "fold": fold,
                     "inner_folds": n_inner,
-                    "best_score_neg_log_loss": float(search.best_score_),
-                    "best_params": search.best_params_,
+                    "best_score_neg_log_loss": best_score,
+                    "best_params": best_params,
                 }
             )
             progress.set_postfix_str(
@@ -563,28 +720,30 @@ def train_one(
 
     final_inner = _inner_splits(y, inner_folds)
     _validate_pca_sample_size(y, final_inner)
-    with tempfile.TemporaryDirectory(
-        prefix=".block_pca_cache_",
-        dir=PREDICTION_META_DIR,
-    ) as cache_dir:
-        final_search = _make_search(
-            model,
+    final_best_params, final_best_score = _tune_xgboost(
+        X,
+        y,
+        n_classes=len(classes),
+        inner_folds=final_inner,
+        seed=seed,
+        n_jobs=n_jobs,
+        feature_blocks=feature_blocks,
+        progress_label=f"{progress_label} final tuning",
+    )
+    with tqdm(
+        total=1,
+        desc=f"{progress_label}: final refit",
+        unit="model",
+    ) as progress:
+        final_estimator = _fit_final_pipeline(
+            X,
+            y,
             n_classes=len(classes),
-            inner_folds=final_inner,
             seed=seed,
-            n_jobs=n_jobs,
             feature_blocks=feature_blocks,
-            memory=cache_dir,
+            params=final_best_params,
         )
-        with tqdm(
-            total=1,
-            desc=f"{progress_label}: final refit",
-            unit="search",
-        ) as progress:
-            _fit_search(final_search, X, y)
-            progress.update()
-    # The fitted transformer no longer needs its temporary training cache.
-    final_search.best_estimator_.memory = None
+        progress.update()
 
     predicted = probabilities.argmax(axis=1)
     predictions = pl.DataFrame(
@@ -600,7 +759,7 @@ def train_one(
     predictions.write_parquet(paths["predictions"])
 
     model_payload = {
-        "estimator": final_search.best_estimator_,
+        "estimator": final_estimator,
         "classes": classes,
         "feature_columns": feature_cols,
         "transformed_feature_columns": [
@@ -637,8 +796,8 @@ def train_one(
         "fold_metrics": fold_metrics,
         "per_class_metrics": per_class,
         "fold_tuning": fold_tuning,
-        "final_best_score_neg_log_loss": float(final_search.best_score_),
-        "final_best_params": final_search.best_params_,
+        "final_best_score_neg_log_loss": final_best_score,
+        "final_best_params": final_best_params,
         "artifacts": paths,
     }
     _atomic_json(paths["meta"], meta)
@@ -742,7 +901,7 @@ def run(
             labels_for_window = labels
             if cohort_mode == "common":
                 shared = _shared_mrns(labels, feature_frames)
-                labels_for_window = labels.filter(pl.col(PATIENT_KEY).is_in(shared))
+                labels_for_window = labels.join(shared, on=PATIENT_KEY, how="inner")
                 print(
                     f"  [{window}] common cohort across {len(feature_frames)} spaces: "
                     f"{labels_for_window.height:,}",
@@ -872,7 +1031,7 @@ def main() -> None:
         "--n-jobs",
         type=int,
         default=-1,
-        help="Parallel grid-search workers; -1 uses every available CPU (default).",
+        help="Parallel XGBoost fits; -1 uses every available CPU (default).",
     )
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()

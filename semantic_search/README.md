@@ -103,13 +103,14 @@ PCs, then fits one nested-CV XGBoost model to the resulting 100 predictors for e
 Five outer folds produce out-of-fold predictions; three inner folds tune by log loss. Final models
 are refit on the complete setup cohort. The workflow reports accuracy, balanced accuracy,
 macro/weighted F1, log loss, macro one-vs-rest AUROC, average precision, and per-class metrics.
-Grid search defaults to `n_jobs=-1`, using every CPU allocated to the process; each XGBoost fit is
-single-threaded so parallel candidate/fold fits do not oversubscribe the allocation.
+Hyperparameter tuning defaults to `n_jobs=-1`, using every CPU allocated to the process; each
+XGBoost fit is single-threaded so parallel candidate/fold fits do not oversubscribe the allocation.
 
-The blockwise normalization, scaling, and PCA steps are inside the fitted model pipeline. They are
-therefore learned only from the relevant training partition in both inner and outer CV, rather
-than precomputed on patients later used for validation. Transformer results are cached within each
-grid search so the eight XGBoost parameter combinations reuse the same fold-specific PC scores.
+The saved model keeps blockwise normalization, scaling, and PCA inside its fitted pipeline. During
+nested CV, equivalent transforms are learned only from the relevant training partition rather than
+from patients later used for validation. Each inner fold's PC matrices are computed once in memory
+and reused across all eight XGBoost parameter combinations. This avoids redundant PCA work and
+shared filesystem caches while keeping the nested CV leakage-safe.
 
 ## Interpretation
 
