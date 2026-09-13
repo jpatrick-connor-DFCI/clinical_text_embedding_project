@@ -40,10 +40,12 @@ for _thread_var in (
 
 import numpy as np  # noqa: E402
 import polars as pl  # noqa: E402
+from tqdm.auto import tqdm  # noqa: E402
 
 from pipelines.biomarkers.biomarker_common import load_note_embeddings  # noqa: E402
 from semantic_search import clinical_data  # noqa: E402
 from semantic_search.common import (  # noqa: E402
+    DEFAULT_WINDOWS,
     PATIENT_KEY,
     SPACES,
     WINDOWS,
@@ -296,24 +298,30 @@ def run(spaces: list[str], windows: list[str]) -> None:
 
     sizes, coverage, tests, enrichment, survival = [], [], [], [], []
 
-    for window in windows:
-        for space in spaces:
-            if not os.path.exists(labels_path(space, window)):
-                continue
-            print(f"\n[{space}/{window}]", flush=True)
-            labels = load_labels(space, window)
-            sizes.extend(_cluster_sizes(labels, space, window))
+    setups = [(space, window) for window in windows for space in spaces]
+    for space, window in tqdm(setups, desc="Characterization setups", unit="setup"):
+        if not os.path.exists(labels_path(space, window)):
+            continue
+        print(f"\n[{space}/{window}]", flush=True)
+        labels = load_labels(space, window)
+        sizes.extend(_cluster_sizes(labels, space, window))
 
-            for family, (df, cont, cat) in families.items():
-                fam_tests, fam_enrich, fam_cov = _test_family(
-                    labels, family, df, cont, cat, space, window)
-                tests.extend(fam_tests)
-                enrichment.extend(fam_enrich)
-                coverage.append(fam_cov)
+        for family, (df, cont, cat) in tqdm(
+            families.items(),
+            total=len(families),
+            desc=f"{space}/{window}: clinical families",
+            unit="family",
+            leave=False,
+        ):
+            fam_tests, fam_enrich, fam_cov = _test_family(
+                labels, family, df, cont, cat, space, window)
+            tests.extend(fam_tests)
+            enrichment.extend(fam_enrich)
+            coverage.append(fam_cov)
 
-            if surv.height:
-                survival.extend(_survival(labels, surv, cancer_type_df,
-                                          demographics_df, space, window))
+        if surv.height:
+            survival.extend(_survival(labels, surv, cancer_type_df,
+                                      demographics_df, space, window))
 
     write_result(_frame(sizes, SIZE_COLUMNS), "cluster_sizes")
     write_result(_frame(coverage, COVERAGE_COLUMNS), "cluster_join_coverage")
@@ -345,7 +353,7 @@ def _frame(rows: list[dict], columns: list[str]) -> pl.DataFrame:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--spaces", nargs="+", choices=SPACES, default=SPACES)
-    parser.add_argument("--windows", nargs="+", choices=WINDOWS, default=WINDOWS)
+    parser.add_argument("--windows", nargs="+", choices=WINDOWS, default=DEFAULT_WINDOWS)
     args = parser.parse_args()
     run(spaces=args.spaces, windows=args.windows)
 

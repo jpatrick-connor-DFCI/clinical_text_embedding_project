@@ -41,16 +41,17 @@ disk rather than assuming the run it just did is the only one that has happened.
 | 02 | [`4_figures/02_figure_data.ipynb`](4_figures/02_figure_data.ipynb) | cluster CPU / local | Runs `figures/prep/figureN.py` to write the CSVs the R tier plots from. **Incremental**: a module whose output CSVs all exist is skipped, so a re-run regenerates only what is missing — set `REGENERATE_ALL` or `FORCE` after anything upstream changes, since the check is presence, not freshness. Pure Python — warns and falls back to raw code labels if `4_figures/01` has not run. |
 | 03 | [`4_figures/03_render_figures.Rmd`](4_figures/03_render_figures.Rmd) | local / cluster (R) | Renders manuscript figure panels from the `4_figures/02` CSVs. Bootstrap R packages once with `Rscript R/install_packages.R`, then render with `Rscript -e 'rmarkdown::render("notebooks/4_figures/03_render_figures.Rmd")'`. |
 
-## semantic_search — exploratory patient clustering
+## semantic_search — exploratory embedding analyses
 
 Lives outside `notebooks/` at [`semantic_search/notebooks/`](../semantic_search/notebooks/), since
 it is an exploratory arm rather than a manuscript pipeline stage.
 
 | # | Notebook | Tier | Notes |
 |---|---|---|---|
-| 01 | [`semantic_search/notebooks/01_aggregate.ipynb`](../semantic_search/notebooks/01_aggregate.ipynb) | cluster CPU | Pools note embeddings into one vector per patient: 5 feature spaces x 2 note windows = 10 parquet files. The slow stage — `pool_embedding_series_vectorized` iterates Python-side over patient x type groups. Skip-if-exists resumable. |
-| 02 | [`semantic_search/notebooks/02_cluster.ipynb`](../semantic_search/notebooks/02_cluster.ipynb) | cluster CPU / local | L2 → StandardScaler → PCA → KMeans with a silhouette scan over k, per space. Writes cluster labels, 2-D coords and a meta JSON, plus the cross-space adjusted Rand index. |
+| 01 | [`semantic_search/notebooks/01_aggregate.ipynb`](../semantic_search/notebooks/01_aggregate.ipynb) | cluster CPU | Mean-pools progress, imaging, and pathology notes separately, then concatenates the three 768-dimensional blocks. Writes one parquet per note window. Skip-if-exists resumable. |
+| 02 | [`semantic_search/notebooks/02_cluster.ipynb`](../semantic_search/notebooks/02_cluster.ipynb) | cluster CPU / local | L2 → StandardScaler → PCA → KMeans with a silhouette scan over k for the 3×768 space. Writes cluster labels, 2-D coords and metadata. |
 | 03 | [`semantic_search/notebooks/03_characterize.ipynb`](../semantic_search/notebooks/03_characterize.ipynb) | local / cluster | Tests every available clinical characteristic against each partition (BH-FDR within family), describes cluster survival, and draws the panels inline. |
+| 04 | [`semantic_search/notebooks/04_predict.ipynb`](../semantic_search/notebooks/04_predict.ipynb) | allocated Jupyter CPU session | Runs nested-CV elastic-net logistic regression and XGBoost for cancer type, stage, first-treatment category, and conventional/AVPC/NEPC using the all-time 3×768 representation. |
 
 Runs after [`1_data/03`](1_data/03_prediction_datasets.ipynb) — it needs the knitted embeddings —
 and **nothing depends on it downstream**. It is not part of the `4_figures` manuscript path and does

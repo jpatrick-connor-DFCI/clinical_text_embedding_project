@@ -1,4 +1,4 @@
-"""Stage 2: KMeans-cluster patients in each embedding feature space.
+"""Stage 2: KMeans-cluster patients in the concatenated embedding space.
 
 Preprocessing order is fixed and recorded in each run's meta JSON:
 
@@ -6,9 +6,9 @@ Preprocessing order is fixed and recorded in each run's meta JSON:
 
 L2 first because these are transformer embeddings, whose trained geometry is
 cosine; on unit-norm rows Euclidean KMeans is monotone in cosine distance.
-StandardScaler then stops a handful of high-variance dimensions from dominating,
-and matters most for `concat`, where three blocks of different scale sit side by
-side.  PCA both denoises and makes the silhouette scan affordable.
+StandardScaler then prevents one of the three concatenated note-type blocks, or
+a handful of high-variance dimensions, from dominating. PCA both denoises and
+makes the silhouette scan affordable.
 
 Cluster labels are relabeled by ascending cluster size so a rerun with the same
 seed produces not just the same partition but the same integer names -- the
@@ -48,9 +48,11 @@ from sklearn.cluster import KMeans  # noqa: E402
 from sklearn.decomposition import PCA  # noqa: E402
 from sklearn.metrics import adjusted_rand_score, silhouette_score  # noqa: E402
 from sklearn.preprocessing import StandardScaler, normalize  # noqa: E402
+from tqdm.auto import tqdm  # noqa: E402
 
 from data.schema import assert_schema  # noqa: E402
 from semantic_search.common import (  # noqa: E402
+    DEFAULT_WINDOWS,
     PATIENT_KEY,
     SPACES,
     WINDOWS,
@@ -114,9 +116,22 @@ def _relabel_by_size(labels: np.ndarray) -> np.ndarray:
     return np.array([mapping[v] for v in labels], dtype=np.int64)
 
 
-def scan_k(X: np.ndarray, k_values, seed: int) -> list[dict]:
+def scan_k(
+    X: np.ndarray,
+    k_values,
+    seed: int,
+    *,
+    progress_desc: str | None = None,
+) -> list[dict]:
     rows = []
-    for k in k_values:
+    values = list(k_values)
+    for k in tqdm(
+        values,
+        desc=progress_desc or "Silhouette scan",
+        unit="k",
+        leave=False,
+        disable=progress_desc is None,
+    ):
         if k >= X.shape[0]:
             continue
         km = KMeans(n_clusters=k, n_init=N_INIT, random_state=seed).fit(X)
@@ -158,7 +173,12 @@ def cluster_one(
     Xp, pca_variance = _prepare(X, N_COMPONENTS, seed)
     print(f"    PCA -> {Xp.shape[1]} comps, {pca_variance:.1%} variance", flush=True)
 
-    scan_rows = scan_k(Xp, k_values, seed)
+    scan_rows = scan_k(
+        Xp,
+        k_values,
+        seed,
+        progress_desc=f"{space}/{window}: scanning k",
+    )
     for row in scan_rows:
         row["space"], row["window"] = space, window
 
@@ -208,9 +228,8 @@ def cluster_one(
 def concordance(pairs: list[tuple[str, str]]) -> pl.DataFrame:
     """Adjusted Rand index between every pair of runs, on their shared patients.
 
-    Answers the arm's central question directly: a low ARI between the pathology
-    and imaging partitions means the two note types carve the cohort
-    differently, rather than both restating one dominant axis.
+    With one feature space, this compares the all-time and pre-treatment
+    partitions when both windows were run.
     """
     loaded = {}
     for space, window in pairs:
@@ -250,11 +269,11 @@ def run(
     k_values = range(k_min, k_max + 1)
 
     scan_rows: list[dict] = []
-    for window in windows:
+    setups = [(space, window) for window in windows for space in spaces]
+    for space, window in tqdm(setups, desc="Clustering setups", unit="setup"):
         print(f"\n[{window}]", flush=True)
-        for space in spaces:
-            rows, _ = cluster_one(space, window, k, k_values, seed, overwrite)
-            scan_rows.extend(rows)
+        rows, _ = cluster_one(space, window, k, k_values, seed, overwrite)
+        scan_rows.extend(rows)
 
     scan = pl.DataFrame(scan_rows).select(SILHOUETTE_COLUMNS) if scan_rows else \
         pl.DataFrame(schema={c: pl.Utf8 for c in SILHOUETTE_COLUMNS})
@@ -268,7 +287,7 @@ def run(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--spaces", nargs="+", choices=SPACES, default=SPACES)
-    parser.add_argument("--windows", nargs="+", choices=WINDOWS, default=WINDOWS)
+    parser.add_argument("--windows", nargs="+", choices=WINDOWS, default=DEFAULT_WINDOWS)
     parser.add_argument("--k", type=int, default=None,
                         help="Force this k for every space; default picks the silhouette argmax.")
     parser.add_argument("--k-min", type=int, default=K_MIN)

@@ -8,6 +8,7 @@ except ImportError:  # Keep non-ICD utilities importable in minimal environments
     icd10 = None
 import numpy as np
 import polars as pl
+from tqdm.auto import tqdm
 
 def clean_text(text: str) -> str:
     """
@@ -241,7 +242,9 @@ def find_continuous_records_to_analyze(notes_meta: pl.DataFrame, note_timing_col
 def pool_embedding_series_vectorized(meta_df: pl.DataFrame, embedding_array: np.ndarray, note_types: list[str],
                                      note_timing_col: str = 'NOTE_TIME_REL_FIRST_TREATMENT_START',
                                      pool_fx: dict[str, str] | None = None, decay_param: float | None = None,
-                                     year_adj_cols: list[str] = ['Imaging', 'Pathology']) -> pl.DataFrame:
+                                     year_adj_cols: list[str] = ['Imaging', 'Pathology'],
+                                     show_progress: bool = False,
+                                     progress_desc: str | None = None) -> pl.DataFrame:
     """
     Pool embeddings for each patient and note type using specified strategies.
 
@@ -260,6 +263,8 @@ def pool_embedding_series_vectorized(meta_df: pl.DataFrame, embedding_array: np.
         pool_fx (dict[str, str] | None, optional): Pooling strategy per note type. Defaults to None (mean).
         decay_param (float | None, optional): Decay parameter for time-decayed pooling. Required if using decay strategies. Defaults to None.
         year_adj_cols (list[str], optional): Note types for which year-based adjustments are computed. Defaults to ['Imaging', 'Pathology'].
+        show_progress (bool, optional): Show patient/note-type pooling progress. Defaults to False.
+        progress_desc (str | None, optional): Label for the progress bar.
 
     Returns:
         pl.DataFrame: DataFrame with one row per patient and pooled embeddings per note type.
@@ -280,8 +285,19 @@ def pool_embedding_series_vectorized(meta_df: pl.DataFrame, embedding_array: np.
     mrn_to_idx = {mrn: i for i, mrn in enumerate(unique_mrns)}
 
     # Group by patient and note type
-    grouped = meta_df.group_by(['DFCI_MRN', 'NOTE_TYPE'])
-    for (mrn, note_type), group in grouped:
+    grouped_meta = meta_df.filter(pl.col('NOTE_TYPE').is_in(note_types))
+    grouped = grouped_meta.group_by(['DFCI_MRN', 'NOTE_TYPE'])
+    grouped_iter = grouped
+    if show_progress:
+        n_groups = grouped_meta.select(['DFCI_MRN', 'NOTE_TYPE']).unique().height
+        grouped_iter = tqdm(
+            grouped,
+            total=n_groups,
+            desc=progress_desc or "Pooling embeddings",
+            unit="group",
+            mininterval=1.0,
+        )
+    for (mrn, note_type), group in grouped_iter:
         if note_type not in note_types:
             continue
         idx = mrn_to_idx[mrn]

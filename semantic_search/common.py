@@ -1,4 +1,4 @@
-"""Paths, constants and small loaders shared by the three semantic_search stages.
+"""Paths, constants and small loaders shared by the semantic_search stages.
 
 Layout under SEMANTIC_SEARCH_PATH:
 
@@ -6,8 +6,10 @@ Layout under SEMANTIC_SEARCH_PATH:
     clusters/{space}_{window}_labels.parquet   stage 2  DFCI_MRN, cluster
     clusters/{space}_{window}_coords.parquet   stage 2  DFCI_MRN, dim1, dim2
     clusters/{space}_{window}_meta.json        stage 2  k, seed, silhouette, ...
-    results/*.csv                              stages 1-3
+    results/*.csv                              stages 1-4
     figures/*.png                              stage 3
+    predictions/*.parquet                     stage 4  out-of-fold predictions
+    models/*.joblib                            stage 4  final fitted classifiers
 """
 
 from __future__ import annotations
@@ -29,22 +31,19 @@ NOTE_TYPES = ["Clinician", "Imaging", "Pathology"]
 #                 production survival arm (continuous_window=False,
 #                 max_note_window=0).  Leak-free against tt_death.
 WINDOWS = ["alltime", "pretreatment"]
+DEFAULT_WINDOWS = ["alltime"]
 
-# Feature spaces.  The single-type spaces and `merged` are one embedding
-# dimension wide; `concat` is three.
-SINGLE_TYPE_SPACES = ["clinician", "imaging", "pathology"]
-SPACES = SINGLE_TYPE_SPACES + ["concat", "merged"]
-
-# NOTE_TYPE -> space name for the single-type spaces.
-SPACE_FOR_NOTE_TYPE = {nt: nt.lower() for nt in NOTE_TYPES}
-
-# The literal NOTE_TYPE stamped over every row for the merged pooling pass.
-MERGED_NOTE_TYPE = "All"
+# Sole feature space: the three per-note-type patient means concatenated in the
+# fixed NOTE_TYPES order (3 x 768 = 2,304 dimensions for the current encoder).
+SPACES = ["concat"]
 
 FEATURES_DIR = os.path.join(SEMANTIC_SEARCH_PATH, "features")
 CLUSTERS_DIR = os.path.join(SEMANTIC_SEARCH_PATH, "clusters")
 RESULTS_DIR = os.path.join(SEMANTIC_SEARCH_PATH, "results")
 FIGURES_DIR = os.path.join(SEMANTIC_SEARCH_PATH, "figures")
+PREDICTIONS_DIR = os.path.join(SEMANTIC_SEARCH_PATH, "predictions")
+MODELS_DIR = os.path.join(SEMANTIC_SEARCH_PATH, "models")
+PREDICTION_META_DIR = os.path.join(SEMANTIC_SEARCH_PATH, "prediction_meta")
 
 NOTE_TIMING_COL = "NOTE_TIME_REL_FIRST_TREATMENT_START"
 PATIENT_KEY = "DFCI_MRN"
@@ -53,7 +52,15 @@ PATIENT_KEY = "DFCI_MRN"
 def ensure_dirs() -> None:
     """Create the output subdirectories.  Idempotent; safe to call at import
     time of a stage module."""
-    for path in (FEATURES_DIR, CLUSTERS_DIR, RESULTS_DIR, FIGURES_DIR):
+    for path in (
+        FEATURES_DIR,
+        CLUSTERS_DIR,
+        RESULTS_DIR,
+        FIGURES_DIR,
+        PREDICTIONS_DIR,
+        MODELS_DIR,
+        PREDICTION_META_DIR,
+    ):
         os.makedirs(path, exist_ok=True)
 
 

@@ -27,7 +27,9 @@ dependencies:
   - ipykernel
   - matplotlib
   - seaborn
+  - scikit-learn
   - scikit-survival
+  - joblib
   - lifelines
   - statsmodels
   - tslearn

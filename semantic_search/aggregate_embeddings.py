@@ -1,12 +1,10 @@
-"""Stage 1: pool note embeddings into one feature vector per patient.
+"""Stage 1: pool note embeddings into one 3-block feature vector per patient.
 
-Writes 5 spaces x 2 windows = 10 parquet files under SEMANTIC_SEARCH_PATH/features/:
+Writes one parquet per requested window under SEMANTIC_SEARCH_PATH/features/:
 
-    clinician / imaging / pathology   768   one note type only
-    concat                           2304   the three per-type means side by side
-    merged                            768   every note pooled, NOTE_TYPE ignored
+    concat   2304   clinician, imaging, and pathology means side by side
 
-x
+for:
 
     alltime        every note, no anchor
     pretreatment   notes strictly before first_treatment_date
@@ -14,12 +12,9 @@ x
 Pooling is a plain unweighted mean (not the production `time_decay_mean`): this
 arm asks what a patient's notes say on average, not what they said most recently.
 
-`merged` is a SECOND pooling pass over notes whose NOTE_TYPE has been overwritten
-with a single literal -- NOT the average of the three per-type means.  The two
-differ whenever a patient's note counts are unequal across types, which is almost
-always: the second pass is note-weighted (a patient with 200 imaging and 5
-pathology notes is imaging-dominated), the average-of-means would be
-type-weighted.  Note-weighted is the intended "a note is a note" reading.
+A patient must have at least one finite embedding in every note-type block. The
+three blocks remain separately named and are concatenated without averaging
+across note types.
 
 Run:
     python -m semantic_search.aggregate_embeddings [--windows alltime pretreatment]
@@ -33,15 +28,15 @@ import os
 
 import numpy as np
 import polars as pl
+from tqdm.auto import tqdm
 
 from data.schema import assert_schema
 from pipelines.biomarkers.biomarker_common import load_note_embeddings
 from semantic_search.common import (
-    MERGED_NOTE_TYPE,
+    DEFAULT_WINDOWS,
     NOTE_TIMING_COL,
     NOTE_TYPES,
     PATIENT_KEY,
-    SINGLE_TYPE_SPACES,
     SPACES,
     WINDOWS,
     ensure_dirs,
@@ -83,7 +78,12 @@ def _select_notes(notes_meta: pl.DataFrame, window: str) -> pl.DataFrame:
     raise ValueError(f"Unknown window {window!r}")
 
 
-def _pool_by_type(notes: pl.DataFrame, embeddings: np.ndarray) -> pl.DataFrame:
+def _pool_by_type(
+    notes: pl.DataFrame,
+    embeddings: np.ndarray,
+    *,
+    progress_desc: str | None = None,
+) -> pl.DataFrame:
     """One row per patient, {TYPE}_EMBEDDING_{i} for all three note types.
 
     Called directly rather than through `generate_survival_embedding_df` because
@@ -99,74 +99,54 @@ def _pool_by_type(notes: pl.DataFrame, embeddings: np.ndarray) -> pl.DataFrame:
         note_timing_col=NOTE_TIMING_COL,
         pool_fx={nt: "mean" for nt in NOTE_TYPES},
         year_adj_cols=NO_YEAR_ADJUSTMENT,
+        show_progress=progress_desc is not None,
+        progress_desc=progress_desc,
     )
-
-
-def _pool_merged(notes: pl.DataFrame, embeddings: np.ndarray) -> pl.DataFrame:
-    """One row per patient, EMBEDDING_{i} pooled over every note type at once."""
-    flattened = notes.with_columns(pl.lit(MERGED_NOTE_TYPE).alias("NOTE_TYPE"))
-    pooled = pool_embedding_series_vectorized(
-        flattened,
-        embeddings,
-        note_types=[MERGED_NOTE_TYPE],
-        note_timing_col=NOTE_TIMING_COL,
-        pool_fx={MERGED_NOTE_TYPE: "mean"},
-        year_adj_cols=NO_YEAR_ADJUSTMENT,
-    )
-    prefix = f"{MERGED_NOTE_TYPE.upper()}_EMBEDDING_"
-    return pooled.rename({
-        c: c.replace(prefix, "EMBEDDING_") for c in pooled.columns if c.startswith(prefix)
-    })
-
-
-def _single_type_space(pooled: pl.DataFrame, note_type: str) -> pl.DataFrame:
-    """Extract one note type's block and strip the type prefix from the names."""
-    prefix = f"{note_type.upper()}_EMBEDDING_"
-    cols = [c for c in pooled.columns if c.startswith(prefix)]
-    if not cols:
-        raise ValueError(
-            f"No {prefix}* columns in the pooled frame. Have: {pooled.columns[:8]}..."
-        )
-    return pooled.select([PATIENT_KEY] + cols).rename({
-        c: c.replace(prefix, "EMBEDDING_") for c in cols
-    })
 
 
 def _concat_space(pooled: pl.DataFrame) -> pl.DataFrame:
-    """All three type blocks side by side, names left prefixed so the blocks
-    stay distinguishable downstream."""
-    cols = [c for c in pooled.columns if "_EMBEDDING_" in c]
+    """All three equal-width type blocks in the fixed ``NOTE_TYPES`` order."""
+    blocks = []
+    for note_type in NOTE_TYPES:
+        prefix = f"{note_type.upper()}_EMBEDDING_"
+        block = [c for c in pooled.columns if c.startswith(prefix)]
+        block.sort(key=lambda column: int(column.rsplit("_", 1)[1]))
+        if not block:
+            raise ValueError(f"Pooled frame has no {prefix}* feature columns")
+        blocks.append(block)
+    widths = {len(block) for block in blocks}
+    if len(widths) != 1:
+        raise ValueError(f"Embedding blocks have unequal widths: {[len(b) for b in blocks]}")
+    cols = [column for block in blocks for column in block]
     return pooled.select([PATIENT_KEY] + cols)
 
 
-def build_spaces(notes: pl.DataFrame, embeddings: np.ndarray) -> dict[str, pl.DataFrame]:
-    """All five feature spaces for one already-windowed note selection.
+def build_spaces(
+    notes: pl.DataFrame,
+    embeddings: np.ndarray,
+    *,
+    progress_desc: str | None = None,
+) -> dict[str, pl.DataFrame]:
+    """The 3-block concatenated space for one already-windowed note selection.
 
-    Each space is independently complete-cased: a patient missing a note type is
-    dropped from that type's space and from `concat`, but still appears in
-    `merged` and in the spaces for the types they do have.
+    A patient missing any note type is complete-cased out because every output
+    row must contain all three embedding-block means.
     """
-    pooled = _pool_by_type(notes, embeddings)
-
-    spaces: dict[str, pl.DataFrame] = {}
-    for note_type in NOTE_TYPES:
-        spaces[note_type.lower()] = _single_type_space(pooled, note_type)
-    spaces["concat"] = _concat_space(pooled)
-    spaces["merged"] = _pool_merged(notes, embeddings)
-
-    for name, df in spaces.items():
-        cols = [c for c in df.columns if c != PATIENT_KEY]
-        spaces[name] = filter_finite_rows(df, cols)
-    return spaces
+    pooled = (
+        _pool_by_type(notes, embeddings)
+        if progress_desc is None
+        else _pool_by_type(notes, embeddings, progress_desc=progress_desc)
+    )
+    concatenated = _concat_space(pooled)
+    cols = [c for c in concatenated.columns if c != PATIENT_KEY]
+    return {"concat": filter_finite_rows(concatenated, cols)}
 
 
 def _note_counts(notes: pl.DataFrame, space: str) -> pl.DataFrame:
     """Notes per patient contributing to a given space."""
-    if space in SINGLE_TYPE_SPACES:
-        relevant = notes.filter(pl.col("NOTE_TYPE").str.to_lowercase() == space)
-    else:
-        relevant = notes
-    return relevant.group_by(PATIENT_KEY).len(name="n_notes")
+    if space != "concat":
+        raise ValueError(f"Unknown feature space: {space}")
+    return notes.group_by(PATIENT_KEY).len(name="n_notes")
 
 
 def _summarize(space: str, window: str, df: pl.DataFrame, notes: pl.DataFrame) -> dict:
@@ -206,7 +186,7 @@ def run(windows: list[str], overwrite: bool = False, limit_mrns: int | None = No
         print(f"  --limit-mrns {limit_mrns}: {notes_meta.height:,} notes retained", flush=True)
 
     summary_rows: list[dict] = []
-    for window in windows:
+    for window in tqdm(windows, desc="Embedding windows", unit="window"):
         notes = _select_notes(notes_meta, window)
         print(f"\n[{window}] {notes.height:,} notes, "
               f"{notes.get_column(PATIENT_KEY).n_unique():,} patients", flush=True)
@@ -214,7 +194,11 @@ def run(windows: list[str], overwrite: bool = False, limit_mrns: int | None = No
             print(f"  no notes in window {window!r}; skipping", flush=True)
             continue
 
-        spaces = build_spaces(notes, embeddings)
+        spaces = build_spaces(
+            notes,
+            embeddings,
+            progress_desc=f"{window}: pooling patient/type groups",
+        )
         for space, df in spaces.items():
             path = feature_path(space, window)
             if os.path.exists(path) and not overwrite:
@@ -236,7 +220,7 @@ def run(windows: list[str], overwrite: bool = False, limit_mrns: int | None = No
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--windows", nargs="+", choices=WINDOWS, default=WINDOWS)
+    parser.add_argument("--windows", nargs="+", choices=WINDOWS, default=DEFAULT_WINDOWS)
     parser.add_argument("--overwrite", action="store_true",
                         help="Rebuild feature files that already exist.")
     parser.add_argument("--limit-mrns", type=int, default=None,

@@ -33,11 +33,26 @@ FIGURE_DATA_DIR = os.environ.get(
 )
 BIOMARKER_PATH = os.path.join(DATA_PATH, "biomarker_analysis/")
 MATCHED_COHORT_PATH = os.path.join(BIOMARKER_PATH, "matched_cohorts/")
-# Exploratory unsupervised arm: patients clustered on their pooled note
-# embeddings rather than on a model-derived quantity.  Subdirectories
-# (features/, clusters/, results/, figures/) are created by semantic_search.common.
+# Patient-level pooled-embedding analysis (clustering and clinical-label
+# prediction). Subdirectories are created by semantic_search.common.
 SEMANTIC_SEARCH_PATH = os.path.join(DATA_PATH, "semantic_search/")
 MED_CLASSES_FILE = os.path.join(DATA_PATH, "GPT_generated_med_classes.csv")
+
+# --- LLM-derived prostate phenotype labels (neighboring LLM_annotations repo) ---
+# The upstream pipeline writes one cohort-complete row per prostate patient.  Keep
+# the exact final artifact overridable so a frozen/versioned label run can be used
+# without changing code.
+LLM_ANNOTATIONS_DATA_PATH = os.environ.get(
+    "LLM_ANNOTATIONS_DATA_PATH",
+    "/data/gusev/USERS/jpconnor/data/LLM_annotations/",
+)
+AVPC_NEPC_LABELS_PATH = os.environ.get(
+    "AVPC_NEPC_LABELS_PATH",
+    os.path.join(
+        LLM_ANNOTATIONS_DATA_PATH,
+        "LLM_avpc_nepc_timeline/avpc_nepc_labels.parquet",
+    ),
+)
 
 # --- Figure rendering output (Python figure-data prep + R plotting share this) ---
 FIGURE_OUT_DIR = os.environ.get(
