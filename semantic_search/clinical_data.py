@@ -1,4 +1,4 @@
-"""Assemble the per-patient clinical table the clusters are compared against.
+"""Assemble per-patient clinical tables for embedding-PC association tests.
 
 Reads the materialized covariate files under FEATURE_PATH (built by
 `1_data/01_preprocessing`) rather than re-running the builders in-process: this
@@ -22,17 +22,19 @@ import os
 
 import polars as pl
 
-from config import FEATURE_PATH, SURV_PATH
+from config import FEATURE_PATH, NOTES_PATH, SURV_PATH
 from semantic_search.common import NOTE_TYPES, PATIENT_KEY
 from shared.icd10 import MET_SITE_GROUPS
 from shared.stages import load_stage_map, normalize_stage
 
 FAMILIES = [
     "demographics", "cancer_type", "stage", "met_burden",
-    "treatment", "somatic", "prs", "note_volume",
+    "first_treatment", "prostate_subtype", "treatment", "somatic", "prs",
+    "note_volume",
 ]
 
 SURV_FILE = "death_met_surv_df.parquet"
+NOTE_METADATA_FILE = "full_clinical_notes_embeddings_metadata.parquet"
 # Wide families are capped by prevalence: a somatic marker present in 5 patients
 # cannot separate clusters, and thousands of such columns would dominate the
 # family's FDR denominator and bury the markers that can.
@@ -71,6 +73,15 @@ def load_survival() -> pl.DataFrame:
         print("  survival unavailable (file not found)", flush=True)
         return pl.DataFrame({PATIENT_KEY: []}, schema={PATIENT_KEY: pl.Int64})
     return pl.read_parquet(path).select([PATIENT_KEY, "tt_death", "death"])
+
+
+def load_note_metadata() -> pl.DataFrame | None:
+    """Load note metadata without decompressing the embedding array."""
+    path = os.path.join(NOTES_PATH, NOTE_METADATA_FILE)
+    if not os.path.exists(path):
+        print("  note_volume unavailable (note metadata file not found)", flush=True)
+        return None
+    return pl.read_parquet(path)
 
 
 def load_cancer_type() -> tuple[pl.DataFrame, list[str], list[str]]:
@@ -121,6 +132,39 @@ def load_treatment() -> tuple[pl.DataFrame, list[str], list[str]]:
     return df.select([PATIENT_KEY] + cat), [], cat
 
 
+def load_first_treatment() -> tuple[pl.DataFrame, list[str], list[str]]:
+    """Frozen first-treatment category used by the supervised prediction arm."""
+    from semantic_search.prediction_targets import (
+        collapse_rare_treatment_labels,
+        load_first_treatment_target,
+    )
+
+    try:
+        labels = load_first_treatment_target(granularity="category")
+        labels, _ = collapse_rare_treatment_labels(
+            labels,
+            min_class_n=MIN_TREATMENT_PREVALENCE,
+        )
+    except (FileNotFoundError, ValueError, pl.exceptions.PolarsError) as error:
+        return _empty(type(error).__name__, "first_treatment")
+    labels = labels.rename({"label": "FIRST_TREATMENT_TYPE"})
+    return labels, [], ["FIRST_TREATMENT_TYPE"]
+
+
+def load_prostate_subtype(
+    labels_path: str | None = None,
+) -> tuple[pl.DataFrame, list[str], list[str]]:
+    """Cohort-bounded conventional/AVPC/NEPC labels from the LLM pipeline."""
+    from semantic_search.prediction_targets import load_prostate_subtype_target
+
+    try:
+        labels = load_prostate_subtype_target(labels_path=labels_path)
+    except (FileNotFoundError, ValueError, pl.exceptions.PolarsError) as error:
+        return _empty(type(error).__name__, "prostate_subtype")
+    labels = labels.rename({"label": "PROSTATE_SUBTYPE"})
+    return labels, [], ["PROSTATE_SUBTYPE"]
+
+
 def load_somatic() -> tuple[pl.DataFrame, list[str], list[str]]:
     df, failure = _read_csv_gz("complete_somatic_data_df.csv.gz", "somatic")
     if failure is not None:
@@ -149,8 +193,8 @@ def load_prs() -> tuple[pl.DataFrame, list[str], list[str]]:
 
 def _prevalent_binary_cols(df: pl.DataFrame, cols: list[str], min_n: int) -> list[str]:
     """Keep binary columns with at least `min_n` positives and at least one
-    negative -- anything rarer cannot separate clusters and only inflates the
-    family's FDR denominator."""
+    negative -- anything rarer cannot support a stable PC association and only
+    inflates the family's FDR denominator."""
     keep = []
     for c in cols:
         positives = df.get_column(c).cast(pl.Float64, strict=False).fill_null(0.0)
@@ -164,9 +208,8 @@ def note_volume(notes_meta: pl.DataFrame) -> tuple[pl.DataFrame, list[str], list
     """Documentation-intensity covariates -- a confound check, not a finding.
 
     An unweighted mean over a patient's notes encodes how much was written about
-    them as well as what was written.  If clusters separate mainly on these, the
-    partition is a documentation artifact; this makes that visible rather than
-    letting it masquerade as a clinical signal.
+    them as well as what was written. PC associations with these variables flag
+    documentation-intensity structure rather than a clinical signal.
     """
     per_type = notes_meta.group_by([PATIENT_KEY, "NOTE_TYPE"]).len(name="n")
     wide = per_type.pivot(on="NOTE_TYPE", index=PATIENT_KEY, values="n")
@@ -185,7 +228,10 @@ def note_volume(notes_meta: pl.DataFrame) -> tuple[pl.DataFrame, list[str], list
     return df, cont, []
 
 
-def load_all(notes_meta: pl.DataFrame | None = None) -> dict[str, tuple]:
+def load_all(
+    notes_meta: pl.DataFrame | None = None,
+    avpc_nepc_labels_path: str | None = None,
+) -> dict[str, tuple]:
     """Every family as {name: (frame, continuous_vars, categorical_vars)}.
 
     `note_volume` is included only when `notes_meta` is supplied, since it is the
@@ -197,6 +243,8 @@ def load_all(notes_meta: pl.DataFrame | None = None) -> dict[str, tuple]:
         "cancer_type": load_cancer_type(),
         "stage": load_stage(),
         "met_burden": load_met_burden(),
+        "first_treatment": load_first_treatment(),
+        "prostate_subtype": load_prostate_subtype(avpc_nepc_labels_path),
         "treatment": load_treatment(),
         "somatic": load_somatic(),
         "prs": load_prs(),

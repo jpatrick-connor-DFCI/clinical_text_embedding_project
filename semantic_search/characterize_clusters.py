@@ -1,4 +1,6 @@
-"""Stage 3: what do the clusters correspond to clinically?
+"""Legacy cluster characterization; active stage 3 is ``semantic_search.correlate_pcs``.
+
+What do the clusters correspond to clinically?
 
 For each (space, window) with cluster labels, tests every available clinical
 variable against the partition, then describes each cluster's survival.

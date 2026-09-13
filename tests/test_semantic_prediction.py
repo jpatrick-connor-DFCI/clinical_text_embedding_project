@@ -91,6 +91,99 @@ def test_sparse_treatment_categories_collapse_to_other():
     assert collapsed.get_column("label").to_list() == ["A", "A", "A", "OTHER", "OTHER"]
 
 
+def test_pc_stage_writes_scores_loadings_transformer_and_metadata(tmp_path, monkeypatch):
+    pytest.importorskip("sklearn")
+    from semantic_search import compute_pcs
+
+    feature_file = tmp_path / "concat_alltime.parquet"
+    scores_file = tmp_path / "concat_alltime_scores.parquet"
+    loadings_file = tmp_path / "concat_alltime_loadings.parquet"
+    transformer_file = tmp_path / "concat_alltime_transformer.joblib"
+    meta_file = tmp_path / "concat_alltime_meta.json"
+    rng = np.random.default_rng(11)
+    feature_names = [
+        f"{note_type}_EMBEDDING_{dimension}"
+        for note_type in ("CLINICIAN", "IMAGING", "PATHOLOGY")
+        for dimension in range(2)
+    ]
+    features = pl.DataFrame({
+        "DFCI_MRN": np.arange(1, 11),
+        **{name: rng.normal(size=10) for name in feature_names},
+    })
+    features.write_parquet(feature_file)
+
+    monkeypatch.setattr(compute_pcs, "feature_path", lambda space, window: str(feature_file))
+    monkeypatch.setattr(compute_pcs, "load_features", lambda space, window: features)
+    monkeypatch.setattr(compute_pcs, "pc_scores_path", lambda space, window: str(scores_file))
+    monkeypatch.setattr(compute_pcs, "pc_loadings_path", lambda space, window: str(loadings_file))
+    monkeypatch.setattr(
+        compute_pcs, "pc_transformer_path", lambda space, window: str(transformer_file)
+    )
+    monkeypatch.setattr(compute_pcs, "pc_meta_path", lambda space, window: str(meta_file))
+
+    meta, variance = compute_pcs.fit_one(
+        "concat", "alltime", n_components=3, seed=7, overwrite=False
+    )
+
+    assert meta["n_components_retained"] == 3
+    assert len(variance) == 3
+    assert pl.read_parquet(scores_file).columns == ["DFCI_MRN", "PC1", "PC2", "PC3"]
+    loadings = pl.read_parquet(loadings_file)
+    assert loadings.height == 3 * len(feature_names)
+    assert set(loadings.get_column("note_type")) == {"Clinician", "Imaging", "Pathology"}
+    assert transformer_file.exists()
+    assert meta_file.exists()
+
+
+def test_pc_clinical_tests_report_correlation_and_omnibus_effects():
+    from semantic_search.stats import categorical_pc_test, spearman_test
+
+    continuous = spearman_test([1, 2, 3, 4, 5, 6], [10, 20, 30, 40, 50, 60])
+    categorical = categorical_pc_test(
+        [1, 2, 3, 10, 11, 12], ["A", "A", "A", "B", "B", "B"]
+    )
+
+    assert continuous["effect_name"] == "spearman_rho"
+    assert continuous["effect"] == pytest.approx(1.0)
+    assert continuous["p"] < 0.01
+    assert categorical["effect_name"] == "epsilon_squared"
+    assert categorical["n_levels"] == 2
+    assert 0 <= categorical["effect"] <= 1
+
+
+def test_pc_family_associations_cover_every_pc_and_variable():
+    from semantic_search.correlate_pcs import _family_associations
+
+    scores = pl.DataFrame({
+        "DFCI_MRN": [1, 2, 3, 4, 5, 6],
+        "PC1": [-3.0, -2.0, -1.0, 1.0, 2.0, 3.0],
+        "PC2": [1.0, 0.0, -1.0, -1.0, 0.0, 1.0],
+    })
+    clinical = pl.DataFrame({
+        "DFCI_MRN": [1, 2, 3, 4, 5, 6],
+        "AGE": [10, 20, 30, 40, 50, 60],
+        "TYPE": ["A", "A", "A", "B", "B", "B"],
+    })
+
+    rows, coverage = _family_associations(
+        scores,
+        clinical,
+        ["AGE"],
+        ["TYPE"],
+        pc_columns=["PC1", "PC2"],
+        variance={"PC1": 0.4, "PC2": 0.2},
+        space="concat",
+        window="alltime",
+        family="toy",
+    )
+
+    assert len(rows) == 4
+    assert {(row["pc"], row["variable"]) for row in rows} == {
+        ("PC1", "AGE"), ("PC1", "TYPE"), ("PC2", "AGE"), ("PC2", "TYPE")
+    }
+    assert coverage["coverage"] == 1.0
+
+
 def test_result_writer_replaces_matching_setup_and_preserves_other_runs(tmp_path):
     pytest.importorskip("sklearn")
     pytest.importorskip("xgboost")

@@ -1,4 +1,6 @@
-"""Stage 2: KMeans-cluster patients in the concatenated embedding space.
+"""Legacy clustering stage; the active stage 2 is ``semantic_search.compute_pcs``.
+
+KMeans-cluster patients in the concatenated embedding space.
 
 Preprocessing order is fixed and recorded in each run's meta JSON:
 

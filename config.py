@@ -33,8 +33,8 @@ FIGURE_DATA_DIR = os.environ.get(
 )
 BIOMARKER_PATH = os.path.join(DATA_PATH, "biomarker_analysis/")
 MATCHED_COHORT_PATH = os.path.join(BIOMARKER_PATH, "matched_cohorts/")
-# Patient-level pooled-embedding analysis (clustering and clinical-label
-# prediction). Subdirectories are created by semantic_search.common.
+# Patient-level pooled-embedding analysis (principal-component associations and
+# clinical-label prediction). Subdirectories are created by semantic_search.common.
 SEMANTIC_SEARCH_PATH = os.path.join(DATA_PATH, "semantic_search/")
 MED_CLASSES_FILE = os.path.join(DATA_PATH, "GPT_generated_med_classes.csv")
 

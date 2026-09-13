@@ -1,4 +1,4 @@
-"""Group-comparison tests for cluster-vs-clinical characterization.
+"""Association tests used by the semantic-search exploratory analyses.
 
 Written fresh: the repo has no generic stats-helper module.  Its only prior
 hypothesis testing is the Wald p-value and BH-FDR in
@@ -7,7 +7,7 @@ the R side (`R/figure_utils.R`).  `scipy` and `statsmodels` are both already
 dependencies (via scikit-survival / statsmodels in environment.yml).
 
 Every function returns plain dicts or Polars frames and never raises on a
-degenerate input -- a variable with one non-null level, or a cluster with no
+degenerate input -- a variable with one non-null level, or a comparison group with no
 observations, yields a NaN statistic and a null p-value rather than aborting the
 sweep.  A screen over hundreds of sparse somatic markers must not die on the
 first all-zero column.
@@ -27,6 +27,85 @@ from statsmodels.stats.multitest import multipletests
 # markers testable at all.
 MIN_EXPECTED_COUNT = 5.0
 FDR_ALPHA = 0.05
+
+
+def _finite_pairs(x, y) -> tuple[np.ndarray, np.ndarray]:
+    """Cast two numeric arrays and retain rows finite in both."""
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    mask = np.isfinite(x) & np.isfinite(y)
+    return x[mask], y[mask]
+
+
+def spearman_test(pc_values, clinical_values) -> dict:
+    """Spearman association between one PC and one continuous characteristic."""
+    x, y = _finite_pairs(pc_values, clinical_values)
+    n = int(len(x))
+    if n < 3 or np.unique(x).size < 2 or np.unique(y).size < 2:
+        return {
+            "test": "spearman",
+            "statistic": float("nan"),
+            "effect": float("nan"),
+            "effect_name": "spearman_rho",
+            "p": None,
+            "n": n,
+            "n_levels": None,
+        }
+    rho, p = stats.spearmanr(x, y)
+    return {
+        "test": "spearman",
+        "statistic": float(rho),
+        "effect": float(rho),
+        "effect_name": "spearman_rho",
+        "p": float(p),
+        "n": n,
+        "n_levels": None,
+    }
+
+
+def categorical_pc_test(pc_values, levels) -> dict:
+    """Kruskal-Wallis test of one PC across levels of a clinical variable.
+
+    Epsilon-squared is reported as a scale-free omnibus effect size. It is
+    unsigned because variables with more than two levels have no single
+    clinically meaningful direction.
+    """
+    values = np.asarray(pc_values, dtype=float)
+    levels = np.asarray(levels, dtype=object)
+    mask = np.isfinite(values) & np.array([
+        value is not None and not (isinstance(value, float) and math.isnan(value))
+        for value in levels
+    ])
+    values, levels = values[mask], levels[mask]
+    unique_levels = sorted(set(levels.tolist()), key=str)
+    samples = [values[levels == level] for level in unique_levels]
+    n = int(len(values))
+    k = len(samples)
+    if n < 3 or k < 2 or np.unique(values).size < 2:
+        return {
+            "test": "kruskal",
+            "statistic": float("nan"),
+            "effect": float("nan"),
+            "effect_name": "epsilon_squared",
+            "p": None,
+            "n": n,
+            "n_levels": k,
+        }
+    statistic, p = stats.kruskal(*samples)
+    epsilon_squared = (
+        min(1.0, max(0.0, float((statistic - k + 1) / (n - k))))
+        if n > k
+        else float("nan")
+    )
+    return {
+        "test": "kruskal",
+        "statistic": float(statistic),
+        "effect": epsilon_squared,
+        "effect_name": "epsilon_squared",
+        "p": float(p),
+        "n": n,
+        "n_levels": k,
+    }
 
 
 def _clean_pairs(values: np.ndarray, groups: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

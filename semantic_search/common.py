@@ -3,11 +3,11 @@
 Layout under SEMANTIC_SEARCH_PATH:
 
     features/{space}_{window}.parquet          stage 1  DFCI_MRN + EMBEDDING_*
-    clusters/{space}_{window}_labels.parquet   stage 2  DFCI_MRN, cluster
-    clusters/{space}_{window}_coords.parquet   stage 2  DFCI_MRN, dim1, dim2
-    clusters/{space}_{window}_meta.json        stage 2  k, seed, silhouette, ...
+    pcs/{space}_{window}_scores.parquet        stage 2  DFCI_MRN, PC1, ...
+    pcs/{space}_{window}_loadings.parquet      stage 2  long-form PCA loadings
+    pcs/{space}_{window}_transformer.joblib    stage 2  fitted preprocessing/PCA
+    pcs/{space}_{window}_meta.json             stage 2  explained variance, ...
     results/*.csv                              stages 1-4
-    figures/*.png                              stage 3
     predictions/*.parquet                     stage 4  out-of-fold predictions
     models/*.joblib                            stage 4  final fitted classifiers
 """
@@ -37,8 +37,12 @@ DEFAULT_WINDOWS = ["alltime"]
 # fixed NOTE_TYPES order (3 x 768 = 2,304 dimensions for the current encoder).
 SPACES = ["concat"]
 
+# CLUSTERS_DIR, FIGURES_DIR, and their helpers are retained only so earlier
+# exploratory artifacts and notebooks remain readable. The active exploratory
+# workflow writes PCS_DIR and PC association tables instead.
 FEATURES_DIR = os.path.join(SEMANTIC_SEARCH_PATH, "features")
 CLUSTERS_DIR = os.path.join(SEMANTIC_SEARCH_PATH, "clusters")
+PCS_DIR = os.path.join(SEMANTIC_SEARCH_PATH, "pcs")
 RESULTS_DIR = os.path.join(SEMANTIC_SEARCH_PATH, "results")
 FIGURES_DIR = os.path.join(SEMANTIC_SEARCH_PATH, "figures")
 PREDICTIONS_DIR = os.path.join(SEMANTIC_SEARCH_PATH, "predictions")
@@ -55,6 +59,7 @@ def ensure_dirs() -> None:
     for path in (
         FEATURES_DIR,
         CLUSTERS_DIR,
+        PCS_DIR,
         RESULTS_DIR,
         FIGURES_DIR,
         PREDICTIONS_DIR,
@@ -74,6 +79,26 @@ def _validate(space: str | None = None, window: str | None = None) -> None:
 def feature_path(space: str, window: str) -> str:
     _validate(space, window)
     return os.path.join(FEATURES_DIR, f"{space}_{window}.parquet")
+
+
+def pc_scores_path(space: str, window: str) -> str:
+    _validate(space, window)
+    return os.path.join(PCS_DIR, f"{space}_{window}_scores.parquet")
+
+
+def pc_loadings_path(space: str, window: str) -> str:
+    _validate(space, window)
+    return os.path.join(PCS_DIR, f"{space}_{window}_loadings.parquet")
+
+
+def pc_transformer_path(space: str, window: str) -> str:
+    _validate(space, window)
+    return os.path.join(PCS_DIR, f"{space}_{window}_transformer.joblib")
+
+
+def pc_meta_path(space: str, window: str) -> str:
+    _validate(space, window)
+    return os.path.join(PCS_DIR, f"{space}_{window}_meta.json")
 
 
 def labels_path(space: str, window: str) -> str:
@@ -111,6 +136,15 @@ def embedding_cols(df: pl.DataFrame) -> list[str]:
 
 def load_features(space: str, window: str) -> pl.DataFrame:
     return pl.read_parquet(feature_path(space, window))
+
+
+def load_pc_scores(space: str, window: str) -> pl.DataFrame:
+    return pl.read_parquet(pc_scores_path(space, window))
+
+
+def load_pc_meta(space: str, window: str) -> dict:
+    with open(pc_meta_path(space, window)) as fh:
+        return json.load(fh)
 
 
 def load_labels(space: str, window: str) -> pl.DataFrame:
