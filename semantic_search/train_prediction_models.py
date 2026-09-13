@@ -1,8 +1,11 @@
-"""Train XGBoost clinical-label classifiers from pooled embeddings.
+"""Train XGBoost clinical-label classifiers from blockwise embedding PCs.
 
 The default is a retrospective experiment on the single 3 x 768 concatenated
-feature space using all available notes. One nested-CV histogram XGBoost
-classifier is fit per target with inverse-frequency sample weights.
+feature space using all available notes. Within every CV training split, the
+three embedding blocks are independently compressed to 50 clinician/progress
+PCs, 25 imaging PCs, and 25 pathology PCs. One nested-CV histogram XGBoost
+classifier is then fit to the resulting 100 predictors with inverse-frequency
+sample weights.
 
 For each setup the script writes out-of-fold predictions, a final model tuned
 on all available rows, and an auditable metadata JSON. Aggregate metrics and
@@ -36,7 +39,7 @@ for _thread_var in (
     "BLIS_NUM_THREADS",
     "VECLIB_MAXIMUM_THREADS",
 ):
-    os.environ.setdefault(_thread_var, "1")
+    os.environ[_thread_var] = "1"
 
 import joblib  # noqa: E402
 import numpy as np  # noqa: E402
@@ -50,8 +53,16 @@ from sklearn.metrics import (  # noqa: E402
     precision_recall_fscore_support,
     roc_auc_score,
 )
+from sklearn.compose import ColumnTransformer  # noqa: E402
+from sklearn.decomposition import PCA  # noqa: E402
 from sklearn.model_selection import GridSearchCV, StratifiedKFold  # noqa: E402
-from sklearn.preprocessing import LabelEncoder, label_binarize  # noqa: E402
+from sklearn.pipeline import Pipeline  # noqa: E402
+from sklearn.preprocessing import (  # noqa: E402
+    LabelEncoder,
+    Normalizer,
+    StandardScaler,
+    label_binarize,
+)
 from sklearn.utils.class_weight import compute_sample_weight  # noqa: E402
 from tqdm.auto import tqdm  # noqa: E402
 from xgboost import XGBClassifier  # noqa: E402
@@ -78,11 +89,16 @@ from semantic_search.prediction_targets import (  # noqa: E402
 
 MODELS = ["xgboost"]
 DEFAULT_SEED = 1234
+PCA_COMPONENTS = {
+    "CLINICIAN": 50,
+    "IMAGING": 25,
+    "PATHOLOGY": 25,
+}
 
 XGB_GRID = {
-    "max_depth": [3, 6],
-    "min_child_weight": [1, 5],
-    "reg_lambda": [1.0, 10.0],
+    "model__max_depth": [3, 6],
+    "model__min_child_weight": [1, 5],
+    "model__reg_lambda": [1.0, 10.0],
 }
 
 FOLD_METRIC_NAMES = [
@@ -177,6 +193,9 @@ def _run_signature(
         "patient_label_sha256": hashlib.sha256(patient_labels.encode()).hexdigest(),
         "feature_columns_sha256": hashlib.sha256("\n".join(feature_cols).encode()).hexdigest(),
         "hyperparameter_grid": XGB_GRID,
+        "feature_transform": "blockwise_l2_standardize_pca",
+        "pca_components": PCA_COMPONENTS,
+        "n_transformed_features": sum(PCA_COMPONENTS.values()),
         "outer_folds_requested": outer_folds,
         "inner_folds_requested": inner_folds,
         "seed": seed,
@@ -211,6 +230,53 @@ def _inner_splits(y_train: np.ndarray, requested: int) -> int:
     return folds
 
 
+def _feature_blocks(feature_cols: list[str]) -> dict[str, list[int]]:
+    """Column indices for the three named embedding blocks."""
+    blocks = {
+        note_type: [
+            index
+            for index, column in enumerate(feature_cols)
+            if column.startswith(f"{note_type}_EMBEDDING_")
+        ]
+        for note_type in PCA_COMPONENTS
+    }
+    missing = [note_type for note_type, indices in blocks.items() if not indices]
+    if missing:
+        raise ValueError(f"Missing embedding blocks required for blockwise PCA: {missing}")
+    assigned = {index for indices in blocks.values() for index in indices}
+    if len(assigned) != len(feature_cols):
+        unexpected = [
+            column for index, column in enumerate(feature_cols) if index not in assigned
+        ]
+        raise ValueError(f"Embedding columns outside the three PCA blocks: {unexpected[:5]}")
+    too_narrow = {
+        note_type: (len(indices), PCA_COMPONENTS[note_type])
+        for note_type, indices in blocks.items()
+        if len(indices) < PCA_COMPONENTS[note_type]
+    }
+    if too_narrow:
+        raise ValueError(
+            "Embedding blocks have fewer dimensions than their requested PCs: "
+            f"{too_narrow}"
+        )
+    return blocks
+
+
+def _validate_pca_sample_size(y: np.ndarray, inner_folds: int) -> None:
+    """PCA component count must fit in every inner-training partition."""
+    splitter = StratifiedKFold(n_splits=inner_folds, shuffle=True, random_state=0)
+    smallest_train = min(
+        len(train_index)
+        for train_index, _ in splitter.split(np.zeros(len(y)), y)
+    )
+    required = max(PCA_COMPONENTS.values())
+    if smallest_train < required:
+        raise ValueError(
+            f"Blockwise PCA requires at least {required} rows in every inner training "
+            f"split; smallest has {smallest_train}"
+        )
+
+
 def _make_search(
     model: str,
     *,
@@ -218,6 +284,8 @@ def _make_search(
     inner_folds: int,
     seed: int,
     n_jobs: int,
+    feature_blocks: dict[str, list[int]],
+    memory: str | None = None,
 ) -> GridSearchCV:
     inner_cv = StratifiedKFold(n_splits=inner_folds, shuffle=True, random_state=seed)
     if model != "xgboost":
@@ -235,7 +303,36 @@ def _make_search(
     }
     if n_classes > 2:
         kwargs["num_class"] = n_classes
-    estimator = XGBClassifier(**kwargs)
+    block_transformer = ColumnTransformer(
+        [
+            (
+                note_type.lower(),
+                Pipeline([
+                    ("l2_normalize", Normalizer(norm="l2")),
+                    ("standardize", StandardScaler()),
+                    (
+                        "pca",
+                        PCA(
+                            n_components=PCA_COMPONENTS[note_type],
+                            random_state=seed,
+                            svd_solver="randomized",
+                        ),
+                    ),
+                ]),
+                indices,
+            )
+            for note_type, indices in feature_blocks.items()
+        ],
+        remainder="drop",
+        sparse_threshold=0.0,
+    )
+    estimator = Pipeline(
+        [
+            ("block_pca", block_transformer),
+            ("model", XGBClassifier(**kwargs)),
+        ],
+        memory=memory,
+    )
 
     return GridSearchCV(
         estimator,
@@ -250,7 +347,11 @@ def _make_search(
 
 
 def _fit_search(search: GridSearchCV, X: np.ndarray, y: np.ndarray) -> None:
-    search.fit(X, y, sample_weight=compute_sample_weight("balanced", y))
+    search.fit(
+        X,
+        y,
+        model__sample_weight=compute_sample_weight("balanced", y),
+    )
 
 
 def _metric_bundle(y: np.ndarray, probabilities: np.ndarray) -> dict[str, float]:
@@ -393,6 +494,7 @@ def train_one(
     mrns = data.get_column(PATIENT_KEY).to_numpy()
     if not np.isfinite(X).all():
         raise ValueError(f"{target}/{space}/{window} contains non-finite embedding values")
+    feature_blocks = _feature_blocks(feature_cols)
 
     n_outer = _validate_classes(y, outer_folds)
     outer_cv = StratifiedKFold(n_splits=n_outer, shuffle=True, random_state=seed)
@@ -406,14 +508,21 @@ def train_one(
         for fold, (train_idx, test_idx) in enumerate(outer_cv.split(X, y), start=1):
             progress.set_postfix_str(f"outer fold {fold}/{n_outer}", refresh=True)
             n_inner = _inner_splits(y[train_idx], inner_folds)
-            search = _make_search(
-                model,
-                n_classes=len(classes),
-                inner_folds=n_inner,
-                seed=seed + fold,
-                n_jobs=n_jobs,
-            )
-            _fit_search(search, X[train_idx], y[train_idx])
+            _validate_pca_sample_size(y[train_idx], n_inner)
+            with tempfile.TemporaryDirectory(
+                prefix=".block_pca_cache_",
+                dir=PREDICTION_META_DIR,
+            ) as cache_dir:
+                search = _make_search(
+                    model,
+                    n_classes=len(classes),
+                    inner_folds=n_inner,
+                    seed=seed + fold,
+                    n_jobs=n_jobs,
+                    feature_blocks=feature_blocks,
+                    memory=cache_dir,
+                )
+                _fit_search(search, X[train_idx], y[train_idx])
             probabilities[test_idx] = search.predict_proba(X[test_idx])
             fold_ids[test_idx] = fold
             metrics = _metric_bundle(y[test_idx], probabilities[test_idx])
@@ -453,16 +562,29 @@ def train_one(
         row.update({"target": target, "space": space, "window": window, "model": model})
 
     final_inner = _inner_splits(y, inner_folds)
-    final_search = _make_search(
-        model,
-        n_classes=len(classes),
-        inner_folds=final_inner,
-        seed=seed,
-        n_jobs=n_jobs,
-    )
-    with tqdm(total=1, desc=f"{progress_label}: final refit", unit="search") as progress:
-        _fit_search(final_search, X, y)
-        progress.update()
+    _validate_pca_sample_size(y, final_inner)
+    with tempfile.TemporaryDirectory(
+        prefix=".block_pca_cache_",
+        dir=PREDICTION_META_DIR,
+    ) as cache_dir:
+        final_search = _make_search(
+            model,
+            n_classes=len(classes),
+            inner_folds=final_inner,
+            seed=seed,
+            n_jobs=n_jobs,
+            feature_blocks=feature_blocks,
+            memory=cache_dir,
+        )
+        with tqdm(
+            total=1,
+            desc=f"{progress_label}: final refit",
+            unit="search",
+        ) as progress:
+            _fit_search(final_search, X, y)
+            progress.update()
+    # The fitted transformer no longer needs its temporary training cache.
+    final_search.best_estimator_.memory = None
 
     predicted = probabilities.argmax(axis=1)
     predictions = pl.DataFrame(
@@ -481,6 +603,11 @@ def train_one(
         "estimator": final_search.best_estimator_,
         "classes": classes,
         "feature_columns": feature_cols,
+        "transformed_feature_columns": [
+            f"{note_type}_PC{component}"
+            for note_type, count in PCA_COMPONENTS.items()
+            for component in range(1, count + 1)
+        ],
         "patient_key": PATIENT_KEY,
         "target": target,
         "space": space,
@@ -495,6 +622,9 @@ def train_one(
         "model": model,
         "n_patients": len(y),
         "n_features": len(feature_cols),
+        "n_transformed_features": sum(PCA_COMPONENTS.values()),
+        "pca_components": PCA_COMPONENTS,
+        "feature_transform": "per-block l2_normalize -> standard_scaler -> pca",
         "classes": classes,
         "class_counts": dict(Counter(classes[i] for i in y)),
         "seed": seed,
@@ -524,6 +654,7 @@ def _summary_row(meta: dict) -> dict:
         "model": meta["model"],
         "n_patients": meta["n_patients"],
         "n_features": meta["n_features"],
+        "n_transformed_features": meta["n_transformed_features"],
         "n_classes": len(meta["classes"]),
     }
     for metric in FOLD_METRIC_NAMES:
@@ -737,14 +868,19 @@ def main() -> None:
     parser.add_argument("--outer-folds", type=int, default=5)
     parser.add_argument("--inner-folds", type=int, default=3)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
-    parser.add_argument("--n-jobs", type=int, default=4)
+    parser.add_argument(
+        "--n-jobs",
+        type=int,
+        default=-1,
+        help="Parallel grid-search workers; -1 uses every available CPU (default).",
+    )
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
     if args.outer_folds < 2 or args.inner_folds < 2:
         parser.error("--outer-folds and --inner-folds must both be >= 2")
-    if args.n_jobs < 1:
-        parser.error("--n-jobs must be >= 1")
+    if args.n_jobs == 0 or args.n_jobs < -1:
+        parser.error("--n-jobs must be -1 or a positive integer")
 
     if "alltime" in args.windows:
         print(

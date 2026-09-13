@@ -89,8 +89,9 @@ matched clinical family.
 
 ## Supervised prediction
 
-The prediction command defaults to `concat/alltime` and fits one nested-CV XGBoost model for each
-target:
+The prediction command defaults to `concat/alltime`. Within every training split it independently
+compresses the three embedding blocks to 50 progress-note PCs, 25 imaging PCs, and 25 pathology
+PCs, then fits one nested-CV XGBoost model to the resulting 100 predictors for each target:
 
 | Target | Label source |
 |---|---|
@@ -102,6 +103,13 @@ target:
 Five outer folds produce out-of-fold predictions; three inner folds tune by log loss. Final models
 are refit on the complete setup cohort. The workflow reports accuracy, balanced accuracy,
 macro/weighted F1, log loss, macro one-vs-rest AUROC, average precision, and per-class metrics.
+Grid search defaults to `n_jobs=-1`, using every CPU allocated to the process; each XGBoost fit is
+single-threaded so parallel candidate/fold fits do not oversubscribe the allocation.
+
+The blockwise normalization, scaling, and PCA steps are inside the fitted model pipeline. They are
+therefore learned only from the relevant training partition in both inner and outer CV, rather
+than precomputed on patients later used for validation. Transformer results are cached within each
+grid search so the eight XGBoost parameter combinations reuse the same fold-specific PC scores.
 
 ## Interpretation
 

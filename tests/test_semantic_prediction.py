@@ -222,21 +222,36 @@ def test_nested_cv_writes_oof_predictions_and_refit_xgboost(tmp_path, monkeypatc
     monkeypatch.setattr(training, "PREDICTION_META_DIR", str(tmp_path / "meta"))
     monkeypatch.setattr(
         training,
+        "PCA_COMPONENTS",
+        {"CLINICIAN": 1, "IMAGING": 1, "PATHOLOGY": 1},
+    )
+    monkeypatch.setattr(
+        training,
         "XGB_GRID",
-        {"max_depth": [2], "min_child_weight": [1], "reg_lambda": [1.0]},
+        {
+            "model__max_depth": [2],
+            "model__min_child_weight": [1],
+            "model__reg_lambda": [1.0],
+        },
     )
 
     rng = np.random.default_rng(7)
     y = np.repeat(["A", "B", "C"], 6)
     signal = np.repeat(np.eye(3), 6, axis=0)
-    X = np.column_stack([signal, rng.normal(scale=0.05, size=len(y))])
+    X = np.column_stack([
+        signal[:, 0], rng.normal(scale=0.05, size=len(y)),
+        signal[:, 1], rng.normal(scale=0.05, size=len(y)),
+        signal[:, 2], rng.normal(scale=0.05, size=len(y)),
+    ])
+    feature_names = [
+        f"{note_type}_EMBEDDING_{dimension}"
+        for note_type in ("CLINICIAN", "IMAGING", "PATHOLOGY")
+        for dimension in range(2)
+    ]
     data = pl.DataFrame(
         {
             "DFCI_MRN": np.arange(100, 100 + len(y)),
-            "EMBEDDING_0": X[:, 0],
-            "EMBEDDING_1": X[:, 1],
-            "EMBEDDING_2": X[:, 2],
-            "EMBEDDING_3": X[:, 3],
+            **{name: X[:, index] for index, name in enumerate(feature_names)},
             "label": y,
         }
     )
@@ -246,7 +261,7 @@ def test_nested_cv_writes_oof_predictions_and_refit_xgboost(tmp_path, monkeypatc
 
     meta, folds, by_class = training.train_one(
         data,
-        [f"EMBEDDING_{i}" for i in range(4)],
+        feature_names,
         target="stage",
         space="concat",
         window="pretreatment",
@@ -261,19 +276,31 @@ def test_nested_cv_writes_oof_predictions_and_refit_xgboost(tmp_path, monkeypatc
     assert len(folds) == 3
     assert {row["class"] for row in by_class} == {"A", "B", "C"}
     assert meta["n_patients"] == 18
+    assert meta["n_transformed_features"] == 3
+    assert meta["pca_components"] == {
+        "CLINICIAN": 1, "IMAGING": 1, "PATHOLOGY": 1,
+    }
     predictions = pl.read_parquet(meta["artifacts"]["predictions"])
     assert predictions.height == 18
     assert predictions.get_column("DFCI_MRN").n_unique() == 18
     assert sorted(predictions.get_column("fold").unique().to_list()) == [1, 2, 3]
     assert all(len(values) == 3 for values in predictions["class_probabilities"])
-    assert (tmp_path / "models" / f"stage__concat__pretreatment__{model}.joblib").exists()
+    model_path = tmp_path / "models" / f"stage__concat__pretreatment__{model}.joblib"
+    assert model_path.exists()
+    payload = pytest.importorskip("joblib").load(model_path)
+    assert payload["transformed_feature_columns"] == [
+        "CLINICIAN_PC1", "IMAGING_PC1", "PATHOLOGY_PC1",
+    ]
+    transformed = payload["estimator"].named_steps["block_pca"].transform(X)
+    assert transformed.shape == (18, 3)
+    assert payload["estimator"].predict_proba(X).shape == (18, 3)
     with open(meta["artifacts"]["meta"]) as handle:
         on_disk = json.load(handle)
     assert on_disk["classes"] == ["A", "B", "C"]
 
     reused, reused_folds, _ = training.train_one(
         data,
-        [f"EMBEDDING_{i}" for i in range(4)],
+        feature_names,
         target="stage",
         space="concat",
         window="pretreatment",
@@ -290,7 +317,7 @@ def test_nested_cv_writes_oof_predictions_and_refit_xgboost(tmp_path, monkeypatc
     with pytest.raises(ValueError, match="different cohort or CV configuration"):
         training.train_one(
             data,
-            [f"EMBEDDING_{i}" for i in range(4)],
+            feature_names,
             target="stage",
             space="concat",
             window="pretreatment",
