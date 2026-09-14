@@ -37,7 +37,7 @@ from semantic_search import clinical_data  # noqa: E402
 from semantic_search.common import (  # noqa: E402
     DEFAULT_WINDOWS,
     PATIENT_KEY,
-    SPACES,
+    PC_SPACES,
     WINDOWS,
     ensure_dirs,
     load_pc_meta,
@@ -365,7 +365,7 @@ def run(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--spaces", nargs="+", choices=SPACES, default=SPACES)
+    parser.add_argument("--spaces", nargs="+", choices=PC_SPACES, default=PC_SPACES)
     parser.add_argument("--windows", nargs="+", choices=WINDOWS, default=DEFAULT_WINDOWS)
     parser.add_argument(
         "--max-pcs",

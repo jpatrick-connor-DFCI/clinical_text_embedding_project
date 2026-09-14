@@ -7,15 +7,17 @@ output:
     toc_float: true
     code_folding: hide
 params:
-  space: "concat"
+  pc_space: "clinician"
+  prediction_space: "concat"
   window: "alltime"
   max_pcs: 20
 ---
 
 This is the figures/reporting tier for the semantic-search arm. It reads the
 artifacts produced by stages 2--4; it does not fit PCA models or retrain
-classifiers. By default it reports the `concat/alltime` analysis. Change the
-parameters at render time to inspect another completed space/window pair.
+classifiers. By default it reports the `clinician/alltime` PC analysis and
+`concat/alltime` prediction analysis. Change the parameters at render time to
+inspect another completed space/window pair.
 
 The `alltime` window is descriptive: notes can contain information written
 after treatment or near an outcome. Consequently, these panels measure
@@ -50,21 +52,29 @@ suppressPackageStartupMessages({
 })
 source("R/config.R")
 
-SPACE <- params$space
+PC_SPACE <- params$pc_space
+PREDICTION_SPACE <- params$prediction_space
 WINDOW <- params$window
 MAX_PCS <- as.integer(params$max_pcs)
+PC_SPACES <- c("clinician", "imaging", "pathology")
+if (!PC_SPACE %in% PC_SPACES) {
+  stop("pc_space must be one of: ", paste(PC_SPACES, collapse = ", "))
+}
+if (!identical(PREDICTION_SPACE, "concat")) {
+  stop("prediction_space must be 'concat': supervised XGBoost uses the concatenated space.")
+}
 SEMANTIC_SEARCH_PATH <- file.path(DATA_PATH, "semantic_search")
 PCS_DIR <- file.path(SEMANTIC_SEARCH_PATH, "pcs")
 RESULTS_DIR <- file.path(SEMANTIC_SEARCH_PATH, "results")
 PREDICTIONS_DIR <- file.path(SEMANTIC_SEARCH_PATH, "predictions")
 FIGURE_DIR <- Sys.getenv(
   "SEMANTIC_SEARCH_FIGURES_OUT",
-  unset = file.path(dirname(FIGURE_OUT_DIR), "semantic_search", paste(SPACE, WINDOW, sep = "_"))
+  unset = file.path(dirname(FIGURE_OUT_DIR), "semantic_search", paste(PC_SPACE, WINDOW, sep = "_"))
 )
 dir.create(FIGURE_DIR, recursive = TRUE, showWarnings = FALSE)
 
-score_file <- file.path(PCS_DIR, sprintf("%s_%s_scores.parquet", SPACE, WINDOW))
-loading_file <- file.path(PCS_DIR, sprintf("%s_%s_loadings.parquet", SPACE, WINDOW))
+score_file <- file.path(PCS_DIR, sprintf("%s_%s_scores.parquet", PC_SPACE, WINDOW))
+loading_file <- file.path(PCS_DIR, sprintf("%s_%s_loadings.parquet", PC_SPACE, WINDOW))
 variance_file <- file.path(RESULTS_DIR, "pc_explained_variance.csv")
 association_file <- file.path(RESULTS_DIR, "pc_clinical_associations.csv")
 
@@ -103,33 +113,35 @@ need_file(variance_file, "Explained-variance")
 scores <- as.data.frame(arrow::read_parquet(score_file))
 loadings <- as.data.frame(arrow::read_parquet(loading_file))
 variance <- readr::read_csv(variance_file, show_col_types = FALSE) %>%
-  filter(space == SPACE, window == WINDOW) %>%
+  filter(space == PC_SPACE, window == WINDOW) %>%
   mutate(component = as.integer(component)) %>% arrange(component)
 association_raw <- read_csv_if_present(association_file)
 associations <- if (is.null(association_raw)) tibble() else association_raw %>%
-  filter(space == SPACE, window == WINDOW) %>%
+  filter(space == PC_SPACE, window == WINDOW) %>%
   mutate(component = as.integer(component), fdr = as.numeric(fdr),
          p = as.numeric(p), effect = as.numeric(effect))
 coverage_raw <- read_csv_if_present(file.path(RESULTS_DIR, "pc_join_coverage.csv"))
 association_coverage <- if (is.null(coverage_raw)) tibble() else coverage_raw %>%
-  filter(space == SPACE, window == WINDOW)
+  filter(space == PC_SPACE, window == WINDOW)
 summary_raw <- read_csv_if_present(file.path(RESULTS_DIR, "prediction_metrics_summary.csv"))
 metrics_summary <- if (is.null(summary_raw)) tibble() else summary_raw %>%
-  filter(space == SPACE, window == WINDOW, model == "xgboost")
+  filter(space == PREDICTION_SPACE, window == WINDOW, model == "xgboost")
 folds_raw <- read_csv_if_present(file.path(RESULTS_DIR, "prediction_metrics_folds.csv"))
 metrics_folds <- if (is.null(folds_raw)) tibble() else folds_raw %>%
-  filter(space == SPACE, window == WINDOW, model == "xgboost")
+  filter(space == PREDICTION_SPACE, window == WINDOW, model == "xgboost")
 class_raw <- read_csv_if_present(file.path(RESULTS_DIR, "prediction_metrics_by_class.csv"))
 metrics_class <- if (is.null(class_raw)) tibble() else class_raw %>%
-  filter(space == SPACE, window == WINDOW, model == "xgboost")
+  filter(space == PREDICTION_SPACE, window == WINDOW, model == "xgboost")
 
+cat("PC association space: ", PC_SPACE, " / ", WINDOW, "\n", sep = "")
 cat("PC scores: ", nrow(scores), " patients; ", ncol(scores) - 1, " PCs\n", sep = "")
 cat("Associations: ", nrow(associations), " tests\n", sep = "")
-cat("XGBoost runs: ", nrow(metrics_summary), " target(s)\n", sep = "")
+cat("XGBoost runs (", PREDICTION_SPACE, " / ", WINDOW, "): ",
+    nrow(metrics_summary), " target(s)\n", sep = "")
 cat("Figure directory: ", FIGURE_DIR, "\n", sep = "")
 ```
 
-## PC space
+## PC space: `r PC_SPACE`
 
 ### Explained variance
 
@@ -165,7 +177,7 @@ if (!all(c("PC1", "PC2") %in% names(scores))) {
     scale_fill_viridis_c(name = "Patients", trans = "sqrt") +
     coord_equal() +
     labs(title = "Patient embedding space: PC1 vs PC2",
-         subtitle = sprintf("%s / %s; n = %s", SPACE, WINDOW, format(nrow(scores), big.mark = ","))) +
+         subtitle = sprintf("%s / %s; n = %s", PC_SPACE, WINDOW, format(nrow(scores), big.mark = ","))) +
     theme_report
   save_panel(pc_space, "02_pc1_pc2_space", width = 7, height = 7)
 }
@@ -192,36 +204,35 @@ if (length(score_pcs) == 0) {
 }
 ```
 
-### Contribution of note types to leading PCs
+### Leading embedding-dimension loadings
 
-The bars show each note type's share of the squared PCA loading. Since all
-three blocks have the same number of embedding dimensions, this provides a
-compact view of whether a component is predominantly carried by one note type.
+PCs are fit within one note type, so each panel is specific to the selected
+`pc_space`. The plot shows the ten embedding dimensions with the largest
+absolute loadings for each leading PC.
 
-```{r loading-by-note-type}
-loading_share <- loadings %>%
+```{r leading-loadings}
+top_loadings <- loadings %>%
   mutate(component = as.integer(component)) %>%
   filter(component <= MAX_PCS) %>%
-  group_by(component, pc, note_type) %>%
-  summarise(squared_loading = sum(loading ^ 2), .groups = "drop") %>%
   group_by(component, pc) %>%
-  mutate(share = squared_loading / sum(squared_loading)) %>% ungroup() %>%
-  mutate(pc = factor(pc, levels = paste0("PC", sort(unique(component)))))
-if (nrow(loading_share) == 0) {
+  slice_max(abs_loading, n = 10, with_ties = FALSE) %>%
+  ungroup() %>%
+  mutate(feature = factor(feature, levels = unique(feature[order(component, abs_loading)])))
+if (nrow(top_loadings) == 0) {
   cat("No loading rows found for the requested PCs.\n")
 } else {
-  loading_plot <- ggplot(loading_share, aes(pc, share, fill = note_type)) +
-    geom_col() +
-    scale_y_continuous(labels = function(x) paste0(round(100 * x), "%")) +
-    scale_fill_manual(values = c(Clinician = "#3B6FB6", Imaging = "#E39D3A", Pathology = "#5B9E77")) +
-    labs(title = "Note-type contribution to PC loadings", x = "Principal component",
-         y = "Share of squared loading", fill = "Note type") + theme_report +
-    theme(axis.text.x = element_text(angle = 45, hjust = 1))
-  save_panel(loading_plot, "04_note_type_loading_share", width = 12, height = 6)
+  loading_plot <- ggplot(top_loadings, aes(feature, loading, fill = loading > 0)) +
+    geom_col(show.legend = FALSE) +
+    coord_flip() +
+    facet_wrap(~ pc, scales = "free_y", ncol = 2) +
+    scale_fill_manual(values = c(`TRUE` = "#3B6FB6", `FALSE` = "#C65D3E")) +
+    labs(title = "Largest embedding-dimension loadings", x = "Embedding dimension",
+         y = "PCA loading") + theme_report
+  save_panel(loading_plot, "04_leading_loadings", width = 12, height = 10)
 }
 ```
 
-## Associations with PC scores
+## Associations with `r PC_SPACE` PC scores
 
 Associations use Spearman correlation for continuous variables, Kruskal--Wallis
 with epsilon-squared for categorical variables, and Cox proportional hazards
@@ -329,6 +340,8 @@ Each value below comes from out-of-fold predictions of the nested-CV XGBoost
 workflow. The embedding preprocessing and blockwise PCA are fit inside each
 training partition. These are therefore valid internal out-of-fold recovery
 metrics, but alltime labels may still be directly documented in the notes.
+Unlike the exploratory PCA branch, this uses the concatenated three-note-type
+representation (`r PREDICTION_SPACE`) by design.
 
 ### Aggregate out-of-fold metrics
 
@@ -364,6 +377,36 @@ if (nrow(metrics_summary) == 0) {
     select(target, n_patients, n_classes, all_of(available_metrics)) %>%
     mutate(target = display_target(target)), digits = 3,
     caption = "Pooled out-of-fold performance. Each patient contributes exactly one outer-fold prediction.")
+}
+```
+
+### AUROC by prediction task
+
+This panel isolates the pooled out-of-fold macro one-vs-rest AUROC used in the
+summary above. It gives every class equal weight within its task.
+
+```{r xgboost-auroc-by-task}
+if (nrow(metrics_summary) > 0 && "macro_ovr_auc_pooled_oof" %in% names(metrics_summary)) {
+  auc_by_task <- metrics_summary %>%
+    transmute(
+      target = display_target(target),
+      auroc = macro_ovr_auc_pooled_oof
+    ) %>%
+    arrange(auroc) %>%
+    mutate(target = factor(target, levels = target))
+  auc_plot <- ggplot(auc_by_task, aes(target, auroc)) +
+    geom_col(fill = "#8E5BD8", width = 0.7) +
+    geom_text(aes(label = sprintf("%.2f", auroc)), hjust = -0.2, size = 3.5) +
+    coord_flip(clip = "off") +
+    scale_y_continuous(limits = c(0, 1.05)) +
+    labs(
+      title = "Pooled out-of-fold AUROC by prediction task",
+      subtitle = "Macro one-vs-rest AUROC",
+      x = NULL, y = "AUROC"
+    ) +
+    theme_report +
+    theme(plot.margin = margin(5.5, 25, 5.5, 5.5))
+  save_panel(auc_plot, "07b_xgboost_auroc_by_task", width = 9, height = 5)
 }
 ```
 
@@ -412,14 +455,14 @@ if (nrow(metrics_class) > 0) {
 ```{r xgboost-confusion-matrices}
 prediction_files <- list.files(
   PREDICTIONS_DIR,
-  pattern = sprintf("__%s__%s__xgboost\\.parquet$", SPACE, WINDOW),
+  pattern = sprintf("__%s__%s__xgboost\\.parquet$", PREDICTION_SPACE, WINDOW),
   full.names = TRUE
 )
 if (length(prediction_files) == 0) {
   cat("No matching out-of-fold prediction files found.\n")
 } else {
   confusion_data <- bind_rows(lapply(prediction_files, function(path) {
-    target <- sub(sprintf("__%s__%s__xgboost\\.parquet$", SPACE, WINDOW), "", basename(path))
+    target <- sub(sprintf("__%s__%s__xgboost\\.parquet$", PREDICTION_SPACE, WINDOW), "", basename(path))
     as.data.frame(arrow::read_parquet(path)) %>%
       count(true_label, predicted_label, name = "n") %>%
       group_by(true_label) %>% mutate(row_fraction = n / sum(n)) %>% ungroup() %>%
@@ -437,13 +480,15 @@ if (length(prediction_files) == 0) {
       ) +
       labs(
         title = paste("Out-of-fold confusion matrix:", target_name),
-        subtitle = "Rows are true labels; colors are normalized within true label",
+        subtitle = "Rows are true labels; colors are row-normalized percentages (labels shown for <=12 classes)",
         x = "Predicted label", y = "True label"
       ) +
       theme_report +
       theme(axis.text.x = element_text(angle = 45, hjust = 1))
     if (n_classes <= 12) {
-      confusion_plot <- confusion_plot + geom_text(aes(label = n), size = 3)
+      confusion_plot <- confusion_plot + geom_text(
+        aes(label = sprintf("%.0f%%", 100 * row_fraction)), size = 3
+      )
     }
     safe_target <- gsub("[^a-z0-9]+", "_", tolower(target_name))
     save_panel(
@@ -458,7 +503,7 @@ if (length(prediction_files) == 0) {
 
 ## Reproducibility and interpretation notes
 
-- PC scores use `L2 row normalization -> StandardScaler -> PCA` on concatenated clinician, imaging, and pathology means.
+- PC scores use `L2 row normalization -> StandardScaler -> PCA` separately within clinician, imaging, or pathology patient means.
 - PC association FDR is corrected within `(space, window, clinical family)` across all screened PCs and variables. Check `pc_join_coverage.csv` before interpreting a sparsely matched family.
 - XGBoost models use nested stratified CV with blockwise PCA fit inside training partitions. Reported summaries and confusion matrices use outer-fold predictions only.
 - The report writes PNG panels to `SEMANTIC_SEARCH_FIGURES_OUT`, or by default alongside `CLINICAL_FIGURES_OUT` at `../semantic_search/<space>_<window>`.
@@ -466,8 +511,16 @@ if (length(prediction_files) == 0) {
 Render, for example:
 
 ```{r render-command, eval=FALSE}
-rmarkdown::render(
-  "semantic_search/notebooks/05_figures.Rmd",
-  params = list(space = "concat", window = "alltime", max_pcs = 20)
-)
+for (pc_space in c("clinician", "imaging", "pathology")) {
+  rmarkdown::render(
+    "semantic_search/notebooks/05_figures.Rmd",
+    output_file = paste0("05_figures_", pc_space, "_alltime.html"),
+    params = list(
+      pc_space = pc_space,
+      prediction_space = "concat",
+      window = "alltime",
+      max_pcs = 20
+    )
+  )
+}
 ```

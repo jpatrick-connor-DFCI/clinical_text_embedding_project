@@ -1,6 +1,7 @@
 """Stage 2: compute principal components of patient-level note embeddings.
 
-The active semantic-search workflow uses the single concatenated 3 x 768 space:
+The exploratory workflow fits PCA separately for clinician, imaging, and
+pathology note embeddings (one 768-dimensional space per note type):
 
     L2-normalize rows -> StandardScaler -> PCA
 
@@ -47,7 +48,7 @@ from data.schema import assert_schema  # noqa: E402
 from semantic_search.common import (  # noqa: E402
     DEFAULT_WINDOWS,
     PATIENT_KEY,
-    SPACES,
+    PC_SPACES,
     WINDOWS,
     embedding_cols,
     ensure_dirs,
@@ -291,7 +292,7 @@ def run(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--spaces", nargs="+", choices=SPACES, default=SPACES)
+    parser.add_argument("--spaces", nargs="+", choices=PC_SPACES, default=PC_SPACES)
     parser.add_argument("--windows", nargs="+", choices=WINDOWS, default=DEFAULT_WINDOWS)
     parser.add_argument("--n-components", type=int, default=N_COMPONENTS)
     parser.add_argument("--seed", type=int, default=RANDOM_SEED)

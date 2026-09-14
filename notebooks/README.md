@@ -48,8 +48,8 @@ it is an exploratory arm rather than a manuscript pipeline stage.
 
 | # | Notebook | Tier | Notes |
 |---|---|---|---|
-| 01 | [`semantic_search/notebooks/01_aggregate.ipynb`](../semantic_search/notebooks/01_aggregate.ipynb) | cluster CPU | Mean-pools progress, imaging, and pathology notes separately, then concatenates the three 768-dimensional blocks. Writes one parquet per note window. Skip-if-exists resumable. |
-| 02 | [`semantic_search/notebooks/02_pcs.ipynb`](../semantic_search/notebooks/02_pcs.ipynb) | cluster CPU / local | L2 → StandardScaler → PCA for the 3×768 space. Writes patient scores, long-form loadings, the fitted transformer, and explained variance. |
+| 01 | [`semantic_search/notebooks/01_aggregate.ipynb`](../semantic_search/notebooks/01_aggregate.ipynb) | cluster CPU | Mean-pools progress, imaging, and pathology notes separately. Writes separate 768-dimensional note-type spaces plus the 3×768 concatenated prediction space, one per note window. Skip-if-exists resumable. |
+| 02 | [`semantic_search/notebooks/02_pcs.ipynb`](../semantic_search/notebooks/02_pcs.ipynb) | cluster CPU / local | Independently applies L2 → StandardScaler → PCA to each note type. Writes patient scores, long-form loadings, fitted transformers, and explained variance. |
 | 03 | [`semantic_search/notebooks/03_pc_correlations.ipynb`](../semantic_search/notebooks/03_pc_correlations.ipynb) | local / cluster | Tests retained PCs against continuous, categorical, and survival characteristics with family-wise BH-FDR and coverage reporting. |
 | 04 | [`semantic_search/notebooks/04_predict.ipynb`](../semantic_search/notebooks/04_predict.ipynb) | allocated Jupyter CPU session | Compresses each CV split to 50 progress + 25 imaging + 25 pathology PCs, then runs nested-CV XGBoost for cancer type, stage, first-treatment category, and conventional/AVPC/NEPC. |
 | 05 | [`semantic_search/notebooks/05_figures.Rmd`](../semantic_search/notebooks/05_figures.Rmd) | local / cluster (R) | Renders PC-space, PC-association, and out-of-fold XGBoost figures from completed semantic-search artifacts, without refitting models. |

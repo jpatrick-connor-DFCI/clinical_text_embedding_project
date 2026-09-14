@@ -1,8 +1,11 @@
-"""Stage 1: pool note embeddings into one 3-block feature vector per patient.
+"""Stage 1: pool note embeddings into patient-level feature spaces.
 
 Writes one parquet per requested window under SEMANTIC_SEARCH_PATH/features/:
 
-    concat   2304   clinician, imaging, and pathology means side by side
+    concat      2304   clinician, imaging, and pathology means side by side
+    clinician    768   clinician-note mean only
+    imaging      768   imaging-note mean only
+    pathology    768   pathology-note mean only
 
 for:
 
@@ -37,7 +40,7 @@ from semantic_search.common import (
     NOTE_TIMING_COL,
     NOTE_TYPES,
     PATIENT_KEY,
-    SPACES,
+    FEATURE_SPACES,
     WINDOWS,
     ensure_dirs,
     feature_path,
@@ -121,17 +124,24 @@ def _concat_space(pooled: pl.DataFrame) -> pl.DataFrame:
     return pooled.select([PATIENT_KEY] + cols)
 
 
+def _note_type_space(pooled: pl.DataFrame, note_type: str) -> pl.DataFrame:
+    """One complete-cased feature matrix for one note type only."""
+    prefix = f"{note_type.upper()}_EMBEDDING_"
+    columns = [column for column in pooled.columns if column.startswith(prefix)]
+    columns.sort(key=lambda column: int(column.rsplit("_", 1)[1]))
+    if not columns:
+        raise ValueError(f"Pooled frame has no {prefix}* feature columns")
+    frame = pooled.select([PATIENT_KEY] + columns)
+    return filter_finite_rows(frame, columns)
+
+
 def build_spaces(
     notes: pl.DataFrame,
     embeddings: np.ndarray,
     *,
     progress_desc: str | None = None,
 ) -> dict[str, pl.DataFrame]:
-    """The 3-block concatenated space for one already-windowed note selection.
-
-    A patient missing any note type is complete-cased out because every output
-    row must contain all three embedding-block means.
-    """
+    """Prediction's concatenated space plus isolated note-type PC spaces."""
     pooled = (
         _pool_by_type(notes, embeddings)
         if progress_desc is None
@@ -139,14 +149,23 @@ def build_spaces(
     )
     concatenated = _concat_space(pooled)
     cols = [c for c in concatenated.columns if c != PATIENT_KEY]
-    return {"concat": filter_finite_rows(concatenated, cols)}
+    spaces = {"concat": filter_finite_rows(concatenated, cols)}
+    spaces.update({
+        note_type.lower(): _note_type_space(pooled, note_type)
+        for note_type in NOTE_TYPES
+    })
+    return spaces
 
 
 def _note_counts(notes: pl.DataFrame, space: str) -> pl.DataFrame:
     """Notes per patient contributing to a given space."""
-    if space != "concat":
+    if space == "concat":
+        return notes.group_by(PATIENT_KEY).len(name="n_notes")
+    if space not in {note_type.lower() for note_type in NOTE_TYPES}:
         raise ValueError(f"Unknown feature space: {space}")
-    return notes.group_by(PATIENT_KEY).len(name="n_notes")
+    return notes.filter(pl.col("NOTE_TYPE") == space.title()).group_by(PATIENT_KEY).len(
+        name="n_notes"
+    )
 
 
 def _summarize(space: str, window: str, df: pl.DataFrame, notes: pl.DataFrame) -> dict:
@@ -167,7 +186,7 @@ def _summarize(space: str, window: str, df: pl.DataFrame, notes: pl.DataFrame) -
 def run(windows: list[str], overwrite: bool = False, limit_mrns: int | None = None) -> pl.DataFrame:
     ensure_dirs()
 
-    wanted = [(s, w) for w in windows for s in SPACES]
+    wanted = [(s, w) for w in windows for s in FEATURE_SPACES]
     if not overwrite:
         missing = [(s, w) for s, w in wanted if not os.path.exists(feature_path(s, w))]
         if not missing:

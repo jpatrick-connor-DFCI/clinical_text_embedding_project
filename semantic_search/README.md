@@ -1,24 +1,27 @@
 # semantic_search — patient-level analysis of note embeddings
 
-This arm uses one patient representation: the progress-note, imaging-report, and
-pathology-report means concatenated into a 3×768-dimensional vector. Its exploratory branch
-computes principal components and tests them against clinical characteristics; its supervised
-branch predicts selected clinical labels from the same representation.
+This arm mean-pools progress notes, imaging reports, and pathology reports at the patient level.
+Its exploratory branch computes and tests principal components separately within each note type;
+its supervised branch uses their concatenated 3×768-dimensional representation to predict selected
+clinical labels.
 
 ## Feature space and windows
 
 | Space | Dim | Meaning |
 |---|---:|---|
 | `concat` | 2304 | progress, imaging, and pathology patient means side by side |
+| `clinician` | 768 | progress-note patient mean; used for exploratory PCA/associations |
+| `imaging` | 768 | imaging-report patient mean; used for exploratory PCA/associations |
+| `pathology` | 768 | pathology-report patient mean; used for exploratory PCA/associations |
 
 | Window | Notes included |
 |---|---|
 | `alltime` | every note a patient has, no anchor |
 | `pretreatment` | notes strictly before `first_treatment_date` |
 
-`alltime` is the default. Each note type is mean-pooled separately and retains its own named
-768-dimensional block. Patients missing any block are complete-cased out. No across-note-type
-mean is constructed.
+`alltime` is the default. Each note type is mean-pooled separately. The `concat` representation
+requires all three blocks; each note-type representation requires only that note type. No
+across-note-type mean is constructed.
 
 ## Workflow
 
@@ -26,9 +29,9 @@ mean is constructed.
 1_data/03  (knitted embeddings)
     |
     v
-01_aggregate  semantic_search.aggregate_embeddings -> features/concat_{window}.parquet
+01_aggregate  semantic_search.aggregate_embeddings -> features/{concat,clinician,imaging,pathology}_{window}.parquet
     |
-    +--> 02_pcs  semantic_search.compute_pcs         -> pcs/* scores, loadings, transformer, meta
+    +--> 02_pcs  semantic_search.compute_pcs         -> separate clinician/imaging/pathology PCs
     |       |
     |       v
     |    03_pc_correlations  semantic_search.correlate_pcs
@@ -56,19 +59,23 @@ The corresponding notebooks are `01_aggregate.ipynb`, `02_pcs.ipynb`,
 `03_pc_correlations.ipynb`, `04_predict.ipynb`, and
 `05_figures.Rmd`. The R Markdown report reads completed stage-2--4 artifacts
 and renders PC-space, PC-association, and XGBoost-performance panels; it does
-not rerun model fitting.
+not rerun model fitting. Render it once each with `pc_space = "clinician"`,
+`"imaging"`, and `"pathology"` to produce note-type-specific exploratory
+reports; its XGBoost panels consistently read the separate `concat` prediction
+artifacts.
 
 ## Principal components and clinical associations
 
-Stage 2 applies `L2 row normalization → StandardScaler → PCA`. It defaults to 50 components and
-records:
+Stage 2 independently applies `L2 row normalization → StandardScaler → PCA` to clinician,
+imaging, and pathology embeddings (50 components per note type by default). It does not fit PCs
+across concatenated note types. It records:
 
 | Path | Contents |
 |---|---|
-| `pcs/concat_{window}_scores.parquet` | one row per patient, `DFCI_MRN, PC1, ...` |
-| `pcs/concat_{window}_loadings.parquet` | long-form feature loadings with note type and embedding dimension |
-| `pcs/concat_{window}_transformer.joblib` | fitted normalization, scaling, and PCA pipeline |
-| `pcs/concat_{window}_meta.json` | source signature, dimensions, preprocessing, explained variance |
+| `pcs/{clinician,imaging,pathology}_{window}_scores.parquet` | one row per eligible patient, `DFCI_MRN, PC1, ...` |
+| `pcs/{clinician,imaging,pathology}_{window}_loadings.parquet` | long-form loadings for that note type |
+| `pcs/{clinician,imaging,pathology}_{window}_transformer.joblib` | fitted normalization, scaling, and PCA pipeline |
+| `pcs/{clinician,imaging,pathology}_{window}_meta.json` | source signature, dimensions, preprocessing, explained variance |
 | `results/pc_explained_variance.csv` | per-PC and cumulative explained variance |
 
 Stage 3 tests every retained PC by default; `--max-pcs N` restricts the screen to PC1–PCN.

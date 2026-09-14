@@ -11,7 +11,7 @@ from semantic_search.prediction_targets import (
 )
 
 
-def test_semantic_search_builds_only_the_three_block_concat_space(monkeypatch):
+def test_semantic_search_builds_concat_and_isolated_note_type_spaces(monkeypatch):
     from semantic_search import aggregate_embeddings, common
 
     pooled = pl.DataFrame(
@@ -31,7 +31,7 @@ def test_semantic_search_builds_only_the_three_block_concat_space(monkeypatch):
 
     assert common.SPACES == ["concat"]
     assert common.DEFAULT_WINDOWS == ["alltime"]
-    assert list(spaces) == ["concat"]
+    assert list(spaces) == ["concat", "clinician", "imaging", "pathology"]
     assert spaces["concat"].shape == (1, 7)
     assert spaces["concat"].get_column("DFCI_MRN").to_list() == [1]
     assert spaces["concat"].columns[1:] == [
@@ -41,6 +41,12 @@ def test_semantic_search_builds_only_the_three_block_concat_space(monkeypatch):
         "IMAGING_EMBEDDING_1",
         "PATHOLOGY_EMBEDDING_0",
         "PATHOLOGY_EMBEDDING_1",
+    ]
+    assert spaces["clinician"].shape == (2, 3)
+    assert spaces["imaging"].shape == (2, 3)
+    assert spaces["pathology"].shape == (1, 3)
+    assert spaces["clinician"].columns[1:] == [
+        "CLINICIAN_EMBEDDING_0", "CLINICIAN_EMBEDDING_1"
     ]
 
 
@@ -95,17 +101,13 @@ def test_pc_stage_writes_scores_loadings_transformer_and_metadata(tmp_path, monk
     pytest.importorskip("sklearn")
     from semantic_search import compute_pcs
 
-    feature_file = tmp_path / "concat_alltime.parquet"
-    scores_file = tmp_path / "concat_alltime_scores.parquet"
-    loadings_file = tmp_path / "concat_alltime_loadings.parquet"
-    transformer_file = tmp_path / "concat_alltime_transformer.joblib"
-    meta_file = tmp_path / "concat_alltime_meta.json"
+    feature_file = tmp_path / "clinician_alltime.parquet"
+    scores_file = tmp_path / "clinician_alltime_scores.parquet"
+    loadings_file = tmp_path / "clinician_alltime_loadings.parquet"
+    transformer_file = tmp_path / "clinician_alltime_transformer.joblib"
+    meta_file = tmp_path / "clinician_alltime_meta.json"
     rng = np.random.default_rng(11)
-    feature_names = [
-        f"{note_type}_EMBEDDING_{dimension}"
-        for note_type in ("CLINICIAN", "IMAGING", "PATHOLOGY")
-        for dimension in range(2)
-    ]
+    feature_names = [f"CLINICIAN_EMBEDDING_{dimension}" for dimension in range(4)]
     features = pl.DataFrame({
         "DFCI_MRN": np.arange(1, 11),
         **{name: rng.normal(size=10) for name in feature_names},
@@ -122,7 +124,7 @@ def test_pc_stage_writes_scores_loadings_transformer_and_metadata(tmp_path, monk
     monkeypatch.setattr(compute_pcs, "pc_meta_path", lambda space, window: str(meta_file))
 
     meta, variance = compute_pcs.fit_one(
-        "concat", "alltime", n_components=3, seed=7, overwrite=False
+        "clinician", "alltime", n_components=3, seed=7, overwrite=False
     )
 
     assert meta["n_components_retained"] == 3
@@ -130,7 +132,7 @@ def test_pc_stage_writes_scores_loadings_transformer_and_metadata(tmp_path, monk
     assert pl.read_parquet(scores_file).columns == ["DFCI_MRN", "PC1", "PC2", "PC3"]
     loadings = pl.read_parquet(loadings_file)
     assert loadings.height == 3 * len(feature_names)
-    assert set(loadings.get_column("note_type")) == {"Clinician", "Imaging", "Pathology"}
+    assert set(loadings.get_column("note_type")) == {"Clinician"}
     assert transformer_file.exists()
     assert meta_file.exists()
 

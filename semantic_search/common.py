@@ -33,9 +33,12 @@ NOTE_TYPES = ["Clinician", "Imaging", "Pathology"]
 WINDOWS = ["alltime", "pretreatment"]
 DEFAULT_WINDOWS = ["alltime"]
 
-# Sole feature space: the three per-note-type patient means concatenated in the
-# fixed NOTE_TYPES order (3 x 768 = 2,304 dimensions for the current encoder).
+# ``concat`` is retained exclusively for the supervised prediction workflow.
+# Exploratory PCA and clinical associations must use a single note type at a
+# time, so their three spaces each contain one 768-dimensional patient mean.
 SPACES = ["concat"]
+PC_SPACES = [note_type.lower() for note_type in NOTE_TYPES]
+FEATURE_SPACES = SPACES + PC_SPACES
 
 # CLUSTERS_DIR, FIGURES_DIR, and their helpers are retained only so earlier
 # exploratory artifacts and notebooks remain readable. The active exploratory
@@ -70,8 +73,8 @@ def ensure_dirs() -> None:
 
 
 def _validate(space: str | None = None, window: str | None = None) -> None:
-    if space is not None and space not in SPACES:
-        raise ValueError(f"Unknown space {space!r}. Must be one of {SPACES}.")
+    if space is not None and space not in FEATURE_SPACES:
+        raise ValueError(f"Unknown space {space!r}. Must be one of {FEATURE_SPACES}.")
     if window is not None and window not in WINDOWS:
         raise ValueError(f"Unknown window {window!r}. Must be one of {WINDOWS}.")
 
