@@ -79,8 +79,6 @@ read_csv_if_present <- function(path) {
 save_panel <- function(plot, name, width = 10, height = 6) {
   ggplot2::ggsave(file.path(FIGURE_DIR, paste0(name, ".png")), plot,
                   width = width, height = height, dpi = 300)
-  ggplot2::ggsave(file.path(FIGURE_DIR, paste0(name, ".pdf")), plot,
-                  width = width, height = height)
   plot
 }
 pc_number <- function(x) as.integer(sub("^PC", "", as.character(x)))
@@ -169,7 +167,7 @@ if (!all(c("PC1", "PC2") %in% names(scores))) {
     labs(title = "Patient embedding space: PC1 vs PC2",
          subtitle = sprintf("%s / %s; n = %s", SPACE, WINDOW, format(nrow(scores), big.mark = ","))) +
     theme_report
-  save_panel(pc_space, "02_pc1_pc2_space")
+  save_panel(pc_space, "02_pc1_pc2_space", width = 7, height = 7)
 }
 ```
 
@@ -233,9 +231,11 @@ separate by test type below.
 
 ### Association discovery map
 
-For every clinical family and PC, the map displays the variable with the
-smallest within-family FDR. A blank/white tile means no finite adjusted p-value
-was available, not evidence of no association.
+For every clinical family and PC, the map displays the smallest within-family
+FDR. The accompanying significant-association table gives the corresponding
+variable names; omitting them here keeps the 20-PC overview legible. A
+blank/white tile means no finite adjusted p-value was available, not evidence
+of no association.
 
 ```{r association-map}
 if (nrow(associations) == 0) {
@@ -246,17 +246,15 @@ if (nrow(associations) == 0) {
     group_by(family, component, pc) %>%
     slice_min(fdr, n = 1, with_ties = FALSE) %>% ungroup() %>%
     mutate(signal = -log10(pmax(fdr, .Machine$double.xmin)),
-           label = ifelse(nchar(variable) > 22, paste0(substr(variable, 1, 21), "…"), variable),
            pc = factor(pc, levels = paste0("PC", sort(unique(component)))))
   if (nrow(association_map) == 0) {
     cat("No finite FDR values available for the requested PCs.\n")
   } else {
     map_plot <- ggplot(association_map, aes(pc, family, fill = signal)) +
       geom_tile(colour = "white", linewidth = 0.25) +
-      geom_text(aes(label = label), size = 2.5) +
       scale_fill_viridis_c(name = expression(-log[10](FDR)), na.value = "grey95") +
-      labs(title = "Most significant PC association within each family",
-           subtitle = "Tile labels name the best-associated clinical variable", x = "Principal component", y = NULL) +
+      labs(title = "Strongest PC association within each clinical family",
+           subtitle = "Color shows the lowest FDR across variables in each family", x = "Principal component", y = NULL) +
       theme_report + theme(axis.text.x = element_text(angle = 45, hjust = 1))
     save_panel(map_plot, "05_association_discovery_map", width = 14, height = 7)
   }
@@ -290,7 +288,7 @@ numeric scale.
 if (nrow(associations) > 0) {
   top_effects <- associations %>%
     filter(component <= MAX_PCS, is.finite(fdr), is.finite(effect)) %>%
-    group_by(family, test) %>% slice_min(fdr, n = 12, with_ties = FALSE) %>% ungroup() %>%
+    group_by(effect_name) %>% slice_min(fdr, n = 12, with_ties = FALSE) %>% ungroup() %>%
     mutate(label = paste0(pc, ": ", variable),
            label = ifelse(nchar(label) > 34, paste0(substr(label, 1, 33), "…"), label),
            label = reorder(label, effect),
@@ -299,7 +297,7 @@ if (nrow(associations) > 0) {
     effect_plot <- ggplot(top_effects, aes(label, effect, colour = fdr < 0.05)) +
       geom_hline(aes(yintercept = null_effect), colour = "grey75") +
       geom_point(size = 2) + coord_flip() +
-      facet_wrap(~ effect_name, scales = "free_x") +
+      facet_wrap(~ effect_name, scales = "free") +
       scale_colour_manual(values = c(`TRUE` = "#C84E4E", `FALSE` = "#555555"),
                           name = "FDR < 0.05") +
       labs(title = "Leading clinical associations by compatible effect measure",
@@ -427,15 +425,34 @@ if (length(prediction_files) == 0) {
       group_by(true_label) %>% mutate(row_fraction = n / sum(n)) %>% ungroup() %>%
       mutate(target = display_target(target))
   }))
-  confusion_plot <- ggplot(confusion_data, aes(predicted_label, true_label, fill = row_fraction)) +
-    geom_tile(colour = "white") +
-    geom_text(aes(label = n), size = 3) +
-    scale_fill_viridis_c(labels = function(x) paste0(round(100 * x), "%"), name = "Row fraction") +
-    facet_wrap(~ target, scales = "free") +
-    labs(title = "Out-of-fold confusion matrices", subtitle = "Rows are true labels; colors are normalized within true label",
-         x = "Predicted label", y = "True label") + theme_report +
-    theme(axis.text.x = element_text(angle = 45, hjust = 1))
-  save_panel(confusion_plot, "10_xgboost_confusion_matrices", width = 14, height = 10)
+  for (target_name in unique(confusion_data$target)) {
+    target_data <- confusion_data %>% filter(target == target_name)
+    n_classes <- length(unique(c(target_data$true_label, target_data$predicted_label)))
+    confusion_plot <- ggplot(
+      target_data, aes(predicted_label, true_label, fill = row_fraction)
+    ) +
+      geom_tile(colour = "white") +
+      scale_fill_viridis_c(
+        labels = function(x) paste0(round(100 * x), "%"), name = "Row fraction"
+      ) +
+      labs(
+        title = paste("Out-of-fold confusion matrix:", target_name),
+        subtitle = "Rows are true labels; colors are normalized within true label",
+        x = "Predicted label", y = "True label"
+      ) +
+      theme_report +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    if (n_classes <= 12) {
+      confusion_plot <- confusion_plot + geom_text(aes(label = n), size = 3)
+    }
+    safe_target <- gsub("[^a-z0-9]+", "_", tolower(target_name))
+    save_panel(
+      confusion_plot,
+      paste0("10_xgboost_confusion_", safe_target),
+      width = 10,
+      height = max(7, min(12, 0.38 * n_classes + 3))
+    )
+  }
 }
 ```
 
@@ -444,7 +461,7 @@ if (length(prediction_files) == 0) {
 - PC scores use `L2 row normalization -> StandardScaler -> PCA` on concatenated clinician, imaging, and pathology means.
 - PC association FDR is corrected within `(space, window, clinical family)` across all screened PCs and variables. Check `pc_join_coverage.csv` before interpreting a sparsely matched family.
 - XGBoost models use nested stratified CV with blockwise PCA fit inside training partitions. Reported summaries and confusion matrices use outer-fold predictions only.
-- The report writes each panel as PNG and PDF to `SEMANTIC_SEARCH_FIGURES_OUT`, or by default to `CLINICAL_FIGURES_OUT/semantic_search/<space>_<window>`.
+- The report writes PNG panels to `SEMANTIC_SEARCH_FIGURES_OUT`, or by default to `CLINICAL_FIGURES_OUT/semantic_search/<space>_<window>`.
 
 Render, for example:
 
