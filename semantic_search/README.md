@@ -87,10 +87,10 @@ Stage 3 tests every retained PC by default; `--max-pcs N` restricts the screen t
 | overall survival | univariate Cox model using a standardized PC | hazard ratio per PC SD |
 
 The clinical families are demographics, cancer type, stage, metastatic burden, first-treatment
-type, LLM-derived conventional/AVPC/NEPC prostate subtype, broader treatment exposures, somatic
-alterations, PRS, note volume, and overall survival. Sparse treatment and somatic binary features
-retain the existing minimum-prevalence filters. The PC and prediction workflows use the same
-overridable frozen prostate-label artifact.
+type, LLM-derived conventional/AVPC/NEPC prostate subtype, broader treatment exposures, note
+volume, and overall survival. Somatic alterations and PRS are excluded from the PC association
+screen. Sparse treatment binary features retain the existing minimum-prevalence filter. The PC and
+prediction workflows use the same overridable frozen prostate-label artifact.
 
 BH-FDR is applied across all PC–variable tests within each `(space, window, family)`. This treats
 the full PC screen as the family's multiplicity burden; correction is not restarted for each PC.

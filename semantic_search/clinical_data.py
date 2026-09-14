@@ -29,16 +29,11 @@ from shared.stages import load_stage_map, normalize_stage
 
 FAMILIES = [
     "demographics", "cancer_type", "stage", "met_burden",
-    "first_treatment", "prostate_subtype", "treatment", "somatic", "prs",
-    "note_volume",
+    "first_treatment", "prostate_subtype", "treatment", "note_volume",
 ]
 
 SURV_FILE = "death_met_surv_df.parquet"
 NOTE_METADATA_FILE = "full_clinical_notes_embeddings_metadata.parquet"
-# Wide families are capped by prevalence: a somatic marker present in 5 patients
-# cannot separate clusters, and thousands of such columns would dominate the
-# family's FDR denominator and bury the markers that can.
-MIN_SOMATIC_PREVALENCE = 25
 MIN_TREATMENT_PREVALENCE = 25
 
 
@@ -165,32 +160,6 @@ def load_prostate_subtype(
     return labels, [], ["PROSTATE_SUBTYPE"]
 
 
-def load_somatic() -> tuple[pl.DataFrame, list[str], list[str]]:
-    df, failure = _read_csv_gz("complete_somatic_data_df.csv.gz", "somatic")
-    if failure is not None:
-        return failure
-    suffixes = ("_SNV", "_AMP", "_DEL", "_SV", "_FUSION")
-    cat = [c for c in df.columns if c.upper().endswith(suffixes)]
-    if not cat:
-        return _empty("no alteration columns", "somatic")
-    df = df.unique(subset=PATIENT_KEY, keep="first").select([PATIENT_KEY] + cat)
-    cat = _prevalent_binary_cols(df, cat, MIN_SOMATIC_PREVALENCE)
-    if not cat:
-        return _empty(f"no marker reached {MIN_SOMATIC_PREVALENCE} patients", "somatic")
-    return df.select([PATIENT_KEY] + cat), [], cat
-
-
-def load_prs() -> tuple[pl.DataFrame, list[str], list[str]]:
-    df, failure = _read_csv_gz("complete_germline_data_df.csv.gz", "prs")
-    if failure is not None:
-        return failure
-    cont = [c for c in df.columns if c.upper().startswith("PGS")]
-    if not cont:
-        return _empty("no PGS* columns", "prs")
-    df = df.unique(subset=PATIENT_KEY, keep="first")
-    return df.select([PATIENT_KEY] + cont), cont, []
-
-
 def _prevalent_binary_cols(df: pl.DataFrame, cols: list[str], min_n: int) -> list[str]:
     """Keep binary columns with at least `min_n` positives and at least one
     negative -- anything rarer cannot support a stable PC association and only
@@ -246,8 +215,6 @@ def load_all(
         "first_treatment": load_first_treatment(),
         "prostate_subtype": load_prostate_subtype(avpc_nepc_labels_path),
         "treatment": load_treatment(),
-        "somatic": load_somatic(),
-        "prs": load_prs(),
     }
     if notes_meta is not None:
         families["note_volume"] = note_volume(notes_meta)
