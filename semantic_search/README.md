@@ -53,7 +53,10 @@ python -m semantic_search.train_prediction_models [--targets ...] [--overwrite]
 ```
 
 The corresponding notebooks are `01_aggregate.ipynb`, `02_pcs.ipynb`,
-`03_pc_correlations.ipynb`, and `04_predict.ipynb`.
+`03_pc_correlations.ipynb`, `04_predict.ipynb`, and
+`05_figures.Rmd`. The R Markdown report reads completed stage-2--4 artifacts
+and renders PC-space, PC-association, and XGBoost-performance panels; it does
+not rerun model fitting.
 
 ## Principal components and clinical associations
 
