@@ -59,7 +59,7 @@ RESULTS_DIR <- file.path(SEMANTIC_SEARCH_PATH, "results")
 PREDICTIONS_DIR <- file.path(SEMANTIC_SEARCH_PATH, "predictions")
 FIGURE_DIR <- Sys.getenv(
   "SEMANTIC_SEARCH_FIGURES_OUT",
-  unset = file.path(FIGURE_OUT_DIR, "semantic_search", paste(SPACE, WINDOW, sep = "_"))
+  unset = file.path(dirname(FIGURE_OUT_DIR), "semantic_search", paste(SPACE, WINDOW, sep = "_"))
 )
 dir.create(FIGURE_DIR, recursive = TRUE, showWarnings = FALSE)
 
@@ -461,7 +461,7 @@ if (length(prediction_files) == 0) {
 - PC scores use `L2 row normalization -> StandardScaler -> PCA` on concatenated clinician, imaging, and pathology means.
 - PC association FDR is corrected within `(space, window, clinical family)` across all screened PCs and variables. Check `pc_join_coverage.csv` before interpreting a sparsely matched family.
 - XGBoost models use nested stratified CV with blockwise PCA fit inside training partitions. Reported summaries and confusion matrices use outer-fold predictions only.
-- The report writes PNG panels to `SEMANTIC_SEARCH_FIGURES_OUT`, or by default to `CLINICAL_FIGURES_OUT/semantic_search/<space>_<window>`.
+- The report writes PNG panels to `SEMANTIC_SEARCH_FIGURES_OUT`, or by default alongside `CLINICAL_FIGURES_OUT` at `../semantic_search/<space>_<window>`.
 
 Render, for example:
 
