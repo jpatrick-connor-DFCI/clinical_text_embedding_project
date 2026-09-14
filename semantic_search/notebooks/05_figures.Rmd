@@ -7,7 +7,7 @@ output:
     toc_float: true
     code_folding: hide
 params:
-  pc_space: "clinician"
+  pc_spaces: ["clinician", "imaging", "pathology"]
   prediction_space: "concat"
   window: "alltime"
   max_pcs: 20
@@ -15,9 +15,9 @@ params:
 
 This is the figures/reporting tier for the semantic-search arm. It reads the
 artifacts produced by stages 2--4; it does not fit PCA models or retrain
-classifiers. By default it reports the `clinician/alltime` PC analysis and
-`concat/alltime` prediction analysis. Change the parameters at render time to
-inspect another completed space/window pair.
+classifiers. By default it reports clinician, imaging, and pathology PC
+analyses for `alltime`, plus the separate `concat/alltime` prediction analysis.
+Change the parameters at render time to inspect a subset or another window.
 
 The `alltime` window is descriptive: notes can contain information written
 after treatment or near an outcome. Consequently, these panels measure
@@ -52,13 +52,13 @@ suppressPackageStartupMessages({
 })
 source("R/config.R")
 
-PC_SPACE <- params$pc_space
+PC_SPACES <- unique(as.character(params$pc_spaces))
 PREDICTION_SPACE <- params$prediction_space
 WINDOW <- params$window
 MAX_PCS <- as.integer(params$max_pcs)
-PC_SPACES <- c("clinician", "imaging", "pathology")
-if (!PC_SPACE %in% PC_SPACES) {
-  stop("pc_space must be one of: ", paste(PC_SPACES, collapse = ", "))
+AVAILABLE_PC_SPACES <- c("clinician", "imaging", "pathology")
+if (!length(PC_SPACES) || any(!PC_SPACES %in% AVAILABLE_PC_SPACES)) {
+  stop("pc_spaces must contain only: ", paste(AVAILABLE_PC_SPACES, collapse = ", "))
 }
 if (!identical(PREDICTION_SPACE, "concat")) {
   stop("prediction_space must be 'concat': supervised XGBoost uses the concatenated space.")
@@ -69,12 +69,13 @@ RESULTS_DIR <- file.path(SEMANTIC_SEARCH_PATH, "results")
 PREDICTIONS_DIR <- file.path(SEMANTIC_SEARCH_PATH, "predictions")
 FIGURE_DIR <- Sys.getenv(
   "SEMANTIC_SEARCH_FIGURES_OUT",
-  unset = file.path(dirname(FIGURE_OUT_DIR), "semantic_search", paste(PC_SPACE, WINDOW, sep = "_"))
+  unset = file.path(
+    dirname(FIGURE_OUT_DIR), "semantic_search",
+    paste(c(paste(PC_SPACES, collapse = "_"), WINDOW), collapse = "_")
+  )
 )
 dir.create(FIGURE_DIR, recursive = TRUE, showWarnings = FALSE)
 
-score_file <- file.path(PCS_DIR, sprintf("%s_%s_scores.parquet", PC_SPACE, WINDOW))
-loading_file <- file.path(PCS_DIR, sprintf("%s_%s_loadings.parquet", PC_SPACE, WINDOW))
 variance_file <- file.path(RESULTS_DIR, "pc_explained_variance.csv")
 association_file <- file.path(RESULTS_DIR, "pc_clinical_associations.csv")
 
@@ -92,6 +93,7 @@ save_panel <- function(plot, name, width = 10, height = 6) {
   plot
 }
 pc_number <- function(x) as.integer(sub("^PC", "", as.character(x)))
+display_pc_space <- function(x) tools::toTitleCase(x)
 display_target <- function(x) {
   dplyr::recode(x,
     cancer_type = "Cancer type", stage = "Cancer stage",
@@ -106,23 +108,34 @@ theme_report <- theme_minimal(base_size = 11) +
 ```
 
 ```{r inputs}
-need_file(score_file, "PC score")
-need_file(loading_file, "PC loading")
 need_file(variance_file, "Explained-variance")
 
-scores <- as.data.frame(arrow::read_parquet(score_file))
-loadings <- as.data.frame(arrow::read_parquet(loading_file))
+pc_artifacts <- lapply(PC_SPACES, function(pc_space) {
+  score_file <- file.path(PCS_DIR, sprintf("%s_%s_scores.parquet", pc_space, WINDOW))
+  loading_file <- file.path(PCS_DIR, sprintf("%s_%s_loadings.parquet", pc_space, WINDOW))
+  need_file(score_file, paste(pc_space, "PC score"))
+  need_file(loading_file, paste(pc_space, "PC loading"))
+  list(
+    scores = as.data.frame(arrow::read_parquet(score_file)) %>%
+      mutate(pc_space = pc_space),
+    loadings = as.data.frame(arrow::read_parquet(loading_file)) %>%
+      mutate(pc_space = pc_space)
+  )
+})
+names(pc_artifacts) <- PC_SPACES
+scores <- bind_rows(lapply(pc_artifacts, function(x) x$scores))
+loadings <- bind_rows(lapply(pc_artifacts, function(x) x$loadings))
 variance <- readr::read_csv(variance_file, show_col_types = FALSE) %>%
-  filter(space == PC_SPACE, window == WINDOW) %>%
+  filter(space %in% PC_SPACES, window == WINDOW) %>%
   mutate(component = as.integer(component)) %>% arrange(component)
 association_raw <- read_csv_if_present(association_file)
 associations <- if (is.null(association_raw)) tibble() else association_raw %>%
-  filter(space == PC_SPACE, window == WINDOW) %>%
+  filter(space %in% PC_SPACES, window == WINDOW) %>%
   mutate(component = as.integer(component), fdr = as.numeric(fdr),
          p = as.numeric(p), effect = as.numeric(effect))
 coverage_raw <- read_csv_if_present(file.path(RESULTS_DIR, "pc_join_coverage.csv"))
 association_coverage <- if (is.null(coverage_raw)) tibble() else coverage_raw %>%
-  filter(space == PC_SPACE, window == WINDOW)
+  filter(space %in% PC_SPACES, window == WINDOW)
 summary_raw <- read_csv_if_present(file.path(RESULTS_DIR, "prediction_metrics_summary.csv"))
 metrics_summary <- if (is.null(summary_raw)) tibble() else summary_raw %>%
   filter(space == PREDICTION_SPACE, window == WINDOW, model == "xgboost")
@@ -133,33 +146,50 @@ class_raw <- read_csv_if_present(file.path(RESULTS_DIR, "prediction_metrics_by_c
 metrics_class <- if (is.null(class_raw)) tibble() else class_raw %>%
   filter(space == PREDICTION_SPACE, window == WINDOW, model == "xgboost")
 
-cat("PC association space: ", PC_SPACE, " / ", WINDOW, "\n", sep = "")
-cat("PC scores: ", nrow(scores), " patients; ", ncol(scores) - 1, " PCs\n", sep = "")
+pc_counts <- scores %>%
+  group_by(pc_space) %>%
+  summarise(n_patients = n(), .groups = "drop") %>%
+  mutate(n_pcs = sum(grepl("^PC[0-9]+$", names(scores))))
+cat("PC association spaces: ", paste(PC_SPACES, collapse = ", "), " / ", WINDOW, "\n", sep = "")
+print(pc_counts)
 cat("Associations: ", nrow(associations), " tests\n", sep = "")
 cat("XGBoost runs (", PREDICTION_SPACE, " / ", WINDOW, "): ",
     nrow(metrics_summary), " target(s)\n", sep = "")
 cat("Figure directory: ", FIGURE_DIR, "\n", sep = "")
 ```
 
-## PC space: `r PC_SPACE`
+## PC spaces
 
 ### Explained variance
 
 ```{r scree-plot}
 if (nrow(variance) == 0) {
-  cat("No variance rows found for this space/window pair.\n")
+  cat("No variance rows found for the requested PC spaces/window.\n")
 } else {
-  scree <- ggplot(variance, aes(component, explained_variance_ratio)) +
-    geom_col(fill = "#3B6FB6") +
-    geom_line(aes(y = cumulative_explained_variance_ratio), colour = "#C84E4E",
-              linewidth = 0.8) +
-    geom_point(aes(y = cumulative_explained_variance_ratio), colour = "#C84E4E", size = 1.5) +
-    scale_y_continuous(labels = function(x) paste0(round(100 * x), "%"),
-                       sec.axis = sec_axis(~ ., name = "Cumulative explained variance",
-                                           labels = function(x) paste0(round(100 * x), "%"))) +
-    labs(title = "PCA scree plot", x = "Principal component",
-         y = "Explained variance") + theme_report
-  save_panel(scree, "01_scree")
+  for (pc_space_name in PC_SPACES) {
+    space_variance <- variance %>% filter(space == pc_space_name)
+    scree <- ggplot(space_variance, aes(component, explained_variance_ratio)) +
+      geom_col(fill = "#3B6FB6") +
+      geom_line(aes(y = cumulative_explained_variance_ratio), colour = "#C84E4E",
+                linewidth = 0.8) +
+      geom_point(aes(y = cumulative_explained_variance_ratio), colour = "#C84E4E", size = 1.5) +
+      scale_y_continuous(
+        labels = function(x) paste0(round(100 * x), "%"),
+        sec.axis = sec_axis(
+          ~ ., name = "Cumulative explained variance",
+          labels = function(x) paste0(round(100 * x), "%")
+        )
+      ) +
+      labs(
+        title = paste("PCA scree plot —", display_pc_space(pc_space_name)),
+        x = "Principal component", y = "Explained variance"
+      ) +
+      theme_report
+    save_panel(
+      scree, paste0("01_", pc_space_name, "_scree"),
+      width = 10, height = 6
+    )
+  }
 }
 ```
 
@@ -172,14 +202,23 @@ large cohort and makes density structure visible without overplotting.
 if (!all(c("PC1", "PC2") %in% names(scores))) {
   cat("At least PC1 and PC2 are required for this panel.\n")
 } else {
-  pc_space <- ggplot(scores, aes(PC1, PC2)) +
-    geom_bin2d(bins = 70) +
-    scale_fill_viridis_c(name = "Patients", trans = "sqrt") +
-    coord_equal() +
-    labs(title = "Patient embedding space: PC1 vs PC2",
-         subtitle = sprintf("%s / %s; n = %s", PC_SPACE, WINDOW, format(nrow(scores), big.mark = ","))) +
-    theme_report
-  save_panel(pc_space, "02_pc1_pc2_space", width = 7, height = 7)
+  for (pc_space_name in PC_SPACES) {
+    space_scores <- scores %>% filter(pc_space == pc_space_name)
+    pc_space_plot <- ggplot(space_scores, aes(PC1, PC2)) +
+      geom_bin2d(bins = 70) +
+      scale_fill_viridis_c(name = "Patients", trans = "sqrt") +
+      coord_equal() +
+      labs(
+        title = paste("Patient embedding space: PC1 vs PC2 —", display_pc_space(pc_space_name)),
+        subtitle = sprintf("%s / %s; n = %s", pc_space_name, WINDOW,
+                           format(nrow(space_scores), big.mark = ","))
+      ) +
+      theme_report
+    save_panel(
+      pc_space_plot, paste0("02_", pc_space_name, "_pc1_pc2_space"),
+      width = 7, height = 7
+    )
+  }
 }
 ```
 
@@ -192,47 +231,66 @@ score_pcs <- head(score_pcs, min(12, length(score_pcs)))
 if (length(score_pcs) == 0) {
   cat("No PC columns found in the score artifact.\n")
 } else {
-  score_long <- scores %>%
-    select(all_of(score_pcs)) %>%
-    pivot_longer(everything(), names_to = "pc", values_to = "score") %>%
-    mutate(pc = factor(pc, levels = score_pcs))
-  score_dist <- ggplot(score_long, aes(score)) +
-    geom_histogram(bins = 50, fill = "#3B6FB6", colour = "white", linewidth = 0.15) +
-    facet_wrap(~ pc, scales = "free", ncol = 4) +
-    labs(title = "Leading PC score distributions", x = "PC score", y = "Patients") + theme_report
-  save_panel(score_dist, "03_pc_score_distributions", width = 12, height = 8)
+  for (pc_space_name in PC_SPACES) {
+    score_long <- scores %>%
+      filter(pc_space == pc_space_name) %>%
+      select(all_of(score_pcs)) %>%
+      pivot_longer(everything(), names_to = "pc", values_to = "score") %>%
+      mutate(pc = factor(pc, levels = score_pcs))
+    score_dist <- ggplot(score_long, aes(score)) +
+      geom_histogram(bins = 50, fill = "#3B6FB6", colour = "white", linewidth = 0.15) +
+      facet_wrap(~ pc, scales = "free", ncol = 4) +
+      labs(
+        title = paste("Leading PC score distributions —", display_pc_space(pc_space_name)),
+        x = "PC score", y = "Patients"
+      ) +
+      theme_report
+    save_panel(
+      score_dist, paste0("03_", pc_space_name, "_pc_score_distributions"),
+      width = 12, height = 8
+    )
+  }
 }
 ```
 
 ### Leading embedding-dimension loadings
 
 PCs are fit within one note type, so each panel is specific to the selected
-`pc_space`. The plot shows the ten embedding dimensions with the largest
+note type. The plot shows the ten embedding dimensions with the largest
 absolute loadings for each leading PC.
 
 ```{r leading-loadings}
 top_loadings <- loadings %>%
   mutate(component = as.integer(component)) %>%
   filter(component <= MAX_PCS) %>%
-  group_by(component, pc) %>%
+  group_by(pc_space, component, pc) %>%
   slice_max(abs_loading, n = 10, with_ties = FALSE) %>%
-  ungroup() %>%
-  mutate(feature = factor(feature, levels = unique(feature[order(component, abs_loading)])))
+  ungroup()
 if (nrow(top_loadings) == 0) {
   cat("No loading rows found for the requested PCs.\n")
 } else {
-  loading_plot <- ggplot(top_loadings, aes(feature, loading, fill = loading > 0)) +
+  for (pc_space_name in PC_SPACES) {
+    space_loadings <- top_loadings %>%
+      filter(pc_space == pc_space_name) %>%
+      mutate(feature = factor(feature, levels = unique(feature[order(component, abs_loading)])))
+    loading_plot <- ggplot(space_loadings, aes(feature, loading, fill = loading > 0)) +
     geom_col(show.legend = FALSE) +
     coord_flip() +
     facet_wrap(~ pc, scales = "free_y", ncol = 2) +
     scale_fill_manual(values = c(`TRUE` = "#3B6FB6", `FALSE` = "#C65D3E")) +
-    labs(title = "Largest embedding-dimension loadings", x = "Embedding dimension",
-         y = "PCA loading") + theme_report
-  save_panel(loading_plot, "04_leading_loadings", width = 12, height = 10)
+    labs(
+      title = paste("Largest embedding-dimension loadings —", display_pc_space(pc_space_name)),
+      x = "Embedding dimension", y = "PCA loading"
+    ) + theme_report
+    save_panel(
+      loading_plot, paste0("04_", pc_space_name, "_leading_loadings"),
+      width = 12, height = 10
+    )
+  }
 }
 ```
 
-## Associations with `r PC_SPACE` PC scores
+## Associations with PC scores
 
 Associations use Spearman correlation for continuous variables, Kruskal--Wallis
 with epsilon-squared for categorical variables, and Cox proportional hazards
@@ -254,20 +312,30 @@ if (nrow(associations) == 0) {
 } else {
   association_map <- associations %>%
     filter(component <= MAX_PCS, is.finite(fdr)) %>%
-    group_by(family, component, pc) %>%
+    group_by(space, family, component, pc) %>%
     slice_min(fdr, n = 1, with_ties = FALSE) %>% ungroup() %>%
     mutate(signal = -log10(pmax(fdr, .Machine$double.xmin)),
            pc = factor(pc, levels = paste0("PC", sort(unique(component)))))
   if (nrow(association_map) == 0) {
     cat("No finite FDR values available for the requested PCs.\n")
   } else {
-    map_plot <- ggplot(association_map, aes(pc, family, fill = signal)) +
-      geom_tile(colour = "white", linewidth = 0.25) +
-      scale_fill_viridis_c(name = expression(-log[10](FDR)), na.value = "grey95") +
-      labs(title = "Strongest PC association within each clinical family",
-           subtitle = "Color shows the lowest FDR across variables in each family", x = "Principal component", y = NULL) +
-      theme_report + theme(axis.text.x = element_text(angle = 45, hjust = 1))
-    save_panel(map_plot, "05_association_discovery_map", width = 14, height = 7)
+    for (pc_space_name in PC_SPACES) {
+      space_map <- association_map %>% filter(space == pc_space_name)
+      map_plot <- ggplot(space_map, aes(pc, family, fill = signal)) +
+        geom_tile(colour = "white", linewidth = 0.25) +
+        scale_fill_viridis_c(name = expression(-log[10](FDR)), na.value = "grey95") +
+        labs(
+          title = paste("Strongest PC association within each clinical family —",
+                        display_pc_space(pc_space_name)),
+          subtitle = "Color shows the lowest FDR across variables in each family",
+          x = "Principal component", y = NULL
+        ) +
+        theme_report + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+      save_panel(
+        map_plot, paste0("05_", pc_space_name, "_association_discovery_map"),
+        width = 14, height = 7
+      )
+    }
   }
 }
 ```
@@ -281,8 +349,8 @@ cohort. Inspect this before treating absence of an association as informative.
 if (nrow(association_coverage) > 0) {
   knitr::kable(
     association_coverage %>%
-      select(family, n_pc_patients, n_matched, coverage, below_threshold) %>%
-      arrange(coverage) %>%
+      select(space, family, n_pc_patients, n_matched, coverage, below_threshold) %>%
+      arrange(space, coverage) %>%
       mutate(coverage = scales::percent(coverage, accuracy = 0.1)),
     caption = "Patient overlap between PC scores and each clinical family."
   )
@@ -299,21 +367,30 @@ numeric scale.
 if (nrow(associations) > 0) {
   top_effects <- associations %>%
     filter(component <= MAX_PCS, is.finite(fdr), is.finite(effect)) %>%
-    group_by(effect_name) %>% slice_min(fdr, n = 12, with_ties = FALSE) %>% ungroup() %>%
+    group_by(space, effect_name) %>% slice_min(fdr, n = 12, with_ties = FALSE) %>% ungroup() %>%
     mutate(label = paste0(pc, ": ", variable),
            label = ifelse(nchar(label) > 34, paste0(substr(label, 1, 33), "…"), label),
-           label = reorder(label, effect),
            null_effect = ifelse(effect_name == "hazard_ratio_per_sd", 1, 0))
   if (nrow(top_effects) > 0) {
-    effect_plot <- ggplot(top_effects, aes(label, effect, colour = fdr < 0.05)) +
+    for (pc_space_name in PC_SPACES) {
+      space_effects <- top_effects %>%
+        filter(space == pc_space_name) %>%
+        mutate(label = reorder(label, effect))
+      effect_plot <- ggplot(space_effects, aes(label, effect, colour = fdr < 0.05)) +
       geom_hline(aes(yintercept = null_effect), colour = "grey75") +
       geom_point(size = 2) + coord_flip() +
       facet_wrap(~ effect_name, scales = "free") +
       scale_colour_manual(values = c(`TRUE` = "#C84E4E", `FALSE` = "#555555"),
                           name = "FDR < 0.05") +
-      labs(title = "Leading clinical associations by compatible effect measure",
-           x = NULL, y = "Effect estimate") + theme_report
-    save_panel(effect_plot, "06_association_effects", width = 13, height = 9)
+      labs(
+        title = paste("Leading clinical associations —", display_pc_space(pc_space_name)),
+        x = NULL, y = "Effect estimate"
+      ) + theme_report
+      save_panel(
+        effect_plot, paste0("06_", pc_space_name, "_association_effects"),
+        width = 13, height = 9
+      )
+    }
   }
 }
 ```
@@ -324,7 +401,7 @@ if (nrow(associations) > 0) {
 if (nrow(associations) > 0) {
   significant_associations <- associations %>%
     filter(is.finite(fdr), fdr < 0.05) %>% arrange(fdr, desc(abs(effect))) %>%
-    select(pc, family, variable, test, effect_name, effect, fdr, n) %>% head(50)
+    select(space, pc, family, variable, test, effect_name, effect, fdr, n) %>% head(50)
   if (nrow(significant_associations) == 0) {
     cat("No FDR-significant PC associations in this completed result set.\n")
   } else {
@@ -506,21 +583,19 @@ if (length(prediction_files) == 0) {
 - PC scores use `L2 row normalization -> StandardScaler -> PCA` separately within clinician, imaging, or pathology patient means.
 - PC association FDR is corrected within `(space, window, clinical family)` across all screened PCs and variables. Check `pc_join_coverage.csv` before interpreting a sparsely matched family.
 - XGBoost models use nested stratified CV with blockwise PCA fit inside training partitions. Reported summaries and confusion matrices use outer-fold predictions only.
-- The report writes PNG panels to `SEMANTIC_SEARCH_FIGURES_OUT`, or by default alongside `CLINICAL_FIGURES_OUT` at `../semantic_search/<space>_<window>`.
+- The report writes PNG panels to `SEMANTIC_SEARCH_FIGURES_OUT`, or by default alongside `CLINICAL_FIGURES_OUT` at `../semantic_search/<pc-spaces>_<window>`.
 
 Render, for example:
 
 ```{r render-command, eval=FALSE}
-for (pc_space in c("clinician", "imaging", "pathology")) {
-  rmarkdown::render(
-    "semantic_search/notebooks/05_figures.Rmd",
-    output_file = paste0("05_figures_", pc_space, "_alltime.html"),
-    params = list(
-      pc_space = pc_space,
-      prediction_space = "concat",
-      window = "alltime",
-      max_pcs = 20
-    )
+rmarkdown::render(
+  "semantic_search/notebooks/05_figures.Rmd",
+  output_file = "05_figures_all_pc_spaces_alltime.html",
+  params = list(
+    pc_spaces = c("clinician", "imaging", "pathology"),
+    prediction_space = "concat",
+    window = "alltime",
+    max_pcs = 20
   )
-}
+)
 ```

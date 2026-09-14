@@ -59,9 +59,9 @@ The corresponding notebooks are `01_aggregate.ipynb`, `02_pcs.ipynb`,
 `03_pc_correlations.ipynb`, `04_predict.ipynb`, and
 `05_figures.Rmd`. The R Markdown report reads completed stage-2--4 artifacts
 and renders PC-space, PC-association, and XGBoost-performance panels; it does
-not rerun model fitting. Render it once each with `pc_space = "clinician"`,
-`"imaging"`, and `"pathology"` to produce note-type-specific exploratory
-reports; its XGBoost panels consistently read the separate `concat` prediction
+not rerun model fitting. Its default `pc_spaces` parameter includes clinician,
+imaging, and pathology, producing note-type-specific exploratory panels in one
+render; its XGBoost panels consistently read the separate `concat` prediction
 artifacts.
 
 ## Principal components and clinical associations
