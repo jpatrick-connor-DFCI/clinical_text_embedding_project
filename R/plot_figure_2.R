@@ -110,12 +110,18 @@ build_fig2b <- function(metrics, metric = METRIC) {
     mutate(label = sprintf("n=%d\nmedian=%+.3f\nmean=%+.3f",
                            n, median_delta, mean_delta))
   # Order violins left-to-right by DESCENDING median delta, so the scheme the
-  # text model improves most sits furthest left. Levels are re-applied to both
-  # frames; SCHEME_COLORS/SCHEME_LABELS are keyed by scheme name, so reordering
-  # the factor levels leaves their lookups correct.
-  scheme_order <- ann %>% arrange(desc(median_delta)) %>% pull(scheme) %>% as.character()
+  # text model improves most sits furthest left. Pin this order on the x scale
+  # below as well as in both data frames: this avoids a future layer with a
+  # differently ordered factor resetting the displayed order. Scheme name
+  # supplies a deterministic tie-break for exactly equal medians.
+  scheme_order <- ann %>%
+    arrange(desc(median_delta), as.character(scheme)) %>%
+    pull(scheme) %>%
+    as.character()
   d   <- d   %>% mutate(scheme = factor(as.character(scheme), levels = scheme_order))
   ann <- ann %>% mutate(scheme = factor(as.character(scheme), levels = scheme_order))
+  message(sprintf("[fig2b] schemes left-to-right by descending median delta: %s",
+                  paste(scheme_order, collapse = ", ")))
   ymax <- max(d$delta, na.rm = TRUE) * 1.20
 
   ggplot(d, aes(x = scheme, y = delta, fill = scheme)) +
@@ -135,7 +141,8 @@ build_fig2b <- function(metrics, metric = METRIC) {
               size = MANUSCRIPT_SMALL_TEXT_SIZE, color = "#222222") +
     scale_fill_manual(values = SCHEME_COLORS, guide = "none") +
     scale_color_manual(values = SCHEME_COLORS, guide = "none") +
-    scale_x_discrete(labels = SCHEME_LABELS) +
+    scale_x_discrete(limits = scheme_order,
+                     labels = unname(SCHEME_LABELS[scheme_order])) +
     labs(x = NULL, y = sprintf("Delta %s (Text - Base)", lbl),
          title = sprintf("%s Improvement by Scheme", lbl),
          caption = paste("Each point is an endpoint; endpoints are correlated, so summaries are descriptive.",
