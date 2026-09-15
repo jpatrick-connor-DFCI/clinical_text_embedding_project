@@ -4,7 +4,8 @@
 # B conditional KM survival from the slope-window landmark (left-truncated entry),
 # D mean trajectory per slope group vs. a cohort-average reference band,
 # E stage-matched slope-group composition (dynamics vs. baseline stage),
-# C disease-severity small multiples (% Stage IV, mean # met, 10-yr RMST, mean slope).
+# C disease-severity small multiples (mean lines of therapy, pre-index met burden,
+#   conditional RMST, mean maximum stage).
 # S1: silhouette vs k (slope-group-count justification).
 
 suppressPackageStartupMessages({
@@ -292,11 +293,15 @@ build_fig4e <- function() {
 
 
 # ============================================================================
-# fig4c: disease-severity + slope small multiples
+# fig4c: disease-severity small multiples
 # ============================================================================
-# The four displayed metrics come from fig4_cluster_severity.csv. Mean slope is
-# the quantity the dynamics groups are defined on and can be negative for the
-# Falling group (no 0..100 clamp applied).
+# The four displayed metrics come from fig4_cluster_severity.csv and all describe
+# disease severity rather than the risk dynamics themselves: mean lines of
+# therapy, mean pre-index met burden (the N_MET_SITES covariate, not the
+# post-index mean_met_sites also present in that file), conditional RMST from the
+# landmark, and mean maximum stage on a I=1..IV=4 ordinal scale. Each is NULL-
+# guarded by by_id(), so a metric whose source data was unavailable at prep time
+# drops out of the panel instead of rendering an empty facet.
 build_fig4c <- function() {
   severity <- load_figure_data("fig4_cluster_severity.csv")
   if (nrow(severity) == 0) return(placeholder_panel("fig4_cluster_severity.csv empty"))
@@ -311,14 +316,14 @@ build_fig4c <- function() {
   }
 
   characteristics <- list(
-    list(title = "% Stage IV", units = "Percentage (%)", vals = by_id("pct_stage_iv"),
-         low = by_id("pct_stage_iv_low"), high = by_id("pct_stage_iv_high"), is_pct = TRUE),
-    list(title = "Mean # met sites", units = "Sites (0-7)", vals = by_id("mean_met_sites"),
-         low = by_id("mean_met_sites_low"), high = by_id("mean_met_sites_high"), is_pct = FALSE),
+    list(title = "Mean lines of therapy", units = "Lines", vals = by_id("mean_n_lines"),
+         low = by_id("mean_n_lines_low"), high = by_id("mean_n_lines_high"), is_pct = FALSE),
+    list(title = "Mean met burden (pre-index)", units = "Met sites", vals = by_id("mean_met_burden"),
+         low = by_id("mean_met_burden_low"), high = by_id("mean_met_burden_high"), is_pct = FALSE),
     list(title = "Conditional RMST: month 12–120", units = "Months after landmark", vals = by_id("rmst_months"),
          low = by_id("rmst_months_low"), high = by_id("rmst_months_high"), is_pct = FALSE),
-    list(title = "Mean risk slope", units = "Risk / month", vals = by_id("mean_slope"),
-         low = by_id("mean_slope_low"), high = by_id("mean_slope_high"), is_pct = FALSE)
+    list(title = "Mean maximum stage", units = "Stage (1=I … 4=IV)", vals = by_id("mean_max_stage"),
+         low = by_id("mean_max_stage_low"), high = by_id("mean_max_stage_high"), is_pct = FALSE)
   )
 
   panel_for <- function(spec) {

@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
-# Render every manuscript figure for BOTH metrics.
+# Render every manuscript figure on the primary metric (C-index).
 #
-# The plot scripts pick their metric up from MANUSCRIPT_METRIC and default to
-# "auc" when it is unset (see figure_utils.R). Metric-dependent panels are
-# written to metric-tagged filenames (fig1b_cindex / fig1b_auc, ...), so running
-# a script once renders only one of the two sets -- and running it with the
-# variable unset renders the AUC set while looking like a complete run. This
-# wrapper exists so that "render the figures" always means both.
+# The manuscript reports Harrell's C-index as its single primary metric, so this
+# wrapper renders the c-index set only. Mean AUC(t) is retained as an OPTIONAL
+# sensitivity view: set MANUSCRIPT_METRICS="cindex auc" (or just "auc") to also
+# render it. Metric-dependent panels are written to metric-tagged filenames
+# (fig1b_cindex / fig1b_auc, ...), so the two sets never overwrite each other.
+#
+# Note the event-exclusion set is judged on the c-index in BOTH renders (see
+# figure_utils.R::excluded_event_keys), so an AUC render shows the same
+# endpoints as the c-index one and differs only in the metric plotted.
 #
 # Usage:
-#   R/render_all_figures.sh                 # every plot script, both metrics
-#   R/render_all_figures.sh plot_figure_1.R # just one, both metrics
+#   R/render_all_figures.sh                    # every plot script, c-index
+#   R/render_all_figures.sh plot_figure_1.R    # just one, c-index
+#   MANUSCRIPT_METRICS="cindex auc" R/render_all_figures.sh   # both sets
 #
 # Honors CTEP_FIGURE_DATA_DIR and CLINICAL_FIGURES_OUT as the plot scripts do.
 set -uo pipefail
@@ -26,7 +30,8 @@ fi
 
 fail=0
 failed_runs=()
-for metric in cindex auc; do
+read -r -a metrics <<< "${MANUSCRIPT_METRICS:-cindex}"
+for metric in "${metrics[@]}"; do
   for sc in "${scripts[@]}"; do
     [ -f "$sc" ] || { echo "!! no such script: $sc" >&2; fail=1; continue; }
     echo "=== $(basename "$sc") [$metric] ==="
@@ -43,4 +48,4 @@ if [ "$fail" -ne 0 ]; then
   for r in "${failed_runs[@]}"; do echo "  - $r"; done
   exit 1
 fi
-echo "All figures rendered for both metrics."
+echo "All figures rendered for: ${metrics[*]}"

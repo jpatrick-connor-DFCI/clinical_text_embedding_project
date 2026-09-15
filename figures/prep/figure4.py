@@ -16,7 +16,9 @@ Writes to FIGURE_DATA_DIR:
                                        landmark_month  (stage = major stage I-IV for the
                                        within-stage supplement, NaN if unknown)
 - fig4_cluster_severity.csv            cluster, mean_met_sites, rmst_months, pct_stage_iv,
-                                       pct_ici, mean_slope, n_patients
+                                       pct_ici, n_patients, mean_n_lines, mean_met_burden,
+                                       mean_max_stage  (Fig 4C plots the last three plus
+                                       rmst_months; the rest are retained for other readers)
 - fig4_group_trajectories.csv          group, month, mean_risk, q25, q75  (per slope group +
                                        a "cohort" pseudo-group = cohort-wide average band)
 - fig4_slope_by_stage.csv              stage, cluster, n_patients, mean_slope  (stage-matched
@@ -69,12 +71,21 @@ DEFAULT_DECAY = 0.1
 HEATMAP_ROWS_PER_CLUSTER = 500
 
 KM_COLUMNS = ["DFCI_MRN", "cluster", "death", "tt_death", "stage", "landmark_month"]
+# The Fig 4C panel displays four of these: mean_n_lines, mean_met_burden,
+# rmst_months, mean_max_stage. mean_met_sites / pct_stage_iv / pct_ici are
+# retained as figure data (other panels and the heatmap's full-N labels read
+# this file) but are no longer plotted in 4C. mean_slope was dropped entirely:
+# it restated the quantity the groups are defined on rather than describing
+# their disease severity.
 SEVERITY_COLUMNS = ["cluster", "mean_met_sites", "rmst_months",
-                    "pct_stage_iv", "pct_ici", "mean_slope", "n_patients",
+                    "pct_stage_iv", "pct_ici", "n_patients",
+                    "mean_n_lines", "mean_met_burden", "mean_max_stage",
                     "mean_met_sites_low", "mean_met_sites_high",
                     "pct_stage_iv_low", "pct_stage_iv_high",
-                    "mean_slope_low", "mean_slope_high",
-                    "rmst_months_low", "rmst_months_high"]
+                    "rmst_months_low", "rmst_months_high",
+                    "mean_n_lines_low", "mean_n_lines_high",
+                    "mean_met_burden_low", "mean_met_burden_high",
+                    "mean_max_stage_low", "mean_max_stage_high"]
 GROUP_TRAJECTORY_COLUMNS = ["group", "month", "mean_risk", "q25", "q75"]
 SLOPE_BY_STAGE_COLUMNS = ["stage", "cluster", "n_patients", "mean_slope"]
 SILHOUETTE_COLUMNS = ["k", "silhouette"]
@@ -320,17 +331,89 @@ def _km_data(traj_sub: pl.DataFrame) -> pl.DataFrame:
     return out.select(KM_COLUMNS)
 
 
+def _lines_of_therapy_map() -> pl.DataFrame | None:
+    """MRN -> number of lines of therapy the patient ends up on.
+
+    Derived from PROFILE medications, not from
+    categorical_treatment_data_by_line.csv.gz: despite its name, that file is
+    collapsed to one row per patient with `treatment_line` hardcoded to 1 (see
+    generate_all_non_text_covariates.build_categorical_treatment_data_by_line),
+    so counting lines from it would return 1 for everybody.
+
+    NOTE: MEDICATIONS_SUMMARY carries 7 fixed drug slots per patient, so a
+    patient on more than 7 antineoplastics has late lines truncated and this
+    count saturates (see profile_lines' module docstring). Returns None if the
+    PROFILE source is unavailable, in which case the metric is left NaN.
+    """
+    try:
+        from pipelines.biomarkers.profile_lines import derive_lines_of_therapy
+        from pipelines.preprocessing import profile_sources as ps
+
+        lines = derive_lines_of_therapy(ps.unpivot_medications_summary())
+    except Exception as e:
+        print(f"  lines of therapy unavailable ({type(e).__name__}: {e}); mean_n_lines will be NaN")
+        return None
+    if lines.is_empty():
+        return None
+    return lines.group_by("DFCI_MRN").agg(pl.len().cast(pl.Float64).alias("n_lines"))
+
+
+def _met_burden_map() -> pl.DataFrame | None:
+    """MRN -> pre-index metastatic burden (N_MET_SITES from met_burden_df).
+
+    This is the BASELINE covariate built by
+    generate_all_non_text_covariates.build_met_burden_df (distinct pre-index
+    C77-C79 organ groups), deliberately not the post-index `n_met_sites` count
+    derived from death_met_surv_df outcomes elsewhere in this module. Both are
+    kept in the severity CSV under different names; do not conflate them.
+    """
+    path = os.path.join(FEATURE_PATH, "met_burden_df.csv.gz")
+    try:
+        df = pl.read_csv(path, columns=["DFCI_MRN", "N_MET_SITES"])
+    except Exception as e:
+        print(f"  {path} unavailable ({type(e).__name__}: {e}); mean_met_burden will be NaN")
+        return None
+    return df.with_columns(
+        pl.col("N_MET_SITES").cast(pl.Float64, strict=False).alias("met_burden")
+    ).select(["DFCI_MRN", "met_burden"])
+
+
+def _max_stage_map() -> dict[int, float] | None:
+    """MRN -> maximum major stage as an ordinal (I=1, II=2, III=3, IV=4).
+
+    cancer_stage_df carries one raw stage per patient, so "maximum" is that
+    patient's recorded major stage; the ordinal encoding exists so the panel can
+    average it across a group. Unrecognized / in-situ / unstageable values are
+    omitted rather than coerced to a number.
+    """
+    mrn_to_stage = _major_stage_map()
+    if mrn_to_stage is None:
+        print("  mean_max_stage will be NaN")
+        return None
+    ordinal = {stage: i + 1 for i, stage in enumerate(STAGE_ORDER)}
+    return {mrn: float(ordinal[stg]) for mrn, stg in mrn_to_stage.items()}
+
+
 def _cluster_severity(traj_sub: pl.DataFrame, treatment_df: pl.DataFrame) -> pl.DataFrame:
     """Per-cluster disease-severity metrics for the Fig 4C characteristics panel.
 
-    - mean_met_sites: mean number of distinct metastasis sites per patient (0-7).
-    - rmst_months:    cluster restricted mean survival time conditional on being
-                      alive at the trajectory landmark, from that landmark to
-                      RMST_TAU_MONTHS.
+    The four metrics Fig 4C plots:
+    - mean_n_lines:    mean number of lines of therapy the patient ends up on.
+    - mean_met_burden: mean pre-index metastatic burden (N_MET_SITES covariate).
+    - rmst_months:     cluster restricted mean survival time conditional on being
+                       alive at the trajectory landmark, from that landmark to
+                       RMST_TAU_MONTHS.
+    - mean_max_stage:  mean maximum major stage as an ordinal (I=1 ... IV=4).
+
+    Also retained for other readers (panel labels, supplements), not plotted in 4C:
+    - mean_met_sites: mean number of distinct POST-index metastasis sites (0-7).
     - pct_stage_iv:   % of cluster patients whose raw stage normalizes to IV.
     - pct_ici:        % of cluster patients ever treated with ICI (any line).
-    - mean_slope:     mean per-patient risk-trajectory slope (risk/month) — the
-                      quantity the groups are defined on.
+
+    mean_slope is deliberately absent: it restated the quantity the groups are
+    defined on rather than describing their disease severity. The per-patient
+    `slope` feature itself is untouched — it still defines and orders the groups,
+    and fig4_slope_by_stage.csv still reports it.
 
     pct_stage_iv and pct_ici are computed here rather than read from the
     cluster_composition_* CSVs because _composition() retains only the top-N
@@ -370,6 +453,31 @@ def _cluster_severity(traj_sub: pl.DataFrame, treatment_df: pl.DataFrame) -> pl.
     else:
         merged = merged.with_columns(pl.lit(None, dtype=pl.Float64).alias("is_stage_iv"))
 
+    # The three Fig 4C metrics sourced outside the survival frame. Each is
+    # optional: a missing source leaves the column all-null, so _mean_ci returns
+    # NaN and the panel renders an empty facet rather than aborting the figure.
+    lines_df = _lines_of_therapy_map()
+    if lines_df is not None:
+        merged = merged.join(lines_df, on="DFCI_MRN", how="left")
+    else:
+        merged = merged.with_columns(pl.lit(None, dtype=pl.Float64).alias("n_lines"))
+
+    burden_df = _met_burden_map()
+    if burden_df is not None:
+        merged = merged.join(burden_df, on="DFCI_MRN", how="left")
+    else:
+        merged = merged.with_columns(pl.lit(None, dtype=pl.Float64).alias("met_burden"))
+
+    max_stage = _max_stage_map()
+    if max_stage is not None:
+        merged = merged.with_columns(
+            pl.col("DFCI_MRN").replace_strict(
+                max_stage, default=None, return_dtype=pl.Float64
+            ).alias("max_stage")
+        )
+    else:
+        merged = merged.with_columns(pl.lit(None, dtype=pl.Float64).alias("max_stage"))
+
     ici_col = _find_ici_column([c for c in treatment_df.columns if c.startswith("PX_on_")])
     if ici_col is not None:
         ever_ici = (treatment_df.group_by("DFCI_MRN")
@@ -377,7 +485,7 @@ def _cluster_severity(traj_sub: pl.DataFrame, treatment_df: pl.DataFrame) -> pl.
         merged = merged.join(ever_ici, on="DFCI_MRN", how="left")
         merged = merged.with_columns(finite_or_zero("ever_ici").alias("ever_ici"))
     else:
-        print(f"  no ICI column found among PX_on_* (looked for ICI/immune checkpoint inhibitors)")
+        print("  no ICI column found among PX_on_* (looked for ICI/immune checkpoint inhibitors)")
         merged = merged.with_columns(pl.lit(None, dtype=pl.Float64).alias("ever_ici"))
 
     rows = []
@@ -422,22 +530,32 @@ def _cluster_severity(traj_sub: pl.DataFrame, treatment_df: pl.DataFrame) -> pl.
             half_width = 1.96 * scale * float(values.std(ddof=1)) / np.sqrt(values.size)
             return estimate - half_width, estimate + half_width
 
+        def _mean_or_nan(column: str) -> float:
+            value = sub[column].cast(pl.Float64, strict=False).mean()
+            return float(value) if value is not None else np.nan
+
         met_low, met_high = _mean_ci("n_met_sites")
         stage_low, stage_high = _mean_ci("is_stage_iv", scale=100.0)
-        slope_low, slope_high = _mean_ci("slope")
+        lines_low, lines_high = _mean_ci("n_lines")
+        burden_low, burden_high = _mean_ci("met_burden")
+        max_stage_low, max_stage_high = _mean_ci("max_stage")
         rows.append({
             "cluster": int(k),
             "mean_met_sites": float(sub["n_met_sites"].mean()) if sub["n_met_sites"].mean() is not None else np.nan,
             "rmst_months": rmst,
             "pct_stage_iv": 100.0 * float(sub["is_stage_iv"].mean()) if sub["is_stage_iv"].mean() is not None else np.nan,
             "pct_ici":      100.0 * float(sub["ever_ici"].mean()) if sub["ever_ici"].mean() is not None else np.nan,
-            "mean_slope":   float(sub["slope"].mean()) if sub["slope"].mean() is not None else np.nan,
+            "mean_n_lines":    _mean_or_nan("n_lines"),
+            "mean_met_burden": _mean_or_nan("met_burden"),
+            "mean_max_stage":  _mean_or_nan("max_stage"),
             "n_patients": int(n_sub),
             "mean_met_sites_low": met_low, "mean_met_sites_high": met_high,
             "pct_stage_iv_low": max(0.0, stage_low) if np.isfinite(stage_low) else np.nan,
             "pct_stage_iv_high": min(100.0, stage_high) if np.isfinite(stage_high) else np.nan,
-            "mean_slope_low": slope_low, "mean_slope_high": slope_high,
             "rmst_months_low": rmst_low, "rmst_months_high": rmst_high,
+            "mean_n_lines_low": lines_low, "mean_n_lines_high": lines_high,
+            "mean_met_burden_low": burden_low, "mean_met_burden_high": burden_high,
+            "mean_max_stage_low": max_stage_low, "mean_max_stage_high": max_stage_high,
         })
     return pl.DataFrame(rows).select(SEVERITY_COLUMNS) if rows else pl.DataFrame(schema={c: pl.Float64 for c in SEVERITY_COLUMNS})
 

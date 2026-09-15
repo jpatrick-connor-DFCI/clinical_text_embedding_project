@@ -14,15 +14,17 @@ suppressPackageStartupMessages({
 source("R/config.R")
 
 # ----------------------------------------------------------------------------
-# Metric switch — lets a single plot script render two parallel figure sets,
-# one scored by Harrell's C-index, one by mean time-dependent AUC(t). Set the
-# MANUSCRIPT_METRIC env var to "cindex" or "auc" before sourcing/Rscript-ing a
-# plot_figure_*.R script; defaults to "auc" for interactive/unset use.
+# Metric switch — the manuscript reports Harrell's C-index as its single primary
+# metric, so METRIC defaults to "cindex" and every figure is built on it unless
+# asked otherwise. Mean time-dependent AUC(t) is retained as an OPTIONAL
+# sensitivity view: set MANUSCRIPT_METRIC=auc before sourcing/Rscript-ing a
+# plot_figure_*.R script to render the parallel AUC set. Metric-dependent panels
+# stay metric-tagged on disk, so an AUC render never overwrites the c-index one.
 # ----------------------------------------------------------------------------
-METRIC <- tolower(Sys.getenv("MANUSCRIPT_METRIC", unset = "auc"))
+METRIC <- tolower(Sys.getenv("MANUSCRIPT_METRIC", unset = "cindex"))
 if (!METRIC %in% c("cindex", "auc")) {
-  warning(sprintf("Unrecognized MANUSCRIPT_METRIC=%s; falling back to 'auc'", METRIC))
-  METRIC <- "auc"
+  warning(sprintf("Unrecognized MANUSCRIPT_METRIC=%s; falling back to 'cindex'", METRIC))
+  METRIC <- "cindex"
 }
 
 # Human-readable label for the active metric ("C-index" / "Mean AUC(t)").
@@ -195,44 +197,49 @@ compact_panels <- function(panels) {
 
 
 # ----------------------------------------------------------------------------
-# Under-performing-event exclusion
+# Outlier-event exclusion
 #
-# Events where the text model does substantially WORSE than the base model in
-# the full cohort are dropped from every figure, so a reader never sees an
-# event in one panel that was filtered out of another. The rule is
-# one-directional: an event is excluded only when
+# Events whose text-vs-base delta is a distributional OUTLIER are dropped from
+# every figure, so a reader never sees an event in one panel that was filtered
+# out of another. The delta is
 #
-#     base_<metric> - text_<metric> > EVENT_EXCLUSION_DELTA
+#     delta = text_cindex - base_cindex        (full cohort, per scheme+event)
 #
-# i.e. only when text is worse by more than the threshold. Events where text
-# wins are always kept, by any margin.
+# and an event is excluded when that delta falls outside
 #
-# The comparison uses whichever metric the render is built on: the cindex figures
-# are trimmed on base_cindex/text_cindex, the auc figures on base_auc/text_auc.
-# Each figure set is therefore internally consistent -- no panel shows an event
-# another panel dropped -- but the two sets need not exclude the same events,
-# since an event can be worse by >0.05 on one metric and not the other. That is
-# intended: an event is judged by the metric the figure actually reports.
+#     mean(delta) +/- EVENT_EXCLUSION_SD * sd(delta)
+#
+# The rule is TWO-SIDED: an implausibly large text win is as much an outlier as
+# an implausibly large text loss, and both distort the summaries built on these
+# endpoints. The thresholds come from the delta distribution itself, so they
+# adapt to the run rather than encoding a fixed effect size.
+#
+# The delta is always judged on the C-INDEX, the manuscript's primary metric,
+# regardless of which metric a given render reports. That keeps ONE exclusion set
+# across the manuscript: the optional AUC render (MANUSCRIPT_METRIC=auc) shows
+# the same endpoints as the c-index figures and differs only in the metric
+# plotted. Judging each render on its own metric would let the two disagree about
+# which events exist, which is the inconsistency this guards against.
 # ----------------------------------------------------------------------------
-EVENT_EXCLUSION_DELTA <- 0.05
+EVENT_EXCLUSION_SD <- 3             # outlier cutoff, in SDs of the delta distribution
+EVENT_EXCLUSION_METRIC <- "cindex"  # delta is always judged on the primary metric
 FILTER_UNDERPERFORMING_ENDPOINTS <- tolower(Sys.getenv(
-  "MANUSCRIPT_FILTER_UNDERPERFORMING_ENDPOINTS", unset = "false"
+  "MANUSCRIPT_FILTER_UNDERPERFORMING_ENDPOINTS", unset = "true"
 )) %in% c("1", "true", "yes", "on")
-# Strictly-greater-than comparisons on doubles need slack: 0.65 - 0.60 evaluates
-# to 0.05000000000000004, so an event sitting exactly on the threshold would be
-# dropped by a bare `> 0.05`. Compare against the threshold plus one ulp-ish
-# tolerance so "worse by exactly 0.05" is kept, as the rule specifies.
-EVENT_EXCLUSION_TOL <- 1e-9
+# sd() is undefined below two finite deltas, and a handful of points cannot
+# support a +/-3SD rule; below this many, nothing is dropped.
+EVENT_EXCLUSION_MIN_N <- 3
 
 # Key an event by scheme + event name; both are needed since the same event
 # label can appear under more than one coding scheme.
 .event_key <- function(scheme, event) paste(scheme, event, sep = "\u001f")
 
 # Returns the character vector of scheme/event keys to exclude, given the
-# full-cohort metrics frame, judged on `metric` (defaults to the active METRIC).
-# Empty vector when the frame lacks that metric's columns (nothing can be
-# judged, so nothing is dropped).
-excluded_event_keys <- function(metrics, metric = METRIC) {
+# full-cohort metrics frame. `metric` selects the delta's metric and defaults to
+# the primary C-index (see above) -- it is NOT the active render metric. Empty
+# vector when the frame lacks that metric's columns, or has too few finite deltas
+# to define a distribution (nothing can be judged, so nothing is dropped).
+excluded_event_keys <- function(metrics, metric = EVENT_EXCLUSION_METRIC) {
   if (!FILTER_UNDERPERFORMING_ENDPOINTS) return(character(0))
   if (is.null(metrics) || nrow(metrics) == 0) return(character(0))
   base_col <- paste0("base_", metric_suffix(metric))
@@ -240,17 +247,36 @@ excluded_event_keys <- function(metrics, metric = METRIC) {
   if (!all(c(base_col, text_col, "scheme", "event") %in% names(metrics))) {
     return(character(0))
   }
-  base_val <- metrics[[base_col]]
-  text_val <- metrics[[text_col]]
-  drop <- (base_val - text_val) > (EVENT_EXCLUSION_DELTA + EVENT_EXCLUSION_TOL)
-  drop[is.na(drop)] <- FALSE
+  delta  <- as.numeric(metrics[[text_col]]) - as.numeric(metrics[[base_col]])
+  finite <- is.finite(delta)
+  if (sum(finite) < EVENT_EXCLUSION_MIN_N) {
+    message(sprintf(
+      "[exclude] only %d finite %s delta(s); too few for a +/-%dSD rule -- nothing dropped",
+      sum(finite), metric_label(metric), EVENT_EXCLUSION_SD))
+    return(character(0))
+  }
+  mu    <- mean(delta[finite])
+  sigma <- stats::sd(delta[finite])
+  # A degenerate (zero / non-finite) SD puts every event exactly at the mean:
+  # there is no outlier to speak of, and the comparison would drop all or none
+  # arbitrarily.
+  if (!is.finite(sigma) || sigma <= 0) {
+    message("[exclude] delta distribution has zero spread -- nothing dropped")
+    return(character(0))
+  }
+  lo <- mu - EVENT_EXCLUSION_SD * sigma
+  hi <- mu + EVENT_EXCLUSION_SD * sigma
+  drop <- finite & (delta < lo | delta > hi)
+  message(sprintf(
+    "[exclude] %s delta: mean %.4f, sd %.4f -> keep [%.4f, %.4f]; %d of %d event(s) outside",
+    metric_label(metric), mu, sigma, lo, hi, sum(drop), sum(finite)))
   if (!any(drop)) return(character(0))
   keys <- .event_key(metrics$scheme[drop], metrics$event[drop])
   message(sprintf(
-    "[exclude] %d event(s) dropped from all figures (base %s beats text by > %.2f): %s",
-    length(keys), metric_label(metric), EVENT_EXCLUSION_DELTA,
-    paste(sprintf("%s/%s (delta %.3f)", metrics$scheme[drop], metrics$event[drop],
-                  (text_val - base_val)[drop]),
+    "[exclude] %d outlier event(s) dropped from all figures: %s",
+    length(keys),
+    paste(sprintf("%s/%s (delta %+.4f)", metrics$scheme[drop], metrics$event[drop],
+                  delta[drop]),
           collapse = "; ")))
   unique(keys)
 }
