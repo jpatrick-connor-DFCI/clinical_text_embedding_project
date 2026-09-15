@@ -355,7 +355,17 @@ def _lines_of_therapy_map() -> pl.DataFrame | None:
         return None
     if lines.is_empty():
         return None
-    return lines.group_by("DFCI_MRN").agg(pl.len().cast(pl.Float64).alias("n_lines"))
+    per_patient = lines.group_by("DFCI_MRN").agg(pl.len().cast(pl.Float64).alias("n_lines"))
+    # Report the derived distribution. A panel showing ~1.0 lines for every group
+    # is the signature of a stale fig4_cluster_severity.csv (written before this
+    # raw-medications derivation existed, when the count came from
+    # categorical_treatment_data_by_line.csv.gz and was 1 for everybody), so print
+    # enough here to tell a genuine distribution from a degenerate one.
+    print(f"  lines of therapy: {lines.height} lines across "
+          f"{per_patient.height} patients; per-patient median "
+          f"{per_patient['n_lines'].median()} / mean "
+          f"{per_patient['n_lines'].mean():.2f} / max {per_patient['n_lines'].max()}")
+    return per_patient
 
 
 def _met_burden_map() -> pl.DataFrame | None:

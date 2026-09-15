@@ -69,9 +69,12 @@ build_fig2a <- function(metrics, metric = METRIC) {
     geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "#666666") +
     geom_point(data = filter(d, as.character(plot_group) != "death"),
                size = 1.8, alpha = 0.65) +
-    # Draw death in a separate final layer so no coincident event can cover it.
+    # Draw death in a separate final layer so no coincident event can cover it,
+    # and draw it larger and fully opaque: it is the single literal death
+    # endpoint among thousands of coded events, so at the shared size/alpha it
+    # was indistinguishable from the surrounding cloud.
     geom_point(data = filter(d, as.character(plot_group) == "death"),
-               size = 1.8, alpha = 0.65) +
+               size = 3.6, alpha = 1) +
     scale_color_manual(values = FIG2A_GROUP_COLORS, labels = FIG2A_GROUP_LABELS,
                        name = NULL, drop = FALSE) +
     scale_shape_manual(values = FIG2A_GROUP_SHAPES, labels = FIG2A_GROUP_LABELS,
@@ -106,6 +109,13 @@ build_fig2b <- function(metrics, metric = METRIC) {
               .groups = "drop") %>%
     mutate(label = sprintf("n=%d\nmedian=%+.3f\nmean=%+.3f",
                            n, median_delta, mean_delta))
+  # Order violins left-to-right by DESCENDING median delta, so the scheme the
+  # text model improves most sits furthest left. Levels are re-applied to both
+  # frames; SCHEME_COLORS/SCHEME_LABELS are keyed by scheme name, so reordering
+  # the factor levels leaves their lookups correct.
+  scheme_order <- ann %>% arrange(desc(median_delta)) %>% pull(scheme) %>% as.character()
+  d   <- d   %>% mutate(scheme = factor(as.character(scheme), levels = scheme_order))
+  ann <- ann %>% mutate(scheme = factor(as.character(scheme), levels = scheme_order))
   ymax <- max(d$delta, na.rm = TRUE) * 1.20
 
   ggplot(d, aes(x = scheme, y = delta, fill = scheme)) +
