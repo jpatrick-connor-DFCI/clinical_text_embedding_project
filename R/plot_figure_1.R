@@ -62,7 +62,7 @@ build_cohort_flow <- function() {
     coord_cartesian(xlim = c(0, 1), ylim = c(0.5, nrow(d) + 0.5), expand = FALSE) +
     labs(title = "Cohort availability") +
     theme_void(base_size = MANUSCRIPT_BASE_SIZE) +
-    theme(plot.title = element_text(face = "bold", size = 8, hjust = 0),
+    theme(plot.title = element_text(face = "bold", size = 11, hjust = 0),
           plot.margin = margin(3, 4, 3, 3))
 }
 
@@ -133,7 +133,7 @@ build_endpoint_counts <- function() {
     labs(x = NULL, y = "Endpoints", title = "Outcome endpoints") +
     theme_manuscript() +
     theme(panel.grid.major.y = element_line(color = "grey90"),
-          axis.text.x = element_text(hjust = 0.5, size = 6))
+          axis.text.x = element_text(hjust = 0.5, size = 9, face = "bold"))
   if (untrimmed) attr(p, "caption_detail") <- paste(
     "Panel d uses unfiltered aggregate endpoint counts because per-endpoint",
     "results were unavailable; the endpoint filter was not applied to this panel.")
@@ -167,15 +167,15 @@ build_cancer_pie <- function() {
     coord_polar(theta = "y", start = pi / 2, direction = -1) +
     geom_text(aes(x = 1.2, label = ifelse(pct >= 3, sprintf("%.1f%%", pct), "")),
               position = position_stack(vjust = 0.5),
-              size = 2, color = "#222222") +
+              size = 2.8, color = "#222222") +
     scale_fill_manual(values = pal, name = NULL) +
     labs(title = "Cancer types", subtitle = sprintf("Patients with text; N = %s", comma(total))) +
     guides(fill = guide_legend(ncol = 2, byrow = TRUE)) +
     theme_void(base_size = MANUSCRIPT_BASE_SIZE) +
-    theme(plot.title = element_text(size = 8, face = "bold", hjust = 0),
-          plot.subtitle = element_text(size = 6.5, hjust = 0),
-          legend.position = "bottom", legend.text = element_text(size = 5.8),
-          legend.key.size = unit(2.5, "mm"), legend.spacing.y = unit(0, "mm"),
+    theme(plot.title = element_text(size = 11, face = "bold", hjust = 0),
+          plot.subtitle = element_text(size = 9, hjust = 0),
+          legend.position = "bottom", legend.text = element_text(size = 8.5),
+          legend.key.size = unit(3.5, "mm"), legend.spacing.y = unit(0, "mm"),
           legend.margin = margin(0, 0, 0, 0), plot.margin = margin(3, 4, 3, 3))
 }
 

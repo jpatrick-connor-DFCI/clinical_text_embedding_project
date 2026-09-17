@@ -44,6 +44,9 @@ build_crossed_dynamics_panel <- function(df, arms, title_text, landmark) {
   labels_in_order <- vapply(arms, function(a) a$label, character(1))
   sub <- sub %>% mutate(strat = factor(strat, levels = labels_in_order))
   pal <- setNames(vapply(arms, function(a) a$color, character(1)), labels_in_order)
+  group_n <- table(sub$strat)
+  legend_labels <- setNames(sprintf("%s (n = %s)", names(group_n),
+                                    scales::comma(as.integer(group_n))), names(group_n))
 
   fit <- survfit2(Surv(entry, months, death) ~ strat, data = sub)
   td  <- tidy_km(fit) %>%
@@ -54,9 +57,7 @@ build_crossed_dynamics_panel <- function(df, arms, title_text, landmark) {
   if (nrow(td) == 0) return(placeholder_panel(
     paste0("no events after month ", landmark)))
 
-  lr    <- logrank_p_lt(sub, "entry", "months", "death", "strat")
   td_ci <- step_ci_df(td, "label")
-  ann <- sprintf("Cox score test %s", format_p_inline(lr))
   risk_times <- sort(unique(c(landmark, seq(24, 120, 24))))
   risk_times <- risk_times[risk_times >= landmark]
 
@@ -65,13 +66,10 @@ build_crossed_dynamics_panel <- function(df, arms, title_text, landmark) {
               aes(xmin = time, xmax = time_next, ymin = conf.low, ymax = conf.high, fill = label),
               inherit.aes = FALSE, alpha = 0.15, color = NA) } +
     geom_step(linewidth = 0.5) +
-    scale_color_manual(values = pal, name = NULL, drop = FALSE) +
+    scale_color_manual(values = pal, labels = legend_labels, name = NULL, drop = FALSE) +
     scale_fill_manual(values = pal, guide = "none", drop = FALSE) +
     scale_x_continuous(breaks = risk_times, expand = expansion(mult = SURVIVAL_X_EXPANSION)) +
     coord_cartesian(xlim = c(landmark, 120), ylim = c(0, 1.03)) +
-    annotate("text", x = landmark + 2, y = 0.08, label = ann,
-             hjust = 0, vjust = 0, size = MANUSCRIPT_SMALL_TEXT_SIZE,
-             color = "#333333") +
     labs(x = "Months from first treatment",
          y = "Conditional overall survival",
          title = title_text,
@@ -79,7 +77,6 @@ build_crossed_dynamics_panel <- function(df, arms, title_text, landmark) {
     theme_manuscript() +
     theme(legend.position = c(0.02, 0.28), legend.justification = c(0, 0),
           legend.background = element_rect(fill = "white", color = NA))
-  group_n <- table(sub$strat)
   attr(p, "caption_detail") <- paste0("Panel d: ", paste(sprintf("%s, n = %s",
     names(group_n), scales::comma(as.integer(group_n))), collapse = "; "), ".")
   p

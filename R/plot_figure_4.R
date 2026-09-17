@@ -106,7 +106,7 @@ build_fig4a <- function() {
          subtitle = "Rows: patients; shown / full group counts") +
     theme_manuscript() +
     theme(panel.grid = element_blank(), axis.ticks.y = element_blank(),
-          axis.text.y = element_text(size = 5.8),
+          axis.text.y = element_text(size = 8.5, face = "bold"),
           legend.key.height = unit(5, "mm"), legend.key.width = unit(2.5, "mm"))
 }
 
@@ -152,7 +152,6 @@ build_fig4b <- function() {
     filter(time >= LANDMARK)
 
   pal <- setNames(unname(colors_by_id), unname(labels_by_id))
-  lp  <- logrank_p(km, "months", "death", "strat", start_col = "entry")
   ci  <- step_ci_df(td, "label")
   ref_id <- if ("1" %in% as.character(cluster_ids)) "1" else as.character(cluster_ids[1])
   km$strat <- relevel(factor(km$strat), ref = ref_id)
@@ -198,8 +197,8 @@ build_fig4b <- function() {
   # Preserve the model results in the figure legend.
   short_hr <- gsub(" \\(n=[^)]+\\)", "", hr_text)
   attr(p, "caption_detail") <- sprintf(
-    "Panel b: landmark %s months, N = %s; Cox score test %s. %sCox analysis (N = %s): %s.",
-    LANDMARK, comma(nrow(km)), format_p_inline(lp),
+    "Panel b: landmark %s months, N = %s. %sCox analysis (N = %s): %s.",
+    LANDMARK, comma(nrow(km)),
     ifelse(stage_adjusted, "Stage-adjusted ", "Unadjusted "),
     comma(nrow(cx_data)), gsub("\n", "; ", short_hr))
   p
@@ -221,10 +220,7 @@ build_stage_composition <- function() {
 
   pal <- setNames(GROUP_COLORS[seq_len(N_SLOPE_GROUPS)], GROUP_NAMES)
   tab <- xtabs(n_patients ~ stage + group_lab, d)
-  chi <- suppressWarnings(chisq.test(tab, correct = FALSE))
   total_n <- sum(tab)
-  cramer_v <- sqrt(unname(chi$statistic) /
-                   (total_n * min(nrow(tab) - 1, ncol(tab) - 1)))
 
   ggplot(d, aes(stage, n_patients, fill = group_lab)) +
     geom_col(position = "fill", width = 0.7, color = "white") +
@@ -232,8 +228,7 @@ build_stage_composition <- function() {
     scale_y_continuous(labels = scales::percent) +
     labs(x = "Stage", y = "Proportion of stage",
          title = "Risk dynamics by stage",
-         subtitle = sprintf("N = %s; Cramér's V = %.3f",
-                            comma(total_n), cramer_v)) +
+         subtitle = sprintf("N = %s", comma(total_n))) +
     theme_manuscript() + theme(legend.position = "bottom")
 }
 

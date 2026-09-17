@@ -28,13 +28,14 @@ save_captioned_figure <- function(plot, caption, name, group, width, height) {
   writeLines(caption, file.path(dir, paste0(group, ".md")), useBytes = TRUE)
   # Review copies carry the caption below the art; the uncaptioned vector PDF is
   # retained for journals that require legends as a separate manuscript section.
-  wrapped <- stringr::str_wrap(caption, width = max(60L, floor(width * 16)))
+  caption_size <- 9
+  wrapped <- stringr::str_wrap(caption, width = max(60L, floor(width * 16 * 7.5 / caption_size)))
   n_lines <- length(strsplit(wrapped, "\n", fixed = TRUE)[[1]])
-  caption_height <- n_lines * 7.5 * 1.15 / 72 + 0.20
+  caption_height <- n_lines * caption_size * 1.15 / 72 + 0.20
   caption_grob <- grid::textGrob(wrapped, x = grid::unit(2, "mm"),
                                 y = grid::unit(1, "npc") - grid::unit(1, "mm"),
                                 just = c("left", "top"),
-                                gp = grid::gpar(fontsize = 7.5, fontfamily = "sans", lineheight = 1.15))
+                                gp = grid::gpar(fontsize = caption_size, fontfamily = "sans", lineheight = 1.15))
   review <- patchwork::wrap_plots(
     patchwork::wrap_elements(full = cowplot::as_grob(plot)),
     patchwork::wrap_elements(full = caption_grob),

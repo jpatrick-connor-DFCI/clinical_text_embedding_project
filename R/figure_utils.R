@@ -251,7 +251,7 @@ save_compiled_figure <- function(panels, number, width, height,
     labeled_panel <- cowplot::ggdraw() +
       cowplot::draw_plot(panel, x = 0.025, y = 0, width = 0.975, height = 0.975) +
       cowplot::draw_label(label, x = 0, y = 1, hjust = 0, vjust = 1,
-                          size = 9, fontface = "bold", fontfamily = "sans")
+                          size = 12, fontface = "bold", fontfamily = "sans")
     patchwork::wrap_elements(full = cowplot::as_grob(labeled_panel))
   })
   names(wrapped_panels) <- names(panels)

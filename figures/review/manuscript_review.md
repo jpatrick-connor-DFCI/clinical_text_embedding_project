@@ -32,6 +32,9 @@ KM panels omit number-at-risk tables, as requested. Pie percentages sit farther
 from the center to separate the smaller slices. These settings supersede the
 180-mm dimensions and risk-table additions above. Subtitles, axis labels, and
 legends remain visible, and standalone plots retain their titles.
+Figure 4 omits Cramér’s V and Cox score-test annotations. The panel d legend
+includes data-derived patient counts for stage I–II rising risk and stage IV
+falling risk after landmark eligibility filtering.
 The revised outputs still require a cluster rerender.
 
 ## Outputs after rerendering
