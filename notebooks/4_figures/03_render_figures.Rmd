@@ -46,6 +46,13 @@ The main figures contain exactly these panels, in letter order:
 Within-versus-pan and top-event plots (including the top-event supplement) are
 retired. Superseded standalone panel files are removed when each figure rerenders.
 
+Main figures are rendered at 180-mm width with final-size type, 600-dpi PNGs, and
+vector PDFs. Each compiled figure also gets a `_captioned` PNG/PDF review copy;
+standalone legends are written to `$CLINICAL_FIGURES_OUT/captions/`. Base wording
+is versioned in `figures/manuscript_captions.json`; current sample sizes and model
+statistics are added at rendering time. The clean artwork remains available for
+journals requiring captions separately.
+
 - **Code lookups (R)**: [01_code_lookups.Rmd](01_code_lookups.Rmd) — one-time bootstrap.
 - **Prep tier**: [02_figure_data.ipynb](02_figure_data.ipynb) (Python kernel) — run first.
 - **One-time R package bootstrap** (any host with R):

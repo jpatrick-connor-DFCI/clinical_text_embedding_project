@@ -56,23 +56,33 @@ build_crossed_dynamics_panel <- function(df, arms, title_text, landmark) {
 
   lr    <- logrank_p_lt(sub, "entry", "months", "death", "strat")
   td_ci <- step_ci_df(td, "label")
-  ann   <- sprintf("n=%s\nlogrank p=%.1e", scales::comma(nrow(sub)), lr)
+  ann <- sprintf("Cox score test %s", format_p_inline(lr))
+  risk_times <- sort(unique(c(landmark, seq(24, 120, 24))))
+  risk_times <- risk_times[risk_times >= landmark]
 
-  ggplot(td, aes(time, estimate, color = label)) +
+  p <- ggplot(td, aes(time, estimate, color = label)) +
     { if (nrow(td_ci) > 0) geom_rect(data = td_ci,
               aes(xmin = time, xmax = time_next, ymin = conf.low, ymax = conf.high, fill = label),
               inherit.aes = FALSE, alpha = 0.15, color = NA) } +
-    geom_step(linewidth = 0.9) +
+    geom_step(linewidth = 0.5) +
     scale_color_manual(values = pal, name = NULL, drop = FALSE) +
     scale_fill_manual(values = pal, guide = "none", drop = FALSE) +
+    scale_x_continuous(breaks = risk_times, expand = expansion(mult = c(0.025, 0.025))) +
     coord_cartesian(xlim = c(landmark, 120), ylim = c(0, 1.03)) +
-    annotate("text", x = 118, y = 1.0, label = ann,
-             hjust = 1, vjust = 1, size = MANUSCRIPT_SMALL_TEXT_SIZE,
-             fontface = "italic", color = "#444444") +
+    annotate("text", x = landmark + 2, y = 0.08, label = ann,
+             hjust = 0, vjust = 0, size = MANUSCRIPT_SMALL_TEXT_SIZE,
+             color = "#333333") +
     labs(x = "Months from first treatment",
-         y = sprintf("Overall survival (conditional on survival to month %s)", landmark),
-         title = title_text) +
+         y = "Conditional overall survival",
+         title = title_text,
+         subtitle = sprintf("Month-%s landmark; N = %s", landmark, comma(nrow(sub)))) +
     theme_manuscript() +
-    theme(legend.position = c(0.02, 0.20), legend.justification = c(0, 0),
+    theme(legend.position = c(0.02, 0.28), legend.justification = c(0, 0),
           legend.background = element_rect(fill = "white", color = NA))
+  row_labels <- setNames(c("I-II rising", "IV falling"), labels_in_order)
+  p <- add_manuscript_risk_table(p, fit, risk_times, row_labels)
+  group_n <- table(sub$strat)
+  attr(p, "caption_detail") <- paste0("Panel d: ", paste(sprintf("%s, n = %s",
+    names(group_n), scales::comma(as.integer(group_n))), collapse = "; "), ".")
+  p
 }

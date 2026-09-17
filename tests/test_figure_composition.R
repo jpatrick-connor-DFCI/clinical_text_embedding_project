@@ -11,11 +11,14 @@ for (expr in parse("R/figure_utils.R")) {
       as.character(expr[[2]]) %in% helpers) eval(expr)
 }
 METRIC <- "cindex"
+FILTER_UNDERPERFORMING_ENDPOINTS <- FALSE
+source("R/figure_captions.R")
 
 run_tests <- function() {
   output <- tempfile("figure-composition-")
   dir.create(output)
   on.exit(unlink(output, recursive = TRUE))
+  FIGURE_OUT_DIR <<- output
   PNG_OUT_DIR <<- file.path(output, "png")
   PDF_OUT_DIR <<- file.path(output, "pdf")
 
@@ -63,9 +66,15 @@ run_tests <- function() {
   skipped <- setNames(rep(list(placeholder_panel("no data")), 13), letters[1:13])
   result <- save_compiled_figure(skipped, 2, width = 9, height = 12, design = design)
   stopifnot(length(result) == 0L, !any(file.exists(files)))
-  files <- save_compiled_figure(list(a = panels$a, b = panels$b), 3, width = 8, height = 4)
+  # Figure 3's spanning lower row previously lost labels b and c.
+  files <- save_compiled_figure(list(a = panels$a, b = panels$b, c = panels$h),
+                               3, width = 7.09, height = 5.8, design = "ab\ncc")
+  labels <- text_labels(patchwork::patchworkGrob(captured))
   stopifnot(length(files) == 2L, all(file.info(files)$size > 0),
-            !any(grepl("^Unavailable panels:", text_labels(patchwork::patchworkGrob(captured)))))
+            all(vapply(c("a", "b", "c"), function(x) sum(labels == x) == 1L, logical(1))),
+            !any(grepl("^Unavailable panels:", labels)),
+            file.exists(file.path(FIGURE_OUT_DIR, "captions", "figure3.md")),
+            file.exists(file.path(PDF_OUT_DIR, "figure3", "figure3_cindex_captioned.pdf")))
 
   # NULL is an implementation error, not an expected absence of data.
   result <- try(save_compiled_figure(list(a = panels$a, b = NULL), 4, 8, 4), silent = TRUE)

@@ -8,6 +8,7 @@ suppressPackageStartupMessages({
 })
 
 source("R/figure_utils.R")
+source("R/publication_style.R")
 
 FDR_ALPHA  <- 0.05
 IQR_WHISKER <- 1.5
@@ -35,9 +36,9 @@ bh_within_cell <- function(betas) {
 # in MODALITY_ORDER: one that never fit anywhere (its feature-comp tasks did
 # not finish) would otherwise disqualify every endpoint and blank the panel.
 #
-# 3A and 3D share this so the joint-Cox panels report one endpoint set. An
+# Panels b and c share this so the joint-Cox panels report one endpoint set. An
 # endpoint missing a modality is not comparable across modalities: counting it
-# in 3D's per-modality violins while 3A excludes it made the two panels describe
+# in the per-modality violins while the count panel excludes it would describe
 # different endpoints from the same file.
 complete_case_events <- function(betas) {
   fitted_mods <- intersect(FIG3_MODALITIES, unique(betas$modality[!is.na(betas$beta)]))
@@ -67,9 +68,9 @@ build_significant_endpoints <- function(betas) {
     scale_x_discrete(labels = MODALITY_DISPLAY) +
     scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
     labs(x = NULL,
-         y = sprintf("# endpoints (joint Cox BH-FDR < %.2f)", FDR_ALPHA),
-         title = "Significant Endpoints per Modality",
-         subtitle = sprintf("%d complete-case endpoints", nrow(present))) +
+         y = "Significant endpoints",
+         title = "Significant endpoints",
+         subtitle = sprintf("BH-FDR < %.2f; n = %d endpoints", FDR_ALPHA, nrow(present))) +
     theme_manuscript() +
     theme(axis.text.x = element_text(angle = 0, hjust = 0.5),
           panel.grid.major.y = element_line(color = "grey90"))
@@ -107,18 +108,11 @@ build_modality_rank <- function(betas, metric = METRIC, excluded = EXCLUDED_EVEN
   }
   # fig3_modality_avg_rank_*.csv is pre-aggregated per modality in the Python tier
   # and carries no event column, so it cannot be filtered directly. When events are
-  # disqualified, re-derive the mean/SEM from the (filtered) long companion, which
+  # disqualified, re-derive the mean/IQR from the (filtered) long companion, which
   # is the same complete-case rank matrix the aggregate was built from -- otherwise
   # 3a would still be averaging over events no other panel reports.
   d <- avg_rank_from_long(ranks_long)
-  if (nrow(d) == 0) {
-    # Fallback only: this file is pre-aggregated and carries no event column, so
-    # its mean ranks still reflect the held-out modality and are not re-ranked.
-    d <- load_figure_data(sprintf("fig3_modality_avg_rank_%s.csv", metric_suffix(metric)))
-  }
-  if (nrow(d) == 0) return(placeholder_panel("fig3_modality_avg_rank_*.csv empty"))
-  if (!"q25_rank" %in% names(d)) d$q25_rank <- d$mean_rank - d$sem_rank
-  if (!"q75_rank" %in% names(d)) d$q75_rank <- d$mean_rank + d$sem_rank
+  if (nrow(d) == 0) return(placeholder_panel("No complete modality ranks after endpoint filtering"))
   # Drop MODALITY_ORDER levels this run has no rank for, so a modality that
   # never ran leaves no empty slot on the axis; ranked_mods also sizes the
   # x-range below, which is 1..n over what was actually ranked.
@@ -132,7 +126,7 @@ build_modality_rank <- function(betas, metric = METRIC, excluded = EXCLUDED_EVEN
   lbl <- metric_label(metric)
 
   ggplot(d, aes(mean_rank, modality, fill = as.character(modality))) +
-    geom_col(width = 0.62, color = "white") +
+    geom_point(shape = 21, size = 2, color = "#333333") +
     geom_errorbarh(aes(xmin = q25_rank, xmax = q75_rank),
                    height = 0.25, color = "#222222", linewidth = 0.5) +
     geom_text(aes(label = sprintf("%.2f", mean_rank),
@@ -141,19 +135,16 @@ build_modality_rank <- function(betas, metric = METRIC, excluded = EXCLUDED_EVEN
     scale_fill_manual(values = MODALITY_COLORS, guide = "none") +
     scale_y_discrete(labels = MODALITY_DISPLAY) +
     coord_cartesian(xlim = c(0.5, length(ranked_mods) + 0.5)) +
-    labs(x = sprintf("Average rank across endpoints (1 = best, ranked by %s)", lbl), y = NULL,
-         title = "Average Modality Rank",
-         caption = sprintf("%s joint-Cox complete-case endpoints; bars show mean rank and IQR across correlated endpoints.",
-                           if ("n_events" %in% names(d)) d$n_events[1] else "?")) +
+    labs(x = "Mean C-index rank (1 = best)", y = NULL,
+         title = "Modality rank",
+         subtitle = sprintf("n = %s endpoints with complete ranks", d$n_events[1])) +
     theme_manuscript() +
-    theme(panel.grid.major.x = element_line(color = "grey90"),
-          plot.caption = element_text(size = MANUSCRIPT_CAPTION_SIZE, hjust = 1,
-                                      face = "italic", color = "#666666"))
+    theme(panel.grid.major.x = element_line(color = "grey90"))
 }
 
 
 # ============================================================================
-# fig3c: unpenalized β violins by modality + Tukey trim + Wilcoxon-vs-0
+# fig3c: unpenalized Cox coefficient violins by modality with display trimming
 # ============================================================================
 tukey_trim <- function(x, k = IQR_WHISKER) {
   qs <- stats::quantile(x, c(0.25, 0.75), na.rm = TRUE)
@@ -167,7 +158,7 @@ tukey_trim <- function(x, k = IQR_WHISKER) {
 build_joint_cox_violins <- function(betas) {
   if (nrow(betas) == 0)
     return(placeholder_panel("fig3_joint_betas.csv empty"))
-  # Same complete-case endpoint set as 3A, so both joint-Cox panels summarise
+  # Same complete-case endpoint set as panel b, so both joint-Cox panels summarise
   # the same endpoints (see complete_case_events).
   cc_events <- complete_case_events(betas)
   d <- betas %>%
@@ -207,14 +198,13 @@ build_joint_cox_violins <- function(betas) {
   mod_order <- ann %>% arrange(desc(mean_beta)) %>% pull(modality) %>% as.character()
   plot_df <- plot_df %>% mutate(modality = factor(as.character(modality), levels = mod_order))
   ann      <- ann      %>% mutate(modality = factor(as.character(modality), levels = mod_order))
-  means_str <- paste(sprintf("%s: %.2f", MODALITY_DISPLAY[as.character(ann$modality)], ann$mean_beta),
-                     collapse = "   ")
-
-  ymax <- max(plot_df$beta, na.rm = TRUE)
-  ggplot(plot_df, aes(modality, beta, fill = modality)) +
+  counts <- plot_df %>% count(modality)
+  display_labels <- setNames(sprintf("%s\nn = %s",
+    MODALITY_DISPLAY[as.character(counts$modality)], counts$n), as.character(counts$modality))
+  p <- ggplot(plot_df, aes(modality, beta, fill = modality)) +
     geom_violin(scale = "width", alpha = 0.45, color = "#444444", linewidth = 0.4) +
-    geom_jitter(aes(color = modality), width = 0.18, size = 0.7, alpha = 0.30,
-                show.legend = FALSE) +
+    geom_point(aes(color = modality), position = position_jitter(width = 0.16, seed = 2026),
+               size = 0.45, alpha = 0.30, show.legend = FALSE) +
     geom_hline(yintercept = 0, color = "#333333", linetype = "dashed") +
     geom_errorbar(data = ann,
                   aes(x = modality, y = median_beta, ymin = q25, ymax = q75),
@@ -224,18 +214,15 @@ build_joint_cox_violins <- function(betas) {
               fill = "white", color = "#111111", stroke = 0.7) +
     scale_fill_manual(values = MODALITY_COLORS, guide = "none") +
     scale_color_manual(values = MODALITY_COLORS, guide = "none") +
-    scale_x_discrete(labels = MODALITY_DISPLAY) +
-    labs(x = NULL, y = "Joint Cox coefficient β per 1-SD risk score",
-         title = "Unpenalized Joint Cox Model: Coefficients by Modality",
-         caption = paste0(sprintf("%d complete-case endpoints.  ", nrow(cc_events)),
-                          "Mean β by modality: ", means_str, "\n",
-                          "Unpenalized coefficients; ridge estimates are retained as sensitivity output.",
-                          "  Diamond and bar: median and IQR across correlated endpoints.")) +
+    scale_x_discrete(labels = display_labels) +
+    labs(x = NULL, y = "Joint Cox coefficient (per SD)",
+         title = "Joint Cox coefficients",
+         subtitle = sprintf("n = %d joint-model endpoints; displayed counts after trimming shown below", nrow(cc_events))) +
     theme_manuscript() +
     theme(axis.text.x = element_text(angle = 0, hjust = 0.5),
-          plot.caption = element_text(size = MANUSCRIPT_CAPTION_SIZE, hjust = 0,
-                                      face = "italic", color = "#777777"),
           panel.grid.major.y = element_line(color = "grey90"))
+  attr(p, "caption_detail") <- sprintf("The joint-model analyses include %d endpoints before display trimming.", nrow(cc_events))
+  p
 }
 
 
@@ -264,10 +251,10 @@ p3b <- build_significant_endpoints(betas)
 p3c <- build_joint_cox_violins(betas)
 
 .tag <- metric_tag()
-save_panel(p3a, paste0("fig3a", .tag), group = "figure3", width = 7.2, height = 6.0)
-save_panel(p3b, paste0("fig3b", .tag), group = "figure3", width = 7.2, height = 5.8)
-save_panel(p3c, paste0("fig3c", .tag), group = "figure3", width = 9.2, height = 6.4)
+save_panel(p3a, paste0("fig3a", .tag), group = "figure3", width = 3.5, height = 3.2, dpi = 600)
+save_panel(p3b, paste0("fig3b", .tag), group = "figure3", width = 3.5, height = 3.2, dpi = 600)
+save_panel(p3c, paste0("fig3c", .tag), group = "figure3", width = MANUSCRIPT_WIDTH, height = 2.8, dpi = 600)
 save_compiled_figure(
   list(a = p3a, b = p3b, c = p3c),
-  number = 3, width = 18, height = 14, design = "ab\ncc"
+  number = 3, width = MANUSCRIPT_WIDTH, height = 5.8, design = "ab\ncc"
 )

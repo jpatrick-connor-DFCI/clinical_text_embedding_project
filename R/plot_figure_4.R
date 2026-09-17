@@ -9,6 +9,7 @@ suppressPackageStartupMessages({
 })
 
 source("R/figure_utils.R")
+source("R/publication_style.R")
 source("R/figure4_utils.R", local = TRUE)
 
 N_SLOPE_GROUPS <- 3
@@ -76,7 +77,7 @@ build_fig4a <- function() {
   } else bounds$full_n <- NA_integer_
 
   yticks <- bounds$mid
-  ylabs <- sprintf("%s\nshown %s / full %s", cluster_label(bounds$cluster),
+  ylabs <- sprintf("%s\n%s / %s", cluster_label(bounds$cluster),
                    comma(bounds$n), ifelse(is.na(bounds$full_n), "NA", comma(bounds$full_n)))
 
   # The prep z-scores each month column across the cohort (StandardScaler), so
@@ -92,23 +93,21 @@ build_fig4a <- function() {
       limits   = c(-Z_LIMIT, Z_LIMIT), oob = scales::squish,
       breaks   = c(-Z_LIMIT, 0, Z_LIMIT),
       labels   = c(sprintf("≤ -%.1f", Z_LIMIT), "0", sprintf("≥ +%.1f", Z_LIMIT)),
-      name     = "Mortality risk\n(z vs cohort,\nper month)",
+      name     = "Risk score\n(z)",
       na.value = "grey90"
     ) +
-    scale_x_continuous(expand = c(0, 0), breaks = pretty(long$month, n = 6)) +
+    scale_x_continuous(expand = c(0, 0), breaks = sort(unique(long$month))) +
     scale_y_reverse(expand = c(0, 0), breaks = yticks, labels = ylabs) +
     geom_hline(data = bounds[-nrow(bounds), ],
                aes(yintercept = top + 0.5),
                color = "white", linewidth = 0.6) +
-    labs(x = "Months post-treatment", y = NULL,
-         title = "Mortality-Risk Trajectories by Dynamics Group",
-         subtitle = stringr::str_wrap(
-           "Display-stratified random sample (up to 500 patients/group); group labels report full analytic-cohort N",
-           width = 78)) +
+    labs(x = "Months from first treatment", y = NULL,
+         title = "Risk-score trajectories",
+         subtitle = "Rows: patients; shown / full group counts") +
     theme_manuscript() +
-    theme(panel.grid = element_blank(),
-          axis.ticks.y = element_blank(),
-          axis.text.y = element_text(size = 9))
+    theme(panel.grid = element_blank(), axis.ticks.y = element_blank(),
+          axis.text.y = element_text(size = 5.8),
+          legend.key.height = unit(5, "mm"), legend.key.width = unit(2.5, "mm"))
 }
 
 
@@ -174,47 +173,38 @@ build_fig4b <- function() {
                              cs[, "lower .95"], cs[, "upper .95"]), collapse = "\n")
   }
 
+  risk_times <- sort(unique(c(LANDMARK, seq(24, 120, 24))))
+  risk_times <- risk_times[risk_times >= LANDMARK]
   main <- ggplot(td, aes(time, estimate, color = label)) +
     { if (nrow(ci) > 0) geom_rect(data = ci,
                                   aes(xmin = time, xmax = time_next,
                                       ymin = conf.low, ymax = conf.high,
                                       fill = label),
                                   color = NA, alpha = 0.15, inherit.aes = FALSE) } +
-    geom_step(linewidth = 0.9) +
-    geom_point(data = thin_censor_rows(td, "label", 60), shape = 3, size = 1.0) +
+    geom_step(linewidth = 0.5) +
     scale_color_manual(values = pal, name = NULL, drop = FALSE) +
     scale_fill_manual(values = pal, guide = "none", drop = FALSE) +
-    coord_cartesian(xlim = c(LANDMARK, 120)) +
+    scale_x_continuous(breaks = risk_times, expand = expansion(mult = c(0.025, 0.025))) +
+    coord_cartesian(xlim = c(LANDMARK, 120), ylim = c(0, 1.03)) +
     labs(x = "Months from first treatment",
-         y = sprintf(paste0("Overall Survival Probability\n",
-                           "(conditional on survival to month %s)"), LANDMARK),
-         title = "KM Overall Survival by Risk-Dynamics Group",
-         subtitle = sprintf("Landmark-eligible cohort: N=%s; follow-up conditional on survival to month %s",
-                            comma(nrow(km)), LANDMARK)) +
+         y = "Conditional overall survival",
+         title = "Survival by risk dynamics",
+         subtitle = sprintf("Month-%s landmark; N = %s", LANDMARK, comma(nrow(km)))) +
     theme_manuscript() +
     theme(legend.position = c(0.02, 0.18), legend.justification = c(0, 0),
           legend.background = element_rect(fill = "white", color = NA))
 
-  risk_times <- seq(LANDMARK, 120, 12)
-  s <- summary(fit, times = risk_times, extend = TRUE)
-  rt <- tibble(time = s$time, n.risk = s$n.risk,
-               strat_id = sub("^[^=]+=", "", s$strata)) %>%
-    mutate(row = factor(labels_by_id[strat_id], levels = rev(unname(labels_by_id))))
-  risk_table <- ggplot(rt, aes(time, row, label = comma(n.risk), color = row)) +
-    geom_text(size = 3) + scale_color_manual(values = pal, guide = "none") +
-    scale_x_continuous(limits = c(LANDMARK, 120), breaks = risk_times) +
-    labs(x = NULL, y = "Number at risk") + theme_void(base_size = 9) +
-    theme(axis.text.y = element_text(), axis.title.y = element_text(angle = 90))
-  stats_text <- sprintf("Landmark score test: %s. %s%s",
-                        format_p_inline(lp),
-                        ifelse(stage_adjusted, "Stage-adjusted ", ""),
-                        gsub("\n", "; ", hr_text))
-  stats_panel <- ggplot() +
-    annotate("text", x = 0, y = 1, label = stringr::str_wrap(stats_text, width = 105),
-             hjust = 0, vjust = 1, size = MANUSCRIPT_SMALL_TEXT_SIZE,
-             fontface = "italic", color = "#444444") +
-    xlim(0, 1) + ylim(0, 1) + theme_void()
-  main / stats_panel / risk_table + plot_layout(heights = c(4.0, 0.55, 1.1))
+  labels <- setNames(GROUP_NAMES[cluster_ids + 1L], as.character(cluster_ids))
+  p <- add_manuscript_risk_table(main, fit, risk_times, labels)
+  # Preserve the model results in the figure legend instead of an unreadably
+  # small paragraph between the curve and the number-at-risk table.
+  short_hr <- gsub(" \\(n=[^)]+\\)", "", hr_text)
+  attr(p, "caption_detail") <- sprintf(
+    "Panel b: landmark %s months, N = %s; Cox score test %s. %sCox analysis (N = %s): %s.",
+    LANDMARK, comma(nrow(km)), format_p_inline(lp),
+    ifelse(stage_adjusted, "Stage-adjusted ", "Unadjusted "),
+    comma(nrow(cx_data)), gsub("\n", "; ", short_hr))
+  p
 }
 
 
@@ -243,10 +233,10 @@ build_stage_composition <- function() {
     scale_fill_manual(values = pal, name = NULL, drop = FALSE) +
     scale_y_continuous(labels = scales::percent) +
     labs(x = "Stage", y = "Proportion of stage",
-         title = "Risk-Dynamics Composition by Stage",
-         subtitle = sprintf("N=%s; Cramér's V=%.3f (descriptive association)",
+         title = "Risk dynamics by stage",
+         subtitle = sprintf("N = %s; Cramér's V = %.3f",
                             comma(total_n), cramer_v)) +
-    theme_manuscript()
+    theme_manuscript() + theme(legend.position = "bottom")
 }
 
 
@@ -261,7 +251,7 @@ build_stage_risk_comparison <- function() {
       list(stage_values = "IV", cluster_id = 0L,
            label = "Stage IV, Falling Risk", color = GROUP_COLORS[1])
     ),
-    title_text = "Stage I-II Rising Risk vs. Stage IV Falling Risk",
+    title_text = "Early-stage rising vs. stage IV falling",
     landmark = cohort$landmark
   )
 }
@@ -275,11 +265,11 @@ p4c <- build_stage_composition()
 p4d <- build_stage_risk_comparison()
 
 .tag <- metric_tag()
-save_panel(p4a, paste0("fig4a", .tag), group = "figure4", width = 8.8, height = 5.8)
-save_panel(p4b, paste0("fig4b", .tag), group = "figure4", width = 9.8, height = 7.0)
-save_panel(p4c, paste0("fig4c", .tag), group = "figure4", width = 7.2, height = 5.4)
-save_panel(p4d, paste0("fig4d", .tag), group = "figure4", width = 8.6, height = 7.2)
+save_panel(p4a, paste0("fig4a", .tag), group = "figure4", width = 3.5, height = 3.2, dpi = 600)
+save_panel(p4b, paste0("fig4b", .tag), group = "figure4", width = 3.5, height = 3.2, dpi = 600)
+save_panel(p4c, paste0("fig4c", .tag), group = "figure4", width = 3.5, height = 3.2, dpi = 600)
+save_panel(p4d, paste0("fig4d", .tag), group = "figure4", width = 3.5, height = 3.2, dpi = 600)
 save_compiled_figure(
   list(a = p4a, b = p4b, c = p4c, d = p4d),
-  number = 4, width = 20, height = 16
+  number = 4, width = MANUSCRIPT_WIDTH, height = 6.65
 )

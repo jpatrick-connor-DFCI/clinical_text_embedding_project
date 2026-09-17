@@ -45,11 +45,19 @@ The main figures use the following panel order. Individual files are
 Within-versus-pan comparisons and top-event plots are retired, including the
 top-event supplement. Their inputs are no longer required by Figure 2 preparation.
 
-Figure rendering defaults to retaining every endpoint. To enable the optional
-one-sided sensitivity filter (exclude endpoints where base exceeds text by more
-than 0.05 on the active metric), set
-`MANUSCRIPT_FILTER_UNDERPERFORMING_ENDPOINTS=true`. The setting is shared by
-Figures 1–3 and their supplements.
+Main figures render at 180-mm width with final-size typography and 600-dpi PNGs.
+The renderer also writes `_captioned.png` / `_captioned.pdf` review copies and
+standalone legends in `CLINICAL_FIGURES_OUT/captions/`. Caption wording is maintained
+in `figures/manuscript_captions.json`; readable base legends are in
+[`figures/figure_captions.md`](figures/figure_captions.md). Sample sizes and model
+statistics are appended from the current run. The original downloaded figures
+were reviewed in [`figures/review/manuscript_review.md`](figures/review/manuscript_review.md).
+
+Figure rendering defaults to a two-sided endpoint filter: text-minus-base
+C-index differences outside the pooled mean ± 3 standard deviations are excluded.
+Set `MANUSCRIPT_FILTER_UNDERPERFORMING_ENDPOINTS=false` to retain every endpoint.
+The setting is shared by Figures 1–3 and their supplements and is disclosed in
+the generated main-figure captions.
 
 Single sources of truth: paths in `config.py`, the scheme registry in `schemes.py`, and the
 time-zero anchor registry in `anchors.py`.

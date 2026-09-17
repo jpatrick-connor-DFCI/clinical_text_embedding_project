@@ -7,6 +7,7 @@ suppressPackageStartupMessages({
 })
 
 source("R/figure_utils.R")
+source("R/publication_style.R")
 
 
 # ---------------- helpers local to Fig 1 ----------------
@@ -35,7 +36,7 @@ build_cohort_flow <- function() {
   if (anyNA(d$stage) || anyDuplicated(d$stage) ||
       any(!is.finite(d$n_patients)) || any(d$n_patients < 0) ||
       any(diff(d$n_patients) > 0)) {
-    stop("Figure 1a requires unique, ordered cumulative cohort counts")
+    stop("Figure 1c requires unique, ordered cumulative cohort counts")
   }
   # Keep named eligibility steps even when no patients are lost. Only collapse
   # the last modality if it duplicates the explicitly named final cohort.
@@ -59,10 +60,10 @@ build_cohort_flow <- function() {
                  arrow = arrow(length = unit(0.12, "cm"), type = "closed"),
                  color = "#5d6d7e", linewidth = 0.45) +
     coord_cartesian(xlim = c(0, 1), ylim = c(0.5, nrow(d) + 0.5), expand = FALSE) +
-    labs(title = "Cohort Eligibility and Data Availability") +
+    labs(title = "Cohort availability") +
     theme_void(base_size = MANUSCRIPT_BASE_SIZE) +
-    theme(plot.title = element_text(face = "bold", size = 12.5, hjust = 0.5),
-          plot.margin = margin(8, 12, 8, 12))
+    theme(plot.title = element_text(face = "bold", size = 8, hjust = 0),
+          plot.margin = margin(3, 4, 3, 3))
 }
 
 
@@ -108,6 +109,7 @@ trimmed_endpoint_counts <- function() {
 
 build_endpoint_counts <- function() {
   d <- trimmed_endpoint_counts()
+  untrimmed <- nrow(d) == 0
   if (nrow(d) == 0) {
     # Fallback: no per-event metrics available, so report the untrimmed counts
     # rather than blanking the panel.
@@ -120,17 +122,22 @@ build_endpoint_counts <- function() {
     arrange(scheme) %>%
     mutate(scheme_lbl = SCHEME_LABELS[as.character(scheme)],
            scheme_lbl = factor(scheme_lbl, levels = scheme_lbl))
-  ggplot(d, aes(x = scheme_lbl, y = n_endpoints, fill = as.character(scheme))) +
+  p <- ggplot(d, aes(x = scheme_lbl, y = n_endpoints, fill = as.character(scheme))) +
     geom_col(width = 0.62, color = "white") +
     geom_text(aes(label = scales::comma(n_endpoints)),
               vjust = -0.3, size = MANUSCRIPT_TEXT_SIZE) +
     scale_fill_manual(values = SCHEME_COLORS, guide = "none") +
     scale_y_continuous(expand = expansion(mult = c(0, 0.12)),
                        labels = scales::comma) +
-    labs(x = NULL, y = "Number of endpoints", title = "Outcome Endpoints") +
+    scale_x_discrete(labels = function(x) stringr::str_wrap(x, width = 10)) +
+    labs(x = NULL, y = "Endpoints", title = "Outcome endpoints") +
     theme_manuscript() +
     theme(panel.grid.major.y = element_line(color = "grey90"),
-          axis.text.x = element_text(hjust = 0.5, size = 10))
+          axis.text.x = element_text(hjust = 0.5, size = 6))
+  if (untrimmed) attr(p, "caption_detail") <- paste(
+    "Panel d uses unfiltered aggregate endpoint counts because per-endpoint",
+    "results were unavailable; the endpoint filter was not applied to this panel.")
+  p
 }
 
 
@@ -151,7 +158,7 @@ build_cancer_pie <- function() {
   d <- d %>%
     arrange(desc(n)) %>%
     mutate(pct = 100 * n / total,
-           label = sprintf("%s (n=%s)", category, scales::comma(n)),
+           label = sprintf("%s (%s)", category, scales::comma(n)),
            label = factor(label, levels = label))
   pal <- grDevices::hcl.colors(nrow(d), "Set 3")
 
@@ -160,13 +167,16 @@ build_cancer_pie <- function() {
     coord_polar(theta = "y", start = pi / 2, direction = -1) +
     geom_text(aes(label = ifelse(pct >= 3, sprintf("%.1f%%", pct), "")),
               position = position_stack(vjust = 0.5),
-              size = MANUSCRIPT_SMALL_TEXT_SIZE, color = "white", fontface = "bold") +
+              size = 2, color = "#222222") +
     scale_fill_manual(values = pal, name = NULL) +
-    labs(title = sprintf("Cancer Types Among Patients with Text (N=%s)",
-                         scales::comma(total))) +
-    theme_void() +
-    theme(plot.title = element_text(size = 13, face = "bold", hjust = 0.5),
-          legend.text = element_text(size = 9))
+    labs(title = "Cancer types", subtitle = sprintf("Patients with text; N = %s", comma(total))) +
+    guides(fill = guide_legend(ncol = 2, byrow = TRUE)) +
+    theme_void(base_size = MANUSCRIPT_BASE_SIZE) +
+    theme(plot.title = element_text(size = 8, face = "bold", hjust = 0),
+          plot.subtitle = element_text(size = 6.5, hjust = 0),
+          legend.position = "bottom", legend.text = element_text(size = 5.8),
+          legend.key.size = unit(2.5, "mm"), legend.spacing.y = unit(0, "mm"),
+          legend.margin = margin(0, 0, 0, 0), plot.margin = margin(3, 4, 3, 3))
 }
 
 
@@ -187,8 +197,8 @@ build_stage_counts <- function() {
               size = MANUSCRIPT_TEXT_SIZE) +
     scale_y_continuous(expand = expansion(mult = c(0, 0.12)),
                        labels = scales::comma) +
-    labs(x = NULL, y = "Patients", title = "Cancer Stage Breakdown",
-         subtitle = sprintf("Patients with a recognized major stage (N=%s)", comma(stage_n))) +
+    labs(x = NULL, y = "Patients", title = "Cancer stage",
+         subtitle = sprintf("Known stage; N = %s", comma(stage_n))) +
     theme_manuscript() +
     theme(panel.grid.major.y = element_line(color = "grey90"))
 }
@@ -205,11 +215,11 @@ p1c <- build_cohort_flow()
 p1d <- build_endpoint_counts()
 
 .tag <- metric_tag()
-save_panel(p1a, paste0("fig1a", .tag), group = "figure1", width = 8.4, height = 6.2)
-save_panel(p1b, paste0("fig1b", .tag), group = "figure1", width = 7.2, height = 5.4)
-save_panel(p1c, paste0("fig1c", .tag), group = "figure1", width = 9.2, height = 7.0)
-save_panel(p1d, paste0("fig1d", .tag), group = "figure1", width = 7.2, height = 5.4)
+save_panel(p1a, paste0("fig1a", .tag), group = "figure1", width = 3.5, height = 3.2, dpi = 600)
+save_panel(p1b, paste0("fig1b", .tag), group = "figure1", width = 3.5, height = 3.2, dpi = 600)
+save_panel(p1c, paste0("fig1c", .tag), group = "figure1", width = 3.5, height = 3.2, dpi = 600)
+save_panel(p1d, paste0("fig1d", .tag), group = "figure1", width = 3.5, height = 3.2, dpi = 600)
 save_compiled_figure(
   list(a = p1a, b = p1b, c = p1c, d = p1d),
-  number = 1, width = 20, height = 15
+  number = 1, width = MANUSCRIPT_WIDTH, height = 6.65
 )

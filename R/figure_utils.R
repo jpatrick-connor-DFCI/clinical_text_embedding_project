@@ -12,6 +12,7 @@ suppressPackageStartupMessages({
 })
 
 source("R/config.R")
+source("R/figure_captions.R")
 
 # ----------------------------------------------------------------------------
 # Manuscript figures use Harrell's C-index exclusively, including direct script
@@ -136,7 +137,7 @@ load_figure_data <- function(name) {
 # default — since figure_utils.R is source()'d into globalenv() (source()'s
 # default local=FALSE), so a lexical default couldn't see a caller-defined
 # constant from the sys.source()-ed plot script's own environment.
-save_panel <- function(plot, name, group, width = 6.0, height = 4.8) {
+save_panel <- function(plot, name, group, width = 6.0, height = 4.8, dpi = 300) {
   # A skipped panel (no underlying data) is not written at all -- an absent file
   # is a clearer signal to downstream assembly than a page reading "csv empty".
   if (is_skipped_panel(plot)) {
@@ -159,8 +160,10 @@ save_panel <- function(plot, name, group, width = 6.0, height = 4.8) {
   dir.create(pdf_dir, showWarnings = FALSE, recursive = TRUE)
   out_png <- file.path(png_dir, paste0(name, ".png"))
   out_pdf <- file.path(pdf_dir, paste0(name, ".pdf"))
-  ggsave(out_png, plot, width = width, height = height, dpi = 300, bg = "white")
-  ggsave(out_pdf, plot, width = width, height = height, bg = "white")
+  ggsave(out_png, plot, width = width, height = height, dpi = dpi, bg = "white")
+  pdf_device <- if (capabilities("cairo")) grDevices::cairo_pdf else grDevices::pdf
+  if (!capabilities("cairo")) warning("Cairo is unavailable; check PDF font/glyph embedding before submission")
+  ggsave(out_pdf, plot, width = width, height = height, bg = "white", device = pdf_device)
   message(sprintf("[panel] %s / %s", out_png, out_pdf))
   invisible(c(out_png, out_pdf))
 }
@@ -226,7 +229,11 @@ save_compiled_figure <- function(panels, number, width, height,
     if (!length(panels)) {
       # Do not leave an old figure when none of its current panels can be drawn.
       unlink(c(file.path(PNG_OUT_DIR, group, paste0(name, ".png")),
-               file.path(PDF_OUT_DIR, group, paste0(name, ".pdf"))))
+               file.path(PDF_OUT_DIR, group, paste0(name, ".pdf")),
+               file.path(PNG_OUT_DIR, group, paste0(name, "_captioned.png")),
+               file.path(PDF_OUT_DIR, group, paste0(name, "_captioned.pdf")),
+               file.path(FIGURE_OUT_DIR, "captions", paste0(group, ".txt")),
+               file.path(FIGURE_OUT_DIR, "captions", paste0(group, ".md"))))
       message(sprintf("[figure%s] SKIPPED: no available panels", number))
       return(invisible(character(0)))
     }
@@ -237,10 +244,13 @@ save_compiled_figure <- function(panels, number, width, height,
     }
   }
   labeled <- lapply(names(panels), function(label) {
-    patchwork::wrap_elements(full = cowplot::as_grob(panels[[label]])) +
-      labs(tag = label) +
-      theme(plot.tag = element_text(size = 18, face = "bold", hjust = 0, vjust = 1),
-            plot.tag.position = "topleft", plot.margin = margin(6, 6, 6, 6))
+    # Bake each letter into its panel grob. Patchwork tag propagation previously
+    # dropped b/c in Figure 3's asymmetric layout and can recurse into KM tables.
+    labeled_panel <- cowplot::ggdraw() +
+      cowplot::draw_plot(panels[[label]], x = 0.025, y = 0, width = 0.975, height = 0.975) +
+      cowplot::draw_label(label, x = 0, y = 1, hjust = 0, vjust = 1,
+                          size = 9, fontface = "bold", fontfamily = "sans")
+    patchwork::wrap_elements(full = cowplot::as_grob(labeled_panel))
   })
   names(labeled) <- names(panels)
   compiled <- patchwork::wrap_plots(labeled, ncol = ncol, design = design,
@@ -251,7 +261,10 @@ save_compiled_figure <- function(panels, number, width, height,
       theme = theme(plot.caption = element_text(size = 10, hjust = 0))
     )
   }
-  save_panel(compiled, name, group, width = width, height = height)
+  files <- save_panel(compiled, name, group, width = width, height = height, dpi = 600)
+  caption <- figure_caption(number, panels, missing_labels)
+  save_captioned_figure(compiled, caption, name, group, width, height)
+  invisible(files)
 }
 
 # A panel with no data to draw. Returns a sentinel rather than a ggplot: rather
