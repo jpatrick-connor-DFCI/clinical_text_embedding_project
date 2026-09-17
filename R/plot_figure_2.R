@@ -1,6 +1,6 @@
 # Figure 2: a base-vs-text C-index scatter, b delta-C-index violin,
 # c survival by stage, d survival by text-risk quartile.
-# Individual panels and compiled PNG/PDF, labeled a-d.
+# Individual panels and compiled PNG/PDF without panel letters.
 
 suppressPackageStartupMessages({
   library(ggplot2); library(patchwork); library(dplyr); library(tidyr)
@@ -171,7 +171,7 @@ build_stage_and_risk_km <- function(metric = METRIC) {
     ann <- if (is.na(perf)) sprintf("log-rank %s", format_p_inline(lr_p))
            else sprintf("%s=%.3f\nlog-rank %s", lbl, perf, format_p_inline(lr_p))
     ggplot(ts2, aes(time, estimate, color = stratum)) +
-      scale_x_continuous(breaks = seq(0, 60, 12), expand = expansion(mult = c(0.025, 0.025))) +
+      scale_x_continuous(breaks = seq(0, 60, 12), expand = expansion(mult = SURVIVAL_X_EXPANSION)) +
       geom_rect(data = td_ci,
                 aes(xmin = time, xmax = time_next, ymin = conf.low, ymax = conf.high, fill = stratum),
                 inherit.aes = FALSE, alpha = 0.15, color = NA) +
@@ -194,11 +194,7 @@ build_stage_and_risk_km <- function(metric = METRIC) {
   pR <- panel_km(tq, ord4q, lr_q, perf_q, "Overall survival by text risk",
                  legend_pos = c(0.98, 0.98), legend_just = c(1, 1))
   # Return the stage and text-risk quartile curves as separate panels.
-  pL <- add_manuscript_risk_table(pL, fit_s, seq(0, 60, 12),
-                                   setNames(c("I", "II", "III", "IV"), c("I", "II", "III", "IV")))
-  pR <- add_manuscript_risk_table(pR, fit_q, seq(0, 60, 12),
-                                   setNames(paste0("Q", 1:4), paste0("Q", 1:4)))
-  attr(pL, "caption_detail") <- sprintf("Panels c and d include %s patients with known stage.",
+  attr(pL, "caption_detail") <- sprintf("The bottom panels include %s patients with known stage.",
                                         scales::comma(nrow(d)))
   list(stage = pL, quartile = pR)
 }
@@ -233,5 +229,5 @@ save_panel(p2c, paste0("fig2c", .tag), group = "figure2", width = 3.5, height = 
 save_panel(p2d, paste0("fig2d", .tag), group = "figure2", width = 3.5, height = 3.2, dpi = 600)
 save_compiled_figure(
   list(a = p2a, b = p2b, c = p2c, d = p2d),
-  number = 2, width = MANUSCRIPT_WIDTH, height = 6.65
+  number = 2, width = COMPILED_FIGURE_WIDTH, height = COMPILED_FIGURE_HEIGHT
 )

@@ -205,9 +205,8 @@ retire_main_panels <- function(number, labels) {
   }
 }
 
-# Wrap each complete panel as one grob so nested patchwork layouts (e.g. 4c)
-# receive exactly one letter and retain their own annotations and legends.
-# Named panels and explicit designs keep letters tied to standalone filenames.
+# Wrap each complete panel as one grob to preserve nested layouts and legends.
+# Panel names are layout keys and standalone-file identifiers, not printed tags.
 save_compiled_figure <- function(panels, number, width, height,
                                  design = NULL, ncol = 2, heights = NULL) {
   group <- paste0("figure", number)
@@ -243,17 +242,10 @@ save_compiled_figure <- function(panels, number, width, height,
       for (label in missing_labels) design <- gsub(label, "#", design, fixed = TRUE)
     }
   }
-  labeled <- lapply(names(panels), function(label) {
-    # Bake each letter into its panel grob. Patchwork tag propagation previously
-    # dropped b/c in Figure 3's asymmetric layout and can recurse into KM tables.
-    labeled_panel <- cowplot::ggdraw() +
-      cowplot::draw_plot(panels[[label]], x = 0.025, y = 0, width = 0.975, height = 0.975) +
-      cowplot::draw_label(label, x = 0, y = 1, hjust = 0, vjust = 1,
-                          size = 9, fontface = "bold", fontfamily = "sans")
-    patchwork::wrap_elements(full = cowplot::as_grob(labeled_panel))
+  wrapped_panels <- lapply(panels, function(panel) {
+    patchwork::wrap_elements(full = cowplot::as_grob(panel))
   })
-  names(labeled) <- names(panels)
-  compiled <- patchwork::wrap_plots(labeled, ncol = ncol, design = design,
+  compiled <- patchwork::wrap_plots(wrapped_panels, ncol = ncol, design = design,
                                     heights = heights)
   if (any(missing)) {
     compiled <- compiled + patchwork::plot_annotation(

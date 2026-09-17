@@ -1,6 +1,6 @@
 # Figure 4: a risk-score heatmap, b survival by risk trajectory,
 # c risk-dynamics composition by stage, d stage I-II rising versus stage IV
-# falling risk survival. Individual panels and compiled PNG/PDF, labeled a-d.
+# falling risk survival. Individual panels and compiled PNG/PDF without panel letters.
 
 suppressPackageStartupMessages({
   library(ggplot2); library(patchwork); library(dplyr); library(tidyr)
@@ -184,7 +184,7 @@ build_fig4b <- function() {
     geom_step(linewidth = 0.5) +
     scale_color_manual(values = pal, name = NULL, drop = FALSE) +
     scale_fill_manual(values = pal, guide = "none", drop = FALSE) +
-    scale_x_continuous(breaks = risk_times, expand = expansion(mult = c(0.025, 0.025))) +
+    scale_x_continuous(breaks = risk_times, expand = expansion(mult = SURVIVAL_X_EXPANSION)) +
     coord_cartesian(xlim = c(LANDMARK, 120), ylim = c(0, 1.03)) +
     labs(x = "Months from first treatment",
          y = "Conditional overall survival",
@@ -194,13 +194,11 @@ build_fig4b <- function() {
     theme(legend.position = c(0.02, 0.18), legend.justification = c(0, 0),
           legend.background = element_rect(fill = "white", color = NA))
 
-  labels <- setNames(GROUP_NAMES[cluster_ids + 1L], as.character(cluster_ids))
-  p <- add_manuscript_risk_table(main, fit, risk_times, labels)
-  # Preserve the model results in the figure legend instead of an unreadably
-  # small paragraph between the curve and the number-at-risk table.
+  p <- main
+  # Preserve the model results in the figure legend.
   short_hr <- gsub(" \\(n=[^)]+\\)", "", hr_text)
   attr(p, "caption_detail") <- sprintf(
-    "Panel b: landmark %s months, N = %s; Cox score test %s. %sCox analysis (N = %s): %s.",
+    "Top right: landmark %s months, N = %s; Cox score test %s. %sCox analysis (N = %s): %s.",
     LANDMARK, comma(nrow(km)), format_p_inline(lp),
     ifelse(stage_adjusted, "Stage-adjusted ", "Unadjusted "),
     comma(nrow(cx_data)), gsub("\n", "; ", short_hr))
@@ -271,5 +269,5 @@ save_panel(p4c, paste0("fig4c", .tag), group = "figure4", width = 3.5, height = 
 save_panel(p4d, paste0("fig4d", .tag), group = "figure4", width = 3.5, height = 3.2, dpi = 600)
 save_compiled_figure(
   list(a = p4a, b = p4b, c = p4c, d = p4d),
-  number = 4, width = MANUSCRIPT_WIDTH, height = 6.65
+  number = 4, width = COMPILED_FIGURE_WIDTH, height = COMPILED_FIGURE_HEIGHT
 )

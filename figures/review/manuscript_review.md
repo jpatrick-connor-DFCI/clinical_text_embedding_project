@@ -22,6 +22,16 @@ The captions disclose their behavior rather than treating this formatting review
 as a new statistical analysis. Data-derived hazard ratios, sample sizes, and
 landmark months are appended during the cluster render.
 
+## Subsequent compiled-figure revision
+
+After inspecting the updated Desktop PNGs, the compiled canvas was enlarged to
+10 × 9 inches for Figures 1, 2, and 4 and 10 × 8.2 inches for Figure 3. Panel
+letters were removed, and captions now identify panels by position. All four
+KM panels omit number-at-risk tables, as requested. Pie percentages sit farther
+from the center to separate the smaller slices. These settings supersede the
+180-mm dimensions, panel-letter treatment, and risk-table additions above.
+The revised outputs still require a cluster rerender.
+
 ## Outputs after rerendering
 
 - `png/figureN/figureN_cindex.png` and `pdf/figureN/figureN_cindex.pdf`: figure artwork.
@@ -31,7 +41,7 @@ landmark months are appended during the cluster render.
 
 The captioned review copies are taller than the submission artwork. Supply the
 clean artwork and separate legends if the target journal requests separate files.
-The journal-specific dimensions can be adjusted from the 180-mm working width.
+The compiled dimensions are configured in `R/publication_style.R` and the main plot scripts.
 
 Working reference: [Nature initial-submission guidance](https://www.nature.com/nature/for-authors/initial-submission)
 recommends final-size preparation, editable vector artwork, and self-contained

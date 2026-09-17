@@ -67,7 +67,7 @@ build_crossed_dynamics_panel <- function(df, arms, title_text, landmark) {
     geom_step(linewidth = 0.5) +
     scale_color_manual(values = pal, name = NULL, drop = FALSE) +
     scale_fill_manual(values = pal, guide = "none", drop = FALSE) +
-    scale_x_continuous(breaks = risk_times, expand = expansion(mult = c(0.025, 0.025))) +
+    scale_x_continuous(breaks = risk_times, expand = expansion(mult = SURVIVAL_X_EXPANSION)) +
     coord_cartesian(xlim = c(landmark, 120), ylim = c(0, 1.03)) +
     annotate("text", x = landmark + 2, y = 0.08, label = ann,
              hjust = 0, vjust = 0, size = MANUSCRIPT_SMALL_TEXT_SIZE,
@@ -79,10 +79,8 @@ build_crossed_dynamics_panel <- function(df, arms, title_text, landmark) {
     theme_manuscript() +
     theme(legend.position = c(0.02, 0.28), legend.justification = c(0, 0),
           legend.background = element_rect(fill = "white", color = NA))
-  row_labels <- setNames(c("I-II rising", "IV falling"), labels_in_order)
-  p <- add_manuscript_risk_table(p, fit, risk_times, row_labels)
   group_n <- table(sub$strat)
-  attr(p, "caption_detail") <- paste0("Panel d: ", paste(sprintf("%s, n = %s",
+  attr(p, "caption_detail") <- paste0("Bottom right: ", paste(sprintf("%s, n = %s",
     names(group_n), scales::comma(as.integer(group_n))), collapse = "; "), ".")
   p
 }

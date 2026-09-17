@@ -1,5 +1,5 @@
 # Figure 1: a cancer-type pie, b stage counts, c cohort-availability flow,
-# d outcome endpoints. Individual panels and compiled PNG/PDF, labeled a-d.
+# d outcome endpoints. Individual panels and compiled PNG/PDF without panel letters.
 
 suppressPackageStartupMessages({
   library(ggplot2); library(patchwork); library(dplyr); library(tidyr)
@@ -135,7 +135,7 @@ build_endpoint_counts <- function() {
     theme(panel.grid.major.y = element_line(color = "grey90"),
           axis.text.x = element_text(hjust = 0.5, size = 6))
   if (untrimmed) attr(p, "caption_detail") <- paste(
-    "Panel d uses unfiltered aggregate endpoint counts because per-endpoint",
+    "The bottom-right panel uses unfiltered aggregate endpoint counts because per-endpoint",
     "results were unavailable; the endpoint filter was not applied to this panel.")
   p
 }
@@ -162,10 +162,10 @@ build_cancer_pie <- function() {
            label = factor(label, levels = label))
   pal <- grDevices::hcl.colors(nrow(d), "Set 3")
 
-  ggplot(d, aes(x = "", y = n, fill = label)) +
+  ggplot(d, aes(x = 1, y = n, fill = label)) +
     geom_col(width = 1, color = "white") +
     coord_polar(theta = "y", start = pi / 2, direction = -1) +
-    geom_text(aes(label = ifelse(pct >= 3, sprintf("%.1f%%", pct), "")),
+    geom_text(aes(x = 1.2, label = ifelse(pct >= 3, sprintf("%.1f%%", pct), "")),
               position = position_stack(vjust = 0.5),
               size = 2, color = "#222222") +
     scale_fill_manual(values = pal, name = NULL) +
@@ -221,5 +221,5 @@ save_panel(p1c, paste0("fig1c", .tag), group = "figure1", width = 3.5, height = 
 save_panel(p1d, paste0("fig1d", .tag), group = "figure1", width = 3.5, height = 3.2, dpi = 600)
 save_compiled_figure(
   list(a = p1a, b = p1b, c = p1c, d = p1d),
-  number = 1, width = MANUSCRIPT_WIDTH, height = 6.65
+  number = 1, width = COMPILED_FIGURE_WIDTH, height = COMPILED_FIGURE_HEIGHT
 )

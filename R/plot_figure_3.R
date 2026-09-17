@@ -1,6 +1,6 @@
 # Figure 3: a C-index modality rank, b significant endpoint counts,
 # c joint Cox coefficient violins. Individual panels and compiled PNG/PDF,
-# labeled a-c.
+# without panel letters.
 
 suppressPackageStartupMessages({
   library(ggplot2); library(patchwork); library(dplyr); library(tidyr)
@@ -256,5 +256,5 @@ save_panel(p3b, paste0("fig3b", .tag), group = "figure3", width = 3.5, height = 
 save_panel(p3c, paste0("fig3c", .tag), group = "figure3", width = MANUSCRIPT_WIDTH, height = 2.8, dpi = 600)
 save_compiled_figure(
   list(a = p3a, b = p3b, c = p3c),
-  number = 3, width = MANUSCRIPT_WIDTH, height = 5.8, design = "ab\ncc"
+  number = 3, width = COMPILED_FIGURE_WIDTH, height = 8.2, design = "ab\ncc"
 )

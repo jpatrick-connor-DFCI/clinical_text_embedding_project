@@ -1,10 +1,13 @@
-# Main-figure typography at final 180-mm width; source after figure_utils.R.
+# Main-figure typography; source after figure_utils.R.
 # Supplements retain their existing theme when they source figure_utils.R anew.
 MANUSCRIPT_BASE_SIZE <- 7
 MANUSCRIPT_TEXT_SIZE <- 2.3
 MANUSCRIPT_SMALL_TEXT_SIZE <- 2.1
 MANUSCRIPT_CAPTION_SIZE <- 6
 MANUSCRIPT_WIDTH <- 180 / 25.4
+COMPILED_FIGURE_WIDTH <- 10
+COMPILED_FIGURE_HEIGHT <- 9
+SURVIVAL_X_EXPANSION <- 0.06
 
 SCHEME_LABELS <- c(death_met = "Death + mets", icd3_post = "ICD-10 (3-char)",
                    icd4_post = "ICD-10 (4-char)", phecode_post = "PhecodeX")

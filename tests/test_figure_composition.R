@@ -39,7 +39,7 @@ run_tests <- function() {
     ggplot(data.frame(x = 1:3, y = 1:3), aes(x, y)) + geom_point() +
       labs(title = paste("Panel", label))
   }), letters[1:13])
-  # Include a nested panel: it should still receive just its outer label.
+  # Nested panels must retain their titles without receiving panel letters.
   panels$h <- patchwork::wrap_plots(panels$a, panels$b)
   design <- "abc\ndde\nfgg\nhhh\nijk\nlmm"
 
@@ -55,8 +55,8 @@ run_tests <- function() {
   stopifnot(length(files) == 2L, all(file.info(files)$size > 0))
   labels <- text_labels(patchwork::patchworkGrob(captured))
   retained <- setdiff(letters[1:13], c("c", "d", "m"))
-  stopifnot(all(vapply(retained, function(label) sum(labels == label) == 1L, logical(1))),
-            !any(c("c", "d", "m") %in% labels),
+  stopifnot(!any(letters[1:13] %in% labels),
+            all(paste("Panel", setdiff(retained, "h")) %in% labels),
             "Unavailable panels: c, d, m" %in% labels,
             any(grepl("cancer C-index unavailable", messages)),
             any(grepl("no eligible phecode event", messages)))
@@ -66,12 +66,13 @@ run_tests <- function() {
   skipped <- setNames(rep(list(placeholder_panel("no data")), 13), letters[1:13])
   result <- save_compiled_figure(skipped, 2, width = 9, height = 12, design = design)
   stopifnot(length(result) == 0L, !any(file.exists(files)))
-  # Figure 3's spanning lower row previously lost labels b and c.
+  # The spanning lower row keeps its nested content, with no outer letters.
   files <- save_compiled_figure(list(a = panels$a, b = panels$b, c = panels$h),
-                               3, width = 7.09, height = 5.8, design = "ab\ncc")
+                               3, width = 10, height = 8.2, design = "ab\ncc")
   labels <- text_labels(patchwork::patchworkGrob(captured))
   stopifnot(length(files) == 2L, all(file.info(files)$size > 0),
-            all(vapply(c("a", "b", "c"), function(x) sum(labels == x) == 1L, logical(1))),
+            !any(c("a", "b", "c") %in% labels),
+            all(c("Panel a", "Panel b") %in% labels),
             !any(grepl("^Unavailable panels:", labels)),
             file.exists(file.path(FIGURE_OUT_DIR, "captions", "figure3.md")),
             file.exists(file.path(PDF_OUT_DIR, "figure3", "figure3_cindex_captioned.pdf")))
