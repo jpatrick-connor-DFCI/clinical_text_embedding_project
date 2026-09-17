@@ -79,6 +79,23 @@ build_significant_endpoints <- function(betas) {
 # ============================================================================
 # fig3a: average modality rank across endpoints (1 = best)
 # ============================================================================
+# Summarize the surviving endpoint ranks after the shared exclusions and
+# joint-Cox complete-case restriction. The rank panel displays means and IQRs.
+avg_rank_from_long <- function(ranks_long) {
+  if (is.null(ranks_long) || nrow(ranks_long) == 0) return(tibble::tibble())
+  if (!all(c("scheme", "event", "modality", "rank") %in% names(ranks_long))) {
+    return(tibble::tibble())
+  }
+  n_events <- dplyr::n_distinct(ranks_long[, c("scheme", "event")])
+  ranks_long %>%
+    group_by(modality) %>%
+    summarise(mean_rank = mean(rank, na.rm = TRUE),
+              q25_rank = quantile(rank, .25, na.rm = TRUE),
+              q75_rank = quantile(rank, .75, na.rm = TRUE),
+              .groups = "drop") %>%
+    mutate(n_events = n_events)
+}
+
 build_modality_rank <- function(betas, metric = METRIC, excluded = EXCLUDED_EVENTS) {
   ranks_long <- drop_excluded_events(
     load_figure_data(sprintf("fig3_modality_ranks_long_%s.csv", metric_suffix(metric))),
