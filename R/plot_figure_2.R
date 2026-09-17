@@ -54,13 +54,13 @@ build_fig2a <- function(metrics, metric = METRIC) {
   ggplot(d, aes(base_val, text_val, color = plot_group, shape = plot_group)) +
     geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "#666666") +
     geom_point(data = filter(d, as.character(plot_group) != "death"),
-               size = 0.65, alpha = 0.5) +
+               size = 1.0, alpha = 0.5) +
     # Draw death in a separate final layer so no coincident event can cover it,
     # and draw it larger and fully opaque: it is the single literal death
     # endpoint among thousands of coded events, so at the shared size/alpha it
     # was indistinguishable from the surrounding cloud.
     geom_point(data = filter(d, as.character(plot_group) == "death"),
-               size = 1.5, alpha = 1) +
+               size = 2.2, alpha = 1) +
     scale_color_manual(values = FIG2A_GROUP_COLORS, labels = FIG2A_GROUP_LABELS,
                        name = NULL, drop = FALSE) +
     scale_shape_manual(values = FIG2A_GROUP_SHAPES, labels = FIG2A_GROUP_LABELS,
