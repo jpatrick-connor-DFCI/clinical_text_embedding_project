@@ -7,9 +7,7 @@
 #   A  Stage IV patients, by overall risk-score quartile
 #   B  Stages I-II patients pooled, by overall risk-score quartile
 #
-# Reuses fig2_km_stage_vs_risk.csv and fig2_stage_vs_risk_{cindex_by_stage,auc}.csv
-# (all written by prep_figure_2.py); the latter two carry the per-stage annotation
-# for the active metric (see figure_utils.R::METRIC — MANUSCRIPT_METRIC=cindex|auc).
+# Uses prepared within-stage KM data and C-index annotations.
 
 suppressPackageStartupMessages({
   library(ggplot2); library(patchwork); library(dplyr)
@@ -41,10 +39,8 @@ build_stage_panel <- function(df, perf_df, stage_values, stage_label, perf_group
   td_ci <- step_ci_df(td, "stratum")
 
   lr  <- logrank_p(sub, "months", "death", "risk_quartile")
-  # Within-stage performance of the text risk score for OS (fig2_stage_vs_risk_auc.csv
-  # or fig2_stage_vs_risk_cindex_by_stage.csv, both precomputed in prep_figure_2.py),
-  # matching whichever metric is active (MANUSCRIPT_METRIC=cindex|auc).
-  perf_col <- if (metric == "cindex") "cindex" else "mean_auc"
+  # Within-stage C-index of the text risk score for overall survival.
+  perf_col <- "cindex"
   perf <- if (nrow(perf_df) > 0) perf_df[[perf_col]][perf_df$stage_group == perf_group][1] else NA_real_
   ann <- sprintf("n=%s\n%s=%.3f\nlog-rank %s",
                  scales::comma(nrow(sub)), metric_label(metric), perf, format_p_inline(lr))
@@ -75,7 +71,7 @@ d <- load_figure_data("fig2_km_stage_vs_risk.csv")
 if (nrow(d) > 0) {
   d <- d %>% mutate(months = tt_death / 30.44, death = as.integer(death))
 }
-perf_csv <- if (METRIC == "cindex") "fig2_stage_vs_risk_cindex_by_stage.csv" else "fig2_stage_vs_risk_auc.csv"
+perf_csv <- "fig2_stage_vs_risk_cindex_by_stage.csv"
 perf_df <- load_figure_data(perf_csv)
 
 pS_iv <- build_stage_panel(

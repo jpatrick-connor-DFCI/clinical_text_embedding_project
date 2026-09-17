@@ -4,18 +4,12 @@
 # C pan vs within-cancer model (dumbbell), D pan vs within-treatment model,
 # E KM by risk-score tertile (text solid / base dashed),
 # F survival by cancer stage, G survival by text risk-score quartile.
-# E/F/G share a single side-by-side row of KM curves, each with 95% CI bands.
-# H/I/J: top-3-by-Δ-C-index event barplots for mets/ICD10/phecodes, shown as
-#   paired text-vs-base C-index bars per event (I has only 2 ICD10 events).
+# H: top-3-by-Δ-C-index event bars for mets/ICD10/phecodes.
+# I: 24-month calibration; J: decision-curve analysis.
 # K/L/M: text-vs-base held-out-risk KM for each category's rank-1 event.
 # (Ranks 2-3 for each category are in the plot_figure_2_supp_events.R supplement.)
 #
-# Metric switch: set MANUSCRIPT_METRIC=cindex|auc (see figure_utils.R::METRIC) to
-# render this whole figure scored by Harrell's C-index or by mean AUC(t). Panels
-# A-D and F/G read whichever metric's columns/CSV match; outputs are suffixed
-# (e.g. figure2_text_results_cindex.png / _auc.png) so both sets can coexist.
-# Panels H-M (Δ C-index barplots + per-event KM) are always C-index-only and
-# carry no metric suffix — they render identically regardless of METRIC.
+# All performance panels and annotations use Harrell's C-index.
 
 suppressPackageStartupMessages({
   library(ggplot2); library(patchwork); library(dplyr); library(tidyr)
@@ -155,8 +149,8 @@ build_fig2b <- function(metrics, metric = METRIC) {
 
 
 # ============================================================================
-# fig2c / fig2d: pan vs. within-stratum model dumbbell (C-index or mean AUC(t),
-# per the active METRIC). Grey dot = pan model, red dot = within-stratum model.
+# fig2c / fig2d: pan vs. within-stratum C-index dumbbell.
+# Grey dot = pan model, red dot = within-stratum model.
 # Dashed vertical lines mark the overall (pooled) held-out performance of each
 # model — grey = pan, red = within. The catch-all "OTHER" stratum is not
 # plotted as its own dumbbell. Shared by the cancer- and treatment-stratified
@@ -165,8 +159,8 @@ build_fig2b <- function(metrics, metric = METRIC) {
 build_within_vs_pan <- function(csv, stratum_title, metric = METRIC) {
   d <- load_figure_data(csv)
   if (nrow(d) == 0) return(placeholder_panel(paste(csv, "empty")))
-  pan_col <- if (metric == "cindex") "cindex_pan" else "auc_pan"
-  within_col <- if (metric == "cindex") "cindex_within" else "auc_within"
+  pan_col <- "cindex_pan"
+  within_col <- "cindex_within"
   lbl <- metric_label(metric)
   if (!all(c(pan_col, within_col) %in% names(d)) ||
       all(is.na(d[[pan_col]])) || all(is.na(d[[within_col]]))) {
@@ -341,24 +335,14 @@ build_fig2d <- function() {
 
 
 # ============================================================================
-# fig2e: stage vs text risk-quartile (1×2 KM + C-index/AUC(t) annotations)
+# fig2e: stage vs text risk-quartile (1×2 KM + C-index annotations)
 # ============================================================================
 build_fig2e <- function(metric = METRIC) {
   d  <- load_figure_data("fig2_km_stage_vs_risk.csv")
   lbl <- metric_label(metric)
-  if (metric == "cindex") {
-    ci <- load_figure_data("fig2_stage_vs_risk_cindex.csv")
-    perf_s <- if (nrow(ci) > 0) ci$cindex[ci$predictor == "stage"][1] else NA_real_
-    perf_q <- if (nrow(ci) > 0) ci$cindex[ci$predictor == "text_risk"][1] else NA_real_
-  } else {
-    # fig2_stage_vs_risk_auc.csv is per-stage (FigS2 convention), not per-predictor
-    # like the cindex file — it has no pooled "stage" predictor row, only the text
-    # risk score's mean AUC(t) within each stage. Report the n-weighted average
-    # across stages as the closest AUC(t) analogue to the pooled stage C-index.
-    auc_df <- load_figure_data("fig2_stage_vs_risk_auc.csv")
-    perf_s <- NA_real_
-    perf_q <- if (nrow(auc_df) > 0) weighted.mean(auc_df$mean_auc, auc_df$n, na.rm = TRUE) else NA_real_
-  }
+  ci <- load_figure_data("fig2_stage_vs_risk_cindex.csv")
+  perf_s <- if (nrow(ci) > 0) ci$cindex[ci$predictor == "stage"][1] else NA_real_
+  perf_q <- if (nrow(ci) > 0) ci$cindex[ci$predictor == "text_risk"][1] else NA_real_
   if (nrow(d) == 0) {
     ph <- placeholder_panel("fig2_km_stage_vs_risk.csv empty")
     return(list(stage = ph, quartile = ph))
@@ -415,8 +399,7 @@ build_fig2e <- function(metric = METRIC) {
 
 # ============================================================================
 # Combined metric-delta barplot (Mets / ICD10 / phecode events, grouped by code
-# type) + top-event KM panels. Ranking follows MANUSCRIPT_METRIC and reads the
-# matching cindex/auc prep outputs.
+# type) + top-event KM panels. Ranking uses the prepared C-index outputs.
 # ============================================================================
 # Must cover every category the prep tier emits (CATEGORY_ORDER in
 # figures/prep/figure2.py): build_scheme_delta_bars filters to these names, so a
@@ -607,3 +590,12 @@ save_panel(p2_dca, paste0("fig2j", .tag), group = "figure2", width = 7.2, height
 save_panel(p2_km_mets1, paste0("fig2k", .tag), group = "figure2", width = 7.6, height = 6.0)
 save_panel(p2_km_icd1, paste0("fig2l", .tag), group = "figure2", width = 7.6, height = 6.0)
 save_panel(p2_km_phecodes1, paste0("fig2m", .tag), group = "figure2", width = 7.6, height = 6.0)
+
+# Complete manuscript figure, with one lowercase label per named panel.
+save_compiled_figure(
+  list(a = p2a, b = p2b, c = p2_wc, d = p2_wt, e = p2d,
+       f = p2_stage, g = p2_quart, h = p2_bars, i = p2_cal, j = p2_dca,
+       k = p2_km_mets1, l = p2_km_icd1, m = p2_km_phecodes1),
+  number = 2, width = 24, height = 36, design = "abc\ndde\nfgg\nhhh\nijk\nlmm",
+  heights = c(6, 6, 6, 7, 6, 6)
+)

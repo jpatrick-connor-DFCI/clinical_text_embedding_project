@@ -15,6 +15,21 @@ The tree is organized by pipeline stage rather than by file type:
 - `shared/` — palette and stage logic used across pipelines and figures
 - `data/` — versioned lookup tables and their loaders
 
+Render manuscript panels and compiled Figures 1–4 with:
+
+```bash
+R/render_all_figures.sh
+```
+
+All performance figures use C-index; AUC variants and the former Figure 5a
+propensity ROC panel are retired. Rendering removes their old PNG/PDF files from
+the configured output directory. Figures 1–4 are also assembled with lowercase
+panel labels, saved as `png/figureN/figureN_cindex.png` and
+`pdf/figureN/figureN_cindex.pdf` beneath `CLINICAL_FIGURES_OUT`. Individual panels
+are retained. A missing panel prevents publication of its compiled figure and
+reports which input is missing. Figure 1a follows the PROFILE-testing cohort
+flowchart style, with cumulative patient counts in connected rectangular boxes.
+
 Figure rendering defaults to retaining every endpoint. To enable the optional
 one-sided sensitivity filter (exclude endpoints where base exceeds text by more
 than 0.05 on the active metric), set

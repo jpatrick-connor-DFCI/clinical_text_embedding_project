@@ -5,9 +5,7 @@
 # C average modality rank across endpoints (1 = best),
 # D unpenalized standardized-beta violins + paired endpoint summaries.
 #
-# Metric switch: panel C is ranked by whichever metric MANUSCRIPT_METRIC selects
-# (see figure_utils.R::METRIC) — "cindex" (Harrell's C-index) or "auc" (mean AUC(t)).
-# A/B/D don't depend on the survival ranking metric and are unaffected.
+# Panel C ranks modalities using Harrell's C-index.
 
 suppressPackageStartupMessages({
   library(ggplot2); library(patchwork); library(dplyr); library(tidyr)
@@ -310,12 +308,14 @@ p3c <- build_fig3c(betas)
 p3d <- build_fig3d(betas)
 
 .tag <- metric_tag(METRIC)
-# 3A/3D depend on METRIC only through the event-exclusion set, which is now
-# judged on the active metric -- so their content differs between the cindex and
-# auc renders and each needs its own filename. Untagged, the second render
-# silently overwrote the first. 3B (risk-score correlation) has no event
-# dimension and is identical across metrics, so it stays untagged.
+# Preserve the existing C-index panel filenames.
 save_panel(p3a, paste0("fig3a", .tag), group = "figure3", width = 7.2, height = 5.8)
 save_panel(p3b, "fig3b", group = "figure3", width = 7.2, height = 6.0)
 save_panel(p3c, paste0("fig3c", .tag), group = "figure3", width = 7.2, height = 6.0)
 save_panel(p3d, paste0("fig3d", .tag), group = "figure3", width = 9.2, height = 6.4)
+
+# Complete manuscript figure, with one lowercase label per named panel.
+save_compiled_figure(
+  list(a = p3a, b = p3b, c = p3c, d = p3d),
+  number = 3, width = 20, height = 14
+)

@@ -2,7 +2,7 @@
 #
 # Two panels, each built on the both-anchors-eligible intersection cohort (so a shift is
 # attributable to the timescale, not to cohort composition):
-#   A  Paired scatter of the text model's per-event metric (C-index or mean AUC(t), per
+#   A  Paired scatter of the text model's per-event metric (C-index, per
 #      figure_utils.R::METRIC) under the sequencing anchor vs the treatment anchor,
 #      one point per (scheme, event); diagonal = no sensitivity to anchor choice.
 #   B  Delta (sequencing - treatment) per event, ordered by scheme, with a zero
@@ -23,7 +23,7 @@ source("R/figure_utils.R")
 # ============================================================================
 build_scatter_panel <- function(wide, metric = METRIC) {
   if (nrow(wide) == 0) return(placeholder_panel("no both-anchor events"))
-  metric_col <- if (metric == "cindex") "cindex" else "mean_auc"
+  metric_col <- "cindex"
   lims <- range(c(wide[[paste0(metric_col, "_treatment")]],
                   wide[[paste0(metric_col, "_sequencing")]]), na.rm = TRUE)
 
@@ -47,7 +47,7 @@ build_scatter_panel <- function(wide, metric = METRIC) {
 # ============================================================================
 build_delta_panel <- function(wide, metric = METRIC) {
   if (nrow(wide) == 0) return(placeholder_panel("no both-anchor events"))
-  metric_col <- if (metric == "cindex") "cindex" else "mean_auc"
+  metric_col <- "cindex"
   d <- wide %>%
     mutate(delta = .data[[paste0(metric_col, "_sequencing")]] - .data[[paste0(metric_col, "_treatment")]]) %>%
     filter(!is.na(delta)) %>%
@@ -80,16 +80,15 @@ wide <- tibble::tibble()
 if (nrow(sens) > 0) {
   text_intersection <- sens %>% filter(model == "text", cohort == "intersection")
   wide <- text_intersection %>%
-    select(anchor, scheme, event, cindex, mean_auc) %>%
-    pivot_wider(names_from = anchor, values_from = c(cindex, mean_auc)) %>%
+    select(anchor, scheme, event, cindex) %>%
+    pivot_wider(names_from = anchor, values_from = cindex) %>%
     filter(!is.na(cindex_treatment), !is.na(cindex_sequencing))
 }
 
 pS_scatter <- build_scatter_panel(wide)
 pS_delta   <- build_delta_panel(wide)
 
-# Both panels plot the active metric (cindex vs mean_auc) and are trimmed on it,
-# so each render needs its own filename -- untagged, the two runs collided.
+# Preserve the existing C-index panel filenames.
 .tag <- metric_tag(METRIC)
 save_panel(pS_scatter, paste0("figS_anchor_scatter", .tag), group = "figure2", width = 6.4, height = 6.4)
 save_panel(pS_delta,   paste0("figS_anchor_delta", .tag),   group = "figure2", width = 7.8, height = 5.2)

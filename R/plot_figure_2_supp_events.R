@@ -5,7 +5,7 @@
 # curve per category (mets / ICD10 / phecodes); this supplement shows the
 # rank-2 and rank-3 events for each category as a 3x2 grid.
 #
-# Ranking and output names follow MANUSCRIPT_METRIC=cindex|auc.
+# Ranking and output names follow the manuscript C-index metric.
 
 suppressPackageStartupMessages({
   library(ggplot2); library(patchwork); library(dplyr)

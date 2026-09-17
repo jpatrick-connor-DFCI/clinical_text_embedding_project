@@ -30,9 +30,7 @@ Writes to FIGURE_DATA_DIR:
 - fig2_stage_vs_risk_cindex.csv     predictor, cindex, n   (stage ordinal vs text risk score, OS)
 - fig2_stage_vs_risk_cindex_by_stage.csv  stage_group, cindex, n   (within-stratum C-index of text
                                     risk score for OS, including pooled I-II; FigS2 annotation)
-- fig2_stage_vs_risk_auc.csv        stage_group, mean_auc, n   (within-stratum AUC(t) of text
-                                    risk score for OS, including pooled I-II; FigS2 annotation)
-- fig2_scheme_delta_topk_{cindex,auc}.csv
+- fig2_scheme_delta_topk_cindex.csv
                                     category, rank, scheme, event, event_lbl, metric,
                                     text_value, base_value, delta (top-3 events per category by
                                     the selected positive metric delta; category in
@@ -45,7 +43,7 @@ Writes to FIGURE_DATA_DIR:
                                     selection. Cross-scheme dedup: an ICD10 event and a phecode event
                                     with any shared mapping never both appear — ICD10 is ranked first,
                                     so the phecode is skipped for its next-best-delta event.)
-- fig2_scheme_event_km_{cindex,auc}.csv
+- fig2_scheme_event_km_cindex.csv
                                     category, scheme, event, event_lbl, DFCI_MRN, text_risk_score,
                                     base_risk_score, event_flag, tt, text_tertile, base_tertile
                                     (held-out risk scores + survival for the events selected in
@@ -62,8 +60,7 @@ import re
 import numpy as np
 import pandas as pd
 import polars as pl
-from sksurv.metrics import concordance_index_censored, cumulative_dynamic_auc
-from sksurv.util import Surv
+from sksurv.metrics import concordance_index_censored
 from sklearn.linear_model import LogisticRegression
 
 from config import CODE_PATH, RESULTS_PATH, SURV_PATH
@@ -449,10 +446,6 @@ STAGE_VS_RISK_COLUMNS = [
     "outer_fold", "stage_group", "stage_ordinal", "risk_quartile",
 ]
 STAGE_VS_RISK_CINDEX_COLUMNS = ["predictor", "cindex", "n"]
-STAGE_VS_RISK_AUC_COLUMNS = ["stage_group", "mean_auc", "n"]
-# Number of evaluation points on the 5th-95th percentile time grid, matching
-# within_vs_pan_cancer_models.py's mean-AUC(t) convention.
-AUC_TIME_GRID_POINTS = 50
 
 
 def _full_cohort_metrics() -> pl.DataFrame:
@@ -860,9 +853,9 @@ def _stage_vs_risk_cindex_by_stage(df: pl.DataFrame) -> pl.DataFrame:
 
     Per-stage analogue of _stage_vs_risk_cindex (which reports one pooled
     cindex for the whole known-stage cohort), matching the per-stage grouping
-    of _stage_vs_risk_auc so FigS2 can annotate either metric per stage panel.
+    needed by the within-stage C-index annotations in FigS2.
     """
-    out_cols = STAGE_VS_RISK_AUC_COLUMNS[:1] + ["cindex", "n"]
+    out_cols = ["stage_group", "cindex", "n"]
     if df.is_empty():
         return pl.DataFrame(schema={c: pl.Float64 for c in out_cols})
     rows = []
@@ -883,64 +876,12 @@ def _stage_vs_risk_cindex_by_stage(df: pl.DataFrame) -> pl.DataFrame:
     return pl.DataFrame(rows).select(out_cols)
 
 
-def _stage_vs_risk_auc(df: pl.DataFrame) -> pl.DataFrame:
-    """Mean time-dependent AUC within each stage and pooled Stages I-II.
-
-    IPCW reference + eval-time grid (5th-95th percentile, 50 points) are fit on the
-    pooled known-stage cohort (this table has no train/test split, unlike
-    within_vs_pan_cancer_models.py's held-out data), then cumulative_dynamic_auc is
-    evaluated per stage subgroup against that shared reference — mirroring the
-    project-standard mean-AUC(t) definition used everywhere else in the pipeline.
-    """
-    if df.is_empty():
-        return pl.DataFrame(schema={c: pl.Float64 for c in STAGE_VS_RISK_AUC_COLUMNS})
-    if "outer_fold" not in df.columns:
-        raise ValueError("Risk scores predate nested CV; regenerate files with outer_fold metadata")
-
-    rows = []
-    groups = [(k, g) for (k,), g in df.group_by(["stage_group"], maintain_order=True)]
-    early_stage = df.filter(pl.col("stage_group").is_in(["I", "II"]))
-    if not early_stage.is_empty():
-        groups.append(("I-II", early_stage))
-    for stage_lbl, sub in groups:
-        fold_aucs, fold_weights = [], []
-        for fold in sub["outer_fold"].unique().sort().to_list():
-            fold_eval = sub.filter(pl.col("outer_fold") == fold)
-            fold_ref = df.filter(pl.col("outer_fold") != fold)
-            sub_tt = fold_eval["tt_death"].cast(pl.Float64, strict=False).to_numpy()
-            ref_tt = fold_ref["tt_death"].cast(pl.Float64, strict=False).to_numpy()
-            lo, hi = np.percentile(ref_tt, [5, 95])
-            et = np.linspace(lo, hi, AUC_TIME_GRID_POINTS)
-            et = et[(et > sub_tt.min()) & (et < sub_tt.max())]
-            if len(et) == 0:
-                continue
-            try:
-                sub_death = fold_eval["death"].cast(pl.Boolean, strict=False).to_numpy()
-                y_test = Surv.from_arrays(sub_death, sub_tt)
-                y_ref = Surv.from_arrays(
-                    fold_ref["death"].cast(pl.Boolean, strict=False).to_numpy(), ref_tt
-                )
-                fold_aucs.append(float(cumulative_dynamic_auc(
-                    y_ref, y_test, fold_eval["text_risk_score"].cast(pl.Float64, strict=False).to_numpy(), et,
-                )[1]))
-                fold_weights.append(fold_eval.height)
-            except (ValueError, ZeroDivisionError) as e:
-                print(f"  AUC(t) failed for stage {stage_lbl}: {e}")
-        mean_auc = float(np.average(fold_aucs, weights=fold_weights)) if fold_aucs else float("nan")
-        rows.append({"stage_group": stage_lbl, "mean_auc": mean_auc, "n": sub.height})
-    return pl.DataFrame(rows).select(STAGE_VS_RISK_AUC_COLUMNS)
-
-
 def _within_vs_pan(kind: str) -> pl.DataFrame:
-    """Read a Pipeline-3 pan-vs-within metrics CSV (mean time-dependent AUC + C-index).
+    """Read Pipeline-3 C-index comparisons, retaining the pooled Overall row.
 
-    Maps the upstream schema to the unified figure schema, keeps the `Overall`
-    row, drops NaN-AUC strata, and applies an n>=30 floor to per-stratum rows
-    (the treatment script writes all strata; the cancer script already filters).
-    Returns a header-only frame if the upstream file is missing or pre-dates the
-    AUC columns (re-run the Pipeline-3 script), so the R panel degrades gracefully.
-    C-index columns are passed through when present so the R side can render a
-    parallel C-index version of this panel (falls back to NaN otherwise).
+    Require finite C-index values and n>=30 for individual strata. Legacy AUC
+    columns remain optional in the shared CSV schema; their availability must
+    not determine which strata appear in a C-index figure.
     """
     subdir, fname, stratum_col = _WITHIN_VS_PAN_SPEC[kind]
     fp = os.path.join(RESULTS_PATH, subdir, fname)
@@ -948,27 +889,25 @@ def _within_vs_pan(kind: str) -> pl.DataFrame:
         print(f"  missing {fp}; skipping within-vs-pan {kind}")
         return pl.DataFrame(schema={c: pl.Float64 for c in WITHIN_VS_PAN_COLUMNS})
     df = pl.read_csv(fp)
-    if not {stratum_col, "AUC_PAN", "AUC_WITHIN", "N_HELDOUT"}.issubset(df.columns):
-        print(f"  {fp} has no AUC columns — re-run the Pipeline-3 script; skipping {kind}")
+    if not {stratum_col, "CINDEX_PAN", "CINDEX_WITHIN", "N_HELDOUT"}.issubset(df.columns):
+        print(f"  {fp} has no C-index columns — re-run the Pipeline-3 script; skipping {kind}")
         return pl.DataFrame(schema={c: pl.Float64 for c in WITHIN_VS_PAN_COLUMNS})
-    has_cindex = {"CINDEX_PAN", "CINDEX_WITHIN"}.issubset(df.columns)
-    if not has_cindex:
-        print(f"  {fp} has no CINDEX columns — re-run the Pipeline-3 script for cindex panel")
     out = pl.DataFrame({
         "stratum": df[stratum_col].cast(pl.Utf8),
-        "auc_pan": df["AUC_PAN"],
-        "auc_within": df["AUC_WITHIN"],
+        "auc_pan": df["AUC_PAN"] if "AUC_PAN" in df.columns else pl.Series([None] * df.height, dtype=pl.Float64),
+        "auc_within": df["AUC_WITHIN"] if "AUC_WITHIN" in df.columns else pl.Series([None] * df.height, dtype=pl.Float64),
         "delta": df["DELTA_AUC_WITHIN_MINUS_PAN"] if "DELTA_AUC_WITHIN_MINUS_PAN" in df.columns
-                 else (df["AUC_WITHIN"] - df["AUC_PAN"]),
-        "cindex_pan": df["CINDEX_PAN"] if has_cindex else pl.Series([None] * df.height, dtype=pl.Float64),
-        "cindex_within": df["CINDEX_WITHIN"] if has_cindex else pl.Series([None] * df.height, dtype=pl.Float64),
+                 else (df["AUC_WITHIN"] - df["AUC_PAN"]) if {"AUC_WITHIN", "AUC_PAN"}.issubset(df.columns)
+                 else pl.Series([None] * df.height, dtype=pl.Float64),
+        "cindex_pan": df["CINDEX_PAN"],
+        "cindex_within": df["CINDEX_WITHIN"],
         "n_heldout": df["N_HELDOUT"],
     })
     out = out.with_columns([
         (pl.col("cindex_within") - pl.col("cindex_pan")).alias("cindex_delta"),
         (pl.col("stratum") == "Overall").alias("is_overall"),
     ])
-    out = filter_finite_rows(out, ["auc_pan", "auc_within"])
+    out = filter_finite_rows(out, ["cindex_pan", "cindex_within"])
     out = out.filter(pl.col("is_overall") | (pl.col("n_heldout") >= 30))
     return out.select(WITHIN_VS_PAN_COLUMNS)
 
@@ -994,9 +933,8 @@ def main() -> None:
     save_figure_data(_stage_vs_risk_cindex(stage_vs_risk_df), "fig2_stage_vs_risk_cindex.csv")
     save_figure_data(_stage_vs_risk_cindex_by_stage(stage_vs_risk_df),
                       "fig2_stage_vs_risk_cindex_by_stage.csv")
-    save_figure_data(_stage_vs_risk_auc(stage_vs_risk_df), "fig2_stage_vs_risk_auc.csv")
 
-    for metric in ("cindex", "auc"):
+    for metric in ("cindex",):
         scheme_delta_topk = _scheme_delta_topk(validation_metrics, metric=metric)
         save_figure_data(scheme_delta_topk, f"fig2_scheme_delta_topk_{metric}.csv")
         save_figure_data(

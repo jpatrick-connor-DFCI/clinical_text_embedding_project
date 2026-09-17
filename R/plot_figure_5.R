@@ -1,6 +1,6 @@
 # Render Figure 5 (ICI biomarker discovery) in ggplot2 + patchwork.
 #
-# A propensity ROC curves (covariates-only vs covariates+embeddings),
+# The former propensity ROC/AUC panel (5a) has been retired.
 # B covariate-balance love plot (SMD before vs after IPTW),
 # C cohort-grouped biomarker robustness dot-matrix + definitions caption,
 # D 3-panel marker × ICI KM strip with carried-through interaction HR,
@@ -13,88 +13,6 @@ suppressPackageStartupMessages({
 })
 
 source("R/figure_utils.R")
-
-
-# ============================================================================
-# Manual ROC + trapezoidal AUC (matches the Python helper)
-# ============================================================================
-compute_roc <- function(y, score) {
-  ok <- is.finite(y) & is.finite(score)
-  y <- as.integer(y[ok]); score <- score[ok]
-  if (length(unique(y)) < 2) return(list(fpr = c(0, 1), tpr = c(0, 1), auc = NA_real_))
-  ord <- order(-score)
-  y <- y[ord]
-  n_pos <- max(sum(y == 1), 1L); n_neg <- max(sum(y == 0), 1L)
-  cum_tp <- cumsum(y == 1) / n_pos
-  cum_fp <- cumsum(y == 0) / n_neg
-  fpr <- c(0, cum_fp, 1); tpr <- c(0, cum_tp, 1)
-  auc <- sum(diff(fpr) * (head(tpr, -1) + tpr[-1]) / 2)
-  list(fpr = fpr, tpr = tpr, auc = auc)
-}
-
-bootstrap_auc_ci <- function(y, score, reps = 500L, seed = 5105L) {
-  ok <- is.finite(y) & is.finite(score)
-  y <- y[ok]; score <- score[ok]
-  if (length(y) < 20 || length(unique(y)) < 2) return(c(NA_real_, NA_real_))
-  set.seed(seed)
-  pos <- which(y == 1); neg <- which(y == 0)
-  vals <- replicate(reps, {
-    idx <- c(sample(pos, length(pos), replace = TRUE),
-             sample(neg, length(neg), replace = TRUE))
-    compute_roc(y[idx], score[idx])$auc
-  })
-  unname(stats::quantile(vals, c(.025, .975), na.rm = TRUE))
-}
-
-
-# ============================================================================
-# fig5a: propensity-score ROC curves
-# ============================================================================
-build_fig5a <- function() {
-  ps <- load_figure_data("fig5_ps_predictions.csv")
-  if (nrow(ps) == 0) return(placeholder_panel("fig5_ps_predictions.csv empty"))
-  ps <- ps %>% filter(!is.na(model_probs), !is.na(ground_truth))
-
-  model_order <- c("covariates_only", "covariates_plus_embeddings")
-  model_colors <- c("covariates_only" = "#F28E2B",
-                    "covariates_plus_embeddings" = TEAL)
-
-  roc_df <- bind_rows(lapply(model_order, function(m) {
-    sub <- ps[ps$ps_model == m, ]
-    if (nrow(sub) == 0) return(NULL)
-    r <- compute_roc(sub$ground_truth, sub$model_probs)
-    ci <- bootstrap_auc_ci(sub$ground_truth, sub$model_probs,
-                           seed = 5105L + match(m, model_order))
-    tibble::tibble(model = m, fpr = r$fpr, tpr = r$tpr,
-                   label = sprintf("%s (AUC %.2f, 95%% CI %.2f–%.2f)",
-                                   pretty_model(m), r$auc, ci[1], ci[2]))
-  }))
-  legend_labels <- roc_df %>% distinct(model, label) %>%
-    arrange(match(model, model_order))
-
-  # Cohort subtitle
-  cohorts <- if ("cohort" %in% names(ps)) unique(ps$cohort) else character(0)
-  cohort_sub <- paste(vapply(cohorts, function(c) {
-    sprintf("%s (%s)", cohort_label(c), COHORT_SHORT[c])
-  }, character(1)), collapse = " · ")
-  ttl <- "Propensity Score Model: Predicting ICI Receipt"
-  if (nzchar(cohort_sub)) ttl <- paste0(ttl, "\n", cohort_sub)
-
-  main <- ggplot(roc_df, aes(fpr, tpr, color = model)) +
-    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "#777777") +
-    geom_step(linewidth = 1.1) +
-    scale_color_manual(values = model_colors,
-                       breaks = legend_labels$model,
-                       labels = legend_labels$label, name = NULL) +
-    coord_cartesian(xlim = c(0, 1), ylim = c(0, 1.02)) +
-    labs(x = "False Positive Rate", y = "True Positive Rate", title = ttl) +
-    theme_manuscript() +
-    theme(legend.position = c(0.32, 0.90),
-          legend.justification = c(0, 1),
-          legend.background = element_rect(fill = "white", color = NA))
-
-  main
-}
 
 
 # ============================================================================
@@ -431,14 +349,12 @@ build_figS5a <- function() {
 # ============================================================================
 # Compose Figure 5
 # ============================================================================
-p5a <- build_fig5a()
 p5b <- build_fig5b()
 p5c <- build_fig5c()
 p5d <- build_fig5d()
 p5e <- build_fig5e()
 pS5a <- build_figS5a()
 
-save_panel(p5a, "fig5a", group = "figure5", width = 9.6, height = 7.2)
 save_panel(p5b, "fig5b", group = "figure5", width = 9.0, height = 7.2)
 save_panel(p5c, "fig5c", group = "figure5", width = 12.0, height = 8.2)
 save_panel(p5d, "fig5d", group = "figure5", width = 18.0, height = 6.8)

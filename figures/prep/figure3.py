@@ -4,9 +4,7 @@ Writes to FIGURE_DATA_DIR:
 - fig3_modality_cindex.csv        scheme, event, modality, cindex, auc  (both metrics side by side;
                                   auc is the sibling mean_auc(t) column from the same {mod}_test.csv)
 - fig3_modality_avg_rank_cindex.csv   modality, mean_rank, sem_rank, n_events  (ranked by cindex)
-- fig3_modality_avg_rank_auc.csv      modality, mean_rank, sem_rank, n_events  (ranked by mean AUC(t))
 - fig3_modality_ranks_long_cindex.csv scheme, event, modality, rank  (per-endpoint, cindex-ranked)
-- fig3_modality_ranks_long_auc.csv    scheme, event, modality, rank  (per-endpoint, AUC(t)-ranked)
                                   (the two ranks_long files let the R tier run a Friedman test across
                                   modalities for whichever metric is active)
 - fig3_joint_betas.csv            scheme, event, fit_variant, modality, beta, se, hr, p_value, n, n_events
@@ -453,7 +451,7 @@ def main() -> None:
         metrics_all = _modality_cindex_all()
 
         save_figure_data(metrics_all, "fig3_modality_cindex.csv")
-        for value_col, tag in [("cindex", "cindex"), ("auc", "auc")]:
+        for value_col, tag in [("cindex", "cindex")]:
             save_figure_data(_modality_avg_rank(metrics_all, value_col),
                               f"fig3_modality_avg_rank_{tag}.csv")
             save_figure_data(_modality_ranks_long(metrics_all, value_col),

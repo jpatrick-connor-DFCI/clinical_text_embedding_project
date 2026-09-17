@@ -14,30 +14,26 @@ suppressPackageStartupMessages({
 source("R/config.R")
 
 # ----------------------------------------------------------------------------
-# Metric switch — the manuscript reports Harrell's C-index as its single primary
-# metric, so METRIC defaults to "cindex" and every figure is built on it unless
-# asked otherwise. Mean time-dependent AUC(t) is retained as an OPTIONAL
-# sensitivity view: set MANUSCRIPT_METRIC=auc before sourcing/Rscript-ing a
-# plot_figure_*.R script to render the parallel AUC set. Metric-dependent panels
-# stay metric-tagged on disk, so an AUC render never overwrites the c-index one.
+# Manuscript figures use Harrell's C-index exclusively, including direct script
+# execution. Legacy metric environment variables cannot enable AUC rendering.
 # ----------------------------------------------------------------------------
-METRIC <- tolower(Sys.getenv("MANUSCRIPT_METRIC", unset = "cindex"))
-if (!METRIC %in% c("cindex", "auc")) {
-  warning(sprintf("Unrecognized MANUSCRIPT_METRIC=%s; falling back to 'cindex'", METRIC))
-  METRIC <- "cindex"
-}
+METRIC <- "cindex"
 
-# Human-readable label for the active metric ("C-index" / "Mean AUC(t)").
+# Reject unsupported metrics even when a builder is invoked directly.
 metric_label <- function(metric = METRIC) {
-  c(cindex = "C-index", auc = "Mean AUC(t)")[[metric]]
+  metric_suffix(metric)
+  "C-index"
 }
 
-# Column-name suffix for the active metric ("cindex" / "auc"), matching the
+# Column-name suffix for C-index, matching the
 # `{scheme}_{metric}` naming convention used in the metric-parameterized CSVs.
-metric_suffix <- function(metric = METRIC) metric
+metric_suffix <- function(metric = METRIC) {
+  if (!identical(metric, "cindex")) stop("Manuscript figures support only C-index")
+  metric
+}
 
 # File/panel-name suffix for the active metric output, e.g. "figure2_..._cindex.png".
-metric_tag <- function(metric = METRIC) paste0("_", metric)
+metric_tag <- function(metric = METRIC) paste0("_", metric_suffix(metric))
 
 
 # ----------------------------------------------------------------------------
@@ -133,7 +129,7 @@ load_figure_data <- function(name) {
   suppressMessages(readr::read_csv(fp, show_col_types = FALSE))
 }
 
-# Individual panels only (no composed target figures), grouped by figure under
+# Individual panels and compiled figures, grouped by figure under
 # png/<group>/ and pdf/<group>/; save_panel() writes both formats for every
 # panel and creates the group subdirectory on demand. `group` (e.g. "figure1")
 # is a required argument at every save_panel() call site — not a script-level
@@ -164,6 +160,54 @@ save_panel <- function(plot, name, group, width = 6.0, height = 4.8) {
   ggsave(out_pdf, plot, width = width, height = height, bg = "white")
   message(sprintf("[panel] %s / %s", out_png, out_pdf))
   invisible(c(out_png, out_pdf))
+}
+
+# Only obsolete generated manuscript graphics are removed; prepared CSVs and
+# unrelated output files are untouched. Run for direct scripts and notebooks too.
+remove_retired_figures <- function() {
+  for (root in c(PNG_OUT_DIR, PDF_OUT_DIR)) {
+    files <- list.files(root, pattern = "\\.(png|pdf)$", recursive = TRUE,
+                        full.names = TRUE, ignore.case = TRUE)
+    retired <- files[grepl("^fig(ure)?[0-9S].*_auc\\.(png|pdf)$", basename(files),
+                           ignore.case = TRUE) |
+                       (basename(dirname(files)) == "figure5" &
+                          grepl("^fig5a\\.(png|pdf)$", basename(files)))]
+    if (length(retired)) {
+      if (!all(file.remove(retired))) stop("Could not remove retired AUC/ROC figures")
+      message("Removed ", length(retired), " retired AUC/ROC figure files")
+    }
+  }
+}
+remove_retired_figures()
+
+# Wrap each complete panel as one grob so nested patchwork layouts (e.g. 4c)
+# receive exactly one letter and retain their own annotations and legends.
+# Named panels and explicit designs keep letters tied to standalone filenames.
+save_compiled_figure <- function(panels, number, width, height,
+                                 design = NULL, ncol = 2, heights = NULL) {
+  group <- paste0("figure", number)
+  name <- paste0(group, metric_tag())
+  missing <- vapply(panels, function(p) is.null(p) || is_skipped_panel(p), logical(1))
+  if (any(missing)) {
+    # Do not leave an older complete-looking figure after a failed rebuild.
+    unlink(c(file.path(PNG_OUT_DIR, group, paste0(name, ".png")),
+             file.path(PDF_OUT_DIR, group, paste0(name, ".pdf"))))
+    stop(sprintf("Cannot compile Figure %s; missing panels: %s", number,
+                 paste(names(panels)[missing], collapse = ", ")))
+  }
+  if (is.null(names(panels)) || anyDuplicated(names(panels))) {
+    stop("Compiled figures require unique panel labels")
+  }
+  labeled <- lapply(names(panels), function(label) {
+    patchwork::wrap_elements(full = cowplot::as_grob(panels[[label]])) +
+      labs(tag = label) +
+      theme(plot.tag = element_text(size = 18, face = "bold", hjust = 0, vjust = 1),
+            plot.tag.position = "topleft", plot.margin = margin(6, 6, 6, 6))
+  })
+  names(labeled) <- names(panels)
+  compiled <- patchwork::wrap_plots(labeled, ncol = ncol, design = design,
+                                    heights = heights)
+  save_panel(compiled, name, group, width = width, height = height)
 }
 
 # A panel with no data to draw. Returns a sentinel rather than a ggplot: rather
@@ -214,12 +258,7 @@ compact_panels <- function(panels) {
 # endpoints. The thresholds come from the delta distribution itself, so they
 # adapt to the run rather than encoding a fixed effect size.
 #
-# The delta is always judged on the C-INDEX, the manuscript's primary metric,
-# regardless of which metric a given render reports. That keeps ONE exclusion set
-# across the manuscript: the optional AUC render (MANUSCRIPT_METRIC=auc) shows
-# the same endpoints as the c-index figures and differs only in the metric
-# plotted. Judging each render on its own metric would let the two disagree about
-# which events exist, which is the inconsistency this guards against.
+# The exclusion set is always judged on the manuscript's C-index.
 # ----------------------------------------------------------------------------
 EVENT_EXCLUSION_SD <- 3             # outlier cutoff, in SDs of the delta distribution
 EVENT_EXCLUSION_METRIC <- "cindex"  # delta is always judged on the primary metric

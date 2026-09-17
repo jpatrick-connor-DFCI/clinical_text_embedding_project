@@ -408,3 +408,9 @@ save_panel(p4d, "fig4d",  group = "figure4", width = 7.8, height = 5.8)
 save_panel(p4e, "fig4e",  group = "figure4", width = 7.2, height = 5.4)
 save_panel(p4c, "fig4c",  group = "figure4", width = 9.6, height = 8.4)
 save_panel(pS1, "figS1a", group = "figure4", width = 7.2, height = 5.4)
+
+# Complete manuscript figure, with one lowercase label per named panel.
+save_compiled_figure(
+  list(a = p4a, b = p4b, c = p4c, d = p4d, e = p4e),
+  number = 4, width = 20, height = 23, design = "aabb\ncccc\nddee", heights = c(7, 9, 6)
+)

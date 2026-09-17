@@ -2,7 +2,7 @@
 #
 # Panels: A pipeline schematic, B endpoint counts, C notes/patient by type,
 #         D cancer-type pie, E stage breakdown, F first-line treatment breakdown.
-# Output: panels fig1a–fig1f (png/pdf).
+# Output: panels fig1a–fig1f and compiled figure1_cindex (PNG/PDF).
 
 suppressPackageStartupMessages({
   library(ggplot2); library(patchwork); library(dplyr); library(tidyr)
@@ -34,37 +34,38 @@ build_fig1a <- function() {
   if (nrow(d) == 0) return(placeholder_panel("fig0_data_availability.csv empty"))
   order <- c("full_cohort", "cancer_type", "text", "treatment", "stage",
              "prs", "somatic", "metburden", "all")
-  fills <- c(full_cohort = "#5B8DB8", cancer_type = "#4E79A7",
-             text = MODALITY_COLORS[["text"]], treatment = MODALITY_COLORS[["treatment"]],
-             stage = MODALITY_COLORS[["stage"]], prs = MODALITY_COLORS[["prs"]],
-             somatic = MODALITY_COLORS[["somatic"]], metburden = MODALITY_COLORS[["metburden"]],
-             all = "#333333")
-  d <- d %>% mutate(stage = factor(stage, levels = order)) %>% arrange(stage) %>%
-    filter(!(as.character(stage) == "metburden" & n_patients == lead(n_patients, default = -1))) %>%
-    # Availability steps with no attrition add no information to a cumulative
-    # flow and make the central stack unnecessarily tall.
-    filter(row_number() == 1 | n_patients != lag(n_patients)) %>%
-    mutate(y = rev(seq_len(n())), previous_n = lag(n_patients, default = first(n_patients)),
-           retained = 100 * n_patients / previous_n,
-           total_pct = 100 * n_patients / first(n_patients),
-           box_label = sprintf("%s\n%s · %.1f%% of start", label, comma(n_patients), total_pct),
-           arrow_label = ifelse(row_number() == 1, "", sprintf("%.1f%% retained", retained)))
+  d <- d %>% mutate(stage = factor(stage, levels = order)) %>% arrange(stage)
+  if (anyNA(d$stage) || anyDuplicated(d$stage) ||
+      any(!is.finite(d$n_patients)) || any(d$n_patients < 0) ||
+      any(diff(d$n_patients) > 0)) {
+    stop("Figure 1a requires unique, ordered cumulative cohort counts")
+  }
+  # Keep named eligibility steps even when no patients are lost. Only collapse
+  # the last modality if it duplicates the explicitly named final cohort.
+  d <- d %>%
+    filter(!(as.character(stage) == "metburden" &
+               n_patients == lead(n_patients, default = -1))) %>%
+    mutate(ycen = rev(seq_len(n())),
+           text = sprintf("%s\nn = %s", label, comma(n_patients)),
+           xmin = 0.07, xmax = 0.93, ymin = ycen - 0.31, ymax = ycen + 0.31)
+  arrows <- d %>% mutate(yend = lead(ymax)) %>% filter(!is.na(yend))
+
+  # Match PROFILE-testing's render_consort_panel: uniform pale rectangles,
+  # centered criterion/count labels, and slate arrows between box edges.
   ggplot(d) +
-    geom_segment(data = d %>% filter(row_number() > 1),
-                 aes(x = .5, xend = .5, y = y + .72, yend = y + .32),
-                 arrow = arrow(length = unit(.08, "inches"), type = "closed"), color = "grey35") +
-    geom_label(aes(.5, y, label = box_label, fill = as.character(stage)),
-               size = MANUSCRIPT_TEXT_SIZE, fontface = "bold", lineheight = .95) +
-    geom_text(data = d %>% filter(row_number() > 1),
-              aes(.70, y + .51, label = arrow_label), hjust = 0,
-              size = MANUSCRIPT_SMALL_TEXT_SIZE, color = "grey35") +
-    scale_fill_manual(values = fills, guide = "none") +
-    coord_cartesian(xlim = c(0, 1), ylim = c(.5, max(d$y) + .5), clip = "off") +
-    labs(title = "Cohort Eligibility and Data Availability",
-         subtitle = "Cumulative flow; each box is a subset of the preceding box") +
+    geom_rect(aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
+              fill = "#eef1f5", color = "#5d6d7e", linewidth = 0.4) +
+    geom_text(aes(x = 0.5, y = ycen, label = text),
+              size = MANUSCRIPT_SMALL_TEXT_SIZE, lineheight = 0.9) +
+    geom_segment(data = arrows,
+                 aes(x = 0.5, xend = 0.5, y = ymin, yend = yend),
+                 arrow = arrow(length = unit(0.12, "cm"), type = "closed"),
+                 color = "#5d6d7e", linewidth = 0.45) +
+    coord_cartesian(xlim = c(0, 1), ylim = c(0.5, nrow(d) + 0.5), expand = FALSE) +
+    labs(title = "Cohort Eligibility and Data Availability") +
     theme_void(base_size = MANUSCRIPT_BASE_SIZE) +
-    theme(plot.title = element_text(face = "bold", size = 13),
-          plot.subtitle = element_text(color = "grey35"))
+    theme(plot.title = element_text(face = "bold", size = 12.5, hjust = 0.5),
+          plot.margin = margin(8, 12, 8, 12))
 }
 
 
@@ -250,11 +251,15 @@ p1a <- build_fig1a(); p1b <- build_fig1b(); p1c <- build_fig1c()
 p1d <- build_fig1d(); p1e <- build_fig1e(); p1f <- build_fig1f()
 
 save_panel(p1a, "fig1a", group = "figure1", width = 11.0, height = 6.4)
-# fig1b's counts now depend on the event-exclusion set, which is judged on the
-# active metric -- so the cindex and auc renders differ and need distinct names.
-# The other figure-1 panels have no event dimension and stay untagged.
+# Retain the C-index suffix for compatibility with existing panel filenames.
 save_panel(p1b, paste0("fig1b", metric_tag(METRIC)), group = "figure1", width = 7.2, height = 5.4)
 save_panel(p1c, "fig1c", group = "figure1", width = 8.4, height = 5.4)
 save_panel(p1d, "fig1d", group = "figure1", width = 8.4, height = 6.2)
 save_panel(p1e, "fig1e", group = "figure1", width = 7.2, height = 5.4)
 save_panel(p1f, "fig1f", group = "figure1", width = 9.2, height = 5.4)
+
+# Complete manuscript figure, with one lowercase label per named panel.
+save_compiled_figure(
+  list(a = p1a, b = p1b, c = p1c, d = p1d, e = p1e, f = p1f),
+  number = 1, width = 20, height = 21
+)
