@@ -47,9 +47,9 @@ Within-versus-pan and top-event plots (including the top-event supplement) are
 retired. Superseded standalone panel files are removed when each figure rerenders.
 
 Compiled Figures 1, 2, and 4 render at 10 × 9 inches; Figure 3 renders at
-10 × 8.2 inches, with 600-dpi PNGs and vector PDFs. Compiled artwork has no panel
-letters, and KM curves have no number-at-risk tables. Captions identify panels
-by position. Each compiled figure also gets a `_captioned` PNG/PDF review copy;
+10 × 8.2 inches, with 600-dpi PNGs and vector PDFs. Compiled artwork retains panel
+letters and omits individual plot titles; KM curves have no number-at-risk tables.
+Captions identify panels by letter. Each compiled figure also gets a `_captioned` PNG/PDF review copy;
 standalone legends are written to `$CLINICAL_FIGURES_OUT/captions/`. Base wording
 is versioned in `figures/manuscript_captions.json`; current sample sizes and model
 statistics are added at rendering time. The clean artwork remains available for

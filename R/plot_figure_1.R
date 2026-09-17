@@ -1,5 +1,5 @@
 # Figure 1: a cancer-type pie, b stage counts, c cohort-availability flow,
-# d outcome endpoints. Individual panels and compiled PNG/PDF without panel letters.
+# d outcome endpoints. Individual panels and compiled PNG/PDF with panel letters and no plot titles.
 
 suppressPackageStartupMessages({
   library(ggplot2); library(patchwork); library(dplyr); library(tidyr)
@@ -135,7 +135,7 @@ build_endpoint_counts <- function() {
     theme(panel.grid.major.y = element_line(color = "grey90"),
           axis.text.x = element_text(hjust = 0.5, size = 6))
   if (untrimmed) attr(p, "caption_detail") <- paste(
-    "The bottom-right panel uses unfiltered aggregate endpoint counts because per-endpoint",
+    "Panel d uses unfiltered aggregate endpoint counts because per-endpoint",
     "results were unavailable; the endpoint filter was not applied to this panel.")
   p
 }

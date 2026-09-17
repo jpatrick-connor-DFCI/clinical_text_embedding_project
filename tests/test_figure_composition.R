@@ -37,9 +37,9 @@ run_tests <- function() {
   }
   panels <- setNames(lapply(letters[1:13], function(label) {
     ggplot(data.frame(x = 1:3, y = 1:3), aes(x, y)) + geom_point() +
-      labs(title = paste("Panel", label))
+      labs(title = paste("Panel", label), subtitle = "Sample-size annotation", x = "Time")
   }), letters[1:13])
-  # Nested panels must retain their titles without receiving panel letters.
+  # Nested panels must suppress child titles and receive one outer letter.
   panels$h <- patchwork::wrap_plots(panels$a, panels$b)
   design <- "abc\ndde\nfgg\nhhh\nijk\nlmm"
 
@@ -55,8 +55,10 @@ run_tests <- function() {
   stopifnot(length(files) == 2L, all(file.info(files)$size > 0))
   labels <- text_labels(patchwork::patchworkGrob(captured))
   retained <- setdiff(letters[1:13], c("c", "d", "m"))
-  stopifnot(!any(letters[1:13] %in% labels),
-            all(paste("Panel", setdiff(retained, "h")) %in% labels),
+  stopifnot(all(vapply(retained, function(label) sum(labels == label) == 1L, logical(1))),
+            !any(c("c", "d", "m") %in% labels),
+            !any(paste("Panel", letters[1:13]) %in% labels),
+            all(c("Sample-size annotation", "Time") %in% labels),
             "Unavailable panels: c, d, m" %in% labels,
             any(grepl("cancer C-index unavailable", messages)),
             any(grepl("no eligible phecode event", messages)))
@@ -66,13 +68,14 @@ run_tests <- function() {
   skipped <- setNames(rep(list(placeholder_panel("no data")), 13), letters[1:13])
   result <- save_compiled_figure(skipped, 2, width = 9, height = 12, design = design)
   stopifnot(length(result) == 0L, !any(file.exists(files)))
-  # The spanning lower row keeps its nested content, with no outer letters.
+  # Spanning/nested panels have exactly one letter and no plot titles.
   files <- save_compiled_figure(list(a = panels$a, b = panels$b, c = panels$h),
                                3, width = 10, height = 8.2, design = "ab\ncc")
   labels <- text_labels(patchwork::patchworkGrob(captured))
   stopifnot(length(files) == 2L, all(file.info(files)$size > 0),
-            !any(c("a", "b", "c") %in% labels),
-            all(c("Panel a", "Panel b") %in% labels),
+            all(vapply(c("a", "b", "c"), function(x) sum(labels == x) == 1L, logical(1))),
+            !any(c("Panel a", "Panel b") %in% labels),
+            all(c("Sample-size annotation", "Time") %in% labels),
             !any(grepl("^Unavailable panels:", labels)),
             file.exists(file.path(FIGURE_OUT_DIR, "captions", "figure3.md")),
             file.exists(file.path(PDF_OUT_DIR, "figure3", "figure3_cindex_captioned.pdf")))

@@ -26,10 +26,12 @@ landmark months are appended during the cluster render.
 
 After inspecting the updated Desktop PNGs, the compiled canvas was enlarged to
 10 × 9 inches for Figures 1, 2, and 4 and 10 × 8.2 inches for Figure 3. Panel
-letters were removed, and captions now identify panels by position. All four
+letters are retained and individual plot titles are hidden in compiled copies;
+captions identify panels by letter. All four
 KM panels omit number-at-risk tables, as requested. Pie percentages sit farther
 from the center to separate the smaller slices. These settings supersede the
-180-mm dimensions, panel-letter treatment, and risk-table additions above.
+180-mm dimensions and risk-table additions above. Subtitles, axis labels, and
+legends remain visible, and standalone plots retain their titles.
 The revised outputs still require a cluster rerender.
 
 ## Outputs after rerendering

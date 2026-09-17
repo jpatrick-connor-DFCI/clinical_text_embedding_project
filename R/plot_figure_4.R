@@ -1,6 +1,6 @@
 # Figure 4: a risk-score heatmap, b survival by risk trajectory,
 # c risk-dynamics composition by stage, d stage I-II rising versus stage IV
-# falling risk survival. Individual panels and compiled PNG/PDF without panel letters.
+# falling risk survival. Individual panels and compiled PNG/PDF with panel letters and no plot titles.
 
 suppressPackageStartupMessages({
   library(ggplot2); library(patchwork); library(dplyr); library(tidyr)
@@ -198,7 +198,7 @@ build_fig4b <- function() {
   # Preserve the model results in the figure legend.
   short_hr <- gsub(" \\(n=[^)]+\\)", "", hr_text)
   attr(p, "caption_detail") <- sprintf(
-    "Top right: landmark %s months, N = %s; Cox score test %s. %sCox analysis (N = %s): %s.",
+    "Panel b: landmark %s months, N = %s; Cox score test %s. %sCox analysis (N = %s): %s.",
     LANDMARK, comma(nrow(km)), format_p_inline(lp),
     ifelse(stage_adjusted, "Stage-adjusted ", "Unadjusted "),
     comma(nrow(cx_data)), gsub("\n", "; ", short_hr))

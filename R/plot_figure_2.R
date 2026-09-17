@@ -1,6 +1,6 @@
 # Figure 2: a base-vs-text C-index scatter, b delta-C-index violin,
 # c survival by stage, d survival by text-risk quartile.
-# Individual panels and compiled PNG/PDF without panel letters.
+# Individual panels and compiled PNG/PDF with panel letters and no plot titles.
 
 suppressPackageStartupMessages({
   library(ggplot2); library(patchwork); library(dplyr); library(tidyr)
@@ -194,7 +194,7 @@ build_stage_and_risk_km <- function(metric = METRIC) {
   pR <- panel_km(tq, ord4q, lr_q, perf_q, "Overall survival by text risk",
                  legend_pos = c(0.98, 0.98), legend_just = c(1, 1))
   # Return the stage and text-risk quartile curves as separate panels.
-  attr(pL, "caption_detail") <- sprintf("The bottom panels include %s patients with known stage.",
+  attr(pL, "caption_detail") <- sprintf("Panels c and d include %s patients with known stage.",
                                         scales::comma(nrow(d)))
   list(stage = pL, quartile = pR)
 }

@@ -80,7 +80,7 @@ build_crossed_dynamics_panel <- function(df, arms, title_text, landmark) {
     theme(legend.position = c(0.02, 0.28), legend.justification = c(0, 0),
           legend.background = element_rect(fill = "white", color = NA))
   group_n <- table(sub$strat)
-  attr(p, "caption_detail") <- paste0("Bottom right: ", paste(sprintf("%s, n = %s",
+  attr(p, "caption_detail") <- paste0("Panel d: ", paste(sprintf("%s, n = %s",
     names(group_n), scales::comma(as.integer(group_n))), collapse = "; "), ".")
   p
 }

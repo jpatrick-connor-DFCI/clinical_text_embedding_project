@@ -23,8 +23,8 @@ R/render_all_figures.sh
 
 All performance figures use C-index; AUC variants and the former Figure 5a
 propensity ROC panel are retired. Rendering removes their old PNG/PDF files from
-the configured output directory. Figures 1–4 are also assembled without printed
-panel letters, saved as `png/figureN/figureN_cindex.png` and
+the configured output directory. Figures 1–4 are also assembled with lowercase
+panel letters and without individual plot titles, saved as `png/figureN/figureN_cindex.png` and
 `pdf/figureN/figureN_cindex.pdf` beneath `CLINICAL_FIGURES_OUT`. Individual panels
 are retained. Missing panels are skipped with their reasons logged; available
 panels retain their original file identifiers, and the compiled figure lists unavailable
@@ -48,7 +48,7 @@ top-event supplement. Their inputs are no longer required by Figure 2 preparatio
 
 Compiled Figures 1, 2, and 4 render at 10 × 9 inches; Figure 3 renders at
 10 × 8.2 inches, with 600-dpi PNGs. KM panels omit number-at-risk tables.
-Captions identify panels by position, and standalone panel filenames are unchanged.
+Captions identify panels by letter. Standalone panels retain their plot titles and filenames.
 The renderer also writes `_captioned.png` / `_captioned.pdf` review copies and
 standalone legends in `CLINICAL_FIGURES_OUT/captions/`. Caption wording is maintained
 in `figures/manuscript_captions.json`; readable base legends are in

@@ -206,7 +206,7 @@ retire_main_panels <- function(number, labels) {
 }
 
 # Wrap each complete panel as one grob to preserve nested layouts and legends.
-# Panel names are layout keys and standalone-file identifiers, not printed tags.
+# Panel names provide the printed letters and standalone-file identifiers.
 save_compiled_figure <- function(panels, number, width, height,
                                  design = NULL, ncol = 2, heights = NULL) {
   group <- paste0("figure", number)
@@ -242,9 +242,19 @@ save_compiled_figure <- function(panels, number, width, height,
       for (label in missing_labels) design <- gsub(label, "#", design, fixed = TRUE)
     }
   }
-  wrapped_panels <- lapply(panels, function(panel) {
-    patchwork::wrap_elements(full = cowplot::as_grob(panel))
+  wrapped_panels <- lapply(names(panels), function(label) {
+    # Hide titles only in the compiled copy. Keep subtitles, axes, and legends;
+    # apply the same rule to child plots in a nested patchwork panel.
+    panel <- panels[[label]]
+    no_title <- theme(plot.title = element_blank(), plot.tag = element_blank())
+    panel <- if (inherits(panel, "patchwork")) panel & no_title else panel + no_title
+    labeled_panel <- cowplot::ggdraw() +
+      cowplot::draw_plot(panel, x = 0.025, y = 0, width = 0.975, height = 0.975) +
+      cowplot::draw_label(label, x = 0, y = 1, hjust = 0, vjust = 1,
+                          size = 9, fontface = "bold", fontfamily = "sans")
+    patchwork::wrap_elements(full = cowplot::as_grob(labeled_panel))
   })
+  names(wrapped_panels) <- names(panels)
   compiled <- patchwork::wrap_plots(wrapped_panels, ncol = ncol, design = design,
                                     heights = heights)
   if (any(missing)) {

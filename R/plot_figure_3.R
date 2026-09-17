@@ -1,6 +1,6 @@
 # Figure 3: a C-index modality rank, b significant endpoint counts,
 # c joint Cox coefficient violins. Individual panels and compiled PNG/PDF,
-# without panel letters.
+# with panel letters and no plot titles.
 
 suppressPackageStartupMessages({
   library(ggplot2); library(patchwork); library(dplyr); library(tidyr)
