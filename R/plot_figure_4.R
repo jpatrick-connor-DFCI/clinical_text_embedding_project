@@ -106,7 +106,7 @@ build_fig4a <- function() {
          subtitle = "Rows: patients; shown / full group counts") +
     theme_manuscript() +
     theme(panel.grid = element_blank(), axis.ticks.y = element_blank(),
-          axis.text.y = element_text(size = 8.5, face = "bold"),
+          axis.text.y = element_text(size = 8.5, face = "plain"),
           legend.key.height = unit(5, "mm"), legend.key.width = unit(2.5, "mm"))
 }
 

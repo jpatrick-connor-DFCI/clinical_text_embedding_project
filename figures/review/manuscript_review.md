@@ -35,6 +35,14 @@ legends remain visible, and standalone plots retain their titles.
 Figure 4 omits Cramér’s V and Cox score-test annotations. The panel d legend
 includes data-derived patient counts for stage I–II rising risk and stage IV
 falling risk after landmark eligibility filtering.
+A further review of the Desktop PNGs identified axis titles touching tick
+labels, crowded legend keys and modality labels, and KM annotations crossing
+the text-risk curve. Axis titles remain bold; tick labels are regular and axis
+lines are thin. Explicit axis-title/tick margins and legend-text spacing address
+the collisions. Figure 3b wraps long modality labels; Figure 3c shows modality
+names without per-modality counts. Figure 2 KM statistics appear above the
+curves and their legends sit below the axes. Pie percentages sit farther toward
+the slice edges, and rank-value labels have additional clearance.
 The revised outputs still require a cluster rerender.
 
 ## Outputs after rerendering

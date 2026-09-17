@@ -65,7 +65,7 @@ build_significant_endpoints <- function(betas) {
     geom_col(width = 0.6, color = "white") +
     geom_text(aes(label = n), vjust = -0.3, size = MANUSCRIPT_TEXT_SIZE) +
     scale_fill_manual(values = MODALITY_COLORS, guide = "none") +
-    scale_x_discrete(labels = MODALITY_DISPLAY) +
+    scale_x_discrete(labels = function(x) stringr::str_wrap(unname(MODALITY_DISPLAY[x]), 9)) +
     scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
     labs(x = NULL,
          y = "Significant endpoints",
@@ -130,11 +130,11 @@ build_modality_rank <- function(betas, metric = METRIC, excluded = EXCLUDED_EVEN
     geom_errorbarh(aes(xmin = q25_rank, xmax = q75_rank),
                    height = 0.25, color = "#222222", linewidth = 0.5) +
     geom_text(aes(label = sprintf("%.2f", mean_rank),
-                  x = q75_rank + 0.05),
+                  x = q75_rank + 0.12),
               hjust = 0, size = MANUSCRIPT_SMALL_TEXT_SIZE) +
     scale_fill_manual(values = MODALITY_COLORS, guide = "none") +
     scale_y_discrete(labels = MODALITY_DISPLAY) +
-    coord_cartesian(xlim = c(0.5, length(ranked_mods) + 0.5)) +
+    coord_cartesian(xlim = c(0.5, length(ranked_mods) + 0.85)) +
     labs(x = "Mean C-index rank (1 = best)", y = NULL,
          title = "Modality rank",
          subtitle = sprintf("n = %s endpoints with complete ranks", d$n_events[1])) +
@@ -198,9 +198,6 @@ build_joint_cox_violins <- function(betas) {
   mod_order <- ann %>% arrange(desc(mean_beta)) %>% pull(modality) %>% as.character()
   plot_df <- plot_df %>% mutate(modality = factor(as.character(modality), levels = mod_order))
   ann      <- ann      %>% mutate(modality = factor(as.character(modality), levels = mod_order))
-  counts <- plot_df %>% count(modality)
-  display_labels <- setNames(sprintf("%s\nn = %s",
-    MODALITY_DISPLAY[as.character(counts$modality)], counts$n), as.character(counts$modality))
   p <- ggplot(plot_df, aes(modality, beta, fill = modality)) +
     geom_violin(scale = "width", alpha = 0.45, color = "#444444", linewidth = 0.4) +
     geom_point(aes(color = modality), position = position_jitter(width = 0.16, seed = 2026),
@@ -214,10 +211,10 @@ build_joint_cox_violins <- function(betas) {
               fill = "white", color = "#111111", stroke = 0.7) +
     scale_fill_manual(values = MODALITY_COLORS, guide = "none") +
     scale_color_manual(values = MODALITY_COLORS, guide = "none") +
-    scale_x_discrete(labels = display_labels) +
+    scale_x_discrete(labels = MODALITY_DISPLAY) +
     labs(x = NULL, y = "Joint Cox coefficient (per SD)",
          title = "Joint Cox coefficients",
-         subtitle = sprintf("n = %d joint-model endpoints; displayed counts after trimming shown below", nrow(cc_events))) +
+         subtitle = sprintf("n = %d joint-model endpoints", nrow(cc_events))) +
     theme_manuscript() +
     theme(axis.text.x = element_text(angle = 0, hjust = 0.5),
           panel.grid.major.y = element_line(color = "grey90"))

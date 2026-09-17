@@ -133,7 +133,7 @@ build_endpoint_counts <- function() {
     labs(x = NULL, y = "Endpoints", title = "Outcome endpoints") +
     theme_manuscript() +
     theme(panel.grid.major.y = element_line(color = "grey90"),
-          axis.text.x = element_text(hjust = 0.5, size = 9, face = "bold"))
+          axis.text.x = element_text(hjust = 0.5, size = 9, face = "plain"))
   if (untrimmed) attr(p, "caption_detail") <- paste(
     "Panel d uses unfiltered aggregate endpoint counts because per-endpoint",
     "results were unavailable; the endpoint filter was not applied to this panel.")
@@ -165,7 +165,7 @@ build_cancer_pie <- function() {
   ggplot(d, aes(x = 1, y = n, fill = label)) +
     geom_col(width = 1, color = "white") +
     coord_polar(theta = "y", start = pi / 2, direction = -1) +
-    geom_text(aes(x = 1.2, label = ifelse(pct >= 3, sprintf("%.1f%%", pct), "")),
+    geom_text(aes(x = 1.35, label = ifelse(pct >= 3, sprintf("%.1f%%", pct), "")),
               position = position_stack(vjust = 0.5),
               size = 2.8, color = "#222222") +
     scale_fill_manual(values = pal, name = NULL) +
@@ -174,7 +174,8 @@ build_cancer_pie <- function() {
     theme_void(base_size = MANUSCRIPT_BASE_SIZE) +
     theme(plot.title = element_text(size = 11, face = "bold", hjust = 0),
           plot.subtitle = element_text(size = 9, hjust = 0),
-          legend.position = "bottom", legend.text = element_text(size = 8.5),
+          legend.position = "bottom",
+          legend.text = element_text(size = 8.5, margin = margin(l = 3, r = 8)),
           legend.key.size = unit(3.5, "mm"), legend.spacing.y = unit(0, "mm"),
           legend.margin = margin(0, 0, 0, 0), plot.margin = margin(3, 4, 3, 3))
 }

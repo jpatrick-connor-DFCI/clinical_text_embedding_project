@@ -18,15 +18,20 @@ theme_manuscript <- function(base_size = MANUSCRIPT_BASE_SIZE) {
     theme(plot.title = element_text(size = 11, face = "bold", hjust = 0),
           plot.subtitle = element_text(size = 9, color = "#333333"),
           axis.title = element_text(size = 10, face = "bold"),
-          axis.text = element_text(size = 9, face = "bold", color = "#222222"),
-          axis.line = element_line(linewidth = 0.6), axis.ticks = element_line(linewidth = 0.6),
-          legend.title = element_text(size = 9), legend.text = element_text(size = 9),
+          axis.title.x = element_text(margin = margin(t = 8)),
+          axis.title.y = element_text(margin = margin(r = 10)),
+          axis.text = element_text(size = 9, face = "plain", color = "#222222"),
+          axis.text.x = element_text(margin = margin(t = 4)),
+          axis.text.y = element_text(margin = margin(r = 4)),
+          axis.line = element_line(linewidth = 0.3), axis.ticks = element_line(linewidth = 0.3),
+          legend.title = element_text(size = 9),
+          legend.text = element_text(size = 9, margin = margin(l = 3, r = 8)),
           legend.key.size = grid::unit(4, "mm"), legend.spacing = grid::unit(1.5, "mm"),
           legend.margin = margin(1, 1, 1, 1), legend.background = element_blank(),
           legend.key = element_blank(), strip.background = element_blank(),
           strip.text = element_text(size = 10, face = "bold"),
           plot.caption = element_text(size = MANUSCRIPT_CAPTION_SIZE, hjust = 0),
-          plot.margin = margin(5, 6, 5, 5))
+          plot.margin = margin(8, 10, 8, 8))
 }
 
 # Risk counts come from the fitted survival object, not from digitized curves.

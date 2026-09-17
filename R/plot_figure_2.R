@@ -69,7 +69,7 @@ build_fig2a <- function(metrics, metric = METRIC) {
     labs(x = paste("Base model", lbl), y = paste("Text model", lbl),
          title = "Base versus text model") +
     theme_manuscript() +
-    theme(legend.position = c(0.85, 0.18),
+    theme(legend.position = c(0.98, 0.04), legend.justification = c(1, 0),
           legend.background = element_rect(fill = "white", color = NA))
 }
 
@@ -164,12 +164,11 @@ build_stage_and_risk_km <- function(metric = METRIC) {
   lr_s <- logrank_p(d, "months", "death", "stage_group")
   lr_q <- logrank_p(d, "months", "death", "risk_quartile")
 
-  panel_km <- function(td, palette, lr_p, perf, title_text,
-                       legend_pos = c(0.98, 0.98), legend_just = c(1, 1)) {
+  panel_km <- function(td, palette, lr_p, perf, title_text) {
     ts2 <- td %>% mutate(stratum = factor(stratum, levels = names(palette)))
     td_ci <- step_ci_df(ts2, "stratum")
     ann <- if (is.na(perf)) sprintf("log-rank %s", format_p_inline(lr_p))
-           else sprintf("%s=%.3f\nlog-rank %s", lbl, perf, format_p_inline(lr_p))
+           else sprintf("%s = %.3f; log-rank %s", lbl, perf, format_p_inline(lr_p))
     ggplot(ts2, aes(time, estimate, color = stratum)) +
       scale_x_continuous(breaks = seq(0, 60, 12), expand = expansion(mult = SURVIVAL_X_EXPANSION)) +
       geom_rect(data = td_ci,
@@ -179,20 +178,16 @@ build_stage_and_risk_km <- function(metric = METRIC) {
       scale_color_manual(values = palette, name = NULL) +
       scale_fill_manual(values = palette, guide = "none") +
       coord_cartesian(xlim = c(0, 60), ylim = c(0, 1.03)) +
-      annotate("text", x = 1, y = 0.06, label = ann,
-               hjust = 0, vjust = 0, size = MANUSCRIPT_SMALL_TEXT_SIZE,
-               color = "#333333") +
       labs(x = "Months from first treatment", y = "Overall survival",
-           title = title_text) +
+           title = title_text, subtitle = ann) +
+      guides(color = guide_legend(nrow = 1, byrow = TRUE)) +
       theme_manuscript() +
-      theme(legend.position = legend_pos, legend.justification = legend_just,
+      theme(legend.position = "bottom",
             legend.background = element_rect(fill = "white", color = NA))
   }
 
   pL <- panel_km(ts, ord4,  lr_s, perf_s, "Overall survival by stage")
-  # Fig 2d: legend pinned to the top-right corner of the panel.
-  pR <- panel_km(tq, ord4q, lr_q, perf_q, "Overall survival by text risk",
-                 legend_pos = c(0.98, 0.98), legend_just = c(1, 1))
+  pR <- panel_km(tq, ord4q, lr_q, perf_q, "Overall survival by text risk")
   # Return the stage and text-risk quartile curves as separate panels.
   attr(pL, "caption_detail") <- sprintf("Panels c and d include %s patients with known stage.",
                                         scales::comma(nrow(d)))
