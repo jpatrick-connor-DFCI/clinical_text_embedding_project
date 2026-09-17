@@ -26,9 +26,24 @@ propensity ROC panel are retired. Rendering removes their old PNG/PDF files from
 the configured output directory. Figures 1–4 are also assembled with lowercase
 panel labels, saved as `png/figureN/figureN_cindex.png` and
 `pdf/figureN/figureN_cindex.pdf` beneath `CLINICAL_FIGURES_OUT`. Individual panels
-are retained. A missing panel prevents publication of its compiled figure and
-reports which input is missing. Figure 1a follows the PROFILE-testing cohort
+are retained. Missing panels are skipped with their reasons logged; available
+panels retain their original letters, and the compiled figure lists unavailable
+panels in its caption. If every panel is missing, that figure is skipped and the
+remaining figures still render. Figure 1c follows the PROFILE-testing cohort
 flowchart style, with cumulative patient counts in connected rectangular boxes.
+
+The main figures use the following panel order. Individual files are
+`figNa_cindex`, `figNb_cindex`, etc.; the letters match the compiled figures.
+
+| Figure | a | b | c | d |
+| --- | --- | --- | --- | --- |
+| 1 | Cancer-type pie | Stage barplot | Cohort availability flowchart | Outcome endpoints |
+| 2 | Base vs. text C-index | Delta-C-index violin | Stage KM | Text-risk quartile KM |
+| 3 | Modality rank | Significant endpoints | Joint Cox violins | — |
+| 4 | Risk-score heatmap | KM by risk trajectory | Risk dynamics by stage | Stage I–II rising vs. stage IV falling risk KM |
+
+Within-versus-pan comparisons and top-event plots are retired, including the
+top-event supplement. Their inputs are no longer required by Figure 2 preparation.
 
 Figure rendering defaults to retaining every endpoint. To enable the optional
 one-sided sensitivity filter (exclude endpoints where base exceeds text by more

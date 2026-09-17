@@ -140,6 +140,9 @@ save_panel <- function(plot, name, group, width = 6.0, height = 4.8) {
   # A skipped panel (no underlying data) is not written at all -- an absent file
   # is a clearer signal to downstream assembly than a page reading "csv empty".
   if (is_skipped_panel(plot)) {
+    # A skipped replacement must not leave an old panel under its reused letter.
+    unlink(c(file.path(PNG_OUT_DIR, group, paste0(name, ".png")),
+             file.path(PDF_OUT_DIR, group, paste0(name, ".pdf"))))
     message(sprintf("[panel] SKIPPED %s/%s - %s", group, name, skip_reason(plot)))
     return(invisible(character(0)))
   }
@@ -170,15 +173,34 @@ remove_retired_figures <- function() {
                         full.names = TRUE, ignore.case = TRUE)
     retired <- files[grepl("^fig(ure)?[0-9S].*_auc\\.(png|pdf)$", basename(files),
                            ignore.case = TRUE) |
+                       (basename(dirname(files)) == "figure2" &
+                          grepl("^figS_scheme_km_.*\\.(png|pdf)$", basename(files))) |
+                       (basename(dirname(files)) == "figure4" &
+                          grepl("^fig(S1a|S_stage_dynamics_crossed)\\.(png|pdf)$", basename(files))) |
                        (basename(dirname(files)) == "figure5" &
                           grepl("^fig5a\\.(png|pdf)$", basename(files)))]
     if (length(retired)) {
-      if (!all(file.remove(retired))) stop("Could not remove retired AUC/ROC figures")
-      message("Removed ", length(retired), " retired AUC/ROC figure files")
+      if (!all(file.remove(retired))) stop("Could not remove retired figures")
+      message("Removed ", length(retired), " retired figure files")
     }
   }
 }
 remove_retired_figures()
+
+# Retire superseded panel letters and untagged filenames after a figure's panel
+# selection changes. Current filenames are overwritten (or removed if skipped).
+retire_main_panels <- function(number, labels) {
+  for (root in c(PNG_OUT_DIR, PDF_OUT_DIR)) {
+    files <- list.files(file.path(root, paste0("figure", number)), full.names = TRUE,
+                        pattern = sprintf("^fig%s[a-z](_cindex|_auc)?\\.(png|pdf)$", number))
+    stems <- tools::file_path_sans_ext(basename(files))
+    keep <- paste0("fig", number, labels, "_cindex")
+    retired <- files[!stems %in% keep]
+    if (length(retired) && !all(file.remove(retired))) {
+      stop("Could not remove superseded Figure ", number, " panels")
+    }
+  }
+}
 
 # Wrap each complete panel as one grob so nested patchwork layouts (e.g. 4c)
 # receive exactly one letter and retain their own annotations and legends.
@@ -187,16 +209,32 @@ save_compiled_figure <- function(panels, number, width, height,
                                  design = NULL, ncol = 2, heights = NULL) {
   group <- paste0("figure", number)
   name <- paste0(group, metric_tag())
-  missing <- vapply(panels, function(p) is.null(p) || is_skipped_panel(p), logical(1))
-  if (any(missing)) {
-    # Do not leave an older complete-looking figure after a failed rebuild.
-    unlink(c(file.path(PNG_OUT_DIR, group, paste0(name, ".png")),
-             file.path(PDF_OUT_DIR, group, paste0(name, ".pdf"))))
-    stop(sprintf("Cannot compile Figure %s; missing panels: %s", number,
-                 paste(names(panels)[missing], collapse = ", ")))
-  }
-  if (is.null(names(panels)) || anyDuplicated(names(panels))) {
+  if (is.null(names(panels)) || any(!nzchar(names(panels))) || anyDuplicated(names(panels))) {
     stop("Compiled figures require unique panel labels")
+  }
+  null <- vapply(panels, is.null, logical(1))
+  if (any(null)) {
+    stop("Unexpected NULL panels: ", paste(names(panels)[null], collapse = ", "))
+  }
+  missing <- vapply(panels, is_skipped_panel, logical(1))
+  missing_labels <- names(panels)[missing]
+  if (any(missing)) {
+    reasons <- vapply(panels[missing], skip_reason, character(1))
+    message(sprintf("[figure%s] Unavailable panels:\n%s", number,
+                    paste(sprintf("  %s: %s", missing_labels, reasons), collapse = "\n")))
+    panels <- panels[!missing]
+    if (!length(panels)) {
+      # Do not leave an old figure when none of its current panels can be drawn.
+      unlink(c(file.path(PNG_OUT_DIR, group, paste0(name, ".png")),
+               file.path(PDF_OUT_DIR, group, paste0(name, ".pdf"))))
+      message(sprintf("[figure%s] SKIPPED: no available panels", number))
+      return(invisible(character(0)))
+    }
+    # Reserve the unavailable panels' positions in explicit layouts; keeping
+    # names avoids relabeling, e.g. panel e as c when c and d are unavailable.
+    if (!is.null(design)) {
+      for (label in missing_labels) design <- gsub(label, "#", design, fixed = TRUE)
+    }
   }
   labeled <- lapply(names(panels), function(label) {
     patchwork::wrap_elements(full = cowplot::as_grob(panels[[label]])) +
@@ -207,6 +245,12 @@ save_compiled_figure <- function(panels, number, width, height,
   names(labeled) <- names(panels)
   compiled <- patchwork::wrap_plots(labeled, ncol = ncol, design = design,
                                     heights = heights)
+  if (any(missing)) {
+    compiled <- compiled + patchwork::plot_annotation(
+      caption = paste("Unavailable panels:", paste(missing_labels, collapse = ", ")),
+      theme = theme(plot.caption = element_text(size = 10, hjust = 0))
+    )
+  }
   save_panel(compiled, name, group, width = width, height = height)
 }
 

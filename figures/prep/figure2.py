@@ -17,39 +17,11 @@ Writes to FIGURE_DATA_DIR:
                                     set of mapped phecodes serialized in phecode_ids, not only the
                                     representative display column, so duplicate conditions are not
                                     annotated under two schemes.)
-- fig2_within_vs_pan_cancer.csv     stratum, auc_pan, auc_within, delta, cindex_pan, cindex_within,
-                                    cindex_delta, n_heldout, is_overall
-- fig2_within_vs_pan_treatment.csv  stratum, auc_pan, auc_within, delta, cindex_pan, cindex_within,
-                                    cindex_delta, n_heldout, is_overall
-- fig2_km_tertiles.csv              DFCI_MRN, text_risk_score, base_risk_score, death, tt_death,
-                                    outer_fold, text_tertile, base_tertile
-- fig2_calibration.csv              cross-fitted IPCW 24-month calibration bins
-- fig2_decision_curve.csv           cross-fitted IPCW 24-month net benefit by threshold
 - fig2_km_stage_vs_risk.csv         DFCI_MRN, tt_death, death, text_risk_score, stage_group,
                                     stage_ordinal, risk_quartile   (known-stage cohort)
 - fig2_stage_vs_risk_cindex.csv     predictor, cindex, n   (stage ordinal vs text risk score, OS)
 - fig2_stage_vs_risk_cindex_by_stage.csv  stage_group, cindex, n   (within-stratum C-index of text
                                     risk score for OS, including pooled I-II; FigS2 annotation)
-- fig2_scheme_delta_topk_cindex.csv
-                                    category, rank, scheme, event, event_lbl, metric,
-                                    text_value, base_value, delta (top-3 events per category by
-                                    the selected positive metric delta; category in
-                                    {mets, ICD10, phecodes} — mets = death_met minus the literal
-                                    "death" event, ICD10 = icd3_post + icd4_post pooled,
-                                    phecodes = phecode_post. Categories with fewer than 3
-                                    eligible positive-delta events yield fewer rows. Social-
-                                    determinant outcomes mapping exclusively to ICD-10-CM Z55-Z65
-                                    remain in the full metrics/scatter but are ineligible for top-hit
-                                    selection. Cross-scheme dedup: an ICD10 event and a phecode event
-                                    with any shared mapping never both appear — ICD10 is ranked first,
-                                    so the phecode is skipped for its next-best-delta event.)
-- fig2_scheme_event_km_cindex.csv
-                                    category, scheme, event, event_lbl, DFCI_MRN, text_risk_score,
-                                    base_risk_score, event_flag, tt, text_tertile, base_tertile
-                                    (held-out risk scores + survival for the events selected in
-                                    matching metric-specific top-k CSV, merged from each scheme's
-                                    full_cohort_risk_scores/<event>/ output; events missing
-                                    risk-score files are skipped)
 """
 
 from __future__ import annotations
@@ -917,30 +889,14 @@ def main() -> None:
     surv_df = pl.read_parquet(os.path.join(SURV_PATH, "death_met_surv_df.parquet"))
 
     full_cohort_metrics = _full_cohort_metrics()
-    validation_metrics = _full_cohort_validation_metrics()
     _report_lookup_misses()
     save_figure_data(full_cohort_metrics, "fig2_full_cohort_metrics.csv")
-    save_figure_data(_within_vs_pan("cancer"), "fig2_within_vs_pan_cancer.csv")
-    save_figure_data(_within_vs_pan("treatment"), "fig2_within_vs_pan_treatment.csv")
-    km_tertiles = _km_tertiles(surv_df)
-    save_figure_data(km_tertiles, "fig2_km_tertiles.csv")
-    calibration, dca = _calibration_and_dca(km_tertiles)
-    save_figure_data(calibration, "fig2_calibration.csv")
-    save_figure_data(dca, "fig2_decision_curve.csv")
-
     stage_vs_risk_df = _stage_vs_risk(surv_df)
     save_figure_data(stage_vs_risk_df, "fig2_km_stage_vs_risk.csv")
     save_figure_data(_stage_vs_risk_cindex(stage_vs_risk_df), "fig2_stage_vs_risk_cindex.csv")
     save_figure_data(_stage_vs_risk_cindex_by_stage(stage_vs_risk_df),
                       "fig2_stage_vs_risk_cindex_by_stage.csv")
 
-    for metric in ("cindex",):
-        scheme_delta_topk = _scheme_delta_topk(validation_metrics, metric=metric)
-        save_figure_data(scheme_delta_topk, f"fig2_scheme_delta_topk_{metric}.csv")
-        save_figure_data(
-            _scheme_event_km(scheme_delta_topk),
-            f"fig2_scheme_event_km_{metric}.csv",
-        )
 
 
 if __name__ == "__main__":

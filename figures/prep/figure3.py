@@ -5,10 +5,8 @@ Writes to FIGURE_DATA_DIR:
                                   auc is the sibling mean_auc(t) column from the same {mod}_test.csv)
 - fig3_modality_avg_rank_cindex.csv   modality, mean_rank, sem_rank, n_events  (ranked by cindex)
 - fig3_modality_ranks_long_cindex.csv scheme, event, modality, rank  (per-endpoint, cindex-ranked)
-                                  (the two ranks_long files let the R tier run a Friedman test across
-                                  modalities for whichever metric is active)
+                                  (supports the Friedman test across modalities using C-index)
 - fig3_joint_betas.csv            scheme, event, fit_variant, modality, beta, se, hr, p_value, n, n_events
-- fig3_risk_score_corr.csv        modality x modality correlation, plus n_patients in metadata row
 """
 
 from __future__ import annotations
@@ -440,14 +438,10 @@ def _risk_score_corr(scheme: str, event: str = "death") -> pl.DataFrame:
 
 
 def main() -> None:
-    # The three top-level products are independent, and the joint refits dominate
-    # the runtime, so start them first and do the cheap metric/rank work while
-    # they run. Each already fans out over schemes internally; this only overlaps
-    # the three phases with each other. Writes stay on the main thread in a fixed
-    # order -- save_figure_data is not the thing being parallelized.
-    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="fig3-main") as pool:
+    # Start the joint refits while preparing the C-index ranks. Each refit
+    # already fans out over schemes; the removed correlation panel needs no work.
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="fig3-main") as pool:
         betas_future = pool.submit(_joint_betas_all)
-        corr_future = pool.submit(_risk_score_corr, DEATH_SCHEME, "death")
         metrics_all = _modality_cindex_all()
 
         save_figure_data(metrics_all, "fig3_modality_cindex.csv")
@@ -457,7 +451,6 @@ def main() -> None:
             save_figure_data(_modality_ranks_long(metrics_all, value_col),
                               f"fig3_modality_ranks_long_{tag}.csv")
         save_figure_data(betas_future.result(), "fig3_joint_betas.csv")
-        save_figure_data(corr_future.result(), "fig3_risk_score_corr.csv")
 
 
 if __name__ == "__main__":

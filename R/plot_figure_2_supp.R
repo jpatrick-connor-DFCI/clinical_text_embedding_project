@@ -2,7 +2,7 @@
 #
 # Shows that the overall (text) risk score separates survival within stage-defined
 # strata. Two panels, each stratified by the patient's
-# overall risk-score quartile (the same quartiles used in Figure 2G, defined across
+# overall risk-score quartile (the same quartiles used in Figure 2d, defined across
 # the known-stage cohort — i.e. NOT re-binned within stage):
 #   A  Stage IV patients, by overall risk-score quartile
 #   B  Stages I-II patients pooled, by overall risk-score quartile

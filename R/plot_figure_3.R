@@ -1,15 +1,10 @@
-# Render Figure 3 (six-modality comparison, including somatic) in ggplot2 + patchwork.
-#
-# A complete-case significant endpoints per modality (joint Cox BH-FDR<.05),
-# B modality risk-score correlation heatmap (death endpoint),
-# C average modality rank across endpoints (1 = best),
-# D unpenalized standardized-beta violins + paired endpoint summaries.
-#
-# Panel C ranks modalities using Harrell's C-index.
+# Figure 3: a C-index modality rank, b significant endpoint counts,
+# c joint Cox coefficient violins. Individual panels and compiled PNG/PDF,
+# labeled a-c.
 
 suppressPackageStartupMessages({
   library(ggplot2); library(patchwork); library(dplyr); library(tidyr)
-  library(forcats); library(scales); library(ggcorrplot); library(stringr)
+  library(forcats); library(scales); library(stringr)
 })
 
 source("R/figure_utils.R")
@@ -33,7 +28,7 @@ bh_within_cell <- function(betas) {
 
 
 # ============================================================================
-# fig3a: significant endpoints per modality (complete-case only)
+# fig3b: significant endpoints per modality (complete-case only)
 # ============================================================================
 # Complete-case endpoints = (scheme, event) groups with all modalities fit.
 # "All" means every modality present somewhere in this run, not every modality
@@ -53,7 +48,7 @@ complete_case_events <- function(betas) {
     select(scheme, event)
 }
 
-build_fig3a <- function(betas) {
+build_significant_endpoints <- function(betas) {
   if (nrow(betas) == 0 || !"sig" %in% names(betas))
     return(placeholder_panel("fig3_joint_betas.csv missing p-values"))
 
@@ -82,70 +77,13 @@ build_fig3a <- function(betas) {
 
 
 # ============================================================================
-# fig3b: modality risk-score correlation heatmap (death endpoint)
+# fig3a: average modality rank across endpoints (1 = best)
 # ============================================================================
-build_fig3b <- function() {
-  d <- load_figure_data("fig3_risk_score_corr.csv")
-  if (nrow(d) == 0 || !"modality" %in% names(d))
-    return(placeholder_panel("fig3_risk_score_corr.csv empty"))
-  mat <- d %>% select(any_of(c("modality", FIG3_MODALITIES))) %>%
-    tibble::column_to_rownames("modality") %>% as.matrix()
-  mods <- intersect(FIG3_MODALITIES, rownames(mat))
-  mat <- mat[mods, mods, drop = FALSE]
-  mat[!is.finite(mat)] <- NA_real_
-
-  ggcorrplot::ggcorrplot(mat, type = "lower", lab = TRUE, lab_size = MANUSCRIPT_TEXT_SIZE,
-                         colors = c("#2E86C1", "#FFFFFF", "#E74C3C"),
-                         outline.color = "white") +
-    scale_x_discrete(labels = MODALITY_DISPLAY) +
-    scale_y_discrete(labels = MODALITY_DISPLAY) +
-    labs(title = "Modality Risk-Score Correlation",
-         x = NULL, y = NULL, fill = "Pearson r") +
-    theme_manuscript() +
-    theme(axis.text.x = element_text(angle = 35, hjust = 1),
-          panel.grid = element_blank())
-}
-
-
-# Friedman omnibus test across modalities (repeated-measures ranks, one block
-# per endpoint) — answers whether modality rank differs at all before any
-# pairwise comparison would be considered.
-friedman_p <- function(ranks_long) {
-  if (nrow(ranks_long) == 0) return(NA_real_)
-  mat <- ranks_long %>%
-    tidyr::pivot_wider(id_cols = c(scheme, event), names_from = modality, values_from = rank) %>%
-    select(-scheme, -event) %>%
-    as.matrix()
-  if (nrow(mat) < 2 || ncol(mat) < 2) return(NA_real_)
-  tryCatch(stats::friedman.test(mat)$p.value, error = function(e) NA_real_)
-}
-
-# Re-aggregate per-modality mean/SEM rank from the long per-endpoint ranks.
-# Mirrors figures/prep/figure3.py::_modality_avg_rank so a filtered 3C matches
-# what the Python tier would have produced from the surviving endpoints:
-# mean over endpoints, SEM = sd(ddof=1)/sqrt(n_events), 0 when n_events <= 1.
-avg_rank_from_long <- function(ranks_long) {
-  if (is.null(ranks_long) || nrow(ranks_long) == 0) return(tibble::tibble())
-  if (!all(c("modality", "rank") %in% names(ranks_long))) return(tibble::tibble())
-  n_events <- dplyr::n_distinct(ranks_long[, c("scheme", "event")])
-  ranks_long %>%
-    group_by(modality) %>%
-    summarise(mean_rank = mean(rank, na.rm = TRUE),
-              q25_rank = quantile(rank, .25, na.rm = TRUE),
-              q75_rank = quantile(rank, .75, na.rm = TRUE),
-              .groups = "drop") %>%
-    mutate(n_events = n_events)
-}
-
-
-# ============================================================================
-# fig3c: average modality rank across endpoints (1 = best)
-# ============================================================================
-build_fig3c <- function(betas, metric = METRIC, excluded = EXCLUDED_EVENTS) {
+build_modality_rank <- function(betas, metric = METRIC, excluded = EXCLUDED_EVENTS) {
   ranks_long <- drop_excluded_events(
     load_figure_data(sprintf("fig3_modality_ranks_long_%s.csv", metric_suffix(metric))),
     excluded)
-  # Use the exact joint-Cox complete-case endpoint set reported in panels A/D.
+  # Use the exact joint-Cox complete-case endpoint set reported in panels b/c.
   if (!is.null(betas) && nrow(betas) > 0 && nrow(ranks_long) > 0) {
     ranks_long <- ranks_long %>%
       inner_join(complete_case_events(betas), by = c("scheme", "event"))
@@ -154,7 +92,7 @@ build_fig3c <- function(betas, metric = METRIC, excluded = EXCLUDED_EVENTS) {
   # and carries no event column, so it cannot be filtered directly. When events are
   # disqualified, re-derive the mean/SEM from the (filtered) long companion, which
   # is the same complete-case rank matrix the aggregate was built from -- otherwise
-  # 3C would still be averaging over events no other panel reports.
+  # 3a would still be averaging over events no other panel reports.
   d <- avg_rank_from_long(ranks_long)
   if (nrow(d) == 0) {
     # Fallback only: this file is pre-aggregated and carries no event column, so
@@ -198,7 +136,7 @@ build_fig3c <- function(betas, metric = METRIC, excluded = EXCLUDED_EVENTS) {
 
 
 # ============================================================================
-# fig3d: unpenalized β violins by modality + Tukey trim + Wilcoxon-vs-0
+# fig3c: unpenalized β violins by modality + Tukey trim + Wilcoxon-vs-0
 # ============================================================================
 tukey_trim <- function(x, k = IQR_WHISKER) {
   qs <- stats::quantile(x, c(0.25, 0.75), na.rm = TRUE)
@@ -209,7 +147,7 @@ tukey_trim <- function(x, k = IQR_WHISKER) {
        n_trim = sum(x < lo | x > hi, na.rm = TRUE))
 }
 
-build_fig3d <- function(betas) {
+build_joint_cox_violins <- function(betas) {
   if (nrow(betas) == 0)
     return(placeholder_panel("fig3_joint_betas.csv empty"))
   # Same complete-case endpoint set as 3A, so both joint-Cox panels summarise
@@ -302,20 +240,17 @@ if (nrow(betas) > 0) {
 }
 if (nrow(betas) > 0 && "p_value" %in% names(betas)) betas <- bh_within_cell(betas)
 
-p3a <- build_fig3a(betas)
-p3b <- build_fig3b()
-p3c <- build_fig3c(betas)
-p3d <- build_fig3d(betas)
+retire_main_panels(3, letters[1:3])
 
-.tag <- metric_tag(METRIC)
-# Preserve the existing C-index panel filenames.
-save_panel(p3a, paste0("fig3a", .tag), group = "figure3", width = 7.2, height = 5.8)
-save_panel(p3b, "fig3b", group = "figure3", width = 7.2, height = 6.0)
-save_panel(p3c, paste0("fig3c", .tag), group = "figure3", width = 7.2, height = 6.0)
-save_panel(p3d, paste0("fig3d", .tag), group = "figure3", width = 9.2, height = 6.4)
+p3a <- build_modality_rank(betas)
+p3b <- build_significant_endpoints(betas)
+p3c <- build_joint_cox_violins(betas)
 
-# Complete manuscript figure, with one lowercase label per named panel.
+.tag <- metric_tag()
+save_panel(p3a, paste0("fig3a", .tag), group = "figure3", width = 7.2, height = 6.0)
+save_panel(p3b, paste0("fig3b", .tag), group = "figure3", width = 7.2, height = 5.8)
+save_panel(p3c, paste0("fig3c", .tag), group = "figure3", width = 9.2, height = 6.4)
 save_compiled_figure(
-  list(a = p3a, b = p3b, c = p3c, d = p3d),
-  number = 3, width = 20, height = 14
+  list(a = p3a, b = p3b, c = p3c),
+  number = 3, width = 18, height = 14, design = "ab\ncc"
 )

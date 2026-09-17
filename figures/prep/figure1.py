@@ -6,8 +6,6 @@ Writes to FIGURE_DATA_DIR:
                                   restricted to the exact cancer-type + text cohort shown
                                   in the Figure 1 flowchart)
 - fig1_stage_counts.csv           category, n
-- fig1_treatment_counts.csv       category, n
-- fig1_notes_per_patient.csv      DFCI_MRN, note_type, n_notes  (per patient x note type)
 """
 
 from __future__ import annotations
@@ -16,7 +14,7 @@ import os
 
 import polars as pl
 
-from config import FEATURE_PATH, NOTES_PATH, SURV_PATH
+from config import FEATURE_PATH, SURV_PATH
 from figures.io import save_figure_data
 from pipelines.preprocessing.data_availability import modality_mrn_sets
 from schemes import SCHEMES, list_trained_events
@@ -106,14 +104,10 @@ def main() -> None:
     eligible_df = pl.read_parquet(os.path.join(SURV_PATH, "cohort_df.parquet"),
                                   columns=["DFCI_MRN"])
     cancer_type_df = pl.read_csv(os.path.join(FEATURE_PATH, "cancer_type_df.csv.gz"))
-    treatment_df = pl.read_csv(os.path.join(FEATURE_PATH, "categorical_treatment_data_by_line.csv.gz"))
-    notes_meta = pl.read_parquet(os.path.join(NOTES_PATH, "full_clinical_notes_embeddings_metadata.parquet"))
 
-    tx_cols = [c for c in treatment_df.columns if c.startswith("PX_on_")]
-    tx1 = treatment_df.filter(pl.col("treatment_line") == 1)
     eligible_mrns = set(eligible_df["DFCI_MRN"].to_list())
     availability = modality_mrn_sets(eligible_mrns)
-    # This is deliberately the same cumulative intersection as Figure 0/1A:
+    # This is deliberately the same cumulative intersection as Figure 0/1c:
     # eligible -> cancer type -> text. Do not substitute an event-specific
     # embedding-prediction dataframe, which has additional downstream exclusions.
     cohort_mrns = availability["cancer_type"] & availability["text"]
@@ -129,9 +123,6 @@ def main() -> None:
     print(f"  Figure 1 denominator check passed: cancer type + text N={pie_n:,}")
     save_figure_data(cancer_counts, "fig1_cancer_type_counts.csv")
     save_figure_data(_stage_counts_from_pickle(cohort_mrns), "fig1_stage_counts.csv")
-    save_figure_data(_composition_counts(tx1, tx_cols, "PX_on_", 15),
-                     "fig1_treatment_counts.csv")
-    save_figure_data(_notes_per_patient(notes_meta), "fig1_notes_per_patient.csv")
 
 
 if __name__ == "__main__":

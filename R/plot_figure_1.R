@@ -1,8 +1,5 @@
-# Render Figure 1 (cohort & embedding overview) in ggplot2 + patchwork.
-#
-# Panels: A pipeline schematic, B endpoint counts, C notes/patient by type,
-#         D cancer-type pie, E stage breakdown, F first-line treatment breakdown.
-# Output: panels fig1a–fig1f and compiled figure1_cindex (PNG/PDF).
+# Figure 1: a cancer-type pie, b stage counts, c cohort-availability flow,
+# d outcome endpoints. Individual panels and compiled PNG/PDF, labeled a-d.
 
 suppressPackageStartupMessages({
   library(ggplot2); library(patchwork); library(dplyr); library(tidyr)
@@ -27,9 +24,9 @@ stage_label <- function(x) {
 
 
 # ============================================================================
-# fig1a: cumulative cohort flow (cancer-type availability explicit)
+# fig1c: cumulative cohort flow (cancer-type availability explicit)
 # ============================================================================
-build_fig1a <- function() {
+build_cohort_flow <- function() {
   d <- load_figure_data("fig0_data_availability.csv")
   if (nrow(d) == 0) return(placeholder_panel("fig0_data_availability.csv empty"))
   order <- c("full_cohort", "cancer_type", "text", "treatment", "stage",
@@ -70,7 +67,7 @@ build_fig1a <- function() {
 
 
 # ============================================================================
-# fig1b: endpoint counts per scheme
+# fig1d: endpoint counts per scheme
 # ============================================================================
 # Counts per scheme, recounted from the per-event full-cohort metrics after the
 # same exclusion the rest of the manuscript applies. fig1_endpoint_counts.csv is
@@ -85,7 +82,7 @@ build_fig1a <- function() {
 trimmed_endpoint_counts <- function() {
   m <- load_figure_data("fig2_full_cohort_metrics.csv")
   if (nrow(m) == 0 || !all(c("scheme", "event") %in% names(m))) {
-    message("[fig1b] fig2_full_cohort_metrics.csv unusable (absent, empty, or no ",
+    message("[fig1d] fig2_full_cohort_metrics.csv unusable (absent, empty, or no ",
             "scheme/event columns) -- cannot trim")
     return(tibble::tibble())
   }
@@ -94,7 +91,7 @@ trimmed_endpoint_counts <- function() {
   # untrimmed counts, so say so rather than looking like a successful trim.
   needed <- paste0(c("base_", "text_"), metric_suffix(METRIC))
   if (!all(needed %in% names(m))) {
-    message(sprintf("[fig1b] fig2_full_cohort_metrics.csv lacks %s -- cannot trim on %s",
+    message(sprintf("[fig1d] fig2_full_cohort_metrics.csv lacks %s -- cannot trim on %s",
                     paste(setdiff(needed, names(m)), collapse = "/"), metric_label(METRIC)))
     return(tibble::tibble())
   }
@@ -104,17 +101,17 @@ trimmed_endpoint_counts <- function() {
   out <- m %>%
     distinct(scheme, event) %>%
     count(scheme, name = "n_endpoints")
-  message(sprintf("[fig1b] endpoints trimmed on %s: %d -> %d",
+  message(sprintf("[fig1d] endpoints trimmed on %s: %d -> %d",
                   metric_label(METRIC), n_before, sum(out$n_endpoints)))
   out
 }
 
-build_fig1b <- function() {
+build_endpoint_counts <- function() {
   d <- trimmed_endpoint_counts()
   if (nrow(d) == 0) {
     # Fallback: no per-event metrics available, so report the untrimmed counts
     # rather than blanking the panel.
-    message("[fig1b] FALLING BACK to untrimmed fig1_endpoint_counts.csv")
+    message("[fig1d] FALLING BACK to untrimmed fig1_endpoint_counts.csv")
     d <- load_figure_data("fig1_endpoint_counts.csv")
   }
   if (nrow(d) == 0) return(placeholder_panel("fig1_endpoint_counts.csv empty"))
@@ -138,33 +135,9 @@ build_fig1b <- function() {
 
 
 # ============================================================================
-# fig1c: notes per patient by type (horizontal boxplot, log scale)
+# fig1a: cancer-type pie of cohort composition
 # ============================================================================
-build_fig1c <- function() {
-  d <- load_figure_data("fig1_notes_per_patient.csv")
-  if (nrow(d) == 0) return(placeholder_panel("fig1_notes_per_patient.csv empty"))
-  d <- d %>%
-    mutate(note_type = stringr::str_to_title(gsub("_", " ", as.character(note_type))))
-  ord <- d %>% group_by(note_type) %>% summarise(m = median(n_notes)) %>%
-    arrange(m) %>% pull(note_type)
-  d <- d %>% mutate(note_type = factor(note_type, levels = ord))
-
-  ggplot(d, aes(x = n_notes, y = note_type, fill = note_type)) +
-    geom_boxplot(outlier.shape = NA, width = 0.55, color = "#333333", alpha = 0.7) +
-    scale_x_log10(labels = scales::comma) +
-    scale_fill_manual(values = unname(grDevices::hcl.colors(length(ord), "Set 2")),
-                      guide = "none") +
-    labs(x = "Notes per patient (among patients with ≥1 of type, log scale)",
-         y = NULL, title = "Notes per Patient by Type") +
-    theme_manuscript() +
-    theme(panel.grid.major.x = element_line(color = "grey90"))
-}
-
-
-# ============================================================================
-# fig1d: cancer-type pie of cohort composition
-# ============================================================================
-build_fig1d <- function() {
+build_cancer_pie <- function() {
   d <- load_figure_data("fig1_cancer_type_counts.csv")
   if (nrow(d) == 0) return(placeholder_panel("fig1_cancer_type_counts.csv empty"))
   # prep_figure_1.py already returns the top-10 types + a pooled "Other" row that
@@ -198,9 +171,9 @@ build_fig1d <- function() {
 
 
 # ============================================================================
-# fig1e: cancer stage breakdown (with stage label fix: 2.0 -> Stage II)
+# fig1b: cancer stage breakdown (with stage label fix: 2.0 -> Stage II)
 # ============================================================================
-build_fig1e <- function() {
+build_stage_counts <- function() {
   d <- load_figure_data("fig1_stage_counts.csv")
   if (nrow(d) == 0) return(placeholder_panel("fig1_stage_counts.csv empty"))
   d <- d %>%
@@ -222,44 +195,21 @@ build_fig1e <- function() {
 
 
 # ============================================================================
-# fig1f: first-line treatment breakdown
-# ============================================================================
-build_fig1f <- function() {
-  d <- load_figure_data("fig1_treatment_counts.csv")
-  if (nrow(d) == 0) return(placeholder_panel("fig1_treatment_counts.csv empty"))
-  d <- d %>%
-    mutate(label = gsub("_", " ", as.character(category))) %>%
-    arrange(n) %>% mutate(label = factor(label, levels = label))
-  ggplot(d, aes(x = n, y = label)) +
-    geom_col(fill = "#E8A33D", color = "white", width = 0.65) +
-    geom_text(aes(label = comma(n)), hjust = -0.15, size = MANUSCRIPT_SMALL_TEXT_SIZE) +
-    scale_x_continuous(expand = expansion(mult = c(0, 0.08)),
-                       labels = scales::comma) +
-    labs(x = "Patients", y = NULL, title = "First-line Treatment Breakdown",
-         subtitle = "Patients with recorded exposure; categories are not mutually exclusive") +
-    theme_manuscript() +
-    theme(panel.grid.major.x = element_line(color = "grey90"),
-          axis.line.y = element_blank(), axis.ticks.y = element_blank(),
-          axis.text.y = element_text(size = 9))
-}
-
-
-# ============================================================================
 # Compose
 # ============================================================================
-p1a <- build_fig1a(); p1b <- build_fig1b(); p1c <- build_fig1c()
-p1d <- build_fig1d(); p1e <- build_fig1e(); p1f <- build_fig1f()
+retire_main_panels(1, letters[1:4])
 
-save_panel(p1a, "fig1a", group = "figure1", width = 11.0, height = 6.4)
-# Retain the C-index suffix for compatibility with existing panel filenames.
-save_panel(p1b, paste0("fig1b", metric_tag(METRIC)), group = "figure1", width = 7.2, height = 5.4)
-save_panel(p1c, "fig1c", group = "figure1", width = 8.4, height = 5.4)
-save_panel(p1d, "fig1d", group = "figure1", width = 8.4, height = 6.2)
-save_panel(p1e, "fig1e", group = "figure1", width = 7.2, height = 5.4)
-save_panel(p1f, "fig1f", group = "figure1", width = 9.2, height = 5.4)
+p1a <- build_cancer_pie()
+p1b <- build_stage_counts()
+p1c <- build_cohort_flow()
+p1d <- build_endpoint_counts()
 
-# Complete manuscript figure, with one lowercase label per named panel.
+.tag <- metric_tag()
+save_panel(p1a, paste0("fig1a", .tag), group = "figure1", width = 8.4, height = 6.2)
+save_panel(p1b, paste0("fig1b", .tag), group = "figure1", width = 7.2, height = 5.4)
+save_panel(p1c, paste0("fig1c", .tag), group = "figure1", width = 9.2, height = 7.0)
+save_panel(p1d, paste0("fig1d", .tag), group = "figure1", width = 7.2, height = 5.4)
 save_compiled_figure(
-  list(a = p1a, b = p1b, c = p1c, d = p1d, e = p1e, f = p1f),
-  number = 1, width = 20, height = 21
+  list(a = p1a, b = p1b, c = p1c, d = p1d),
+  number = 1, width = 20, height = 15
 )

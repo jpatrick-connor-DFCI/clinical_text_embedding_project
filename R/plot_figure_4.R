@@ -1,12 +1,6 @@
-# Render Figure 4 (mortality-risk dynamics) + Figure S1 (silhouette appendix).
-#
-# A per-patient mortality-risk trajectory heatmap (raster) grouped by risk-slope group,
-# B conditional KM survival from the slope-window landmark (left-truncated entry),
-# D mean trajectory per slope group vs. a cohort-average reference band,
-# E stage-matched slope-group composition (dynamics vs. baseline stage),
-# C disease-severity small multiples (mean lines of therapy, pre-index met burden,
-#   conditional RMST, mean maximum stage).
-# S1: silhouette vs k (slope-group-count justification).
+# Figure 4: a risk-score heatmap, b survival by risk trajectory,
+# c risk-dynamics composition by stage, d stage I-II rising versus stage IV
+# falling risk survival. Individual panels and compiled PNG/PDF, labeled a-d.
 
 suppressPackageStartupMessages({
   library(ggplot2); library(patchwork); library(dplyr); library(tidyr)
@@ -15,6 +9,7 @@ suppressPackageStartupMessages({
 })
 
 source("R/figure_utils.R")
+source("R/figure4_utils.R", local = TRUE)
 
 N_SLOPE_GROUPS <- 3
 # prep_figure_4 relabels slope groups 0..N-1 by ASCENDING mean OLS slope of
@@ -224,46 +219,9 @@ build_fig4b <- function() {
 
 
 # ============================================================================
-# fig4d: mean trajectory per dynamics group vs. a cohort-average reference band
+# fig4c: stage-matched dynamics-group composition (dynamics vs. baseline stage)
 # ============================================================================
-build_fig4d <- function() {
-  d <- load_figure_data("fig4_group_trajectories.csv")
-  if (nrow(d) == 0) return(placeholder_panel("fig4_group_trajectories.csv empty"))
-
-  # `group` mixes integers and the literal "cohort" pseudo-group, so readr loads
-  # it as character; split the cohort-wide reference band from the slope groups.
-  band <- d %>% filter(group == "cohort")
-  grp  <- d %>% filter(group != "cohort") %>% mutate(group_id = as.integer(group))
-  if (nrow(grp) == 0) return(placeholder_panel("no slope groups in fig4_group_trajectories.csv"))
-
-  pal <- setNames(GROUP_COLORS[seq_len(N_SLOPE_GROUPS)], as.character(seq_len(N_SLOPE_GROUPS) - 1L))
-  grp <- grp %>% mutate(group_lab = factor(cluster_label(group_id), levels = GROUP_NAMES))
-  lab_by_id <- setNames(GROUP_NAMES, as.character(seq_len(N_SLOPE_GROUPS) - 1L))
-
-  ggplot() +
-    # Cohort-average band drawn first/underneath as a neutral grey reference.
-    geom_ribbon(data = band, aes(month, ymin = q25, ymax = q75),
-                fill = "grey50", alpha = 0.25, inherit.aes = FALSE) +
-    geom_line(data = band, aes(month, mean_risk),
-              color = "grey40", linetype = "dashed", linewidth = 0.8) +
-    geom_ribbon(data = grp, aes(month, ymin = q25, ymax = q75, fill = group_lab),
-                alpha = 0.15) +
-    geom_line(data = grp, aes(month, mean_risk, color = group_lab), linewidth = 0.9) +
-    scale_color_manual(values = setNames(unname(pal), lab_by_id), name = NULL, drop = FALSE) +
-    scale_fill_manual(values = setNames(unname(pal), lab_by_id), guide = "none", drop = FALSE) +
-    labs(x = "Months post-treatment", y = "Cox linear predictor (log relative hazard)",
-         title = "Mean Risk Trajectory by Dynamics Group",
-         subtitle = "Descriptive trajectories; ribbons are within-group IQRs") +
-    theme_manuscript() +
-    theme(legend.position = c(0.02, 0.98), legend.justification = c(0, 1),
-          legend.background = element_rect(fill = "white", color = NA))
-}
-
-
-# ============================================================================
-# fig4e: stage-matched dynamics-group composition (dynamics vs. baseline stage)
-# ============================================================================
-build_fig4e <- function() {
+build_stage_composition <- function() {
   d <- load_figure_data("fig4_slope_by_stage.csv")
   if (nrow(d) == 0) return(placeholder_panel("fig4_slope_by_stage.csv empty"))
 
@@ -292,125 +250,36 @@ build_fig4e <- function() {
 }
 
 
-# ============================================================================
-# fig4c: disease-severity small multiples
-# ============================================================================
-# The four displayed metrics come from fig4_cluster_severity.csv and all describe
-# disease severity rather than the risk dynamics themselves: mean lines of
-# therapy, mean pre-index met burden (the N_MET_SITES covariate, not the
-# post-index mean_met_sites also present in that file), conditional RMST from the
-# landmark, and mean maximum stage on a I=1..IV=4 ordinal scale. Each is NULL-
-# guarded by by_id(), so a metric whose source data was unavailable at prep time
-# drops out of the panel instead of rendering an empty facet.
-build_fig4c <- function() {
-  severity <- load_figure_data("fig4_cluster_severity.csv")
-  if (nrow(severity) == 0) return(placeholder_panel("fig4_cluster_severity.csv empty"))
-  clusters <- sort(unique(severity$cluster))
-  if (length(clusters) == 0) return(placeholder_panel("severity CSV has no clusters"))
-
-  by_id <- function(col) {
-    if (!col %in% names(severity)) return(NULL)
-    v <- severity[[col]]
-    if (all(is.na(v))) return(NULL)
-    setNames(v, as.character(severity$cluster))
-  }
-
-  characteristics <- list(
-    list(title = "Mean lines of therapy", units = "Lines", vals = by_id("mean_n_lines"),
-         low = by_id("mean_n_lines_low"), high = by_id("mean_n_lines_high"), is_pct = FALSE),
-    list(title = "Mean met burden (pre-index)", units = "Met sites", vals = by_id("mean_met_burden"),
-         low = by_id("mean_met_burden_low"), high = by_id("mean_met_burden_high"), is_pct = FALSE),
-    list(title = "Conditional RMST: month 12–120", units = "Months after landmark", vals = by_id("rmst_months"),
-         low = by_id("rmst_months_low"), high = by_id("rmst_months_high"), is_pct = FALSE),
-    list(title = "Mean maximum stage", units = "Stage (1=I … 4=IV)", vals = by_id("mean_max_stage"),
-         low = by_id("mean_max_stage_low"), high = by_id("mean_max_stage_high"), is_pct = FALSE)
+# fig4d: early-stage rising risk versus stage IV falling risk.
+build_stage_risk_comparison <- function() {
+  cohort <- load_stage_dynamics_data()
+  build_crossed_dynamics_panel(
+    cohort$data,
+    arms = list(
+      list(stage_values = c("I", "II"), cluster_id = 2L,
+           label = "Stage I-II, Rising Risk", color = GROUP_COLORS[3]),
+      list(stage_values = "IV", cluster_id = 0L,
+           label = "Stage IV, Falling Risk", color = GROUP_COLORS[1])
+    ),
+    title_text = "Stage I-II Rising Risk vs. Stage IV Falling Risk",
+    landmark = cohort$landmark
   )
-
-  panel_for <- function(spec) {
-    if (is.null(spec$vals)) return(placeholder_panel(paste("no data:", spec$title)))
-    df <- tibble::tibble(cluster = clusters,
-                         value = unname(spec$vals[as.character(clusters)]),
-                         low = if (is.null(spec$low)) NA_real_ else unname(spec$low[as.character(clusters)]),
-                         high = if (is.null(spec$high)) NA_real_ else unname(spec$high[as.character(clusters)]))
-    p <- ggplot(df, aes(factor(cluster), value, fill = factor(cluster))) +
-      geom_col(width = 0.65, color = "white") +
-      geom_errorbar(data = filter(df, is.finite(low), is.finite(high)),
-                    aes(ymin = low, ymax = high), width = 0.15, linewidth = 0.6) +
-      scale_fill_manual(values = setNames(GROUP_COLORS[clusters + 1],
-                                          as.character(clusters)),
-                        guide = "none") +
-      scale_x_discrete(labels = setNames(GROUP_NAMES[clusters + 1],
-                                         as.character(clusters))) +
-      labs(x = NULL, y = spec$units, title = spec$title) +
-      theme_manuscript() +
-      theme(panel.grid.major.y = element_line(color = "grey90"))
-    # is_pct panels are bounded percentages; the other metrics (incl. mean
-    # slope, which can be negative for Falling) are left with a free y-range.
-    if (isTRUE(spec$is_pct)) p <- p + coord_cartesian(ylim = c(0, 100))
-    p
-  }
-  # Only characteristics with data get a cell; if none do, skip the figure.
-  ps <- compact_panels(lapply(characteristics, panel_for))
-  if (is.null(ps)) return(placeholder_panel("no severity characteristics with data"))
-  # Shape the grid to how many panels survived, so a partial set fills the space
-  # instead of leaving blank cells in a fixed 2x2.
-  n_col <- if (length(ps) <= 3) length(ps) else 2
-  wrap_plots(ps, ncol = n_col) +
-    plot_annotation(title = "Disease-Severity Characteristics by Risk-Dynamics Group") &
-    theme(plot.title = element_text(size = 13, face = "bold", hjust = 0.5))
 }
 
+# Compose exactly the four requested mortality-risk dynamics panels.
+retire_main_panels(4, letters[1:4])
 
-# ============================================================================
-# figS1a: silhouette vs k (appendix)
-# ============================================================================
-build_figS1a <- function() {
-  d <- load_figure_data("fig4_silhouette.csv")
-  if (nrow(d) == 0) return(placeholder_panel("fig4_silhouette.csv empty"))
-  d <- d %>% arrange(k)
-  best <- d$k[which.max(d$silhouette)]
-  best_val <- max(d$silhouette)
-
-  ggplot(d, aes(k, silhouette)) +
-    geom_line(color = "#2E86C1", linewidth = 1) +
-    geom_point(size = 2, color = "#2E86C1") +
-    geom_vline(xintercept = N_SLOPE_GROUPS, color = "#E74C3C",
-               linetype = "dashed", linewidth = 1) +
-    annotate("point", x = best, y = best_val, color = "#E74C3C", size = 3) +
-    annotate("text", x = N_SLOPE_GROUPS, y = max(d$silhouette) * 1.04,
-             label = sprintf("chosen k=%d", N_SLOPE_GROUPS),
-             hjust = -0.05, size = MANUSCRIPT_TEXT_SIZE,
-             fontface = "italic", color = "#E74C3C") +
-    annotate("text", x = best, y = best_val + 0.005,
-             label = sprintf("best silhouette (k=%d)", best),
-             hjust = -0.05, size = MANUSCRIPT_TEXT_SIZE,
-             fontface = "italic", color = "#E74C3C") +
-    labs(x = "Number of slope groups (k)", y = "Mean silhouette score",
-         title = "Risk-Slope Group-Count Selection") +
-    theme_manuscript() +
-    theme(panel.grid.major = element_line(color = "grey90"))
-}
-
-
-# ============================================================================
-# Compose Figure 4 + Figure S1
-# ============================================================================
 p4a <- build_fig4a()
 p4b <- build_fig4b()
-p4d <- build_fig4d()
-p4e <- build_fig4e()
-p4c <- build_fig4c()
-pS1 <- build_figS1a()
+p4c <- build_stage_composition()
+p4d <- build_stage_risk_comparison()
 
-save_panel(p4a, "fig4a",  group = "figure4", width = 8.8, height = 5.8)
-save_panel(p4b, "fig4b",  group = "figure4", width = 9.8, height = 7.0)
-save_panel(p4d, "fig4d",  group = "figure4", width = 7.8, height = 5.8)
-save_panel(p4e, "fig4e",  group = "figure4", width = 7.2, height = 5.4)
-save_panel(p4c, "fig4c",  group = "figure4", width = 9.6, height = 8.4)
-save_panel(pS1, "figS1a", group = "figure4", width = 7.2, height = 5.4)
-
-# Complete manuscript figure, with one lowercase label per named panel.
+.tag <- metric_tag()
+save_panel(p4a, paste0("fig4a", .tag), group = "figure4", width = 8.8, height = 5.8)
+save_panel(p4b, paste0("fig4b", .tag), group = "figure4", width = 9.8, height = 7.0)
+save_panel(p4c, paste0("fig4c", .tag), group = "figure4", width = 7.2, height = 5.4)
+save_panel(p4d, paste0("fig4d", .tag), group = "figure4", width = 8.6, height = 7.2)
 save_compiled_figure(
-  list(a = p4a, b = p4b, c = p4c, d = p4d, e = p4e),
-  number = 4, width = 20, height = 23, design = "aabb\ncccc\nddee", heights = c(7, 9, 6)
+  list(a = p4a, b = p4b, c = p4c, d = p4d),
+  number = 4, width = 20, height = 16
 )
