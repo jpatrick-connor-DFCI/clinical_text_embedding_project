@@ -6,6 +6,11 @@ set -uo pipefail
 
 cd "$(dirname "$0")/.." || exit 1
 
+# Override both legacy controls, including values inherited from the caller.
+export MANUSCRIPT_METRIC=cindex
+export MANUSCRIPT_METRICS=cindex
+echo "C-index-only renderer: $(pwd)/R/render_all_figures.sh"
+
 if [ "$#" -gt 0 ]; then
   scripts=()
   for a in "$@"; do scripts+=("R/$(basename "$a")"); done
@@ -18,7 +23,7 @@ failed_runs=()
 for sc in "${scripts[@]}"; do
   [ -f "$sc" ] || { echo "!! no such script: $sc" >&2; fail=1; failed_runs+=("$sc (missing)"); continue; }
   echo "=== $(basename "$sc") [cindex] ==="
-  if ! MANUSCRIPT_METRIC=cindex Rscript "$sc"; then
+  if ! Rscript "$sc"; then
     fail=1
     failed_runs+=("$(basename "$sc") [cindex]")
   fi

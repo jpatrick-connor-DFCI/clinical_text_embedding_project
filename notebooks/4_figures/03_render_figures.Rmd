@@ -53,6 +53,12 @@ cat("R version: ", R.version.string, "\n", sep = "")
 ```
 
 ```{r render-plots}
+# Reset both legacy controls in an existing R session before sourcing scripts.
+# This also keeps older plot-script copies from inheriting an AUC selection.
+Sys.setenv(MANUSCRIPT_METRIC = "cindex", MANUSCRIPT_METRICS = "cindex")
+cat("C-index-only renderer: ", file.path(R_DIR, "..", "notebooks", "4_figures",
+                                      "03_render_figures.Rmd"), "\n", sep = "")
+
 SCRIPTS <- c(
   "plot_figure_0.R",
   "plot_figure_1.R",
