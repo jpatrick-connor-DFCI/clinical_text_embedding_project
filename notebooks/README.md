@@ -22,7 +22,7 @@ disk rather than assuming the run it just did is the only one that has happened.
 |---|---|---|---|
 | — | `pipelines.training.build_slurm_manifests` + `slurm/launch_*.sh` | cluster CPU (shell) | Preferred distributed path when Slurm is available — build manifests, then `sbatch` the full-cohort, feature-comparison, and held-out-risk array jobs. When the queue is congested, `2_models/01` can take the light feature-comparison modalities off it. |
 | 01 | [`2_models/01_feature_comparison.ipynb`](2_models/01_feature_comparison.ipynb) | allocated Jupyter CPU session | Notebook fallback for the feature-comparison arrays, covering the three cheapest modalities (`stage`, `treatment`, `metburden`) — each pinned to `n_jobs=1` by `run_feature_comp_task` for having under 50 penalized columns. `somatic`, `text` and `prs` stay on the SLURM arrays. Safe to run **alongside** them: with `OVERWRITE = False` each side skips whatever the other has finished. Includes a read-only pre-flight census of how much is already done. Do not execute on a login node. |
-| 02 | [`2_models/02_within_vs_pan.ipynb`](2_models/02_within_vs_pan.ipynb) | cluster CPU | Within- vs pan-stratum model comparison for cancer type and first-line treatment class, one subprocess per `pipelines.trajectories.*` script, with per-run toggles. Both are long-running and resume from their own per-stratum checkpoints. Must run **before** `4_figures/02` — `figures.prep.figure2` reads their metrics CSVs. |
+| 02 | [`2_models/02_within_vs_pan.ipynb`](2_models/02_within_vs_pan.ipynb) | cluster CPU | Optional within- vs pan-stratum training comparison for cancer type and first-line treatment class, one subprocess per `pipelines.trajectories.*` script, with per-run toggles. Both are long-running and resume from their own per-stratum checkpoints. No longer required by manuscript figures; the within-cancer supplements evaluate existing pooled models and do not use these outputs. |
 | 03 | [`2_models/03_mortality_trajectories.ipynb`](2_models/03_mortality_trajectories.ipynb) | cluster CPU | Landmark mortality risk trajectories (months 0–60) from `pipelines.trajectories.generate_mortality_trajectories`, with landmark coverage and at-risk denominators. **Fits one model at month 0 and re-scores it at every later landmark** (hyperparameters matched to the full-cohort runs), so trajectories are comparable across months. Resumable — each landmark is checkpointed as it completes. Must run **before** `4_figures/02` — `figures.prep.figure4` clusters these trajectories. |
 | 04 | [`2_models/04_full_cohort_risk_scores.ipynb`](2_models/04_full_cohort_risk_scores.ipynb) | cluster CPU | Held-out risk scores for the full-cohort models, once the SLURM arrays have completed. |
 
@@ -38,8 +38,29 @@ disk rather than assuming the run it just did is the only one that has happened.
 | # | Notebook | Tier | Notes |
 |---|---|---|---|
 | 01 | [`4_figures/01_code_lookups.Rmd`](4_figures/01_code_lookups.Rmd) | local / cluster (R) | **One-time bootstrap**, not a per-run step. Builds the ICD-10→phecode mapping and phecode descriptions in `CODE_PATH` that `figures.prep.figure2` labels its panels from — the only R dependency in the prep tier, split out so `4_figures/02` needs no `Rscript`. Re-run after a cohort rebuild (`1_data/01`) or a Phecode package upgrade. Needs `devtools::install_github("vcastro/Phecode")` plus `arrow`. |
-| 02 | [`4_figures/02_figure_data.ipynb`](4_figures/02_figure_data.ipynb) | cluster CPU / local | Runs `figures/prep/figureN.py` to write the CSVs the R tier plots from. **Incremental**: a module whose output CSVs all exist is skipped, so a re-run regenerates only what is missing — set `REGENERATE_ALL` or `FORCE` after anything upstream changes, since the check is presence, not freshness. Pure Python — warns and falls back to raw code labels if `4_figures/01` has not run. |
-| 03 | [`4_figures/03_render_figures.Rmd`](4_figures/03_render_figures.Rmd) | local / cluster (R) | Renders manuscript figure panels from the `4_figures/02` CSVs. Bootstrap R packages once with `Rscript R/install_packages.R`, then render with `Rscript -e 'rmarkdown::render("notebooks/4_figures/03_render_figures.Rmd")'`. |
+| 02 | [`4_figures/02_figure_data.ipynb`](4_figures/02_figure_data.ipynb) | cluster CPU / local | Runs `figures/prep/figureN.py` and the independent `figures.prep.within_cancer` module to write the CSVs the R tier plots from. **Incremental**: a module whose output CSVs all exist is skipped, so a re-run regenerates only what is missing — set `REGENERATE_ALL` or `FORCE` after anything upstream changes, since the check is presence, not freshness. Pure Python — warns and falls back to raw code labels if `4_figures/01` has not run. |
+| 03 | [`4_figures/03_render_figures.Rmd`](4_figures/03_render_figures.Rmd) | local / cluster (R) | Renders manuscript figure panels and supplements from the `4_figures/02` CSVs, including within-cancer text-versus-base scatterplots and text-versus-modality heatmaps. Bootstrap R packages once with `Rscript R/install_packages.R`, then render with `Rscript -e 'rmarkdown::render("notebooks/4_figures/03_render_figures.Rmd")'`. |
+
+The within-cancer supplements require existing matched patient risk scores:
+`full_cohort_risk_scores/` for text versus base (generated by `2_models/04` or the
+corresponding array jobs), and `held_out_risk_scores/` for text versus other modalities
+(generated after feature-comparison training). They evaluate pooled models within
+recorded cancer types, without fitting cancer-specific models. C-indices use joint
+text/comparator outer-fold blocks weighted by comparable-pair counts. The defaults
+require 20 matched patients, 5 events, and 1 comparable pair per comparison; set
+`EXTRA_ARGS = {"within_cancer": ["--min-patients", "30", "--min-events", "10"]}` to
+change the patient/event thresholds. Use `ONLY = {"within_cancer"}` to prepare just
+these supplements, or `FORCE = {"within_cancer"}` to refresh existing outputs.
+The module writes both performance CSVs and `within_cancer_audit.csv`. Rendering
+uses eligible rows, applies the shared manuscript endpoint filter, and reports
+descriptive endpoint summaries without significance tests. Images paginate after
+12 cancer types; matching summary CSVs and legends are in the output `tables/`
+and `captions/` directories.
+Risk scores must include `outer_fold`; regenerate legacy files without it using
+the corresponding training/risk runner's `--overwrite` option. Even when preparing
+only `within_cancer`, rendering with the shared endpoint filter requires
+`fig2_full_cohort_metrics.csv` from `figure2`. Set
+`MANUSCRIPT_FILTER_UNDERPERFORMING_ENDPOINTS=false` to render without that filter.
 
 ## semantic_search — exploratory embedding analyses
 
@@ -87,12 +108,14 @@ third TSV field.
 
 ## Trajectory and biomarker pipelines
 
-Both run before `4_figures/02`. `pipelines.biomarkers.*` is driven by
+Mortality trajectories and biomarkers run before their corresponding modules in
+`4_figures/02`. `pipelines.biomarkers.*` is driven by
 `3_biomarkers/01_pipeline.ipynb` above and needs `2_models/04`'s full-cohort risk scores.
 `pipelines.trajectories.*` is driven by two notebooks. `2_models/02_within_vs_pan.ipynb` runs the
-within-vs-pan scripts, which fit their own models and read only the `1_data/03` embedding
+optional within-vs-pan scripts, which fit their own models and read only the `1_data/03` embedding
 prediction dataset plus the `1_data/01` covariates, so they can run any time after `1_data/03` and
-do not wait on the SLURM arrays or `2_models/04`. `2_models/03_mortality_trajectories.ipynb` runs
+do not wait on the SLURM arrays or `2_models/04`; manuscript figures no longer read their
+outputs. `2_models/03_mortality_trajectories.ipynb` runs
 `generate_mortality_trajectories`, which pools the note embeddings itself and so depends only on
 `1_data/01`. Neither waits on `2_models/04`. The individual scripts are still runnable directly
 with `python -m` from the repo root.

@@ -43,8 +43,24 @@ The main figures contain exactly these panels, in letter order:
 - **Figure 4 (a–d):** risk-score heatmap, KM by risk trajectory, risk-dynamics
   composition by stage, stage I–II rising-risk versus stage IV falling-risk KM.
 
-Within-versus-pan and top-event plots (including the top-event supplement) are
-retired. Superseded standalone panel files are removed when each figure rerenders.
+Within-versus-pan training comparisons and top-event plots (including the top-event
+supplement) are retired. Superseded standalone panel files are removed when each figure rerenders.
+
+The within-cancer supplements evaluate existing pooled models on matched patients
+within each recorded cancer type, using the independent `figures.prep.within_cancer`
+outputs. **S2** plots text versus base C-indices in cancer-type facets, with points
+colored by endpoint family, endpoint counts, and median paired differences.
+**S3** is a cancer-by-modality heatmap of median paired text-minus-comparator
+C-index differences; cells report median absolute C-indices and endpoint counts.
+The median paired difference need not equal the difference of the two medians.
+Unavailable combinations are marked explicitly. These descriptive summaries use
+eligible rows and the shared manuscript endpoint filter, without endpoint-level
+significance tests. Each supplement shows up to 12 cancer types per page.
+
+The new scripts write `figS2_within_cancer_cindex` and `figS3_within_cancer_cindex`
+PNG/PDF files to the `figure2` and `figure3` output groups (later pages add `_page2`,
+etc.), with matching summary CSVs under `tables/` and legends under `captions/`.
+Supplemental caption wording is documented in `figures/figure_captions.md`.
 
 Compiled Figures 1, 2, and 4 render at 10 × 9 inches; Figure 3 renders at
 10 × 8.2 inches, with 600-dpi PNGs and vector PDFs. Compiled artwork retains panel
@@ -90,8 +106,10 @@ SCRIPTS <- c(
   "plot_figure_2.R",
   "plot_figure_2_supp.R",
   "plot_figure_2_supp_anchor.R",
+  "plot_figure_2_supp_cancer.R",
   "plot_figure_2_supp_family.R",
   "plot_figure_3.R",
+  "plot_figure_3_supp_cancer.R",
   "plot_figure_4.R",
   "plot_figure_4_supp.R",
   "plot_figure_5.R"
