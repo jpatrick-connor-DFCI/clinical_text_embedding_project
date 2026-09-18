@@ -51,8 +51,20 @@ require 20 matched patients, 5 events, and 1 comparable pair per comparison; set
 `EXTRA_ARGS = {"within_cancer": ["--min-patients", "30", "--min-events", "10"]}` to
 change the patient/event thresholds. Use `ONLY = {"within_cancer"}` to prepare just
 these supplements, or `FORCE = {"within_cancer"}` to refresh existing outputs.
-The module writes both performance CSVs and `within_cancer_audit.csv`. Rendering
-uses eligible rows, applies the shared manuscript endpoint filter, and reports
+The module writes both performance CSVs, `fig2_within_cancer_event_counts.csv`,
+`fig3_within_cancer_event_counts.csv`, and `within_cancer_audit.csv`. Before evaluating
+each endpoint, the count tables report valid patients, observed events, and
+`n_non_events` by cancer type, with eligibility, status, and required patient/event
+thresholds. They include endpoints without trained risk scores and strata with zero
+eligible patients. Full-cohort membership is scheme-specific embedding IDs intersected
+with cancer annotations; the modality cohort additionally intersects somatic,
+germline, stage, and treatment IDs, matching training. Zero-filled metastatic burden
+does not restrict membership. Counts are upper bounds before matching predictions;
+final paired cohorts must still meet the thresholds, and undersized strata skip
+concordance. Two global progress bars (**Full cohort**, **Modality cohort**) cover
+all schemes/endpoints. Warnings are suppressed; skips and missing modality inputs
+go to the audit CSV without console logs. Rendering uses eligible rows, applies the
+shared manuscript endpoint filter, and reports
 descriptive endpoint summaries without significance tests. Images paginate after
 12 cancer types; matching summary CSVs and legends are in the output `tables/`
 and `captions/` directories.

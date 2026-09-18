@@ -20,10 +20,21 @@ Outputs (in FIGURE_DATA_DIR):
     min_patients_required,min_events_required,status
   within_cancer_audit.csv:
     comparison,scheme,event,comparator,status,detail,n_rows
+  fig2_within_cancer_event_counts.csv, fig3_within_cancer_event_counts.csv:
+    scheme,event,cancer_type,n_patients,n_events,n_non_events,
+    min_patients_required,min_events_required,eligible,status
 
-Cancer rows below the sample/event thresholds or lacking comparable pairs remain
-in the performance CSV with null metrics and an explanatory status. Missing or
-malformed inputs and row exclusions are recorded in the audit CSV and the log.
+Event counts precede score loading, including endpoints without prediction files.
+The full source cohort is the scheme's embedding/outcome patients with a cancer
+label. The modality source cohort additionally intersects the somatic, germline,
+stage and treatment feature-file patient sets, matching training. These counts
+are upper bounds before model-specific covariate and score exclusions. Known
+cancer strata with no valid observations have zero counts. Ineligible endpoints
+skip score loading; matched strata are checked again before concordance work.
+Sparse matched strata have null pair/block counts because those are not computed.
+Missing/malformed inputs and exclusions are recorded only in the audit CSV.
+The run displays one progress bar for all full-cohort events and one for all
+modality-cohort events, with Python warnings suppressed for the preparation run.
 Only status == 'ok' rows should be plotted. n_fold_blocks counts blocks with
 at least one comparable pair; n_patients and n_events describe the full matched
 valid cohort, including patients in blocks with no comparable pairs.
@@ -32,22 +43,26 @@ valid cohort, including patients in blocks with no comparable pairs.
 from __future__ import annotations
 
 import argparse
-import logging
 from pathlib import Path
+import warnings
 
 import numpy as np
 import polars as pl
 from sksurv.exceptions import NoComparablePairException
 from sksurv.metrics import concordance_index_censored
+from tqdm.auto import tqdm
 
-from config import FEATURE_PATH, SURV_PATH
-from figures.io import save_figure_data
+from config import FEATURE_PATH, FIGURE_DATA_DIR, SURV_PATH
 from schemes import embedding_file, scheme_results_dir
 from shared.palette import MODALITY_ORDER
 
-logger = logging.getLogger(__name__)
-
 SCHEMES = ("death_met", "icd3_post", "icd4_post", "phecode_post")
+# Same membership files as training's _get_common_feature_mrns. Metastatic
+# burden is left-joined/zero-filled in training and does not restrict membership.
+MODALITY_COHORT_FILES = (
+    "complete_somatic_data_df.csv.gz", "complete_germline_data_df.csv.gz",
+    "cancer_stage_df.csv.gz", "categorical_treatment_data_by_line.csv.gz",
+)
 RESULT_SCHEMA = {
     "scheme": pl.String,
     "event": pl.String,
@@ -73,6 +88,18 @@ AUDIT_SCHEMA = {
     "detail": pl.String,
     "n_rows": pl.Int64,
 }
+COUNT_SCHEMA = {
+    "scheme": pl.String,
+    "event": pl.String,
+    "cancer_type": pl.String,
+    "n_patients": pl.Int64,
+    "n_events": pl.Int64,
+    "n_non_events": pl.Int64,
+    "min_patients_required": pl.Int64,
+    "min_events_required": pl.Int64,
+    "eligible": pl.Boolean,
+    "status": pl.String,
+}
 _READ_ERRORS = (OSError, ValueError, pl.exceptions.PolarsError)
 
 
@@ -91,9 +118,6 @@ def _audit(
         "comparator": comparator, "status": status, "detail": detail,
         "n_rows": n_rows,
     })
-    log = logger.info if status == "evaluated" else logger.warning
-    log("[%s/%s/%s/%s] %s: %s (%s rows)",
-        comparison, scheme, event, comparator, status, detail, n_rows)
 
 
 def _validate_ids(frame: pl.DataFrame, source: str) -> pl.DataFrame:
@@ -111,12 +135,73 @@ def _validate_ids(frame: pl.DataFrame, source: str) -> pl.DataFrame:
 
 def _load_cancer_types(path: Path) -> pl.DataFrame:
     cancer = pl.read_csv(
-        path, columns=["DFCI_MRN", "CANCER_TYPE"],
+        path,
         schema_overrides={"DFCI_MRN": pl.String, "CANCER_TYPE": pl.String},
     )
+    columns = ["DFCI_MRN", "cancer_type"]
+    # Match filter_event_rows' brainM exclusion exactly; do not guess the
+    # drop-first category when a legacy file lacks this dummy.
+    if "CANCER_TYPE_BRAIN" in cancer.columns:
+        brain = pl.col("CANCER_TYPE_BRAIN").cast(pl.Float64, strict=False)
+        cancer = cancer.with_columns(
+            (brain.is_finite() & (brain != 0)).fill_null(False).alias("_primary_brain")
+        )
+        columns.append("_primary_brain")
     return _validate_ids(cancer, str(path)).with_columns(
         pl.col("CANCER_TYPE").str.strip_chars().alias("cancer_type")
-    ).select("DFCI_MRN", "cancer_type")
+    ).select(columns)
+
+
+def _load_modality_cohort_ids() -> pl.DataFrame:
+    """Read membership only, without loading feature values or embeddings."""
+    common = None
+    for filename in MODALITY_COHORT_FILES:
+        path = Path(FEATURE_PATH) / filename
+        ids = pl.read_csv(path, columns=["DFCI_MRN"], schema_overrides={"DFCI_MRN": pl.String})
+        ids = ids.with_columns(pl.col("DFCI_MRN").str.strip_chars()).unique()
+        ids = _validate_ids(ids, str(path))
+        common = ids if common is None else common.join(ids, on="DFCI_MRN", how="inner")
+    return common
+
+
+def _event_cohort(cohort: pl.DataFrame, event: str) -> pl.DataFrame:
+    if event == "brainM" and "_primary_brain" in cohort.columns:
+        return cohort.filter(~pl.col("_primary_brain"))
+    return cohort
+
+
+def _pre_evaluation_counts(
+    outcomes: pl.DataFrame, cohort: pl.DataFrame, *, scheme: str, event: str,
+    min_patients: int, min_events: int, cancer_types: pl.DataFrame | None = None,
+) -> pl.DataFrame:
+    """Count source-cohort observations before any score/fold availability filter."""
+    # Preserve source-cohort strata even if this endpoint has zero valid rows
+    # (including a cancer excluded by a training endpoint rule).
+    cancers = (cohort.select("cancer_type") if cancer_types is None else cancer_types).unique()
+    valid = outcomes.join(
+        _event_cohort(cohort, event).select("DFCI_MRN", "cancer_type"),
+        on="DFCI_MRN", how="inner", validate="1:1",
+    ).filter(
+        pl.col("time").is_finite() & (pl.col("time") > 0)
+        & pl.col("event_flag").is_in([0.0, 1.0])
+    )
+    observed = valid.group_by("cancer_type").agg(
+        pl.len().alias("n_patients"),
+        pl.col("event_flag").sum().cast(pl.Int64).alias("n_events"),
+    )
+    counts = cancers.join(observed, on="cancer_type", how="left").with_columns(
+        pl.col("n_patients", "n_events").fill_null(0),
+        pl.lit(scheme).alias("scheme"), pl.lit(event).alias("event"),
+        pl.lit(min_patients).alias("min_patients_required"),
+        pl.lit(min_events).alias("min_events_required"),
+    ).with_columns(
+        (pl.col("n_patients") - pl.col("n_events")).alias("n_non_events"),
+        ((pl.col("n_patients") >= min_patients) & (pl.col("n_events") >= min_events)).alias("eligible"),
+        pl.when(pl.col("n_patients") < min_patients).then(pl.lit("too_few_patients"))
+        .when(pl.col("n_events") < min_events).then(pl.lit("too_few_events"))
+        .otherwise(pl.lit("ok")).alias("status"),
+    )
+    return counts.select(list(COUNT_SCHEMA)).cast(COUNT_SCHEMA).sort("cancer_type")
 
 
 def _load_scores(path: Path, modality: str, role: str) -> pl.DataFrame:
@@ -228,21 +313,20 @@ def evaluate_comparison(
     for (cancer_type,), stratum in paired.group_by("cancer_type", maintain_order=True):
         n_events = int(stratum["event_flag"].sum())
         numerator_text = numerator_comparator = 0.0
-        n_pairs = n_blocks = 0
-        for _, block in stratum.group_by("text_fold", "comparator_fold"):
-            text_count, comparator_count, count = _block_pair_counts(block)
-            numerator_text += text_count
-            numerator_comparator += comparator_count
-            n_pairs += count
-            n_blocks += int(count > 0)
+        n_pairs = n_blocks = None
         if stratum.height < min_patients:
             status = "too_few_patients"
         elif n_events < min_events:
             status = "too_few_events"
-        elif n_pairs == 0:
-            status = "no_comparable_pairs"
         else:
-            status = "ok"
+            n_pairs = n_blocks = 0
+            for _, block in stratum.group_by("text_fold", "comparator_fold"):
+                text_count, comparator_count, count = _block_pair_counts(block)
+                numerator_text += text_count
+                numerator_comparator += comparator_count
+                n_pairs += count
+                n_blocks += int(count > 0)
+            status = "ok" if n_pairs else "no_comparable_pairs"
         text_cindex = numerator_text / n_pairs if status == "ok" else None
         comparator_cindex = numerator_comparator / n_pairs if status == "ok" else None
         rows.append({
@@ -258,86 +342,152 @@ def evaluate_comparison(
     return pl.DataFrame(rows, schema=RESULT_SCHEMA).sort("cancer_type")
 
 
-def prepare_within_cancer(
-    *, min_patients: int = 20, min_events: int = 5,
-) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
-    """Return text/base data, text/modality data, and a missing-input/exclusion audit."""
-    if min_patients < 2 or min_events < 1:
-        raise ValueError("min_patients must be >= 2 and min_events must be >= 1")
+def _prepare_within_cancer(
+    *, min_patients: int, min_events: int, show_progress: bool,
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     audit: list[dict] = []
     results: dict[str, list[pl.DataFrame]] = {"fig2": [], "fig3": []}
+    counts: dict[str, list[pl.DataFrame]] = {"fig2": [], "fig3": []}
     try:
         cancer = _load_cancer_types(Path(FEATURE_PATH) / "cancer_type_df.csv.gz")
     except _READ_ERRORS as exc:
         _audit(audit, "all", "", "", "", "invalid_cancer_input", str(exc))
-        return (pl.DataFrame(schema=RESULT_SCHEMA), pl.DataFrame(schema=RESULT_SCHEMA),
-                pl.DataFrame(audit, schema=AUDIT_SCHEMA))
+        cancer = None
 
-    for scheme in SCHEMES:
-        outcome_path = Path(SURV_PATH) / embedding_file(scheme)
-        # Source construction is lazy; schema discovery is the first file access.
+    sources = {}
+    common_ids = None
+    if cancer is not None:
         try:
-            source = pl.scan_parquet(outcome_path)
-            columns = set(source.collect_schema().names())
+            common_ids = _load_modality_cohort_ids()
         except _READ_ERRORS as exc:
-            _audit(audit, "all", scheme, "", "", "missing_outcome_input", str(exc))
-            continue
-        for comparison, subdir, comparators in (
-            ("fig2", "full_cohort_risk_scores", ["base"]),
-            ("fig3", "held_out_risk_scores", [m for m in MODALITY_ORDER if m != "text"]),
-        ):
+            _audit(audit, "fig3", "", "", "", "unavailable_modality_cohort_counts", str(exc))
+        for scheme in SCHEMES:
+            try:
+                source = pl.scan_parquet(Path(SURV_PATH) / embedding_file(scheme))
+                columns = set(source.collect_schema().names())
+                ids = _validate_ids(source.select("DFCI_MRN").collect(), f"{scheme} cohort")
+                full = ids.join(cancer, on="DFCI_MRN", how="inner", validate="1:1").filter(
+                    pl.col("cancer_type").is_not_null() & (pl.col("cancer_type") != "")
+                )
+                modality = (full.join(common_ids, on="DFCI_MRN", how="inner", validate="1:1")
+                            if common_ids is not None else None)
+                sources[scheme] = (source, columns, full, modality)
+            except _READ_ERRORS as exc:
+                _audit(audit, "all", scheme, "", "", "missing_outcome_input", str(exc))
+
+    for comparison, subdir, comparators, description in (
+        ("fig2", "full_cohort_risk_scores", ["base"], "Full cohort"),
+        ("fig3", "held_out_risk_scores", [m for m in MODALITY_ORDER if m != "text"], "Modality cohort"),
+    ):
+        tasks = []
+        for scheme, (_, columns, _, _) in sources.items():
             root = Path(scheme_results_dir(scheme)) / subdir
-            directories = sorted(p for p in root.iterdir() if p.is_dir()) if root.is_dir() else []
-            if not directories:
-                _audit(audit, comparison, scheme, "", "", "missing_risk_input", str(root))
-                continue
-            for directory in directories:
-                event = directory.name
-                missing = {"DFCI_MRN", event, f"tt_{event}"} - columns
-                if missing:
-                    _audit(audit, comparison, scheme, event, "", "missing_outcome_columns",
-                           ", ".join(sorted(missing)))
-                    continue
+            # Count every source endpoint, including unfinished model runs, and
+            # audit orphan risk directories rather than silently discarding them.
+            directories = {p.name for p in root.iterdir() if p.is_dir()} if root.is_dir() else set()
+            events = {c[3:] for c in columns if c.startswith("tt_")}
+            tasks.extend((scheme, event, root / event) for event in sorted(events | directories))
+        with tqdm(total=len(tasks), desc=description, unit="event", leave=True,
+                  dynamic_ncols=True, disable=not show_progress) as progress:
+            for scheme, event, directory in tasks:
                 try:
-                    outcomes = _read_outcomes(source, event)
-                    text = _load_scores(directory / "text_risk_scores.csv", "text", "text")
-                except _READ_ERRORS as exc:
-                    _audit(audit, comparison, scheme, event, "", "invalid_text_or_outcome_input", str(exc))
-                    continue
-                for modality in comparators:
+                    source, columns, full, modality_cohort = sources[scheme]
+                    missing = {"DFCI_MRN", event, f"tt_{event}"} - columns
+                    if missing:
+                        _audit(audit, comparison, scheme, event, "", "missing_outcome_columns",
+                               ", ".join(sorted(missing)))
+                        continue
                     try:
-                        other = _load_scores(directory / f"{modality}_risk_scores.csv", modality, "comparator")
+                        outcomes = _read_outcomes(source, event)
                     except _READ_ERRORS as exc:
-                        _audit(audit, comparison, scheme, event, modality, "invalid_comparator_input", str(exc))
+                        _audit(audit, comparison, scheme, event, "", "invalid_text_or_outcome_input", str(exc))
                         continue
-                    paired, exclusions = _matched_patients(text, other, outcomes, cancer)
-                    for reason, count in exclusions.items():
-                        if count:
-                            _audit(audit, comparison, scheme, event, modality, reason,
-                                   "Excluded before matched within-cancer evaluation", count)
-                    if paired.is_empty():
-                        _audit(audit, comparison, scheme, event, modality, "no_matched_patients",
-                               "No patients have valid paired predictions, outcomes, and cancer labels")
-                        continue
-                    metrics = evaluate_comparison(
-                        paired, scheme=scheme, event=event, comparator=modality,
-                        min_patients=min_patients, min_events=min_events,
+                    cohort = full if comparison == "fig2" else modality_cohort
+                    if cohort is not None:
+                        event_counts = _pre_evaluation_counts(
+                            outcomes, cohort, scheme=scheme, event=event,
+                            min_patients=min_patients, min_events=min_events,
+                            cancer_types=full.select("cancer_type"),
+                        )
+                        counts[comparison].append(event_counts)
+                        if not event_counts["eligible"].any():
+                            _audit(audit, comparison, scheme, event, "", "no_eligible_cancer_types",
+                                   "Source-cohort patient/event counts below thresholds; skipped prediction reads")
+                            continue
+                    # If membership sources are unavailable, score-derived
+                    # comparisons remain usable; their source counts are unknown.
+                    # Otherwise restrict evaluation to the source cohort counted
+                    # above, so its counts are genuine upper bounds.
+                    evaluation_cohort = full if cohort is None else cohort
+                    outcomes = outcomes.join(
+                        _event_cohort(evaluation_cohort, event).select("DFCI_MRN"),
+                        on="DFCI_MRN", how="inner", validate="1:1",
                     )
-                    results[comparison].append(metrics)
-                    n_ok = metrics.filter(pl.col("status") == "ok").height
-                    _audit(audit, comparison, scheme, event, modality, "evaluated",
-                           f"{n_ok}/{metrics.height} cancer strata eligible; "
-                           f"min_patients={min_patients}; min_events={min_events}", paired.height)
-                    for row in metrics.filter(pl.col("status") != "ok").iter_rows(named=True):
-                        _audit(audit, comparison, scheme, event, modality, row["status"],
-                               f"cancer_type={row['cancer_type']}; n_events={row['n_events']}; "
-                               f"n_comparable_pairs={row['n_comparable_pairs']}", row["n_patients"])
+                    try:
+                        text_scores = _load_scores(directory / "text_risk_scores.csv", "text", "text")
+                    except _READ_ERRORS as exc:
+                        _audit(audit, comparison, scheme, event, "", "invalid_text_or_outcome_input", str(exc))
+                        continue
+                    for comparator in comparators:
+                        try:
+                            other = _load_scores(directory / f"{comparator}_risk_scores.csv", comparator, "comparator")
+                        except _READ_ERRORS as exc:
+                            _audit(audit, comparison, scheme, event, comparator, "invalid_comparator_input", str(exc))
+                            continue
+                        paired, exclusions = _matched_patients(text_scores, other, outcomes, cancer)
+                        for reason, count in exclusions.items():
+                            if count:
+                                _audit(audit, comparison, scheme, event, comparator, reason,
+                                       "Excluded before matched within-cancer evaluation", count)
+                        if paired.is_empty():
+                            _audit(audit, comparison, scheme, event, comparator, "no_matched_patients",
+                                   "No patients have valid paired predictions, outcomes, and cancer labels")
+                            continue
+                        metrics = evaluate_comparison(
+                            paired, scheme=scheme, event=event, comparator=comparator,
+                            min_patients=min_patients, min_events=min_events,
+                        )
+                        results[comparison].append(metrics)
+                        n_ok = metrics.filter(pl.col("status") == "ok").height
+                        _audit(audit, comparison, scheme, event, comparator, "evaluated",
+                               f"{n_ok}/{metrics.height} cancer strata eligible; "
+                               f"min_patients={min_patients}; min_events={min_events}", paired.height)
+                        for row in metrics.filter(pl.col("status") != "ok").iter_rows(named=True):
+                            _audit(audit, comparison, scheme, event, comparator, row["status"],
+                                   f"cancer_type={row['cancer_type']}; n_events={row['n_events']}; "
+                                   f"n_comparable_pairs={row['n_comparable_pairs']}", row["n_patients"])
+                finally:
+                    # Missing files, sparse endpoints and all modality comparisons
+                    # together still count as one completed endpoint task.
+                    progress.update(1)
     frames = [
         pl.concat(results[key]).sort("scheme", "event", "cancer_type", "comparator")
         if results[key] else pl.DataFrame(schema=RESULT_SCHEMA)
         for key in ("fig2", "fig3")
     ]
-    return frames[0], frames[1], pl.DataFrame(audit, schema=AUDIT_SCHEMA)
+    count_frames = [
+        pl.concat(counts[key]).sort("scheme", "event", "cancer_type")
+        if counts[key] else pl.DataFrame(schema=COUNT_SCHEMA)
+        for key in ("fig2", "fig3")
+    ]
+    return frames[0], frames[1], pl.DataFrame(audit, schema=AUDIT_SCHEMA), *count_frames
+
+
+def prepare_within_cancer(
+    *, min_patients: int = 20, min_events: int = 5, show_progress: bool = True,
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    """Return Fig2 metrics, Fig3 metrics, audit, full counts and modality counts.
+
+    Warning suppression is scoped to this run, including all file reads. Audit
+    entries are persisted instead of printed. Exceptions still propagate.
+    """
+    if min_patients < 2 or min_events < 1:
+        raise ValueError("min_patients must be >= 2 and min_events must be >= 1")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return _prepare_within_cancer(
+            min_patients=min_patients, min_events=min_events, show_progress=show_progress,
+        )
 
 
 def main() -> None:
@@ -347,13 +497,20 @@ def main() -> None:
     args = parser.parse_args()
     if args.min_patients < 2 or args.min_events < 1:
         parser.error("--min-patients must be >= 2 and --min-events must be >= 1")
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-    fig2, fig3, audit = prepare_within_cancer(
-        min_patients=args.min_patients, min_events=args.min_events
+    frames = prepare_within_cancer(min_patients=args.min_patients, min_events=args.min_events)
+    names = (
+        "fig2_within_cancer_cindex.csv", "fig3_within_cancer_cindex.csv",
+        "within_cancer_audit.csv", "fig2_within_cancer_event_counts.csv",
+        "fig3_within_cancer_event_counts.csv",
     )
-    save_figure_data(fig2, "fig2_within_cancer_cindex.csv")
-    save_figure_data(fig3, "fig3_within_cancer_cindex.csv")
-    save_figure_data(audit, "within_cancer_audit.csv")
+    # CSV-only output avoids importing figures.io's matplotlib runtime or its
+    # warning/print messages. The only normal terminal output is the two bars.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        output = Path(FIGURE_DATA_DIR)
+        output.mkdir(parents=True, exist_ok=True)
+        for frame, name in zip(frames, names):
+            frame.write_csv(output / name)
 
 
 if __name__ == "__main__":

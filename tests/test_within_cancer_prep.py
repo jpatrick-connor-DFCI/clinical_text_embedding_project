@@ -2,12 +2,26 @@
 
 import gzip
 import sys
+import warnings
 
 import numpy as np
 import polars as pl
 import pytest
 
 from figures.prep import within_cancer as prep
+
+
+FEATURE_MEMBERSHIP_FILES = (
+    "complete_somatic_data_df.csv.gz",
+    "complete_germline_data_df.csv.gz",
+    "cancer_stage_df.csv.gz",
+    "categorical_treatment_data_by_line.csv.gz",
+)
+
+
+def _write_gzip_csv(path, frame):
+    with gzip.open(path, "wt") as handle:
+        handle.write(frame.write_csv())
 
 
 def _paired(times, events, text, other, *, text_folds=None, other_folds=None):
@@ -109,6 +123,9 @@ def test_sparse_strata_are_retained_with_thresholds(min_patients, min_events, st
     assert row["n_patients"] == 4
     assert row["n_events"] == 2
     assert (row["delta_cindex"] is None) == (status != "ok")
+    if status != "ok":
+        assert row["n_comparable_pairs"] is None
+        assert row["n_fold_blocks"] is None
 
 
 def test_matching_uses_same_patients_and_audits_invalid_rows():
@@ -168,6 +185,8 @@ def score_tree(tmp_path, monkeypatch):
     })
     with gzip.open(tmp_path / "cancer_type_df.csv.gz", "wt") as handle:
         handle.write(labels.write_csv())
+    for name in FEATURE_MEMBERSHIP_FILES:
+        _write_gzip_csv(tmp_path / name, pl.DataFrame({"DFCI_MRN": ids}))
     pl.DataFrame({
         "DFCI_MRN": ids, "death": [1] * 6, "tt_death": [1., 2., 3., 4., 5., 6.],
         "EMBEDDING_0": [np.nan] * 6,
@@ -190,7 +209,7 @@ def score_tree(tmp_path, monkeypatch):
 
 
 def test_distinct_sources_raw_cancer_mapping_and_missing_modalities(score_tree):
-    fig2, fig3, audit = prep.prepare_within_cancer(min_patients=2, min_events=1)
+    fig2, fig3, audit, counts2, counts3 = prep.prepare_within_cancer(min_patients=2, min_events=1)
     assert fig2.schema == fig3.schema == pl.Schema(prep.RESULT_SCHEMA)
     assert fig2["cancer_type"].to_list() == fig3["cancer_type"].to_list() == ["Reference cancer"]
     assert fig2["delta_cindex"].to_list() == [1.]
@@ -207,10 +226,11 @@ def test_legacy_scores_missing_fold_are_audited_without_pooled_fallback(score_tr
     _, full, _ = score_tree
     path = full / "text_risk_scores.csv"
     pl.read_csv(path).drop("outer_fold").write_csv(path)
-    fig2, fig3, audit = prep.prepare_within_cancer(min_patients=2, min_events=1)
+    fig2, fig3, audit, counts2, counts3 = prep.prepare_within_cancer(min_patients=2, min_events=1)
     assert fig2.is_empty()
     assert not fig3.is_empty()
-    assert "missing outer_fold" in caplog.text
+    assert not caplog.text
+    assert audit["detail"].str.contains("missing outer_fold").any()
     assert audit.filter(pl.col("status") == "invalid_text_or_outcome_input").height == 1
 
 
@@ -219,7 +239,7 @@ def test_duplicate_predictions_skip_comparator_and_record_reason(score_tree):
     path = features / "stage_risk_scores.csv"
     scores = pl.read_csv(path)
     pl.concat([scores, scores.head(1)]).write_csv(path)
-    fig2, fig3, audit = prep.prepare_within_cancer(min_patients=2, min_events=1)
+    fig2, fig3, audit, counts2, counts3 = prep.prepare_within_cancer(min_patients=2, min_events=1)
     assert not fig2.is_empty()
     assert fig3.is_empty()
     assert audit.filter(pl.col("detail").str.contains("duplicate patient IDs")).height == 1
@@ -227,10 +247,12 @@ def test_duplicate_predictions_skip_comparator_and_record_reason(score_tree):
 
 def test_missing_inputs_preserve_typed_schemas_and_audit(tmp_path, monkeypatch):
     monkeypatch.setattr(prep, "FEATURE_PATH", str(tmp_path))
-    fig2, fig3, audit = prep.prepare_within_cancer()
+    fig2, fig3, audit, counts2, counts3 = prep.prepare_within_cancer()
     assert fig2.is_empty() and fig3.is_empty()
     assert fig2.schema == fig3.schema == pl.Schema(prep.RESULT_SCHEMA)
     assert audit.schema == pl.Schema(prep.AUDIT_SCHEMA)
+    assert counts2.schema == counts3.schema == pl.Schema(prep.COUNT_SCHEMA)
+    assert counts2.is_empty() and counts3.is_empty()
     assert audit["status"].to_list() == ["invalid_cancer_input"]
 
 
@@ -240,7 +262,7 @@ def test_missing_raw_cancer_label_cannot_fall_back_to_dummies(score_tree):
     labels = pl.read_csv(path).drop("CANCER_TYPE")
     with gzip.open(path, "wt") as handle:
         handle.write(labels.write_csv())
-    fig2, fig3, audit = prep.prepare_within_cancer(min_patients=2, min_events=1)
+    fig2, fig3, audit, counts2, counts3 = prep.prepare_within_cancer(min_patients=2, min_events=1)
     assert fig2.is_empty() and fig3.is_empty()
     assert audit["status"].to_list() == ["invalid_cancer_input"]
     assert "CANCER_TYPE" in audit["detail"][0]
@@ -255,27 +277,254 @@ def test_generic_score_column_supported_but_fold_still_required(tmp_path):
     assert result["comparator_fold"].to_list() == [1.]
 
 
-def test_cli_writes_both_figures_and_audit_with_requested_thresholds(score_tree, monkeypatch):
-    from figures import io
-
+def test_cli_writes_both_figures_counts_and_audit_quietly(score_tree, monkeypatch, capsys, caplog):
     root, _, _ = score_tree
     output = root / "figure_data"
-    monkeypatch.setattr(io, "FIGURE_DATA_DIR", str(output))
+    monkeypatch.setattr(prep, "FIGURE_DATA_DIR", str(output))
     monkeypatch.setattr(sys, "argv", ["within_cancer", "--min-patients", "3", "--min-events", "2"])
     prep.main()
     assert {path.name for path in output.iterdir()} == {
-        "fig2_within_cancer_cindex.csv", "fig3_within_cancer_cindex.csv", "within_cancer_audit.csv"
+        "fig2_within_cancer_cindex.csv", "fig3_within_cancer_cindex.csv",
+        "fig2_within_cancer_event_counts.csv", "fig3_within_cancer_event_counts.csv",
+        "within_cancer_audit.csv",
     }
-    for name in ("fig2_within_cancer_cindex.csv", "fig3_within_cancer_cindex.csv"):
+    for name in (
+        "fig2_within_cancer_cindex.csv", "fig3_within_cancer_cindex.csv",
+        "fig2_within_cancer_event_counts.csv", "fig3_within_cancer_event_counts.csv",
+    ):
         frame = pl.read_csv(output / name, schema_overrides={"event": pl.String})
         assert frame["event"].to_list() == ["death"]
         assert frame["min_patients_required"].to_list() == [3]
         assert frame["min_events_required"].to_list() == [2]
     audit = pl.read_csv(output / "within_cancer_audit.csv")
     assert audit.filter(pl.col("status") == "evaluated").height == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "[wrote]" not in captured.err and "WARNING" not in captured.err
+    assert not caplog.text
 
 
 @pytest.mark.parametrize("min_patients,min_events", [(1, 1), (20, 0)])
 def test_invalid_thresholds_fail_before_io(min_patients, min_events):
     with pytest.raises(ValueError, match="min_patients"):
         prep.prepare_within_cancer(min_patients=min_patients, min_events=min_events)
+
+
+def test_source_counts_precede_predictions_and_use_all_common_feature_ids(score_tree):
+    root, full, features = score_tree
+    ids = [str(i) for i in range(6)]
+    # Every modality file excludes a different patient. Only 0 and 1 occur in all four.
+    for index, name in enumerate(FEATURE_MEMBERSHIP_FILES, start=2):
+        _write_gzip_csv(root / name, pl.DataFrame({
+            "DFCI_MRN": [patient for patient in ids if patient != str(index)]
+        }))
+    # Metastatic burden is left-joined/zero-filled in training, so even a stale
+    # membership file must not reduce the common modality population.
+    _write_gzip_csv(root / "met_burden_df.csv.gz", pl.DataFrame({"DFCI_MRN": ["absent"]}))
+    for path in full.glob("*_risk_scores.csv"):
+        pl.read_csv(path).head(4).write_csv(path)
+    for path in features.glob("*_risk_scores.csv"):
+        pl.read_csv(path).head(2).write_csv(path)
+
+    fig2, fig3, _, counts2, counts3 = prep.prepare_within_cancer(
+        min_patients=2, min_events=1, show_progress=False
+    )
+    assert counts2.schema == counts3.schema == pl.Schema(prep.COUNT_SCHEMA)
+    assert counts2.select("n_patients", "n_events", "n_non_events").rows() == [(6, 6, 0)]
+    assert counts3.select("n_patients", "n_events", "n_non_events").rows() == [(2, 2, 0)]
+    assert counts2["eligible"].to_list() == counts3["eligible"].to_list() == [True]
+    assert fig2["n_patients"].to_list() == [4]
+    assert fig3["n_patients"].to_list() == [2]
+
+
+def test_untrained_endpoints_count_valid_outcomes_and_preserve_zero_strata(score_tree):
+    root, _, _ = score_tree
+    label_path = root / "cancer_type_df.csv.gz"
+    labels = pl.read_csv(label_path).with_columns(
+        pl.Series("CANCER_TYPE", ["Breast"] * 3 + ["Lung"] * 3)
+    )
+    _write_gzip_csv(label_path, labels)
+    outcome_path = root / prep.embedding_file("death_met")
+    outcomes = pl.read_parquet(outcome_path).with_columns(
+        pl.Series("untrained", [1., 0., 2., np.nan, 1., 0.]),
+        pl.Series("tt_untrained", [1., 2., 3., 4., 0., np.inf]),
+    )
+    outcomes.write_parquet(outcome_path)
+
+    fig2, fig3, audit, counts2, counts3 = prep.prepare_within_cancer(
+        min_patients=2, min_events=1, show_progress=False
+    )
+    for counts in (counts2, counts3):
+        untrained = counts.filter(pl.col("event") == "untrained").sort("cancer_type")
+        assert untrained.select("cancer_type", "n_patients", "n_events", "n_non_events").rows() == [
+            ("Breast", 2, 1, 1), ("Lung", 0, 0, 0)
+        ]
+        assert untrained["eligible"].to_list() == [True, False]
+        assert untrained["status"][1] == "too_few_patients"
+    assert fig2["event"].unique().to_list() == fig3["event"].unique().to_list() == ["death"]
+    assert audit.filter(pl.col("event") == "untrained").height > 0
+
+
+def test_cancers_absent_from_shared_modality_cohort_have_zero_counts(score_tree):
+    root, _, _ = score_tree
+    labels_path = root / "cancer_type_df.csv.gz"
+    labels = pl.read_csv(labels_path).with_columns(
+        pl.Series("CANCER_TYPE", ["Breast"] * 3 + ["Lung"] * 3)
+    )
+    _write_gzip_csv(labels_path, labels)
+    for name in FEATURE_MEMBERSHIP_FILES:
+        _write_gzip_csv(root / name, pl.DataFrame({"DFCI_MRN": ["0", "1", "2"]}))
+    _, _, _, _, counts3 = prep.prepare_within_cancer(
+        min_patients=2, min_events=1, show_progress=False
+    )
+    assert counts3.select("cancer_type", "n_patients", "n_events", "eligible").rows() == [
+        ("Breast", 3, 3, True), ("Lung", 0, 0, False)
+    ]
+
+
+def test_brain_metastasis_counts_follow_primary_brain_exclusion(score_tree):
+    root, _, _ = score_tree
+    label_path = root / "cancer_type_df.csv.gz"
+    labels = pl.read_csv(label_path).with_columns(
+        pl.Series("CANCER_TYPE", ["BRAIN", "BRAIN"] + ["Reference cancer"] * 4),
+        pl.Series("CANCER_TYPE_BRAIN", [1., 1., 0., 0., np.nan, None]),
+    )
+    _write_gzip_csv(label_path, labels)
+    outcome_path = root / prep.embedding_file("death_met")
+    pl.read_parquet(outcome_path).with_columns(
+        pl.lit(1).alias("brainM"), pl.lit(1.).alias("tt_brainM")
+    ).write_parquet(outcome_path)
+
+    _, _, _, counts2, counts3 = prep.prepare_within_cancer(
+        min_patients=2, min_events=1, show_progress=False
+    )
+    for counts in (counts2, counts3):
+        brain = counts.filter(pl.col("event") == "brainM").sort("cancer_type")
+        assert brain.select("cancer_type", "n_patients", "n_events").rows() == [
+            ("BRAIN", 0, 0), ("Reference cancer", 4, 4)
+        ]
+        # Other endpoints must keep the primary brain patients.
+        assert counts.filter((pl.col("event") == "death") & (pl.col("cancer_type") == "BRAIN"))["n_patients"].to_list() == [2]
+
+
+def test_precounts_skip_all_prediction_and_concordance_work_when_ineligible(score_tree, monkeypatch):
+    def unexpected_work(*args, **kwargs):
+        pytest.fail("Ineligible source cohorts must be screened before prediction reads or concordance")
+
+    monkeypatch.setattr(prep, "_load_scores", unexpected_work)
+    monkeypatch.setattr(prep, "_block_pair_counts", unexpected_work)
+    _, _, _, counts2, counts3 = prep.prepare_within_cancer(
+        min_patients=7, min_events=1, show_progress=False
+    )
+    for counts in (counts2, counts3):
+        assert counts["n_patients"].to_list() == [6]
+        assert counts["eligible"].to_list() == [False]
+        assert counts["status"].to_list() == ["too_few_patients"]
+
+
+@pytest.mark.parametrize("min_patients,min_events", [(5, 1), (2, 3)])
+def test_sparse_matched_strata_do_not_compute_concordance(monkeypatch, min_patients, min_events):
+    def unexpected_concordance(*args, **kwargs):
+        pytest.fail("Insufficient matched patient/event counts must skip concordance")
+
+    monkeypatch.setattr(prep, "_block_pair_counts", unexpected_concordance)
+    frame = _paired([1., 2., 3., 4.], [1., 0., 1., 0.], [4., 3., 2., 1.], [1., 2., 3., 4.])
+    row = _evaluate(frame, min_patients=min_patients, min_events=min_events).row(0, named=True)
+    assert row["n_comparable_pairs"] is None
+    assert row["n_fold_blocks"] is None
+    assert row["text_cindex"] is None
+
+
+def test_matched_counts_rechecked_after_source_counts_pass(score_tree, monkeypatch):
+    original = prep._block_pair_counts
+    evaluated_sizes = []
+
+    def record_concordance(block):
+        evaluated_sizes.append(block.height)
+        return original(block)
+
+    monkeypatch.setattr(prep, "_block_pair_counts", record_concordance)
+    fig2, fig3, _, counts2, counts3 = prep.prepare_within_cancer(
+        min_patients=6, min_events=1, show_progress=False
+    )
+    assert counts2["eligible"].to_list() == counts3["eligible"].to_list() == [True]
+    assert fig2["status"].to_list() == ["ok"]
+    assert fig3["n_patients"].to_list() == [5]
+    assert fig3["status"].to_list() == ["too_few_patients"]
+    assert fig3["n_comparable_pairs"].to_list() == fig3["n_fold_blocks"].to_list() == [None]
+    assert evaluated_sizes == [6]
+
+
+def test_missing_modality_membership_preserves_score_evaluation_and_audits_counts(score_tree):
+    root, _, _ = score_tree
+    (root / FEATURE_MEMBERSHIP_FILES[0]).unlink()
+    fig2, fig3, audit, counts2, counts3 = prep.prepare_within_cancer(
+        min_patients=2, min_events=1, show_progress=False
+    )
+    assert not fig2.is_empty() and not fig3.is_empty()
+    assert not counts2.is_empty() and counts3.is_empty()
+    assert counts3.schema == pl.Schema(prep.COUNT_SCHEMA)
+    assert audit["detail"].str.contains(FEATURE_MEMBERSHIP_FILES[0], literal=True).any()
+
+
+def test_warnings_suppressed_and_progress_has_two_global_endpoint_bars(score_tree, monkeypatch, caplog):
+    root, _, _ = score_tree
+    monkeypatch.setattr(prep, "SCHEMES", ["death_met", "icd3_post"])
+    first_path = root / prep.embedding_file("death_met")
+    first = pl.read_parquet(first_path)
+    first.write_parquet(root / prep.embedding_file("icd3_post"))
+    first.with_columns(pl.lit(1).alias("untrained"), pl.lit(2.).alias("tt_untrained")).write_parquet(first_path)
+    bars = []
+
+    class ProgressSpy:
+        def __init__(self, iterable=None, *, total=None, desc=None, **kwargs):
+            self.iterable = iterable
+            self.total = total if total is not None else len(iterable)
+            self.desc = desc
+            self.n = 0
+            bars.append(self)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def __iter__(self):
+            for item in self.iterable:
+                yield item
+                self.update()
+
+        def update(self, n=1):
+            self.n += n
+
+        def close(self):
+            pass
+
+        def set_postfix(self, *args, **kwargs):
+            pass
+
+        def set_postfix_str(self, *args, **kwargs):
+            pass
+
+    original = prep._read_outcomes
+
+    def noisy_read(*args, **kwargs):
+        warnings.warn("synthetic endpoint warning", RuntimeWarning)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(prep, "tqdm", ProgressSpy)
+    monkeypatch.setattr(prep, "_read_outcomes", noisy_read)
+    with warnings.catch_warnings(record=True) as emitted:
+        warnings.simplefilter("always")
+        prep.prepare_within_cancer(min_patients=2, min_events=1)
+    assert not emitted
+    assert not caplog.text
+    assert [(bar.desc, bar.total, bar.n) for bar in bars] == [
+        ("Full cohort", 3, 3), ("Modality cohort", 3, 3)
+    ]
+    # The preparation call must not leave Python warnings disabled for its caller.
+    with warnings.catch_warnings(record=True) as emitted_after:
+        warnings.simplefilter("always")
+        warnings.warn("caller warning", RuntimeWarning)
+    assert len(emitted_after) == 1

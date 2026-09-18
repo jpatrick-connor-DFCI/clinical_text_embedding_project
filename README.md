@@ -55,7 +55,21 @@ weighted by comparable-pair counts, avoiding comparisons across fitted risk scal
 The default minimum is 20 matched patients, 5 events, and 1 comparable pair per
 endpoint/cancer/comparator; override the first two with `--min-patients` and
 `--min-events`. The preparation writes `fig2_within_cancer_cindex.csv`,
-`fig3_within_cancer_cindex.csv`, and `within_cancer_audit.csv` to `FIGURE_DATA_DIR`.
+`fig3_within_cancer_cindex.csv`, `fig2_within_cancer_event_counts.csv`,
+`fig3_within_cancer_event_counts.csv`, and `within_cancer_audit.csv` to `FIGURE_DATA_DIR`.
+
+Before evaluating each endpoint, the count tables report valid patients, observed
+events, and non-events (`n_non_events`) by cancer type, including endpoints with no
+trained risk scores and strata with zero eligible patients. Full-cohort membership
+is the intersection of scheme-specific embedding IDs and cancer annotations;
+modality membership also intersects somatic, germline, stage, and treatment IDs,
+as in training. Metastatic burden is zero-filled and adds no membership restriction.
+The count tables record eligibility, status, and the required patient/event thresholds.
+These counts are upper bounds before matching predictions; the final paired cohort
+must still meet the thresholds. Concordance is skipped for undersized strata.
+The module displays two global progress bars, **Full cohort** and **Modality cohort**,
+across all schemes/endpoints. Warnings are suppressed; skipped comparisons and
+missing modality inputs are recorded in the audit CSV without console logs.
 
 Supplement S2 shows text versus base C-indices in cancer-type facets with endpoint
 counts and median paired differences. Supplement S3 shows a cancer-by-modality
