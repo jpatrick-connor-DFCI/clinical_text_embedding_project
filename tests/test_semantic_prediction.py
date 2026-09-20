@@ -5,8 +5,11 @@ import polars as pl
 import pytest
 
 from semantic_search.prediction_targets import (
+    _bin_line_count,
     collapse_rare_treatment_labels,
     load_first_treatment_target,
+    load_n_lines_followup_stats,
+    load_n_lines_target,
     load_prostate_subtype_target,
 )
 
@@ -384,3 +387,131 @@ def test_nested_cv_writes_oof_predictions_and_refit_xgboost(tmp_path, monkeypatc
             n_jobs=1,
             overwrite=False,
         )
+
+
+# --- n_lines target ------------------------------------------------------
+
+def _med_long(rows):
+    """(DFCI_MRN, DRUG, START_DT) rows shaped like unpivot_medications_summary()."""
+    return pl.DataFrame(
+        {
+            "DFCI_MRN": [r[0] for r in rows],
+            "DRUG": [r[1] for r in rows],
+            "START_DT": [r[2] for r in rows],
+        }
+    )
+
+
+def _patch_meds(monkeypatch, long):
+    from pipelines.preprocessing import profile_sources as ps
+
+    monkeypatch.setattr(ps, "unpivot_medications_summary", lambda: long)
+
+
+def test_bin_line_count_is_open_ended_at_the_top():
+    assert _bin_line_count(1) == "1 line"
+    assert _bin_line_count(2) == "2 lines"
+    assert _bin_line_count(3) == "3 lines"
+    # The 7-slot MEDICATIONS_SUMMARY ceiling must not create distinct classes.
+    assert _bin_line_count(4) == "4+ lines"
+    assert _bin_line_count(7) == "4+ lines"
+    assert _bin_line_count(99) == "4+ lines"
+
+
+def test_bin_labels_sort_in_clinical_order():
+    """LabelEncoder orders classes lexicographically; that must match clinical order."""
+    labels = sorted({_bin_line_count(n) for n in range(1, 10)})
+    assert labels == ["1 line", "2 lines", "3 lines", "4+ lines"]
+
+
+def test_n_lines_counts_distinct_lines_and_bins_them(tmp_path, monkeypatch):
+    from datetime import date
+
+    path = tmp_path / "cohort_df.parquet"
+    pl.DataFrame({"DFCI_MRN": [1, 2, 3]}).write_parquet(path)
+    _patch_meds(
+        monkeypatch,
+        _med_long([
+            # Patient 1: two drugs inside the 28-day window = one line.
+            (1, "Drug A", date(2020, 1, 1)),
+            (1, "Drug B", date(2020, 1, 10)),
+            # Patient 2: three well-separated starts = three lines.
+            (2, "Drug A", date(2020, 1, 1)),
+            (2, "Drug B", date(2020, 6, 1)),
+            (2, "Drug C", date(2021, 1, 1)),
+            # Patient 3: five separated starts = 4+ bin.
+            (3, "Drug A", date(2019, 1, 1)),
+            (3, "Drug B", date(2019, 6, 1)),
+            (3, "Drug C", date(2020, 1, 1)),
+            (3, "Drug D", date(2020, 6, 1)),
+            (3, "Drug E", date(2021, 1, 1)),
+        ]),
+    )
+
+    labels = load_n_lines_target(cohort_path=str(path))
+
+    assert dict(labels.iter_rows()) == {1: "1 line", 2: "3 lines", 3: "4+ lines"}
+
+
+def test_n_lines_excludes_patients_outside_the_cohort(tmp_path, monkeypatch):
+    from datetime import date
+
+    path = tmp_path / "cohort_df.parquet"
+    pl.DataFrame({"DFCI_MRN": [1]}).write_parquet(path)
+    _patch_meds(
+        monkeypatch,
+        _med_long([(1, "Drug A", date(2020, 1, 1)), (999, "Drug B", date(2020, 1, 1))]),
+    )
+
+    labels = load_n_lines_target(cohort_path=str(path))
+
+    assert labels.get_column("DFCI_MRN").to_list() == [1]
+
+
+def test_n_lines_omits_cohort_patients_with_no_medications(tmp_path, monkeypatch):
+    """No medication row means an unknown count, not zero lines."""
+    from datetime import date
+
+    path = tmp_path / "cohort_df.parquet"
+    pl.DataFrame({"DFCI_MRN": [1, 2]}).write_parquet(path)
+    _patch_meds(monkeypatch, _med_long([(1, "Drug A", date(2020, 1, 1))]))
+
+    labels = load_n_lines_target(cohort_path=str(path))
+
+    assert labels.get_column("DFCI_MRN").to_list() == [1]
+    assert "0 lines" not in labels.get_column("label").to_list()
+
+
+def test_n_lines_followup_stats_expose_the_censoring_confound(tmp_path, monkeypatch):
+    """Short follow-up in the low bins is exactly the confound this must surface."""
+    from datetime import date
+
+    path = tmp_path / "cohort_df.parquet"
+    pl.DataFrame(
+        {
+            "DFCI_MRN": [1, 2],
+            "first_treatment_date": [date(2020, 1, 1), date(2020, 1, 1)],
+            "death_date": [None, date(2022, 1, 1)],
+            "last_contact_date": [date(2020, 2, 1), None],
+            "death": [0, 1],
+        }
+    ).write_parquet(path)
+    _patch_meds(
+        monkeypatch,
+        _med_long([
+            # Patient 1: one line, 31 days of follow-up.
+            (1, "Drug A", date(2020, 1, 1)),
+            # Patient 2: three lines, two years of follow-up.
+            (2, "Drug A", date(2020, 1, 1)),
+            (2, "Drug B", date(2020, 6, 1)),
+            (2, "Drug C", date(2021, 1, 1)),
+        ]),
+    )
+
+    stats = load_n_lines_followup_stats(cohort_path=str(path))
+    by_label = {r["label"]: r for r in stats.to_dicts()}
+
+    assert by_label["1 line"]["median_follow_up_days"] == 31
+    assert by_label["3 lines"]["median_follow_up_days"] == 731
+    assert by_label["1 line"]["death_fraction"] == 0.0
+    assert by_label["3 lines"]["death_fraction"] == 1.0

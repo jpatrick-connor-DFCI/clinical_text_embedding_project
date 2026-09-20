@@ -85,6 +85,7 @@ from semantic_search.common import (  # noqa: E402
 from semantic_search.prediction_targets import (  # noqa: E402
     TARGETS,
     collapse_rare_treatment_labels,
+    load_n_lines_followup_stats,
     load_target,
 )
 
@@ -886,6 +887,28 @@ def run(
             continue
         print(f"  {labels.height:,} labeled patients; classes={_class_counts(labels)}", flush=True)
 
+        followup_stats = None
+        if target == "n_lines":
+            # Diagnostic only: a failure here must not block training, since the
+            # labels themselves loaded fine.
+            try:
+                followup_stats = load_n_lines_followup_stats().to_dicts()
+            except (FileNotFoundError, ValueError, pl.exceptions.PolarsError) as error:
+                print(f"  follow-up audit unavailable: {error}", flush=True)
+            else:
+                print("  follow-up by bin (censoring audit):", flush=True)
+                for row in followup_stats:
+                    median = row["median_follow_up_days"]
+                    line = (
+                        f"    {row['label']:>10}  n={row['n']:>6,}  "
+                        f"median follow-up={median:.0f}d"
+                        if median is not None
+                        else f"    {row['label']:>10}  n={row['n']:>6,}  median follow-up=n/a"
+                    )
+                    if row["death_fraction"] is not None:
+                        line += f"  deaths={row['death_fraction']:.1%}"
+                    print(line, flush=True)
+
         for window in windows:
             feature_frames = {
                 space: load_features(space, window)
@@ -953,6 +976,14 @@ def run(
                         "feature_artifact_size": source_stat.st_size,
                         "feature_artifact_mtime_ns": source_stat.st_mtime_ns,
                     }
+                    if target == "n_lines":
+                        # Every patient is labeled regardless of follow-up, so
+                        # low bins may partly reflect short observation rather
+                        # than disease course.  Record follow-up per bin so the
+                        # confound is measurable from the artifact itself.
+                        run_context["n_lines_censoring"] = "all_patients_unadjusted"
+                        if followup_stats is not None:
+                            run_context["n_lines_followup_by_bin"] = followup_stats
                     if target == "first_treatment":
                         run_context.update(
                             {

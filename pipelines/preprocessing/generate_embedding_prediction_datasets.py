@@ -409,8 +409,14 @@ def _write_death_met_outputs(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        # Deliberately not sorted(ANCHORS): this stage anchors from dates carried
+        # in THIS project's cohort frame. The `adt` anchor's dates come from
+        # COMPASS (TREATMENT_ANCHOR_DATE) and are applied by COMPASS's
+        # build_text_embedding_inputs.py, which calls the pooling helpers
+        # directly rather than going through this stage.
         "--anchor", choices=["treatment", "sequencing"], default=DEFAULT_ANCHOR,
-        help="Time-zero anchor (see anchors.py). Default: treatment.",
+        help="Time-zero anchor (see anchors.py). Default: treatment. The 'adt' "
+             "anchor is not built here; see COMPASS build_text_embedding_inputs.py.",
     )
     args = parser.parse_args()
     anchor = ensure_anchor(args.anchor)

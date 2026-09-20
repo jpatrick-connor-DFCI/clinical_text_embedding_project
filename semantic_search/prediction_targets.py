@@ -16,13 +16,30 @@ from config import AVPC_NEPC_LABELS_PATH, MED_CLASSES_FILE, SURV_PATH
 from semantic_search.clinical_data import load_cancer_type, load_stage
 from semantic_search.common import PATIENT_KEY
 
-TARGETS = ["cancer_type", "stage", "first_treatment", "prostate_subtype"]
+TARGETS = [
+    "cancer_type",
+    "stage",
+    "first_treatment",
+    "prostate_subtype",
+    "n_lines",
+]
 TARGET_DISPLAY_NAMES = {
     "cancer_type": "Cancer type",
     "stage": "Cancer stage",
     "first_treatment": "First treatment type",
     "prostate_subtype": "Prostate phenotype",
+    "n_lines": "Total lines of therapy",
 }
+
+# Upper edges of the line-count bins; the final bin is open-ended ("4+ lines").
+# Binned rather than regressed because the prediction arm is classifier-only
+# (LabelEncoder -> predict_proba -> AUC), and because MEDICATIONS_SUMMARY caps a
+# patient at 7 drug slots (profile_sources.MED_SLOTS), so the raw count is not
+# trustworthy at its top end.  An open-ended top bin absorbs that ceiling: a
+# 7-slot-truncated patient lands in "4+ lines", which is where they belong
+# regardless of the true count.  Labels are worded so that lexicographic order
+# (what LabelEncoder applies) matches clinical order.
+N_LINES_BIN_EDGES = (1, 2, 3)
 
 
 def _finalize(frame: pl.DataFrame, source: str) -> pl.DataFrame:
@@ -181,6 +198,111 @@ def load_prostate_subtype_target(*, labels_path: str | None = None) -> pl.DataFr
     return _finalize(frame.select(PATIENT_KEY, "label"), labels_path)
 
 
+def _bin_line_count(count: int) -> str:
+    """Map a line count to its ordered bin label."""
+    for edge in N_LINES_BIN_EDGES:
+        if count <= edge:
+            return f"{edge} line" if edge == 1 else f"{edge} lines"
+    return f"{N_LINES_BIN_EDGES[-1] + 1}+ lines"
+
+
+def load_n_lines_target(*, cohort_path: str | None = None) -> pl.DataFrame:
+    """Total lines of therapy per patient, binned into ordered classes.
+
+    Lines come from ``profile_lines.derive_lines_of_therapy``, the same
+    derivation the biomarker arm uses, so a "line" means the same thing in both
+    places (a 28-day regimen window; see ``LINE_WINDOW_DAYS``).
+
+    CENSORING: every patient in the cohort is labeled, including those still in
+    follow-up, per the analysis decision for this arm.  The count is therefore
+    "lines observed so far", not a completed lifetime total, and for a living
+    patient it is a lower bound.  Because follow-up duration bounds the
+    observable count, a short-follow-up patient is pushed toward the low bins
+    for a reason unrelated to their disease, and a model can exploit that.
+    ``load_n_lines_followup_stats`` reports follow-up by bin so this confound
+    can be quantified alongside the model's accuracy; it is not adjusted for
+    here.
+
+    TRUNCATION: the 7 fixed MEDICATIONS_SUMMARY slots cap the derivable count,
+    so the top bin is open-ended (see ``N_LINES_BIN_EDGES``).
+    """
+    from pipelines.biomarkers.profile_lines import derive_lines_of_therapy
+    from pipelines.preprocessing import profile_sources as ps
+
+    cohort_path = cohort_path or os.path.join(SURV_PATH, "cohort_df.parquet")
+    if not os.path.exists(cohort_path):
+        raise FileNotFoundError(f"Cohort artifact not found: {cohort_path}")
+    cohort = pl.read_parquet(cohort_path)
+    if PATIENT_KEY not in cohort.columns:
+        raise ValueError(f"{cohort_path} is missing {PATIENT_KEY}")
+
+    lines = derive_lines_of_therapy(ps.unpivot_medications_summary())
+    counts = (
+        lines.join(cohort.select(PATIENT_KEY).unique(), on=PATIENT_KEY, how="semi")
+        .group_by(PATIENT_KEY)
+        .agg(pl.col("LINE").max().alias("n_lines"))
+    )
+    # An inner join, not a zero-fill: a cohort patient with no derivable
+    # medication row has an unknown line count, not a count of zero.  Every
+    # patient here has at least one line by construction.
+    return _finalize(
+        counts.select(
+            PATIENT_KEY,
+            pl.col("n_lines")
+            .map_elements(_bin_line_count, return_dtype=pl.String)
+            .alias("label"),
+        ),
+        "derive_lines_of_therapy",
+    )
+
+
+def load_n_lines_followup_stats(*, cohort_path: str | None = None) -> pl.DataFrame:
+    """Follow-up duration per line-count bin, for auditing the censoring confound.
+
+    If the low bins show systematically shorter follow-up than the high bins,
+    a classifier separating them may be reading follow-up length rather than
+    disease course.  Reported in the run metadata; see ``load_n_lines_target``.
+    """
+    cohort_path = cohort_path or os.path.join(SURV_PATH, "cohort_df.parquet")
+    labels = load_n_lines_target(cohort_path=cohort_path)
+    cohort = pl.read_parquet(cohort_path)
+    required = {"first_treatment_date", "death_date", "last_contact_date"}
+    missing = required - set(cohort.columns)
+    if missing:
+        raise ValueError(f"{cohort_path} is missing columns: {sorted(missing)}")
+
+    death_expr = (
+        pl.col("death").cast(pl.Float64)
+        if "death" in cohort.columns
+        else pl.lit(None, dtype=pl.Float64)
+    )
+    followed = (
+        cohort.select(
+            PATIENT_KEY,
+            "first_treatment_date",
+            pl.coalesce(["death_date", "last_contact_date"]).alias("_end"),
+            death_expr.alias("_death"),
+        )
+        .with_columns(
+            (pl.col("_end") - pl.col("first_treatment_date"))
+            .dt.total_days()
+            .alias("follow_up_days")
+        )
+        .join(labels, on=PATIENT_KEY, how="inner")
+    )
+    return (
+        followed.group_by("label")
+        .agg(
+            pl.len().alias("n"),
+            pl.col("follow_up_days").median().alias("median_follow_up_days"),
+            pl.col("follow_up_days").quantile(0.25).alias("q25_follow_up_days"),
+            pl.col("follow_up_days").quantile(0.75).alias("q75_follow_up_days"),
+            pl.col("_death").mean().alias("death_fraction"),
+        )
+        .sort("label")
+    )
+
+
 def load_target(
     target: str,
     *,
@@ -201,6 +323,8 @@ def load_target(
         )
     if target == "prostate_subtype":
         return load_prostate_subtype_target(labels_path=avpc_nepc_labels_path)
+    if target == "n_lines":
+        return load_n_lines_target(cohort_path=cohort_path)
     raise ValueError(f"Unknown target {target!r}; choose from {TARGETS}")
 
 

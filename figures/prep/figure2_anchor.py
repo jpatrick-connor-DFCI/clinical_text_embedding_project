@@ -33,7 +33,19 @@ from schemes import full_cohort_event_dir, full_cohort_risk_dir, list_trained_ev
 from shared.polars_utils import filter_finite_rows
 
 SCHEMES = ["death_met", "icd3_post", "icd4_post", "phecode_post"]
-ANCHOR_LIST = sorted(ANCHORS.keys())
+# This supplement is specifically the treatment-versus-sequencing anchor
+# comparison: COHORT_OVERLAP_COLUMNS below is hardcoded to that pair, and it
+# reads embedding-prediction files this project writes per anchor. It is NOT
+# "every registered anchor" -- the `adt` anchor exists for COMPASS's
+# time-to-platinum arm, whose inputs live in the COMPASS repo and have no
+# embedding-prediction file or full-cohort run here. Deriving this from
+# ANCHORS would make the module look for files that are never written.
+ANCHOR_LIST = ["sequencing", "treatment"]
+_UNKNOWN_ANCHORS = [anchor for anchor in ANCHOR_LIST if anchor not in ANCHORS]
+if _UNKNOWN_ANCHORS:
+    raise ValueError(
+        f"figure2_anchor lists anchors absent from the registry: {_UNKNOWN_ANCHORS}"
+    )
 
 ANCHOR_SENSITIVITY_COLUMNS = [
     "anchor", "scheme", "event", "model", "cohort", "n", "n_events", "cindex", "mean_auc", "ibs",
