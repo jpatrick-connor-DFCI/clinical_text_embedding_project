@@ -19,18 +19,6 @@ ANCHORS: dict[str, dict[str, str]] = {
         "note_time_col": "NOTE_TIME_REL_SEQUENCING",
         "age_col": "AGE_AT_SEQUENCING",
     },
-    # ADT start, for the COMPASS time-to-platinum arm. Unlike the two anchors
-    # above, the anchor dates are not carried in this project's cohort frame:
-    # they come from COMPASS's TREATMENT_ANCHOR_DATE, joined on DFCI_MRN by
-    # COMPASS/data_preprocessing/build_text_embedding_inputs.py. Registered
-    # here so anchor_suffix() namespaces any file this project writes for it
-    # and so note_time_col() is the single definition of the column name that
-    # both repos compute against.
-    "adt": {
-        "date_col": "adt_start_date",
-        "note_time_col": "NOTE_TIME_REL_ADT",
-        "age_col": "AGE_AT_ADT_START",
-    },
 }
 DEFAULT_ANCHOR = "treatment"
 
