@@ -12,7 +12,7 @@ import os
 
 import polars as pl
 
-from config import AVPC_NEPC_LABELS_PATH, SURV_PATH
+from config import AVPC_NEPC_LABELS_PATH, MED_CLASSES_FILE, SURV_PATH
 from semantic_search.clinical_data import load_cancer_type, load_stage
 from semantic_search.common import PATIENT_KEY
 
@@ -77,26 +77,60 @@ def load_first_treatment_target(
     *,
     cohort_path: str | None = None,
     granularity: str = "category",
+    med_classes_path: str | None = None,
 ) -> pl.DataFrame:
-    """Load the first medication slot's curated category (or drug name).
+    """Load the first medication slot's treatment class (or drug name).
 
     ``build_cohort._first_treatment_dates`` obtains both fields from the same
     chronologically first medication row, so this does not reconstruct an
     anchor differently from the rest of the project.
+
+    At ``category`` granularity the label is the condensed GPT-generated
+    ``MOA_Category``, joined onto the frozen ``ANCHOR_DRUG`` exactly as
+    ``generate_all_non_text_covariates.build_treatment_by_line_df`` joins it
+    onto ``MED_NAME``, including the ``OTHER`` fill for drugs the class table
+    does not cover.  This keeps the prediction target in the same vocabulary as
+    the ``PX_on_*`` treatment covariates; PROFILE's raw ``ANCHOR_DRUG_CATEG``
+    (``MED_ANTINEO_DRUG_CATEG``) is a different, uncondensed vocabulary and is
+    deliberately not used here.
     """
     if granularity not in {"category", "drug"}:
         raise ValueError("granularity must be 'category' or 'drug'")
     cohort_path = cohort_path or os.path.join(SURV_PATH, "cohort_df.parquet")
     if not os.path.exists(cohort_path):
         raise FileNotFoundError(f"First-treatment cohort artifact not found: {cohort_path}")
-    label_col = "ANCHOR_DRUG_CATEG" if granularity == "category" else "ANCHOR_DRUG"
     frame = pl.read_parquet(cohort_path)
-    if label_col not in frame.columns:
-        raise ValueError(f"{cohort_path} is missing {label_col}")
+    if "ANCHOR_DRUG" not in frame.columns:
+        raise ValueError(f"{cohort_path} is missing ANCHOR_DRUG")
+
+    if granularity == "drug":
+        label = pl.col("ANCHOR_DRUG")
+    else:
+        med_classes_path = med_classes_path or MED_CLASSES_FILE
+        if not os.path.exists(med_classes_path):
+            raise FileNotFoundError(
+                f"GPT-generated medication classes not found: {med_classes_path}"
+            )
+        # `unique(keep="last")` and the OTHER fill mirror
+        # build_treatment_by_line_df, so an anchor drug resolves to the same
+        # class the PX_on_* covariates assign it.
+        med_classes = pl.read_csv(med_classes_path)
+        for column in ("MED_NAME", "MOA_Category"):
+            if column not in med_classes.columns:
+                raise ValueError(f"{med_classes_path} is missing {column}")
+        med_classes = med_classes.unique("MED_NAME", keep="last")
+        frame = frame.join(
+            med_classes.select("MED_NAME", "MOA_Category"),
+            left_on="ANCHOR_DRUG",
+            right_on="MED_NAME",
+            how="left",
+        )
+        label = pl.col("MOA_Category").fill_null("OTHER")
+
     return _finalize(
         frame.select(
             PATIENT_KEY,
-            pl.col(label_col).cast(pl.String, strict=False).str.to_uppercase().alias("label"),
+            label.cast(pl.String, strict=False).str.to_uppercase().alias("label"),
         ),
         cohort_path,
     )
@@ -153,6 +187,7 @@ def load_target(
     avpc_nepc_labels_path: str | None = None,
     treatment_granularity: str = "category",
     cohort_path: str | None = None,
+    med_classes_path: str | None = None,
 ) -> pl.DataFrame:
     if target == "cancer_type":
         return load_cancer_type_target()
@@ -160,7 +195,9 @@ def load_target(
         return load_stage_target()
     if target == "first_treatment":
         return load_first_treatment_target(
-            cohort_path=cohort_path, granularity=treatment_granularity
+            cohort_path=cohort_path,
+            granularity=treatment_granularity,
+            med_classes_path=med_classes_path,
         )
     if target == "prostate_subtype":
         return load_prostate_subtype_target(labels_path=avpc_nepc_labels_path)

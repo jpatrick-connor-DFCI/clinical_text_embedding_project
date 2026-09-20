@@ -67,6 +67,7 @@ from sklearn.utils.class_weight import compute_sample_weight  # noqa: E402
 from tqdm.auto import tqdm  # noqa: E402
 from xgboost import XGBClassifier  # noqa: E402
 
+from config import MED_CLASSES_FILE  # noqa: E402
 from semantic_search.common import (  # noqa: E402
     DEFAULT_WINDOWS,
     MODELS_DIR,
@@ -960,6 +961,15 @@ def run(
                                 "collapsed_treatment_labels": collapsed,
                             }
                         )
+                        # At category granularity the label vocabulary is the
+                        # GPT-generated MOA_Category table, so the run is only
+                        # reproducible if we record which table produced it.
+                        if treatment_granularity == "category":
+                            run_context["med_classes_file"] = MED_CLASSES_FILE
+                            if os.path.exists(MED_CLASSES_FILE):
+                                med_stat = os.stat(MED_CLASSES_FILE)
+                                run_context["med_classes_file_size"] = med_stat.st_size
+                                run_context["med_classes_file_mtime_ns"] = med_stat.st_mtime_ns
                     meta, folds, per_class = train_one(
                         data,
                         cols,

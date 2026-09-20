@@ -74,17 +74,71 @@ def test_first_treatment_uses_frozen_anchor_category_or_drug(tmp_path):
     path = tmp_path / "cohort_df.parquet"
     pl.DataFrame(
         {
-            "DFCI_MRN": [1, 2],
-            "ANCHOR_DRUG": ["Drug A", "Drug B"],
-            "ANCHOR_DRUG_CATEG": ["Chemotherapy", "Targeted"],
+            "DFCI_MRN": [1, 2, 3],
+            "ANCHOR_DRUG": ["Drug A", "Drug B", "Drug C"],
+            # PROFILE's raw category must NOT be what the category label uses.
+            "ANCHOR_DRUG_CATEG": ["Chemotherapy", "Targeted", "Chemotherapy"],
         }
     ).write_parquet(path)
+    med_classes = tmp_path / "med_classes.csv"
+    pl.DataFrame(
+        {
+            "MED_NAME": ["Drug A", "Drug B"],
+            "MOA_Category": ["Taxane", "PARP Inhibitor"],
+        }
+    ).write_csv(med_classes)
 
-    category = load_first_treatment_target(cohort_path=str(path))
+    category = load_first_treatment_target(
+        cohort_path=str(path), med_classes_path=str(med_classes)
+    )
     drug = load_first_treatment_target(cohort_path=str(path), granularity="drug")
 
-    assert category.get_column("label").to_list() == ["CHEMOTHERAPY", "TARGETED"]
-    assert drug.get_column("label").to_list() == ["DRUG A", "DRUG B"]
+    # Condensed GPT MOA_Category, matching the PX_on_* covariate vocabulary;
+    # Drug C is absent from the class table and falls back to OTHER.
+    assert category.get_column("label").to_list() == [
+        "TAXANE",
+        "PARP INHIBITOR",
+        "OTHER",
+    ]
+    assert drug.get_column("label").to_list() == ["DRUG A", "DRUG B", "DRUG C"]
+
+
+def test_first_treatment_category_ignores_profile_raw_drug_categ(tmp_path):
+    """The category label must come from the GPT class table, not ANCHOR_DRUG_CATEG."""
+    path = tmp_path / "cohort_df.parquet"
+    pl.DataFrame(
+        {
+            "DFCI_MRN": [1],
+            "ANCHOR_DRUG": ["Drug A"],
+            "ANCHOR_DRUG_CATEG": ["Chemotherapy"],
+        }
+    ).write_parquet(path)
+    med_classes = tmp_path / "med_classes.csv"
+    pl.DataFrame(
+        {"MED_NAME": ["Drug A"], "MOA_Category": ["Androgen Receptor Inhibitor"]}
+    ).write_csv(med_classes)
+
+    labels = load_first_treatment_target(
+        cohort_path=str(path), med_classes_path=str(med_classes)
+    )
+
+    assert labels.get_column("label").to_list() == ["ANDROGEN RECEPTOR INHIBITOR"]
+
+
+def test_first_treatment_category_takes_last_duplicate_med_name(tmp_path):
+    """Mirrors build_treatment_by_line_df's unique(MED_NAME, keep='last')."""
+    path = tmp_path / "cohort_df.parquet"
+    pl.DataFrame({"DFCI_MRN": [1], "ANCHOR_DRUG": ["Drug A"]}).write_parquet(path)
+    med_classes = tmp_path / "med_classes.csv"
+    pl.DataFrame(
+        {"MED_NAME": ["Drug A", "Drug A"], "MOA_Category": ["Stale", "Corrected"]}
+    ).write_csv(med_classes)
+
+    labels = load_first_treatment_target(
+        cohort_path=str(path), med_classes_path=str(med_classes)
+    )
+
+    assert labels.get_column("label").to_list() == ["CORRECTED"]
 
 
 def test_sparse_treatment_categories_collapse_to_other():
