@@ -11,10 +11,21 @@ For each setup the script writes out-of-fold predictions, a final model tuned
 on all available rows, and an auditable metadata JSON. Aggregate metrics and
 class counts are written under ``semantic_search/results``.
 
+A non-text reference space, ``cancer_type_baseline``, is also selectable: its
+features are one-hot cancer type and nothing else, trained through the same
+nested CV so its AUC is directly comparable. It answers how much of a target is
+explained by diagnosis alone -- the relevant question for the treatment targets,
+where indication largely determines therapy. It skips PCA (a one-hot matrix is
+already low-dimensional) and is refused for the ``cancer_type`` target, where its
+features would be that target's own labels.
+
 Run:
     python -m semantic_search.train_prediction_models
     python -m semantic_search.train_prediction_models --windows alltime pretreatment
     python -m semantic_search.train_prediction_models --targets stage first_treatment
+    python -m semantic_search.train_prediction_models \
+        --targets treatment_ici treatment_tki \
+        --spaces concat cancer_type_baseline --cohort-mode common
 """
 
 from __future__ import annotations
@@ -25,6 +36,7 @@ import importlib.metadata
 import json
 import math
 import os
+import re
 import tempfile
 from collections import Counter
 from pathlib import Path
@@ -69,6 +81,8 @@ from xgboost import XGBClassifier  # noqa: E402
 
 from config import MED_CLASSES_FILE  # noqa: E402
 from semantic_search.common import (  # noqa: E402
+    BASELINE_SPACE,
+    BASELINE_SPACES,
     DEFAULT_WINDOWS,
     MODELS_DIR,
     PATIENT_KEY,
@@ -82,7 +96,12 @@ from semantic_search.common import (  # noqa: E402
     feature_path,
     load_features,
 )
+from semantic_search.drug_classes import (  # noqa: E402
+    DRUG_CLASS_PATTERNS,
+    DRUG_CLASS_SEX,
+)
 from semantic_search.prediction_targets import (  # noqa: E402
+    DRUG_CLASS_TARGETS,
     TARGETS,
     collapse_rare_treatment_labels,
     load_n_lines_followup_stats,
@@ -186,18 +205,27 @@ def _run_signature(
     inner_folds: int,
     seed: int,
     run_context: dict,
+    feature_blocks: dict[str, list[int]],
 ) -> dict:
     patient_labels = "\n".join(
         f"{mrn}\t{label}"
         for mrn, label in data.select(PATIENT_KEY, "label").sort(PATIENT_KEY).iter_rows()
     )
+    # The baseline space fits no PCA, so recording the embedding PCA settings
+    # for it would misdescribe the run and make its signature collide with an
+    # embedding run's.
+    uses_pca = bool(feature_blocks)
     return {
         "patient_label_sha256": hashlib.sha256(patient_labels.encode()).hexdigest(),
         "feature_columns_sha256": hashlib.sha256("\n".join(feature_cols).encode()).hexdigest(),
         "hyperparameter_grid": XGB_GRID,
-        "feature_transform": "blockwise_l2_standardize_pca",
-        "pca_components": PCA_COMPONENTS,
-        "n_transformed_features": sum(PCA_COMPONENTS.values()),
+        "feature_transform": (
+            "blockwise_l2_standardize_pca" if uses_pca else "passthrough"
+        ),
+        "pca_components": PCA_COMPONENTS if uses_pca else None,
+        "n_transformed_features": (
+            sum(PCA_COMPONENTS.values()) if uses_pca else len(feature_cols)
+        ),
         "outer_folds_requested": outer_folds,
         "inner_folds_requested": inner_folds,
         "seed": seed,
@@ -232,8 +260,67 @@ def _inner_splits(y_train: np.ndarray, requested: int) -> int:
     return folds
 
 
-def _feature_blocks(feature_cols: list[str]) -> dict[str, list[int]]:
-    """Column indices for the three named embedding blocks."""
+# Prefix marking the one-hot cancer-type columns of the baseline space. Chosen
+# so `embedding_cols` (which matches "EMBEDDING_") never picks them up.
+BASELINE_COL_PREFIX = "CANCER_TYPE_"
+
+
+def load_baseline_features() -> pl.DataFrame:
+    """One-hot cancer type per patient: the non-text reference feature space.
+
+    Built in memory from the same `cancer_type_df.csv.gz` the `cancer_type`
+    target reads, so the baseline and that target cannot disagree about a
+    patient's diagnosis.  Returns `DFCI_MRN` plus one 0/1 column per cancer type.
+
+    Note this is the same source the `cancer_type` TARGET uses; running the
+    baseline space against the `cancer_type` target would be circular (the
+    features are the label one-hot encoded), so `run` refuses that pairing.
+    """
+    from semantic_search.clinical_data import load_cancer_type
+
+    frame, _, _ = load_cancer_type()
+    if "CANCER_TYPE" not in frame.columns:
+        raise FileNotFoundError("Cancer-type baseline features are unavailable")
+    frame = (
+        frame.select(
+            pl.col(PATIENT_KEY).cast(pl.Int64, strict=False),
+            pl.col("CANCER_TYPE").cast(pl.String, strict=False).str.strip_chars(),
+        )
+        .drop_nulls([PATIENT_KEY, "CANCER_TYPE"])
+        .filter(pl.col("CANCER_TYPE") != "")
+        .unique(subset=PATIENT_KEY, keep="first")
+        .sort(PATIENT_KEY)
+    )
+    if frame.is_empty():
+        raise ValueError("Cancer-type baseline features are empty")
+    types = sorted(frame.get_column("CANCER_TYPE").unique().to_list())
+    # Explicit sorted indicators rather than `to_dummies`, so the column order
+    # is deterministic across runs and the run signature stays stable.
+    return frame.select(
+        PATIENT_KEY,
+        *[
+            (pl.col("CANCER_TYPE") == value)
+            .cast(pl.Int8)
+            .alias(f"{BASELINE_COL_PREFIX}{re.sub(r'[^A-Za-z0-9]+', '_', value).strip('_').upper()}")
+            for value in types
+        ],
+    )
+
+
+def baseline_cols(df: pl.DataFrame) -> list[str]:
+    """The feature columns of the baseline space, in file order."""
+    return [c for c in df.columns if c.startswith(BASELINE_COL_PREFIX)]
+
+
+def _feature_blocks(feature_cols: list[str], space: str) -> dict[str, list[int]]:
+    """Column indices for the three named embedding blocks.
+
+    The baseline space has no embedding blocks and skips PCA entirely, so it
+    returns an empty mapping -- the sentinel `_make_block_transformer` reads as
+    "pass the features through unchanged".
+    """
+    if space in BASELINE_SPACES:
+        return {}
     blocks = {
         note_type: [
             index
@@ -264,8 +351,17 @@ def _feature_blocks(feature_cols: list[str]) -> dict[str, list[int]]:
     return blocks
 
 
-def _validate_pca_sample_size(y: np.ndarray, inner_folds: int) -> None:
-    """PCA component count must fit in every inner-training partition."""
+def _validate_pca_sample_size(
+    y: np.ndarray, inner_folds: int, feature_blocks: dict[str, list[int]]
+) -> None:
+    """PCA component count must fit in every inner-training partition.
+
+    A space with no blocks (the baseline) fits no PCA, so there is nothing to
+    bound and the check is skipped rather than applied to features it does not
+    describe.
+    """
+    if not feature_blocks:
+        return
     splitter = StratifiedKFold(n_splits=inner_folds, shuffle=True, random_state=0)
     smallest_train = min(
         len(train_index)
@@ -280,9 +376,25 @@ def _validate_pca_sample_size(y: np.ndarray, inner_folds: int) -> None:
 
 
 def _make_block_transformer(
-    feature_blocks: dict[str, list[int]], seed: int
+    feature_blocks: dict[str, list[int]], seed: int, n_features: int | None = None
 ) -> ColumnTransformer:
-    """Build one leakage-safe transform for the three embedding blocks."""
+    """Build one leakage-safe transform for the three embedding blocks.
+
+    With no blocks (the baseline space) the features are already low-dimensional
+    indicators, so they pass through untouched: L2-normalizing and PCA-ing a
+    one-hot matrix would destroy exactly the structure the baseline is meant to
+    represent.
+    """
+    if not feature_blocks:
+        if n_features is None:
+            raise ValueError("A blockless transform needs n_features to select columns")
+        # An explicit index list, not `slice(None)`: ColumnTransformer only
+        # accepts integer/boolean selectors on a bare ndarray.
+        return ColumnTransformer(
+            [("passthrough", "passthrough", list(range(n_features)))],
+            remainder="drop",
+            sparse_threshold=0.0,
+        )
     return ColumnTransformer(
         [
             (
@@ -373,7 +485,7 @@ def _fit_inner_pca(
     feature_blocks: dict[str, list[int]],
     seed: int,
 ) -> tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    transformer = _make_block_transformer(feature_blocks, seed)
+    transformer = _make_block_transformer(feature_blocks, seed, X.shape[1])
     X_train_pc = transformer.fit_transform(X[train_idx])
     X_valid_pc = transformer.transform(X[valid_idx])
     return (
@@ -491,7 +603,7 @@ def _fit_final_pipeline(
     params: dict[str, object],
 ) -> Pipeline:
     """Fit the selected transform and classifier on an entire training partition."""
-    transformer = _make_block_transformer(feature_blocks, seed)
+    transformer = _make_block_transformer(feature_blocks, seed, X.shape[1])
     X_pc = transformer.fit_transform(X)
     estimator = _make_xgboost(n_classes=n_classes, seed=seed, params=params)
     estimator.fit(
@@ -576,10 +688,16 @@ def _prepare_one_dataset(
     *,
     target: str,
     min_treatment_class_n: int,
+    space: str,
 ) -> tuple[pl.DataFrame, list[str], list[str]]:
-    cols = embedding_cols(features)
-    if not cols:
-        raise ValueError("Feature frame has no embedding columns")
+    if space in BASELINE_SPACES:
+        cols = baseline_cols(features)
+        if not cols:
+            raise ValueError("Baseline frame has no cancer-type columns")
+    else:
+        cols = embedding_cols(features)
+        if not cols:
+            raise ValueError("Feature frame has no embedding columns")
     joined = features.join(labels, on=PATIENT_KEY, how="inner").drop_nulls(["label"])
     collapsed: list[str] = []
     if target == "first_treatment":
@@ -620,6 +738,7 @@ def train_one(
     paths = _artifact_paths(target, space, window, model)
     for path in paths.values():
         os.makedirs(os.path.dirname(path), exist_ok=True)
+    feature_blocks = _feature_blocks(feature_cols, space)
     signature = _run_signature(
         data,
         feature_cols,
@@ -628,6 +747,7 @@ def train_one(
         inner_folds=inner_folds,
         seed=seed,
         run_context=run_context or {},
+        feature_blocks=feature_blocks,
     )
     if not overwrite and all(os.path.exists(path) for path in paths.values()):
         with open(paths["meta"]) as handle:
@@ -647,7 +767,6 @@ def train_one(
     mrns = data.get_column(PATIENT_KEY).to_numpy()
     if not np.isfinite(X).all():
         raise ValueError(f"{target}/{space}/{window} contains non-finite embedding values")
-    feature_blocks = _feature_blocks(feature_cols)
 
     n_outer = _validate_classes(y, outer_folds)
     outer_cv = StratifiedKFold(n_splits=n_outer, shuffle=True, random_state=seed)
@@ -661,7 +780,7 @@ def train_one(
         for fold, (train_idx, test_idx) in enumerate(outer_cv.split(X, y), start=1):
             progress.set_postfix_str(f"outer fold {fold}/{n_outer}", refresh=True)
             n_inner = _inner_splits(y[train_idx], inner_folds)
-            _validate_pca_sample_size(y[train_idx], n_inner)
+            _validate_pca_sample_size(y[train_idx], n_inner, feature_blocks)
             if model != "xgboost":
                 raise ValueError(f"Unknown model {model!r}; choose from {MODELS}")
             best_params, best_score = _tune_xgboost(
@@ -721,7 +840,7 @@ def train_one(
         row.update({"target": target, "space": space, "window": window, "model": model})
 
     final_inner = _inner_splits(y, inner_folds)
-    _validate_pca_sample_size(y, final_inner)
+    _validate_pca_sample_size(y, final_inner, feature_blocks)
     final_best_params, final_best_score = _tune_xgboost(
         X,
         y,
@@ -783,9 +902,17 @@ def train_one(
         "model": model,
         "n_patients": len(y),
         "n_features": len(feature_cols),
-        "n_transformed_features": sum(PCA_COMPONENTS.values()),
-        "pca_components": PCA_COMPONENTS,
-        "feature_transform": "per-block l2_normalize -> standard_scaler -> pca",
+        # A blockless space (the baseline) fits no PCA, so its features reach
+        # the classifier untransformed and at their original width.
+        "n_transformed_features": (
+            sum(PCA_COMPONENTS.values()) if feature_blocks else len(feature_cols)
+        ),
+        "pca_components": PCA_COMPONENTS if feature_blocks else None,
+        "feature_transform": (
+            "per-block l2_normalize -> standard_scaler -> pca"
+            if feature_blocks
+            else "passthrough"
+        ),
         "classes": classes,
         "class_counts": dict(Counter(classes[i] for i in y)),
         "seed": seed,
@@ -839,7 +966,11 @@ def _merge_write(path: str, rows: list[dict], key_cols: list[str]) -> None:
     if os.path.exists(path):
         old = pl.read_csv(path)
         if "space" in old.columns:
-            old = old.filter(pl.col("space").is_in(SPACES))
+            # SPACES + BASELINE_SPACES, not SPACES: an embedding-only run must
+            # not silently drop the baseline rows a previous run wrote, since
+            # the baseline is the reference those embedding rows are read
+            # against.
+            old = old.filter(pl.col("space").is_in(SPACES + BASELINE_SPACES))
         if "model" in old.columns:
             old = old.filter(pl.col("model").is_in(MODELS))
         if all(column in old.columns for column in key_cols):
@@ -909,13 +1040,36 @@ def run(
                         line += f"  deaths={row['death_fraction']:.1%}"
                     print(line, flush=True)
 
+        # The baseline features ARE the cancer-type label one-hot encoded, so
+        # pairing them with the cancer_type target would score a tautology.
+        run_spaces = spaces
+        if target == "cancer_type":
+            dropped = [s for s in spaces if s in BASELINE_SPACES]
+            if dropped:
+                print(
+                    f"  skipping {dropped} for cancer_type: the baseline features are "
+                    "that target's own labels",
+                    flush=True,
+                )
+            run_spaces = [s for s in spaces if s not in BASELINE_SPACES]
+            if not run_spaces:
+                continue
+
         for window in windows:
-            feature_frames = {
-                space: load_features(space, window)
-                for space in spaces
-                if os.path.exists(feature_path(space, window))
-            }
-            missing_spaces = [space for space in spaces if space not in feature_frames]
+            feature_frames = {}
+            for space in run_spaces:
+                if space in BASELINE_SPACES:
+                    # Not window-dependent: cancer type is a fixed attribute, so
+                    # the same frame is reused in every window. It is still run
+                    # per window so each window's comparison has its own
+                    # like-for-like reference on the same patient set.
+                    try:
+                        feature_frames[space] = load_baseline_features()
+                    except (FileNotFoundError, ValueError) as error:
+                        print(f"  [{window}] {space} unavailable: {error}", flush=True)
+                elif os.path.exists(feature_path(space, window)):
+                    feature_frames[space] = load_features(space, window)
+            missing_spaces = [space for space in run_spaces if space not in feature_frames]
             if missing_spaces:
                 print(f"  [{window}] missing feature spaces, skipping them: {missing_spaces}", flush=True)
             if not feature_frames:
@@ -939,6 +1093,7 @@ def run(
                     source_labels,
                     target=target,
                     min_treatment_class_n=min_treatment_class_n,
+                    space=space,
                 )
                 counts = _class_counts(data.select(PATIENT_KEY, "label"))
                 print(
@@ -968,14 +1123,28 @@ def run(
                     continue
 
                 for model in models:
-                    source_path = feature_path(space, window)
-                    source_stat = os.stat(source_path)
-                    run_context = {
-                        "cohort_mode": cohort_mode,
-                        "feature_artifact": source_path,
-                        "feature_artifact_size": source_stat.st_size,
-                        "feature_artifact_mtime_ns": source_stat.st_mtime_ns,
-                    }
+                    run_context = {"cohort_mode": cohort_mode}
+                    if space in BASELINE_SPACES:
+                        # Built in memory from the covariate file, so there is no
+                        # feature artifact to stat; record what it is made of and
+                        # which columns it produced instead.
+                        run_context.update(
+                            {
+                                "feature_artifact": None,
+                                "baseline_features": "cancer_type_one_hot",
+                                "baseline_feature_columns": cols,
+                            }
+                        )
+                    else:
+                        source_path = feature_path(space, window)
+                        source_stat = os.stat(source_path)
+                        run_context.update(
+                            {
+                                "feature_artifact": source_path,
+                                "feature_artifact_size": source_stat.st_size,
+                                "feature_artifact_mtime_ns": source_stat.st_mtime_ns,
+                            }
+                        )
                     if target == "n_lines":
                         # Every patient is labeled regardless of follow-up, so
                         # low bins may partly reflect short observation rather
@@ -1001,6 +1170,30 @@ def run(
                                 med_stat = os.stat(MED_CLASSES_FILE)
                                 run_context["med_classes_file_size"] = med_stat.st_size
                                 run_context["med_classes_file_mtime_ns"] = med_stat.st_mtime_ns
+                    if target in DRUG_CLASS_TARGETS:
+                        drug_class = target.removeprefix("treatment_")
+                        run_context.update(
+                            {
+                                "drug_class": drug_class,
+                                # Exposure is "ever, at any line", so a positive
+                                # label can be caused by a drug started after
+                                # the notes the model reads. Neither window is
+                                # leak-free against this target; see
+                                # prediction_targets.load_drug_class_target.
+                                "drug_class_exposure": "ever_any_line",
+                                "drug_class_leakage": "exposure_may_postdate_notes",
+                                "drug_class_definition": "gpt_moa_category_regex",
+                                "drug_class_patterns": list(
+                                    DRUG_CLASS_PATTERNS[drug_class]
+                                ),
+                                "drug_class_sex_restriction": DRUG_CLASS_SEX[drug_class],
+                                "med_classes_file": MED_CLASSES_FILE,
+                            }
+                        )
+                        if os.path.exists(MED_CLASSES_FILE):
+                            med_stat = os.stat(MED_CLASSES_FILE)
+                            run_context["med_classes_file_size"] = med_stat.st_size
+                            run_context["med_classes_file_mtime_ns"] = med_stat.st_mtime_ns
                     meta, folds, per_class = train_one(
                         data,
                         cols,
@@ -1046,7 +1239,17 @@ def run(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--targets", nargs="+", choices=TARGETS, default=TARGETS)
-    parser.add_argument("--spaces", nargs="+", choices=SPACES, default=SPACES)
+    # The baseline is selectable but off by default: it is a reference run, and
+    # under the default `common` cohort mode adding it shrinks the shared
+    # patient intersection for every embedding space in the same call.
+    parser.add_argument(
+        "--spaces",
+        nargs="+",
+        choices=SPACES + BASELINE_SPACES,
+        default=SPACES,
+        help=f"Feature spaces to train. {BASELINE_SPACE!r} is a non-text "
+        "reference: one-hot cancer type and nothing else.",
+    )
     parser.add_argument("--windows", nargs="+", choices=WINDOWS, default=DEFAULT_WINDOWS)
     parser.add_argument("--models", nargs="+", choices=MODELS, default=MODELS)
     parser.add_argument(

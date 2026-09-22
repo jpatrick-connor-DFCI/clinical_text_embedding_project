@@ -37,8 +37,20 @@ DEFAULT_WINDOWS = ["alltime"]
 # Exploratory PCA and clinical associations must use a single note type at a
 # time, so their three spaces each contain one 768-dimensional patient mean.
 SPACES = ["concat"]
+
+# A non-text reference space: one-hot cancer type and nothing else, trained
+# through the same nested CV as the embedding spaces so its AUC is directly
+# comparable.  It answers "how much of this target is just cancer type?" -- for
+# the treatment targets especially, where indication largely determines therapy,
+# an embedding space that fails to beat this has not shown it reads anything
+# beyond diagnosis.  Its features are built on demand by
+# `train_prediction_models`, not written to FEATURES_DIR, since they are a
+# reshape of an existing covariate file rather than a new artifact.
+BASELINE_SPACE = "cancer_type_baseline"
+BASELINE_SPACES = [BASELINE_SPACE]
+
 PC_SPACES = [note_type.lower() for note_type in NOTE_TYPES]
-FEATURE_SPACES = SPACES + PC_SPACES
+FEATURE_SPACES = SPACES + PC_SPACES + BASELINE_SPACES
 
 # CLUSTERS_DIR, FIGURES_DIR, and their helpers are retained only so earlier
 # exploratory artifacts and notebooks remain readable. The active exploratory
@@ -81,6 +93,11 @@ def _validate(space: str | None = None, window: str | None = None) -> None:
 
 def feature_path(space: str, window: str) -> str:
     _validate(space, window)
+    if space in BASELINE_SPACES:
+        raise ValueError(
+            f"{space!r} is built in memory from the covariate files and has no "
+            "feature artifact; see train_prediction_models.load_baseline_features."
+        )
     return os.path.join(FEATURES_DIR, f"{space}_{window}.parquet")
 
 

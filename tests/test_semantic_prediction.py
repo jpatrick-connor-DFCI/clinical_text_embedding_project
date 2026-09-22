@@ -515,3 +515,438 @@ def test_n_lines_followup_stats_expose_the_censoring_confound(tmp_path, monkeypa
     assert by_label["3 lines"]["median_follow_up_days"] == 731
     assert by_label["1 line"]["death_fraction"] == 0.0
     assert by_label["3 lines"]["death_fraction"] == 1.0
+
+
+# --- binary drug-class treatment targets ---------------------------------
+
+def _med_classes(tmp_path, rows):
+    """A (MED_NAME, MOA_Category) table shaped like MED_CLASSES_FILE."""
+    path = tmp_path / "med_classes.csv"
+    pl.DataFrame(
+        {"MED_NAME": [r[0] for r in rows], "MOA_Category": [r[1] for r in rows]}
+    ).write_csv(path)
+    return str(path)
+
+
+def _cohort(tmp_path, mrns, genders=None):
+    path = tmp_path / "cohort_df.parquet"
+    frame = {"DFCI_MRN": list(mrns)}
+    if genders is not None:
+        frame["GENDER"] = list(genders)
+    pl.DataFrame(frame).write_parquet(path)
+    return str(path)
+
+
+def test_moa_categories_classify_into_the_six_drug_classes():
+    from semantic_search.drug_classes import classify_moa_category
+
+    # Free-form LLM spellings must all resolve; matching is normalized, not literal.
+    assert classify_moa_category("Immune Checkpoint Inhibitor", "ici")
+    assert classify_moa_category("PD-1 inhibitor", "ici")
+    assert classify_moa_category("anti-PD-L1", "ici")
+    assert classify_moa_category("Tyrosine Kinase Inhibitor", "tki")
+    assert classify_moa_category("Aromatase Inhibitor", "estrogen")
+    assert classify_moa_category("Selective Estrogen Receptor Degrader", "estrogen")
+    assert classify_moa_category("Androgen Receptor Inhibitor", "androgen_axis")
+    assert classify_moa_category("GnRH agonist", "androgen_axis")
+    assert classify_moa_category("Antibody-Drug Conjugate", "adc")
+    assert classify_moa_category("Monoclonal Antibody", "monoclonal_antibody")
+
+    assert not classify_moa_category("Taxane", "ici")
+    assert not classify_moa_category("Platinum Chemotherapy", "tki")
+    # A null/unmapped category is negative, not null: one-vs-rest needs a decision.
+    assert not classify_moa_category(None, "ici")
+    assert not classify_moa_category("", "ici")
+
+
+def test_adc_is_excluded_from_the_monoclonal_antibody_class():
+    """'mAbs vs. all else' reads as naked antibodies; an ADC is its own class."""
+    from semantic_search.drug_classes import classify_moa_category
+
+    assert classify_moa_category("Antibody-Drug Conjugate", "adc")
+    assert not classify_moa_category("Antibody-Drug Conjugate", "monoclonal_antibody")
+
+
+def test_unknown_drug_class_is_rejected():
+    from semantic_search.drug_classes import classify_moa_category
+
+    with pytest.raises(ValueError, match="Unknown drug class"):
+        classify_moa_category("Taxane", "chemotherapy")
+
+
+def test_drug_class_target_is_ever_exposed_across_all_lines(tmp_path, monkeypatch):
+    """Exposure is 'any drug, any line', not the anchor drug."""
+    from semantic_search.prediction_targets import load_drug_class_target
+
+    _patch_meds(
+        monkeypatch,
+        _med_long(
+            [
+                # Patient 1: ICI only at their SECOND drug -> still positive.
+                (1, "Carboplatin", 0),
+                (1, "Pembrolizumab", 100),
+                # Patient 2: never an ICI -> negative.
+                (2, "Carboplatin", 0),
+                (2, "Paclitaxel", 100),
+            ]
+        ),
+    )
+    classes = _med_classes(
+        tmp_path,
+        [
+            ("Pembrolizumab", "Immune Checkpoint Inhibitor"),
+            ("Carboplatin", "Platinum Chemotherapy"),
+            ("Paclitaxel", "Taxane"),
+        ],
+    )
+
+    labels = load_drug_class_target(
+        "ici",
+        cohort_path=_cohort(tmp_path, [1, 2]),
+        med_classes_path=classes,
+    )
+
+    assert dict(labels.iter_rows()) == {1: "ICI", 2: "NON_ICI"}
+
+
+def test_drug_class_target_labels_unmapped_drugs_negative(tmp_path, monkeypatch):
+    """A drug absent from the GPT class table is not evidence of exposure."""
+    from semantic_search.prediction_targets import load_drug_class_target
+
+    _patch_meds(monkeypatch, _med_long([(1, "Unlisted Drug", 0)]))
+    classes = _med_classes(tmp_path, [("Pembrolizumab", "Immune Checkpoint Inhibitor")])
+
+    labels = load_drug_class_target(
+        "ici", cohort_path=_cohort(tmp_path, [1]), med_classes_path=classes
+    )
+
+    assert dict(labels.iter_rows()) == {1: "NON_ICI"}
+
+
+def test_estrogen_target_is_restricted_to_female_patients(tmp_path, monkeypatch):
+    from semantic_search.prediction_targets import load_drug_class_target
+
+    _patch_meds(
+        monkeypatch,
+        _med_long([(1, "Anastrozole", 0), (2, "Anastrozole", 0), (3, "Docetaxel", 0)]),
+    )
+    classes = _med_classes(
+        tmp_path,
+        [("Anastrozole", "Aromatase Inhibitor"), ("Docetaxel", "Taxane")],
+    )
+    # GENDER is 0=MALE / 1=FEMALE per build_cohort; patient 4 has a null GENDER.
+    cohort = _cohort(tmp_path, [1, 2, 3, 4], genders=[1, 0, 1, None])
+
+    labels = load_drug_class_target(
+        "estrogen", cohort_path=cohort, med_classes_path=classes
+    )
+
+    # Patient 2 is male and patient 4 has no recorded sex: both are excluded.
+    assert dict(labels.iter_rows()) == {1: "ESTROGEN", 3: "NON_ESTROGEN"}
+
+
+def test_androgen_axis_target_is_restricted_to_male_patients(tmp_path, monkeypatch):
+    from semantic_search.prediction_targets import load_drug_class_target
+
+    _patch_meds(
+        monkeypatch, _med_long([(1, "Leuprolide", 0), (2, "Leuprolide", 0)])
+    )
+    classes = _med_classes(tmp_path, [("Leuprolide", "GnRH Agonist")])
+    cohort = _cohort(tmp_path, [1, 2], genders=[0, 1])
+
+    labels = load_drug_class_target(
+        "androgen_axis", cohort_path=cohort, med_classes_path=classes
+    )
+
+    assert dict(labels.iter_rows()) == {1: "ANDROGEN_AXIS"}
+
+
+def test_unrestricted_drug_class_target_needs_no_gender_column(tmp_path, monkeypatch):
+    """ICI/TKI/mAb/ADC are asked of all patients, so GENDER is not required."""
+    from semantic_search.prediction_targets import load_drug_class_target
+
+    _patch_meds(monkeypatch, _med_long([(1, "Erlotinib", 0)]))
+    classes = _med_classes(tmp_path, [("Erlotinib", "Tyrosine Kinase Inhibitor")])
+
+    labels = load_drug_class_target(
+        "tki", cohort_path=_cohort(tmp_path, [1]), med_classes_path=classes
+    )
+
+    assert dict(labels.iter_rows()) == {1: "TKI"}
+
+
+def test_sex_restricted_target_requires_gender_column(tmp_path, monkeypatch):
+    from semantic_search.prediction_targets import load_drug_class_target
+
+    _patch_meds(monkeypatch, _med_long([(1, "Anastrozole", 0)]))
+    classes = _med_classes(tmp_path, [("Anastrozole", "Aromatase Inhibitor")])
+
+    with pytest.raises(ValueError, match="missing GENDER"):
+        load_drug_class_target(
+            "estrogen",
+            cohort_path=_cohort(tmp_path, [1]),
+            med_classes_path=classes,
+        )
+
+
+def test_drug_class_target_ignores_patients_outside_the_cohort(tmp_path, monkeypatch):
+    from semantic_search.prediction_targets import load_drug_class_target
+
+    _patch_meds(monkeypatch, _med_long([(1, "Erlotinib", 0), (999, "Erlotinib", 0)]))
+    classes = _med_classes(tmp_path, [("Erlotinib", "Tyrosine Kinase Inhibitor")])
+
+    labels = load_drug_class_target(
+        "tki", cohort_path=_cohort(tmp_path, [1]), med_classes_path=classes
+    )
+
+    assert dict(labels.iter_rows()) == {1: "TKI"}
+
+
+def test_all_six_drug_class_targets_are_registered():
+    from semantic_search.prediction_targets import (
+        DRUG_CLASS_TARGETS,
+        TARGET_DISPLAY_NAMES,
+        TARGETS,
+    )
+
+    assert DRUG_CLASS_TARGETS == [
+        "treatment_estrogen",
+        "treatment_androgen_axis",
+        "treatment_ici",
+        "treatment_tki",
+        "treatment_monoclonal_antibody",
+        "treatment_adc",
+    ]
+    for target in DRUG_CLASS_TARGETS:
+        assert target in TARGETS
+        assert target in TARGET_DISPLAY_NAMES
+
+
+def test_drug_class_labels_are_binary_and_disjoint():
+    from semantic_search.drug_classes import DRUG_CLASS_LABELS, DRUG_CLASSES
+
+    assert set(DRUG_CLASS_LABELS) == set(DRUG_CLASSES)
+    for positive, negative in DRUG_CLASS_LABELS.values():
+        assert positive != negative
+        assert negative == f"NON_{positive}"
+
+
+def test_moa_coverage_audit_flags_unmatched_categories():
+    """The audit is how the patterns get validated against the cluster-only table."""
+    from semantic_search.drug_classes import audit_moa_coverage
+
+    med_classes = pl.DataFrame(
+        {
+            "MED_NAME": ["A", "B", "C"],
+            "MOA_Category": [
+                "Immune Checkpoint Inhibitor",
+                "Some Unrecognized Class",
+                "Another Unrecognized Class",
+            ],
+        }
+    )
+
+    audit = audit_moa_coverage(med_classes)
+    by_category = {
+        row["MOA_Category"]: row for row in audit.iter_rows(named=True)
+    }
+
+    assert by_category["Immune Checkpoint Inhibitor"]["matched_classes"] == "ici"
+    assert not by_category["Immune Checkpoint Inhibitor"]["unmatched"]
+    assert by_category["Some Unrecognized Class"]["unmatched"]
+    assert by_category["Some Unrecognized Class"]["n_matched_classes"] == 0
+
+
+# --- cancer-type baseline space ------------------------------------------
+
+def test_baseline_space_one_hot_encodes_cancer_type(monkeypatch):
+    from semantic_search import clinical_data, train_prediction_models as tpm
+
+    monkeypatch.setattr(
+        clinical_data,
+        "load_cancer_type",
+        lambda: (
+            pl.DataFrame(
+                {"DFCI_MRN": [3, 1, 2], "CANCER_TYPE": ["Lung", "Breast", "Lung"]}
+            ),
+            [],
+            ["CANCER_TYPE"],
+        ),
+    )
+
+    features = tpm.load_baseline_features()
+
+    assert features.get_column("DFCI_MRN").to_list() == [1, 2, 3]
+    # Deterministic, sorted column order keeps the run signature stable.
+    assert tpm.baseline_cols(features) == ["CANCER_TYPE_BREAST", "CANCER_TYPE_LUNG"]
+    assert features.get_column("CANCER_TYPE_LUNG").to_list() == [0, 1, 1]
+    assert features.get_column("CANCER_TYPE_BREAST").to_list() == [1, 0, 0]
+
+
+def test_baseline_space_skips_pca_and_passes_features_through():
+    from semantic_search import train_prediction_models as tpm
+    from semantic_search.common import BASELINE_SPACE
+
+    cols = ["CANCER_TYPE_LUNG", "CANCER_TYPE_BREAST"]
+    blocks = tpm._feature_blocks(cols, BASELINE_SPACE)
+
+    # No blocks is the sentinel for "no PCA"; L2-normalizing a one-hot matrix
+    # would destroy exactly what the baseline is meant to represent.
+    assert blocks == {}
+    X = np.array([[1.0, 0.0], [0.0, 1.0]])
+    transformer = tpm._make_block_transformer(blocks, 0, X.shape[1])
+    assert np.array_equal(transformer.fit_transform(X), X)
+
+
+def test_embedding_space_still_requires_its_three_blocks():
+    """The baseline escape hatch must not weaken validation for embedding spaces."""
+    from semantic_search import train_prediction_models as tpm
+
+    with pytest.raises(ValueError, match="Missing embedding blocks"):
+        tpm._feature_blocks(["CLINICIAN_EMBEDDING_0"], "concat")
+
+
+def test_baseline_run_signature_records_passthrough_not_pca():
+    from semantic_search import train_prediction_models as tpm
+
+    data = pl.DataFrame({"DFCI_MRN": [1, 2], "label": ["ICI", "NON_ICI"]})
+    cols = ["CANCER_TYPE_LUNG", "CANCER_TYPE_BREAST"]
+    kwargs = dict(
+        model="xgboost", outer_folds=5, inner_folds=3, seed=1, run_context={}
+    )
+
+    baseline = tpm._run_signature(data, cols, feature_blocks={}, **kwargs)
+    embedding = tpm._run_signature(
+        data, cols, feature_blocks={"CLINICIAN": [0, 1]}, **kwargs
+    )
+
+    assert baseline["feature_transform"] == "passthrough"
+    assert baseline["pca_components"] is None
+    assert baseline["n_transformed_features"] == len(cols)
+    # A baseline run and an embedding run must never share a signature.
+    assert embedding["feature_transform"] == "blockwise_l2_standardize_pca"
+    assert baseline != embedding
+
+
+def test_baseline_space_has_no_feature_artifact_path():
+    from semantic_search.common import BASELINE_SPACE, feature_path
+
+    with pytest.raises(ValueError, match="built in memory"):
+        feature_path(BASELINE_SPACE, "alltime")
+
+
+def test_baseline_space_trains_end_to_end(tmp_path, monkeypatch):
+    """The blockless path must survive a real nested-CV fit, not just a transform."""
+    pytest.importorskip("xgboost")
+    from semantic_search import common, train_prediction_models as tpm
+
+    for attr in ("PREDICTIONS_DIR", "MODELS_DIR", "PREDICTION_META_DIR"):
+        monkeypatch.setattr(tpm, attr, str(tmp_path / attr.lower()))
+
+    rng = np.random.default_rng(0)
+    n = 90
+    lung = rng.integers(0, 2, n)
+    data = pl.DataFrame(
+        {
+            "DFCI_MRN": np.arange(n),
+            "CANCER_TYPE_LUNG": lung,
+            "CANCER_TYPE_BREAST": 1 - lung,
+            # Signal, so the fit is a real one: lung patients mostly get the ICI.
+            "label": np.where(
+                rng.random(n) < np.where(lung == 1, 0.8, 0.2), "ICI", "NON_ICI"
+            ),
+        }
+    )
+
+    meta, folds, per_class = tpm.train_one(
+        data,
+        ["CANCER_TYPE_LUNG", "CANCER_TYPE_BREAST"],
+        target="treatment_ici",
+        space=common.BASELINE_SPACE,
+        window="alltime",
+        model="xgboost",
+        outer_folds=3,
+        inner_folds=2,
+        seed=0,
+        n_jobs=1,
+        overwrite=True,
+    )
+
+    assert meta["run_signature"]["feature_transform"] == "passthrough"
+    assert meta["n_transformed_features"] == 2
+    assert sorted(meta["classes"]) == ["ICI", "NON_ICI"]
+    assert len(folds) == 3
+    assert {row["class"] for row in per_class} == {"ICI", "NON_ICI"}
+
+
+def test_tki_class_excludes_non_tyrosine_kinase_inhibitors():
+    """BRAF/MEK/mTOR/CDK are kinase inhibitors but not TYROSINE kinase inhibitors."""
+    from semantic_search.drug_classes import classify_moa_category
+
+    for category in (
+        "Tyrosine Kinase Inhibitor",
+        "VEGFR Tyrosine Kinase Inhibitor",
+        "EGFR Inhibitor",
+        "ALK Inhibitor",
+        "BCR-ABL Inhibitor",
+        "Multi-kinase inhibitor",
+        "TKI",
+    ):
+        assert classify_moa_category(category, "tki"), category
+
+    for category in (
+        "Serine/Threonine Kinase Inhibitor",
+        "BRAF kinase inhibitor",
+        "MEK Inhibitor",
+        "mTOR Inhibitor",
+        "CDK4/6 Inhibitor",
+        "PARP Inhibitor",
+        "Proteasome Inhibitor",
+    ):
+        assert not classify_moa_category(category, "tki"), category
+
+
+def test_estrogen_class_excludes_ambiguous_and_supportive_hormone_therapy():
+    """A bare 'Hormone Therapy' does not say which axis; thyroid/GH are not oncologic."""
+    from semantic_search.drug_classes import classify_moa_category
+
+    for category in ("Hormone Therapy", "Thyroid Hormone Therapy", "Growth Hormone Therapy"):
+        assert not classify_moa_category(category, "estrogen"), category
+        assert not classify_moa_category(category, "androgen_axis"), category
+
+    assert classify_moa_category("Endocrine Therapy", "estrogen")
+    assert classify_moa_category("Aromatase Inhibitor", "estrogen")
+
+
+def test_monoclonal_antibody_class_excludes_bispecifics_and_conjugates():
+    from semantic_search.drug_classes import classify_moa_category
+
+    assert classify_moa_category("Monoclonal Antibody", "monoclonal_antibody")
+    assert classify_moa_category("Anti-CD20 Monoclonal Antibody", "monoclonal_antibody")
+
+    for category in (
+        "Bispecific Antibody",
+        "Bispecific T-cell Engager",
+        "Antibody-Drug Conjugate",
+        "Radioimmunotherapy",
+    ):
+        assert not classify_moa_category(category, "monoclonal_antibody"), category
+
+
+def test_ici_and_monoclonal_antibody_classes_may_both_fire():
+    """The six targets are independent one-vs-rest questions, not a partition.
+
+    Pembrolizumab genuinely is both an ICI and a monoclonal antibody, so a
+    category naming both must count for both rather than being forced to pick.
+    """
+    from semantic_search.drug_classes import classify_moa_category
+
+    assert classify_moa_category("Anti-PD-1 Monoclonal Antibody", "ici")
+    assert classify_moa_category("Anti-PD-1 Monoclonal Antibody", "monoclonal_antibody")
+
+
+def test_chemotherapy_categories_are_negative_for_all_six_classes():
+    from semantic_search.drug_classes import DRUG_CLASSES, classify_moa_category
+
+    for category in ("Taxane", "Platinum Chemotherapy", "Antimetabolite", "Alkylating Agent"):
+        assert not any(classify_moa_category(category, c) for c in DRUG_CLASSES), category

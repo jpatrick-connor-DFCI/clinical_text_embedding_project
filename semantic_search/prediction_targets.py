@@ -15,6 +15,19 @@ import polars as pl
 from config import AVPC_NEPC_LABELS_PATH, MED_CLASSES_FILE, SURV_PATH
 from semantic_search.clinical_data import load_cancer_type, load_stage
 from semantic_search.common import PATIENT_KEY
+from semantic_search.drug_classes import (
+    DRUG_CLASS_LABELS,
+    DRUG_CLASS_SEX,
+    DRUG_CLASSES,
+    classify_moa_category,
+    load_med_classes,
+)
+
+# One binary target per drug class, named `treatment_<class>`.  These replace
+# the multinomial `first_treatment` question with six one-vs-rest questions; see
+# `semantic_search.drug_classes` for how membership is resolved and for the
+# provenance caveat on the MOA vocabulary.
+DRUG_CLASS_TARGETS = [f"treatment_{name}" for name in DRUG_CLASSES]
 
 TARGETS = [
     "cancer_type",
@@ -22,6 +35,7 @@ TARGETS = [
     "first_treatment",
     "prostate_subtype",
     "n_lines",
+    *DRUG_CLASS_TARGETS,
 ]
 TARGET_DISPLAY_NAMES = {
     "cancer_type": "Cancer type",
@@ -29,6 +43,12 @@ TARGET_DISPLAY_NAMES = {
     "first_treatment": "First treatment type",
     "prostate_subtype": "Prostate phenotype",
     "n_lines": "Total lines of therapy",
+    "treatment_estrogen": "Estrogen therapy (female patients)",
+    "treatment_androgen_axis": "Androgen-axis therapy (male patients)",
+    "treatment_ici": "Immune checkpoint inhibitor",
+    "treatment_tki": "Tyrosine kinase inhibitor",
+    "treatment_monoclonal_antibody": "Monoclonal antibody",
+    "treatment_adc": "Antibody-drug conjugate",
 }
 
 # Upper edges of the line-count bins; the final bin is open-ended ("4+ lines").
@@ -303,6 +323,100 @@ def load_n_lines_followup_stats(*, cohort_path: str | None = None) -> pl.DataFra
     )
 
 
+def load_drug_class_target(
+    drug_class: str,
+    *,
+    cohort_path: str | None = None,
+    med_classes_path: str | None = None,
+) -> pl.DataFrame:
+    """Ever-exposure to ``drug_class`` as a binary label over the cohort.
+
+    A patient is positive if ANY drug in ANY of their lines maps to a
+    ``MOA_Category`` in the class, negative otherwise.  Drugs come from
+    ``profile_sources.unpivot_medications_summary`` -- all 7 medication slots,
+    not just the anchor -- so this is "ever treated", not "first treated".
+
+    LEAKAGE: because exposure may occur at any line, a positive label can be
+    caused by a drug started long after the notes a model reads.  That makes
+    this target NOT leak-free against the ``pretreatment`` note window, unlike
+    ``first_treatment``, which is anchored to the same first-treatment date the
+    window is cut at.  A ``pretreatment`` run of these targets is therefore
+    measuring "do the pre-treatment notes predict the patient's whole future
+    treatment course", which is a legitimate question but not the same one; the
+    ``alltime`` window has no such separation at all.  Recorded in run metadata
+    as ``drug_class_exposure="ever_any_line"``.
+
+    TRUNCATION: MEDICATIONS_SUMMARY carries 7 fixed drug slots
+    (``profile_sources.MED_SLOTS``), so a patient on more than 7 antineoplastics
+    has later drugs dropped.  That can only turn a true positive into a false
+    negative, never the reverse, so the positive class is under-counted at the
+    margin.
+
+    SEX RESTRICTION: ``estrogen`` is asked of female patients only and
+    ``androgen_axis`` of male patients only (``DRUG_CLASS_SEX``), using the
+    cohort's ``GENDER`` column.  Patients with a null ``GENDER`` are dropped
+    from those two targets rather than assigned a sex.
+    """
+    from pipelines.preprocessing import profile_sources as ps
+
+    if drug_class not in DRUG_CLASS_LABELS:
+        raise ValueError(
+            f"Unknown drug class {drug_class!r}; choose from {list(DRUG_CLASSES)}"
+        )
+    cohort_path = cohort_path or os.path.join(SURV_PATH, "cohort_df.parquet")
+    if not os.path.exists(cohort_path):
+        raise FileNotFoundError(f"Cohort artifact not found: {cohort_path}")
+    cohort = pl.read_parquet(cohort_path)
+    if PATIENT_KEY not in cohort.columns:
+        raise ValueError(f"{cohort_path} is missing {PATIENT_KEY}")
+
+    required_sex = DRUG_CLASS_SEX[drug_class]
+    if required_sex is not None:
+        if "GENDER" not in cohort.columns:
+            raise ValueError(
+                f"{cohort_path} is missing GENDER, required by the {drug_class} target"
+            )
+        cohort = cohort.filter(pl.col("GENDER") == required_sex)
+        if cohort.is_empty():
+            raise ValueError(
+                f"No cohort patients with GENDER == {required_sex} for {drug_class}"
+            )
+
+    med_classes = load_med_classes(med_classes_path)
+    members = set(
+        med_classes.filter(
+            pl.col("MOA_Category").map_elements(
+                lambda value: classify_moa_category(value, drug_class),
+                return_dtype=pl.Boolean,
+                skip_nulls=False,
+            )
+        )
+        .get_column("MED_NAME")
+        .to_list()
+    )
+
+    # A patient with no derivable medication row has an unknown course, not a
+    # negative one, so the semi-join keeps only patients we actually observed
+    # treated -- the same stance `load_n_lines_target` takes.
+    exposure = (
+        ps.unpivot_medications_summary()
+        .join(cohort.select(PATIENT_KEY).unique(), on=PATIENT_KEY, how="semi")
+        .group_by(PATIENT_KEY)
+        .agg(pl.col("DRUG").is_in(members).any().alias("_exposed"))
+    )
+    positive, negative = DRUG_CLASS_LABELS[drug_class]
+    return _finalize(
+        exposure.select(
+            PATIENT_KEY,
+            pl.when(pl.col("_exposed").fill_null(False))
+            .then(pl.lit(positive))
+            .otherwise(pl.lit(negative))
+            .alias("label"),
+        ),
+        f"drug_class:{drug_class}",
+    )
+
+
 def load_target(
     target: str,
     *,
@@ -325,6 +439,12 @@ def load_target(
         return load_prostate_subtype_target(labels_path=avpc_nepc_labels_path)
     if target == "n_lines":
         return load_n_lines_target(cohort_path=cohort_path)
+    if target in DRUG_CLASS_TARGETS:
+        return load_drug_class_target(
+            target.removeprefix("treatment_"),
+            cohort_path=cohort_path,
+            med_classes_path=med_classes_path,
+        )
     raise ValueError(f"Unknown target {target!r}; choose from {TARGETS}")
 
 
