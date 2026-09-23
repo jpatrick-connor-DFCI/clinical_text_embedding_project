@@ -40,6 +40,19 @@
 # The new scripts write figS2_within_cancer_cindex and figS3_within_cancer_cindex
 # PNG/PDF files to the figure2 and figure3 output groups (later pages add _page2,
 # etc.), with matching summary CSVs under tables/ and legends under captions/.
+# Each also writes a single-page *_within_cancer_selected_cindex version limited to
+# Breast, Leukemia, Lung, Bowel, Brain, Skin, Pancreas, Lymphoma, and CUP.
+# The S3 script also writes mean within-cancer modality-rank heatmaps (as in
+# Figure 3a) for all cancer types (figS3_within_cancer_rank_cindex) and the
+# selected ones (figS3_within_cancer_rank_selected_cindex), ranking the shared-cohort
+# C-indices in fig3_within_cancer_modality_cindex.csv.
+# plot_figure_3_supp_cancer_joint.R renders the joint Cox model refitted within each
+# selected cancer type (figures.prep.within_cancer_joint): coefficient violins
+# (figS3_within_cancer_joint_betas) and significant-endpoint counts
+# (figS3_within_cancer_joint_significant) in the figure3 group.
+# plot_figure_os_within_cancer.R writes figOS_within_cancer_cindex to the figure_os
+# group: the overall-survival (death_met/death) C-index for those cancer types,
+# text versus base and versus each other modality.
 # Supplemental caption wording is documented in figures/figure_captions.md.
 #
 # Compiled Figures 1, 2, and 4 render at 10 x 9 inches; Figure 3 renders at
@@ -105,9 +118,11 @@ SCRIPTS <- c(
   "plot_figure_2_supp_family.R",
   "plot_figure_3.R",
   "plot_figure_3_supp_cancer.R",
+  "plot_figure_3_supp_cancer_joint.R",
   "plot_figure_4.R",
   "plot_figure_4_supp.R",
-  "plot_figure_5.R"
+  "plot_figure_5.R",
+  "plot_figure_os_within_cancer.R"
 )
 
 for (script in SCRIPTS) {

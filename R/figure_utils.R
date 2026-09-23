@@ -49,6 +49,7 @@ MODALITY_COLORS  <- unlist(.palette$MODALITY_COLORS)
 MODALITY_DISPLAY <- unlist(.palette$MODALITY_DISPLAY)
 MODEL_COLORS     <- unlist(.palette$MODEL_COLORS)
 CLUSTER_COLORS   <- unlist(.palette$CLUSTER_COLORS)
+SELECTED_CANCER_TYPES <- unlist(.palette$SELECTED_CANCER_TYPES)
 
 SCHEME_COLORS  <- c(death_met = "#E74C3C", icd3_post = "#3498DB",
                     icd4_post = "#2ECC71", phecode_post = "#9B59B6")

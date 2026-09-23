@@ -56,7 +56,16 @@ The default minimum is 20 matched patients, 5 events, and 1 comparable pair per
 endpoint/cancer/comparator; override the first two with `--min-patients` and
 `--min-events`. The preparation writes `fig2_within_cancer_cindex.csv`,
 `fig3_within_cancer_cindex.csv`, `fig2_within_cancer_event_counts.csv`,
-`fig3_within_cancer_event_counts.csv`, and `within_cancer_audit.csv` to `FIGURE_DATA_DIR`.
+`fig3_within_cancer_event_counts.csv`, `within_cancer_audit.csv`, and
+`fig3_within_cancer_modality_cindex.csv` to `FIGURE_DATA_DIR`. The last scores every
+modality on one shared set of patients and comparable pairs per endpoint and cancer type
+(blocks joint over all modalities' outer folds), so modality ranks share one footing.
+
+`figures.prep.within_cancer_joint` instead refits the Figure 3 joint Cox model within each
+selected cancer type (`SELECTED_CANCER_TYPES` in `shared/palette.json`), standardizing the
+held-out modality risk scores within the cancer type and using the same eligibility rules and
+fit variants as `fig3_joint_betas.csv`. It writes `fig3_within_cancer_joint_betas.csv` and a
+per-stratum status table, `fig3_within_cancer_joint_fits.csv`.
 
 Before evaluating each endpoint, the count tables report valid patients, observed
 events, and non-events (`n_non_events`) by cancer type, including endpoints with no
@@ -81,6 +90,24 @@ without endpoint-level significance tests. PNG/PDF files are named
 `figS2_within_cancer_cindex` and `figS3_within_cancer_cindex` in the `figure2` and
 `figure3` output groups, with up to 12 cancer types per page (`_page2`, etc.).
 Matching summary CSVs and legends are written under `tables/` and `captions/`.
+Each supplement also writes a single-page selected-cancer version
+(`figS2_within_cancer_selected_cindex`, `figS3_within_cancer_selected_cindex`) limited to
+Breast, Leukemia, Lung, Bowel, Brain, Skin, Pancreas, Lymphoma, and CUP
+(`SELECTED_CANCER_TYPES` in `R/within_cancer_utils.R`); in the heatmap, a selected type
+with no eligible endpoints keeps a grey "Unavailable" row. The Figure 3 supplement also
+writes within-cancer modality ranks, mirroring Figure 3a: for each endpoint and cancer type
+with every modality evaluable, modalities are ranked by their shared-cohort C-index from
+`fig3_within_cancer_modality_cindex.csv` (1 = best; ties averaged). Heatmaps of
+mean rank [IQR] are saved as `figS3_within_cancer_rank_cindex` (all cancer types, paged) and
+`figS3_within_cancer_rank_selected_cindex` (selected cancer types). `R/plot_figure_os_within_cancer.R`
+writes `figOS_within_cancer_cindex` to the `figure_os` group: overall-survival
+(`death_met`/`death`) C-indices for the same cancer types, one panel per comparison
+(text versus base, then text versus each other modality), with a matching table and legend.
+`R/plot_figure_3_supp_cancer_joint.R` renders the per-cancer joint Cox refits to the `figure3`
+group: `figS3_within_cancer_joint_betas` (coefficient violins per cancer type, as in Figure 3c)
+and `figS3_within_cancer_joint_significant` (BH-FDR significant endpoints per cancer and
+modality, as in Figure 3b), both on complete-case endpoints within each cancer type and the
+`MANUSCRIPT_JOINT_COX_VARIANT` fit.
 Risk-score files must contain `outer_fold`; older files are skipped with an audit
 entry and can be regenerated with the corresponding training/risk runner's
 `--overwrite` flag. With the shared endpoint filter enabled, rendering also needs
@@ -112,6 +139,7 @@ Run with `python -m` from the repo root — no install step, since that puts the
 python -m pipelines.training.run_full_cohort_event --scheme death_met --event death
 python -m figures.prep.figure2
 python -m figures.prep.within_cancer
+python -m figures.prep.within_cancer_joint
 ```
 
 ## Where to start
@@ -119,7 +147,7 @@ python -m figures.prep.within_cancer
 - Understanding the pipeline DAG: [`notebooks/README.md`](notebooks/README.md) walks the stages in
   run order, from cohort build through to the rendered figures.
 - Reproducing or extending the manuscript figures: `figures/prep/figure0.py` … `figure5.py`
-  and `figures/prep/within_cancer.py`,
+  plus `figures/prep/within_cancer.py` and `within_cancer_joint.py`,
   rendered via the R scripts in `R/`. `notebooks/4_figures/` drives both steps.
 - Running on the cluster: `slurm/launch_*.sh` build manifests and submit the array jobs. They
   default `PROJECT_ROOT` to the cluster checkout path; override it to run elsewhere.

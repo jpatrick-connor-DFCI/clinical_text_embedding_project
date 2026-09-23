@@ -23,6 +23,15 @@ Outputs (in FIGURE_DATA_DIR):
   fig2_within_cancer_event_counts.csv, fig3_within_cancer_event_counts.csv:
     scheme,event,cancer_type,n_patients,n_events,n_non_events,
     min_patients_required,min_events_required,eligible,status
+  fig3_within_cancer_modality_cindex.csv:
+    scheme,event,cancer_type,modality,cindex,n_patients,n_events,
+    n_comparable_pairs,n_fold_blocks,min_patients_required,min_events_required,status
+
+The modality table ranks all modalities on one footing: per endpoint, patients
+with every modality's score (text included) are evaluated together, and C is
+computed on one shared set of comparable pairs within joint blocks of all the
+modalities' outer folds. Endpoints missing any modality's scores are audited
+(incomplete_modalities) and omitted from that table only.
 
 Event counts precede score loading, including endpoints without prediction files.
 The full source cohort is the scheme's embedding/outcome patients with a cancer
@@ -43,6 +52,7 @@ valid cohort, including patients in blocks with no comparable pairs.
 from __future__ import annotations
 
 import argparse
+from functools import reduce
 from pathlib import Path
 import warnings
 
@@ -87,6 +97,20 @@ AUDIT_SCHEMA = {
     "status": pl.String,
     "detail": pl.String,
     "n_rows": pl.Int64,
+}
+MODALITY_RESULT_SCHEMA = {
+    "scheme": pl.String,
+    "event": pl.String,
+    "cancer_type": pl.String,
+    "modality": pl.String,
+    "cindex": pl.Float64,
+    "n_patients": pl.Int64,
+    "n_events": pl.Int64,
+    "n_comparable_pairs": pl.Int64,
+    "n_fold_blocks": pl.Int64,
+    "min_patients_required": pl.Int64,
+    "min_events_required": pl.Int64,
+    "status": pl.String,
 }
 COUNT_SCHEMA = {
     "scheme": pl.String,
@@ -271,30 +295,40 @@ def _matched_patients(
     ), exclusions
 
 
-def _block_pair_counts(block: pl.DataFrame) -> tuple[float, float, int]:
-    """Return two concordance numerators on one common set of comparable pairs."""
+def _block_concordance(block: pl.DataFrame, score_cols: list[str]) -> tuple[list[float], int]:
+    """Return one concordance numerator per score on one common set of comparable pairs."""
+    zeros = [0.0] * len(score_cols)
     if block.height < 2 or block["event_flag"].sum() == 0:
-        return 0.0, 0.0, 0
+        return zeros, 0
     event = block["event_flag"].cast(pl.Boolean).to_numpy()
     times = block["time"].to_numpy()
+    numerators = []
+    n_pairs = None
     try:
-        # Some sksurv releases return NaN plus zero counts for tied-time-only
-        # data, while others raise NoComparablePairException. Handle both.
-        with np.errstate(invalid="ignore", divide="ignore"):
-            text = concordance_index_censored(event, times, block["text_score"].to_numpy())
-        n_pairs = int(text[1] + text[2] + text[3])
-        if n_pairs == 0:
-            return 0.0, 0.0, 0
-        comparator = concordance_index_censored(
-            event, times, block["comparator_score"].to_numpy()
-        )
+        for column in score_cols:
+            # Some sksurv releases return NaN plus zero counts for tied-time-only
+            # data, while others raise NoComparablePairException. Handle both.
+            with np.errstate(invalid="ignore", divide="ignore"):
+                result = concordance_index_censored(event, times, block[column].to_numpy())
+            # sksurv's counts are concordant, discordant, tied risk, and tied time.
+            # Tied-time event/censor pairs are already included in the first three counts.
+            count = int(result[1] + result[2] + result[3])
+            if n_pairs is None:
+                n_pairs = count
+                if n_pairs == 0:
+                    return zeros, 0
+            elif count != n_pairs:
+                raise RuntimeError("Paired C-indices unexpectedly used different comparable pairs")
+            numerators.append(float(result[1] + 0.5 * result[3]))
     except NoComparablePairException:
-        return 0.0, 0.0, 0
-    # sksurv's counts are concordant, discordant, tied risk, and tied time.
-    # Tied-time event/censor pairs are already included in the first three counts.
-    if n_pairs != int(comparator[1] + comparator[2] + comparator[3]):
-        raise RuntimeError("Paired C-indices unexpectedly used different comparable pairs")
-    return float(text[1] + 0.5 * text[3]), float(comparator[1] + 0.5 * comparator[3]), n_pairs
+        return zeros, 0
+    return numerators, n_pairs
+
+
+def _block_pair_counts(block: pl.DataFrame) -> tuple[float, float, int]:
+    """Return two concordance numerators on one common set of comparable pairs."""
+    (text, comparator), n_pairs = _block_concordance(block, ["text_score", "comparator_score"])
+    return text, comparator, n_pairs
 
 
 def evaluate_comparison(
@@ -342,11 +376,82 @@ def evaluate_comparison(
     return pl.DataFrame(rows, schema=RESULT_SCHEMA).sort("cancer_type")
 
 
+def _matched_modalities(
+    scores: dict[str, pl.DataFrame], outcomes: pl.DataFrame, cancer: pl.DataFrame,
+) -> tuple[pl.DataFrame, int]:
+    """Patients with every modality's valid score and fold, a valid outcome and a
+    cancer label; also returns the number of scored patients excluded."""
+    frames = list(scores.values())
+    joined = reduce(lambda left, right: left.join(right, on="DFCI_MRN", how="inner", validate="1:1"),
+                    frames)
+    n_scored = max(frame.height for frame in frames)
+    joined = joined.join(outcomes, on="DFCI_MRN", how="inner", validate="1:1")
+    joined = joined.join(cancer, on="DFCI_MRN", how="left", validate="1:1")
+    valid = (pl.col("time").is_finite() & (pl.col("time") > 0)
+             & pl.col("event_flag").is_in([0.0, 1.0])
+             & pl.col("cancer_type").is_not_null() & (pl.col("cancer_type") != ""))
+    for modality in scores:
+        valid = valid & pl.col(f"{modality}_score").is_finite() & _valid_fold(f"{modality}_fold")
+    joined = joined.filter(valid.fill_null(False)).with_columns(
+        pl.col(f"{modality}_fold").cast(pl.Int64) for modality in scores
+    )
+    return joined, n_scored - joined.height
+
+
+def evaluate_modalities(
+    joint: pl.DataFrame,
+    *,
+    scheme: str,
+    event: str,
+    modalities: list[str],
+    min_patients: int = 20,
+    min_events: int = 5,
+) -> pl.DataFrame:
+    """Per-cancer C-index for every modality on the same patients and pairs.
+
+    Blocks are joint over all modalities' outer folds, so every compared pair is
+    scored by one fitted model per modality, and all modalities share the pairs.
+    """
+    if min_patients < 2 or min_events < 1:
+        raise ValueError("min_patients must be >= 2 and min_events must be >= 1")
+    score_cols = [f"{m}_score" for m in modalities]
+    fold_cols = [f"{m}_fold" for m in modalities]
+    rows = []
+    for (cancer_type,), stratum in joint.group_by("cancer_type", maintain_order=True):
+        n_events = int(stratum["event_flag"].sum())
+        numerators = [0.0] * len(modalities)
+        n_pairs = n_blocks = None
+        if stratum.height < min_patients:
+            status = "too_few_patients"
+        elif n_events < min_events:
+            status = "too_few_events"
+        else:
+            n_pairs = n_blocks = 0
+            for _, block in stratum.group_by(fold_cols):
+                counts, count = _block_concordance(block, score_cols)
+                numerators = [a + b for a, b in zip(numerators, counts)]
+                n_pairs += count
+                n_blocks += int(count > 0)
+            status = "ok" if n_pairs else "no_comparable_pairs"
+        for modality, numerator in zip(modalities, numerators):
+            rows.append({
+                "scheme": scheme, "event": event, "cancer_type": cancer_type,
+                "modality": modality,
+                "cindex": numerator / n_pairs if status == "ok" else None,
+                "n_patients": stratum.height, "n_events": n_events,
+                "n_comparable_pairs": n_pairs, "n_fold_blocks": n_blocks,
+                "min_patients_required": min_patients, "min_events_required": min_events,
+                "status": status,
+            })
+    return pl.DataFrame(rows, schema=MODALITY_RESULT_SCHEMA).sort("cancer_type", "modality")
+
+
 def _prepare_within_cancer(
     *, min_patients: int, min_events: int, show_progress: bool,
-) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     audit: list[dict] = []
     results: dict[str, list[pl.DataFrame]] = {"fig2": [], "fig3": []}
+    modality_results: list[pl.DataFrame] = []
     counts: dict[str, list[pl.DataFrame]] = {"fig2": [], "fig3": []}
     try:
         cancer = _load_cancer_types(Path(FEATURE_PATH) / "cancer_type_df.csv.gz")
@@ -428,12 +533,17 @@ def _prepare_within_cancer(
                     except _READ_ERRORS as exc:
                         _audit(audit, comparison, scheme, event, "", "invalid_text_or_outcome_input", str(exc))
                         continue
+                    modality_scores = {"text": text_scores}
                     for comparator in comparators:
                         try:
                             other = _load_scores(directory / f"{comparator}_risk_scores.csv", comparator, "comparator")
                         except _READ_ERRORS as exc:
                             _audit(audit, comparison, scheme, event, comparator, "invalid_comparator_input", str(exc))
                             continue
+                        modality_scores[comparator] = other.rename({
+                            "comparator_score": f"{comparator}_score",
+                            "comparator_fold": f"{comparator}_fold",
+                        })
                         paired, exclusions = _matched_patients(text_scores, other, outcomes, cancer)
                         for reason, count in exclusions.items():
                             if count:
@@ -456,6 +566,12 @@ def _prepare_within_cancer(
                             _audit(audit, comparison, scheme, event, comparator, row["status"],
                                    f"cancer_type={row['cancer_type']}; n_events={row['n_events']}; "
                                    f"n_comparable_pairs={row['n_comparable_pairs']}", row["n_patients"])
+                    if comparison == "fig3":
+                        _evaluate_all_modalities(
+                            modality_scores, outcomes, cancer, audit, modality_results,
+                            scheme=scheme, event=event,
+                            min_patients=min_patients, min_events=min_events,
+                        )
                 finally:
                     # Missing files, sparse endpoints and all modality comparisons
                     # together still count as one completed endpoint task.
@@ -470,13 +586,51 @@ def _prepare_within_cancer(
         if counts[key] else pl.DataFrame(schema=COUNT_SCHEMA)
         for key in ("fig2", "fig3")
     ]
-    return frames[0], frames[1], pl.DataFrame(audit, schema=AUDIT_SCHEMA), *count_frames
+    modality_frame = (
+        pl.concat(modality_results).sort("scheme", "event", "cancer_type", "modality")
+        if modality_results else pl.DataFrame(schema=MODALITY_RESULT_SCHEMA)
+    )
+    return (frames[0], frames[1], pl.DataFrame(audit, schema=AUDIT_SCHEMA), *count_frames,
+            modality_frame)
+
+
+def _evaluate_all_modalities(
+    modality_scores: dict[str, pl.DataFrame], outcomes: pl.DataFrame, cancer: pl.DataFrame,
+    audit: list[dict], results: list[pl.DataFrame], *, scheme: str, event: str,
+    min_patients: int, min_events: int,
+) -> None:
+    """Append the shared-cohort modality C-indices for one endpoint, or audit why not."""
+    modalities = [m for m in MODALITY_ORDER if m in modality_scores]
+    missing = [m for m in MODALITY_ORDER if m not in modality_scores]
+    if missing:
+        _audit(audit, "fig3_modalities", scheme, event, "", "incomplete_modalities",
+               "Missing scores: " + ", ".join(missing))
+        return
+    joint, n_excluded = _matched_modalities(
+        {m: modality_scores[m] for m in modalities}, outcomes, cancer
+    )
+    if n_excluded:
+        _audit(audit, "fig3_modalities", scheme, event, "", "excluded_before_joint_evaluation",
+               "Scored patients lacking any modality score, fold, outcome or cancer label", n_excluded)
+    if joint.is_empty():
+        _audit(audit, "fig3_modalities", scheme, event, "", "no_matched_patients",
+               "No patients have every modality's prediction, an outcome and a cancer label")
+        return
+    metrics = evaluate_modalities(
+        joint, scheme=scheme, event=event, modalities=modalities,
+        min_patients=min_patients, min_events=min_events,
+    )
+    results.append(metrics)
+    n_ok = metrics.filter(pl.col("status") == "ok")["cancer_type"].n_unique()
+    _audit(audit, "fig3_modalities", scheme, event, "", "evaluated",
+           f"{n_ok}/{metrics['cancer_type'].n_unique()} cancer strata eligible", joint.height)
 
 
 def prepare_within_cancer(
     *, min_patients: int = 20, min_events: int = 5, show_progress: bool = True,
-) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
-    """Return Fig2 metrics, Fig3 metrics, audit, full counts and modality counts.
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    """Return Fig2 metrics, Fig3 metrics, audit, full counts, modality counts and
+    shared-cohort per-modality C-indices.
 
     Warning suppression is scoped to this run, including all file reads. Audit
     entries are persisted instead of printed. Exceptions still propagate.
@@ -501,7 +655,7 @@ def main() -> None:
     names = (
         "fig2_within_cancer_cindex.csv", "fig3_within_cancer_cindex.csv",
         "within_cancer_audit.csv", "fig2_within_cancer_event_counts.csv",
-        "fig3_within_cancer_event_counts.csv",
+        "fig3_within_cancer_event_counts.csv", "fig3_within_cancer_modality_cindex.csv",
     )
     # CSV-only output avoids importing figures.io's matplotlib runtime or its
     # warning/print messages. The only normal terminal output is the two bars.

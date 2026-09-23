@@ -153,28 +153,24 @@ def _modality_cindex(scheme: str) -> pl.DataFrame:
     return pl.DataFrame(schema={c: pl.Float64 for c in MODALITY_CINDEX_COLUMNS})
 
 
-def _joint_betas(scheme: str) -> pl.DataFrame:
-    """Refit the joint Cox model per (scheme, event) so we have p-values.
+def _joint_event_frames(scheme: str):
+    """Yield (event, merged, risk_cols) for each endpoint with >= 2 modality scores.
 
-    The held-out modality risk scores are produced at training time by
-    `run_feature_comp_task.py` (written under `<scheme>/held_out_risk_scores/`).
-    sksurv's `CoxPHSurvivalAnalysis` does not expose SEs, so for Fig 3A we redo
-    the joint fit here with `lifelines.CoxPHFitter` on the same merged inputs
-    (held-out modality risk scores × event surv data), standardizing features.
+    `merged` holds DFCI_MRN, the modality risk scores, the event flag and time,
+    restricted to rows finite in all of them with positive time.
     """
     risk_root = os.path.normpath(
         os.path.join(scheme_results_dir(scheme), "held_out_risk_scores")
     )
     if not os.path.isdir(risk_root):
         print(f"  missing {risk_root}; skipping joint refit")
-        return pl.DataFrame(schema={c: pl.Float64 for c in JOINT_BETA_COLUMNS})
+        return
     try:
         tte_df = load_embedding_prediction_df(scheme)
     except FileNotFoundError as exc:
         print(f"  {scheme}: cannot load embedding prediction df ({exc})")
-        return pl.DataFrame(schema={c: pl.Float64 for c in JOINT_BETA_COLUMNS})
+        return
     available_events = sorted(set(get_events_from_df(tte_df)))
-    rows: list[dict[str, object]] = []
     for event in available_events:
         event_dir = os.path.join(risk_root, event)
         if not os.path.isdir(event_dir):
@@ -206,56 +202,84 @@ def _joint_betas(scheme: str) -> pl.DataFrame:
         merged = filter_finite_rows(
             merged, risk_cols + [event, f"tt_{event}"]
         ).filter(pl.col(f"tt_{event}") > 0)
-        # Drop constant risk-score columns within this event slice; a feature
-        # with zero variance breaks StandardScaler and makes the Cox design
-        # matrix singular.
-        constant_cols = [c for c in risk_cols if merged[c].n_unique() <= 1]
-        if constant_cols:
-            print(f"  [{scheme}/{event}] dropping constant risk columns: {constant_cols}")
-            merged = merged.drop(constant_cols)
-            risk_cols = [c for c in risk_cols if c not in constant_cols]
-        if len(risk_cols) < 2:
-            continue
-        n = len(merged)
-        n_events = int(merged[event].sum()) if n else 0
-        if n < 20 or n_events < 5 or n - n_events < 5:
-            continue
+        yield event, merged, risk_cols
+
+
+def _fit_joint_cox(merged: pl.DataFrame, risk_cols: list[str], *, scheme: str,
+                   event: str, tag: str = "") -> list[dict[str, object]]:
+    """Fit the standardized joint Cox model (unpenalized and ridge) on `merged`.
+
+    Returns JOINT_BETA_COLUMNS rows; empty when the slice is too small (n < 20,
+    < 5 events or < 5 non-events), has < 2 non-constant modalities, or every
+    fit fails. `tag` only labels log lines (e.g. a cancer type).
+    """
+    label = f"{scheme}/{event}" + (f"/{tag}" if tag else "")
+    # Drop constant risk-score columns within this event slice; a feature
+    # with zero variance breaks StandardScaler and makes the Cox design
+    # matrix singular.
+    constant_cols = [c for c in risk_cols if merged[c].n_unique() <= 1]
+    if constant_cols:
+        print(f"  [{label}] dropping constant risk columns: {constant_cols}")
+        merged = merged.drop(constant_cols)
+        risk_cols = [c for c in risk_cols if c not in constant_cols]
+    if len(risk_cols) < 2:
+        return []
+    n = len(merged)
+    n_events = int(merged[event].sum()) if n else 0
+    if n < 20 or n_events < 5 or n - n_events < 5:
+        return []
+    try:
+        X = StandardScaler().fit_transform(merged.select(risk_cols).cast(pl.Float64).to_numpy())
+    except ValueError as exc:
+        print(f"  [{label}] standardize failed: {exc}")
+        return []
+    if not np.isfinite(X).all():
+        print(f"  [{label}] non-finite values after standardize; skipping")
+        return []
+    fit_df = pd.DataFrame(X, columns=risk_cols)
+    fit_df[event] = merged[event].cast(pl.Int64).to_numpy()
+    fit_df[f"tt_{event}"] = merged[f"tt_{event}"].cast(pl.Float64).to_numpy()
+    rows: list[dict[str, object]] = []
+    # The unpenalized model is the inferential/reporting analysis. Ridge is
+    # retained explicitly as a sensitivity variant and is never substituted
+    # for a failed unpenalized fit.
+    for fit_variant, penalizer in (("unpenalized", 0.0), ("ridge_0.01", 1e-2)):
+        cph = CoxPHFitter(penalizer=penalizer, l1_ratio=0.0)
         try:
-            X = StandardScaler().fit_transform(merged.select(risk_cols).cast(pl.Float64).to_numpy())
-        except ValueError as exc:
-            print(f"  [{scheme}/{event}] standardize failed: {exc}")
+            cph.fit(fit_df, duration_col=f"tt_{event}", event_col=event)
+        except (ConvergenceError, TypeError, ValueError,
+                np.linalg.LinAlgError) as exc:
+            print(f"  [{label}/{fit_variant}] CoxPH refit failed: "
+                  f"{type(exc).__name__}: {exc}")
             continue
-        if not np.isfinite(X).all():
-            print(f"  [{scheme}/{event}] non-finite values after standardize; skipping")
+        summary = cph.summary
+        if (summary["coef"].abs() > 5).any():
+            offenders = summary.loc[summary["coef"].abs() > 5, "coef"].to_dict()
+            print(f"  [{label}/{fit_variant}] dropping pathological fit: {offenders}")
             continue
-        fit_df = pd.DataFrame(X, columns=risk_cols)
-        fit_df[event] = merged[event].cast(pl.Int64).to_numpy()
-        fit_df[f"tt_{event}"] = merged[f"tt_{event}"].cast(pl.Float64).to_numpy()
-        # The unpenalized model is the inferential/reporting analysis. Ridge is
-        # retained explicitly as a sensitivity variant and is never substituted
-        # for a failed unpenalized fit.
-        for fit_variant, penalizer in (("unpenalized", 0.0), ("ridge_0.01", 1e-2)):
-            cph = CoxPHFitter(penalizer=penalizer, l1_ratio=0.0)
-            try:
-                cph.fit(fit_df, duration_col=f"tt_{event}", event_col=event)
-            except (ConvergenceError, TypeError, ValueError,
-                    np.linalg.LinAlgError) as exc:
-                print(f"  [{scheme}/{event}/{fit_variant}] CoxPH refit failed: "
-                      f"{type(exc).__name__}: {exc}")
-                continue
-            summary = cph.summary
-            if (summary["coef"].abs() > 5).any():
-                offenders = summary.loc[summary["coef"].abs() > 5, "coef"].to_dict()
-                print(f"  [{scheme}/{event}/{fit_variant}] dropping pathological fit: {offenders}")
-                continue
-            for risk_col, srow in summary.iterrows():
-                rows.append({
-                    "scheme": scheme, "event": event, "fit_variant": fit_variant,
-                    "modality": str(risk_col).replace("_risk_score", ""),
-                    "beta": float(srow["coef"]), "se": float(srow["se(coef)"]),
-                    "hr": float(srow["exp(coef)"]), "p_value": float(srow["p"]),
-                    "n": n, "n_events": n_events,
-                })
+        for risk_col, srow in summary.iterrows():
+            rows.append({
+                "scheme": scheme, "event": event, "fit_variant": fit_variant,
+                "modality": str(risk_col).replace("_risk_score", ""),
+                "beta": float(srow["coef"]), "se": float(srow["se(coef)"]),
+                "hr": float(srow["exp(coef)"]), "p_value": float(srow["p"]),
+                "n": n, "n_events": n_events,
+            })
+    return rows
+
+
+def _joint_betas(scheme: str) -> pl.DataFrame:
+    """Refit the joint Cox model per (scheme, event) so we have p-values.
+
+    The held-out modality risk scores are produced at training time by
+    `run_feature_comp_task.py` (written under `<scheme>/held_out_risk_scores/`).
+    sksurv's `CoxPHSurvivalAnalysis` does not expose SEs, so for Fig 3A we redo
+    the joint fit here with `lifelines.CoxPHFitter` on the same merged inputs
+    (held-out modality risk scores × event surv data), standardizing features.
+    """
+    rows: list[dict[str, object]] = []
+    for event, merged, risk_cols in _joint_event_frames(scheme):
+        rows.extend(_fit_joint_cox(merged, risk_cols, scheme=scheme, event=event))
     if rows:
         return pl.DataFrame(rows).select(JOINT_BETA_COLUMNS)
     return pl.DataFrame(schema={c: pl.Float64 for c in JOINT_BETA_COLUMNS})

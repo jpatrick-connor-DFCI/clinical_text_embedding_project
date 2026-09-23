@@ -209,7 +209,7 @@ def score_tree(tmp_path, monkeypatch):
 
 
 def test_distinct_sources_raw_cancer_mapping_and_missing_modalities(score_tree):
-    fig2, fig3, audit, counts2, counts3 = prep.prepare_within_cancer(min_patients=2, min_events=1)
+    fig2, fig3, audit, counts2, counts3, modality = prep.prepare_within_cancer(min_patients=2, min_events=1)
     assert fig2.schema == fig3.schema == pl.Schema(prep.RESULT_SCHEMA)
     assert fig2["cancer_type"].to_list() == fig3["cancer_type"].to_list() == ["Reference cancer"]
     assert fig2["delta_cindex"].to_list() == [1.]
@@ -226,7 +226,7 @@ def test_legacy_scores_missing_fold_are_audited_without_pooled_fallback(score_tr
     _, full, _ = score_tree
     path = full / "text_risk_scores.csv"
     pl.read_csv(path).drop("outer_fold").write_csv(path)
-    fig2, fig3, audit, counts2, counts3 = prep.prepare_within_cancer(min_patients=2, min_events=1)
+    fig2, fig3, audit, counts2, counts3, modality = prep.prepare_within_cancer(min_patients=2, min_events=1)
     assert fig2.is_empty()
     assert not fig3.is_empty()
     assert not caplog.text
@@ -239,7 +239,7 @@ def test_duplicate_predictions_skip_comparator_and_record_reason(score_tree):
     path = features / "stage_risk_scores.csv"
     scores = pl.read_csv(path)
     pl.concat([scores, scores.head(1)]).write_csv(path)
-    fig2, fig3, audit, counts2, counts3 = prep.prepare_within_cancer(min_patients=2, min_events=1)
+    fig2, fig3, audit, counts2, counts3, modality = prep.prepare_within_cancer(min_patients=2, min_events=1)
     assert not fig2.is_empty()
     assert fig3.is_empty()
     assert audit.filter(pl.col("detail").str.contains("duplicate patient IDs")).height == 1
@@ -247,7 +247,7 @@ def test_duplicate_predictions_skip_comparator_and_record_reason(score_tree):
 
 def test_missing_inputs_preserve_typed_schemas_and_audit(tmp_path, monkeypatch):
     monkeypatch.setattr(prep, "FEATURE_PATH", str(tmp_path))
-    fig2, fig3, audit, counts2, counts3 = prep.prepare_within_cancer()
+    fig2, fig3, audit, counts2, counts3, modality = prep.prepare_within_cancer()
     assert fig2.is_empty() and fig3.is_empty()
     assert fig2.schema == fig3.schema == pl.Schema(prep.RESULT_SCHEMA)
     assert audit.schema == pl.Schema(prep.AUDIT_SCHEMA)
@@ -262,7 +262,7 @@ def test_missing_raw_cancer_label_cannot_fall_back_to_dummies(score_tree):
     labels = pl.read_csv(path).drop("CANCER_TYPE")
     with gzip.open(path, "wt") as handle:
         handle.write(labels.write_csv())
-    fig2, fig3, audit, counts2, counts3 = prep.prepare_within_cancer(min_patients=2, min_events=1)
+    fig2, fig3, audit, counts2, counts3, modality = prep.prepare_within_cancer(min_patients=2, min_events=1)
     assert fig2.is_empty() and fig3.is_empty()
     assert audit["status"].to_list() == ["invalid_cancer_input"]
     assert "CANCER_TYPE" in audit["detail"][0]
@@ -286,7 +286,7 @@ def test_cli_writes_both_figures_counts_and_audit_quietly(score_tree, monkeypatc
     assert {path.name for path in output.iterdir()} == {
         "fig2_within_cancer_cindex.csv", "fig3_within_cancer_cindex.csv",
         "fig2_within_cancer_event_counts.csv", "fig3_within_cancer_event_counts.csv",
-        "within_cancer_audit.csv",
+        "within_cancer_audit.csv", "fig3_within_cancer_modality_cindex.csv",
     }
     for name in (
         "fig2_within_cancer_cindex.csv", "fig3_within_cancer_cindex.csv",
@@ -326,7 +326,7 @@ def test_source_counts_precede_predictions_and_use_all_common_feature_ids(score_
     for path in features.glob("*_risk_scores.csv"):
         pl.read_csv(path).head(2).write_csv(path)
 
-    fig2, fig3, _, counts2, counts3 = prep.prepare_within_cancer(
+    fig2, fig3, _, counts2, counts3, _ = prep.prepare_within_cancer(
         min_patients=2, min_events=1, show_progress=False
     )
     assert counts2.schema == counts3.schema == pl.Schema(prep.COUNT_SCHEMA)
@@ -351,7 +351,7 @@ def test_untrained_endpoints_count_valid_outcomes_and_preserve_zero_strata(score
     )
     outcomes.write_parquet(outcome_path)
 
-    fig2, fig3, audit, counts2, counts3 = prep.prepare_within_cancer(
+    fig2, fig3, audit, counts2, counts3, modality = prep.prepare_within_cancer(
         min_patients=2, min_events=1, show_progress=False
     )
     for counts in (counts2, counts3):
@@ -374,7 +374,7 @@ def test_cancers_absent_from_shared_modality_cohort_have_zero_counts(score_tree)
     _write_gzip_csv(labels_path, labels)
     for name in FEATURE_MEMBERSHIP_FILES:
         _write_gzip_csv(root / name, pl.DataFrame({"DFCI_MRN": ["0", "1", "2"]}))
-    _, _, _, _, counts3 = prep.prepare_within_cancer(
+    _, _, _, _, counts3, _ = prep.prepare_within_cancer(
         min_patients=2, min_events=1, show_progress=False
     )
     assert counts3.select("cancer_type", "n_patients", "n_events", "eligible").rows() == [
@@ -395,7 +395,7 @@ def test_brain_metastasis_counts_follow_primary_brain_exclusion(score_tree):
         pl.lit(1).alias("brainM"), pl.lit(1.).alias("tt_brainM")
     ).write_parquet(outcome_path)
 
-    _, _, _, counts2, counts3 = prep.prepare_within_cancer(
+    _, _, _, counts2, counts3, _ = prep.prepare_within_cancer(
         min_patients=2, min_events=1, show_progress=False
     )
     for counts in (counts2, counts3):
@@ -413,7 +413,7 @@ def test_precounts_skip_all_prediction_and_concordance_work_when_ineligible(scor
 
     monkeypatch.setattr(prep, "_load_scores", unexpected_work)
     monkeypatch.setattr(prep, "_block_pair_counts", unexpected_work)
-    _, _, _, counts2, counts3 = prep.prepare_within_cancer(
+    _, _, _, counts2, counts3, _ = prep.prepare_within_cancer(
         min_patients=7, min_events=1, show_progress=False
     )
     for counts in (counts2, counts3):
@@ -444,7 +444,7 @@ def test_matched_counts_rechecked_after_source_counts_pass(score_tree, monkeypat
         return original(block)
 
     monkeypatch.setattr(prep, "_block_pair_counts", record_concordance)
-    fig2, fig3, _, counts2, counts3 = prep.prepare_within_cancer(
+    fig2, fig3, _, counts2, counts3, _ = prep.prepare_within_cancer(
         min_patients=6, min_events=1, show_progress=False
     )
     assert counts2["eligible"].to_list() == counts3["eligible"].to_list() == [True]
@@ -458,7 +458,7 @@ def test_matched_counts_rechecked_after_source_counts_pass(score_tree, monkeypat
 def test_missing_modality_membership_preserves_score_evaluation_and_audits_counts(score_tree):
     root, _, _ = score_tree
     (root / FEATURE_MEMBERSHIP_FILES[0]).unlink()
-    fig2, fig3, audit, counts2, counts3 = prep.prepare_within_cancer(
+    fig2, fig3, audit, counts2, counts3, modality = prep.prepare_within_cancer(
         min_patients=2, min_events=1, show_progress=False
     )
     assert not fig2.is_empty() and not fig3.is_empty()
@@ -528,3 +528,51 @@ def test_warnings_suppressed_and_progress_has_two_global_endpoint_bars(score_tre
         warnings.simplefilter("always")
         warnings.warn("caller warning", RuntimeWarning)
     assert len(emitted_after) == 1
+
+
+def _modality_frame(times, events, scores, folds):
+    n = len(times)
+    data = {"DFCI_MRN": [str(i) for i in range(n)], "time": times, "event_flag": events,
+            "cancer_type": ["Reference cancer"] * n}
+    for modality, values in scores.items():
+        data[f"{modality}_score"] = values
+        data[f"{modality}_fold"] = folds[modality]
+    return pl.DataFrame(data)
+
+
+def test_all_modalities_share_patients_pairs_and_joint_fold_blocks():
+    # Only patients 0-1 and 2-3 share every model's fold, so every modality is
+    # scored on exactly those two pairs even though "c" used a single fold.
+    frame = _modality_frame(
+        [1., 2., 3., 4.], [1.] * 4,
+        {"a": [4., 3., 2., 1.], "b": [1., 2., 3., 4.], "c": [2., 1., 4., 3.]},
+        {"a": [0, 0, 1, 1], "b": [0, 0, 1, 1], "c": [0, 0, 0, 0]},
+    )
+    result = prep.evaluate_modalities(frame, scheme="s", event="e", modalities=["a", "b", "c"],
+                                      min_patients=2, min_events=1)
+    by_modality = dict(zip(result["modality"], result["cindex"]))
+    assert by_modality == {"a": 1.0, "b": 0.0, "c": 1.0}
+    assert set(result["n_comparable_pairs"]) == {2}
+    assert set(result["n_fold_blocks"]) == {2}
+    # With two modalities, this matches the paired evaluation of the same scores.
+    pairwise = _evaluate(_paired([1., 2., 3., 4.], [1.] * 4, [4., 3., 2., 1.], [1., 2., 3., 4.],
+                                 text_folds=[0, 0, 1, 1], other_folds=[0, 0, 1, 1])).row(0, named=True)
+    assert (pairwise["text_cindex"], pairwise["comparator_cindex"]) == (1.0, 0.0)
+
+
+def test_all_modality_table_requires_every_modality(score_tree):
+    _, _, features = score_tree
+    *_, audit, _, _, modality = prep.prepare_within_cancer(min_patients=2, min_events=1)
+    assert modality.is_empty() and modality.schema == pl.Schema(prep.MODALITY_RESULT_SCHEMA)
+    assert audit.filter(pl.col("status") == "incomplete_modalities").height == 1
+
+    ids = [str(i) for i in range(6)]
+    for name in set(prep.MODALITY_ORDER) - {"text", "stage"}:
+        pl.DataFrame({"DFCI_MRN": ids, f"{name}_risk_score": [1.] * 6, "outer_fold": [0] * 6}
+                     ).write_csv(features / f"{name}_risk_scores.csv")
+    *_, modality = prep.prepare_within_cancer(min_patients=2, min_events=1)
+    assert set(modality["modality"]) == set(prep.MODALITY_ORDER)
+    # Stage covers five patients, so every modality is evaluated on those five.
+    assert set(modality["n_patients"]) == {5}
+    cindex = dict(zip(modality["modality"], modality["cindex"]))
+    assert cindex["stage"] == 1.0 and cindex["text"] == 0.0 and cindex["somatic"] == 0.5

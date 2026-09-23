@@ -1,6 +1,29 @@
 # Shared reporting for existing models evaluated within cancer types.
 # Source R/figure_utils.R first. These helpers do not refit any models.
 
+# SELECTED_CANCER_TYPES (CANCER_GROUP label -> display name, in display order)
+# comes from shared/palette.json via figure_utils.R, shared with the Python prep.
+if (!exists("SELECTED_CANCER_TYPES")) {
+  SELECTED_CANCER_TYPES <- unlist(jsonlite::fromJSON(file.path("shared", "palette.json"))$SELECTED_CANCER_TYPES)
+}
+OS_SCHEME <- "death_met"
+OS_EVENT <- "death"
+
+# Restrict rows to SELECTED_CANCER_TYPES, normalizing labels to their codes.
+# Types with no rows (e.g. pooled into OTHER below the preprocessing size
+# threshold, or ineligible for every endpoint) are reported, not invented.
+select_cancer_types <- function(d, context) {
+  if (!nrow(d)) return(d)
+  d <- d %>%
+    mutate(cancer_type = toupper(trimws(as.character(cancer_type)))) %>%
+    filter(cancer_type %in% names(SELECTED_CANCER_TYPES))
+  absent <- setdiff(names(SELECTED_CANCER_TYPES), d$cancer_type)
+  if (length(absent)) {
+    message(sprintf("[%s] no eligible rows for: %s", context, paste(absent, collapse = ", ")))
+  }
+  d
+}
+
 read_within_cancer_data <- function(name) {
   path <- file.path(FIGURE_DATA_DIR, name)
   if (!file.exists(path)) {
@@ -47,11 +70,129 @@ summarize_within_cancer <- function(metrics, comparators, excluded = character()
     ) %>% arrange(cancer_type, match(comparator, comparators))
 }
 
-within_cancer_caption <- function(number, metrics, summary, n_excluded) {
+# Per-endpoint modality ranks within each cancer type (1 = best C-index; ties
+# share the average rank), mirroring Figure 3a. Input is the shared-cohort table
+# (fig3_within_cancer_modality_cindex.csv): every modality is scored on the same
+# patients and comparable pairs. Complete-case: an endpoint/cancer is ranked only
+# when every modality present in this run has a finite C-index for it.
+within_cancer_modality_ranks <- function(modality_cindex, excluded = character()) {
+  required <- c("scheme", "event", "cancer_type", "modality", "cindex", "status")
+  if (is.null(modality_cindex) || !all(required %in% names(modality_cindex))) return(tibble::tibble())
+  d <- drop_excluded_events(modality_cindex, excluded) %>%
+    filter(status == "ok", modality %in% MODALITY_ORDER, is.finite(cindex),
+           !is.na(cancer_type), nzchar(trimws(cancer_type)))
+  if (!nrow(d)) return(tibble::tibble())
+  if (anyDuplicated(d[c("scheme", "event", "cancer_type", "modality")])) {
+    stop("Duplicate within-cancer endpoint/modality rows; rerun figures.prep.within_cancer")
+  }
+  present <- intersect(MODALITY_ORDER, unique(d$modality))
+  d %>%
+    group_by(scheme, event, cancer_type) %>%
+    filter(all(present %in% modality)) %>%
+    mutate(rank = rank(-cindex, ties.method = "average")) %>%
+    ungroup() %>%
+    select(scheme, event, cancer_type, modality, cindex, rank)
+}
+
+summarize_within_cancer_ranks <- function(ranks) {
+  if (!nrow(ranks)) return(tibble::tibble())
+  ranks %>%
+    group_by(cancer_type, modality) %>%
+    summarise(
+      n_endpoints = n(),
+      mean_rank = mean(rank),
+      q25_rank = as.numeric(quantile(rank, 0.25)),
+      q75_rank = as.numeric(quantile(rank, 0.75)),
+      .groups = "drop"
+    ) %>% arrange(cancer_type, match(modality, MODALITY_ORDER))
+}
+
+# Per-cancer joint Cox refits (fig3_within_cancer_joint_betas.csv) ready to plot:
+# shared endpoint exclusions, one fit variant, BH-FDR within each
+# (scheme, event, cancer) fit as in Figure 3b, and complete case within each
+# cancer type: an endpoint counts only when every modality fitted for that
+# cancer in this run is present (constant scores can drop a modality from a
+# small stratum, so the set is per cancer, not run-wide).
+prepare_within_cancer_joint <- function(betas, excluded = character(),
+                                        variant = "unpenalized", alpha = 0.05) {
+  required <- c("cancer_type", "scheme", "event", "fit_variant", "modality", "beta", "p_value")
+  if (is.null(betas) || !nrow(betas) || !all(required %in% names(betas))) return(tibble::tibble())
+  d <- drop_excluded_events(betas, excluded) %>%
+    mutate(cancer_type = toupper(trimws(as.character(cancer_type)))) %>%
+    filter(fit_variant == variant, is.finite(beta))
+  if (!nrow(d)) return(tibble::tibble())
+  if (anyDuplicated(d[c("cancer_type", "scheme", "event", "modality")])) {
+    stop("Duplicate within-cancer joint Cox rows; rerun figures.prep.within_cancer_joint")
+  }
+  d %>%
+    group_by(cancer_type) %>%
+    mutate(.n_modalities = n_distinct(modality)) %>%
+    group_by(cancer_type, scheme, event) %>%
+    filter(n_distinct(modality) == .n_modalities) %>%
+    mutate(q_value = stats::p.adjust(replace(p_value, is.na(p_value), 1), method = "BH")) %>%
+    ungroup() %>%
+    mutate(sig = q_value < alpha) %>%
+    select(-.n_modalities)
+}
+
+summarize_within_cancer_joint <- function(d) {
+  if (!nrow(d)) return(tibble::tibble())
+  d %>%
+    group_by(cancer_type, modality) %>%
+    summarise(
+      n_endpoints = n(),
+      n_significant = sum(sig),
+      n_significant_positive = sum(sig & beta > 0),
+      prop_significant = n_significant / n_endpoints,
+      median_beta = median(beta),
+      q25_beta = as.numeric(quantile(beta, 0.25)),
+      q75_beta = as.numeric(quantile(beta, 0.75)),
+      .groups = "drop"
+    ) %>%
+    arrange(match(cancer_type, names(SELECTED_CANCER_TYPES)), match(modality, MODALITY_ORDER))
+}
+
+within_cancer_rank_caption <- function(summary, n_modalities, n_excluded, selected = FALSE) {
+  title <- if (selected) {
+    paste("Supplemental Figure 3. Modality rank within selected cancer types. Shown cancer types:",
+          paste0(paste(SELECTED_CANCER_TYPES, collapse = ", "), "."),
+          "CUP denotes cancer of unknown primary.")
+  } else "Supplemental Figure 3. Modality rank within cancer types."
+  display <- paste(
+    "Rows denote cancer types (with the number of ranked endpoints) and columns denote",
+    sprintf("modalities. For each endpoint, the %d modalities are ranked by within-cancer", n_modalities),
+    "C-index (1 = best; ties share the average rank). Cells report the mean rank and its",
+    "interquartile range across endpoints; blue indicates better-than-middle ranks.",
+    "Grey cells have no endpoint with every modality evaluable."
+  )
+  methods <- paste(
+    "Existing pan-cancer models are evaluated within each cancer type without refitting. For",
+    "each endpoint, all modalities are scored on the same patients (those with every modality's",
+    "held-out prediction, an outcome and a cancer label) and the same comparable pairs: Harrell's",
+    "C-index is calculated within blocks sharing every modality's outer fold and aggregated by",
+    "comparable-pair counts. An endpoint is ranked within a cancer type only when every modality",
+    "is evaluable (complete case), as in Figure 3a. Endpoints receive equal weight, are",
+    "correlated, and can differ between cancer types; summaries are descriptive."
+  )
+  filtering <- if (isTRUE(FILTER_UNDERPERFORMING_ENDPOINTS)) {
+    sprintf("The shared manuscript endpoint outlier filter is applied (%d endpoint keys excluded across the manuscript).",
+            n_excluded)
+  } else "The shared manuscript endpoint outlier filter is disabled."
+  counts <- sprintf("Shown: %d cancer types.", dplyr::n_distinct(summary$cancer_type))
+  paste(title, display, methods, filtering, counts, sep = "\n\n")
+}
+
+within_cancer_caption <- function(number, metrics, summary, n_excluded, selected = FALSE) {
   title <- if (number == 2) {
     "Supplemental Figure 2. Text versus base performance within cancer types."
   } else {
     "Supplemental Figure 3. Text versus other modalities within cancer types."
+  }
+  if (selected) {
+    title <- sub("within cancer types\\.$", "within selected cancer types.", title)
+    title <- paste(title, "Shown cancer types:",
+                   paste0(paste(SELECTED_CANCER_TYPES, collapse = ", "), "."),
+                   "CUP denotes cancer of unknown primary.")
   }
   display <- if (number == 2) {
     paste("Each point represents one endpoint within the indicated cancer type; colors",

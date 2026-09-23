@@ -150,4 +150,64 @@ stopifnot(nrow(built$data[[1]]) == 6L,
           sum(built$data[[1]]$fill == "grey92") == 4L,
           sum(built$data[[2]]$label == "Unavailable") == 4L)
 
+# The selected-cancer figures keep only SELECTED_CANCER_TYPES, matching labels
+# regardless of case or padding, and never relabel OTHER as a selected type.
+labelled <- mutate(metrics[rep(1, 4), ], event = c("a", "b", "c", "d"),
+                   cancer_type = c("LUNG", " breast ", "OTHER", "Prostate"))
+selected <- suppressMessages(select_cancer_types(labelled, "test"))
+stopifnot(identical(selected$cancer_type, c("LUNG", "BREAST")),
+          nrow(select_cancer_types(labelled[0, ], "test")) == 0L)
+
+# Within-cancer ranks from the shared-cohort table: complete case per
+# endpoint/cancer, 1 = best, ties averaged, failed rows and exclusions dropped.
+MODALITY_ORDER <- c("stage", "somatic", "text")
+rank_rows <- tibble(
+  scheme = "icd3_post", cancer_type = "Lung",
+  event = c("e1", "e1", "e1", "e2", "e2", "e3", "e3", "e3"),
+  modality = c("stage", "somatic", "text", "stage", "text", "stage", "somatic", "text"),
+  cindex = c(0.5, 0.6875, 0.6875, 0.8, 0.6, 0.7, 0.6, 0.5),
+  status = c(rep("ok", 5), rep("too_few_events", 3))
+)
+ranks <- within_cancer_modality_ranks(rank_rows)
+e1 <- filter(ranks, event == "e1")
+stopifnot(
+  identical(unique(ranks$event), "e1"),  # e2 lacks somatic; e3 failed
+  close_to(e1$rank[e1$modality == "stage"], 3),
+  close_to(e1$rank[e1$modality == "text"], 1.5),
+  close_to(e1$rank[e1$modality == "somatic"], 1.5),
+  nrow(within_cancer_modality_ranks(rank_rows, .event_key("icd3_post", "e1"))) == 0L
+)
+rank_summary <- summarize_within_cancer_ranks(ranks)
+stopifnot(nrow(rank_summary) == 3L, all(rank_summary$n_endpoints == 1L),
+          identical(rank_summary$modality, c("stage", "somatic", "text")),
+          nrow(within_cancer_modality_ranks(rank_rows[0, ])) == 0L)
+duplicate_rank <- try(within_cancer_modality_ranks(bind_rows(rank_rows, rank_rows[1, ])), silent = TRUE)
+stopifnot(inherits(duplicate_rank, "try-error"))
+
+# Within-cancer joint Cox: variant filter, per-cancer complete case, BH within
+# each (scheme, event, cancer) fit, exclusions before anything else.
+joint <- tibble(
+  cancer_type = c(rep("lung", 5), rep("BREAST", 2)),
+  scheme = "icd3_post",
+  event = c("e1", "e1", "e2", "e1", "e1", "e1", "e1"),
+  fit_variant = c("unpenalized", "unpenalized", "unpenalized", "ridge_0.01", "ridge_0.01",
+                  "unpenalized", "unpenalized"),
+  modality = c("text", "stage", "text", "text", "stage", "text", "stage"),
+  beta = c(0.5, -0.1, 0.4, 0.3, 0.1, 0.2, 0.2),
+  p_value = c(0.01, 0.04, 0.001, 0.01, 0.5, 0.03, 0.04)
+)
+prepared <- prepare_within_cancer_joint(joint)
+lung <- filter(prepared, cancer_type == "LUNG")
+stopifnot(
+  nrow(prepared) == 4L, identical(unique(lung$event), "e1"),  # e2 lacks stage
+  close_to(lung$q_value, c(0.02, 0.04)), all(prepared$sig),
+  nrow(prepare_within_cancer_joint(joint, variant = "ridge_0.01")) == 2L,
+  nrow(prepare_within_cancer_joint(joint, .event_key("icd3_post", "e1"))) == 1L
+)
+joint_summary <- summarize_within_cancer_joint(prepared)
+stopifnot(nrow(joint_summary) == 4L,
+          identical(joint_summary$cancer_type[1], "BREAST"),
+          all(joint_summary$n_significant == 1L),
+          identical(joint_summary$n_significant_positive, c(1L, 1L, 0L, 1L)))
+
 message("Within-cancer supplemental-summary tests passed")

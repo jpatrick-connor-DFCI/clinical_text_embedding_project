@@ -14,3 +14,6 @@ MODALITY_COLORS: dict[str, str] = _palette["MODALITY_COLORS"]
 MODALITY_DISPLAY: dict[str, str] = _palette["MODALITY_DISPLAY"]
 MODEL_COLORS: dict[str, str] = _palette["MODEL_COLORS"]
 CLUSTER_COLORS: list[str] = _palette["CLUSTER_COLORS"]
+# Cancer types (preprocessing CANCER_GROUP label -> display name, in display
+# order) for the selected-cancer supplements and within-cancer joint fits.
+SELECTED_CANCER_TYPES: dict[str, str] = _palette["SELECTED_CANCER_TYPES"]
