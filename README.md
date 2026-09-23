@@ -157,10 +157,15 @@ python -m figures.prep.within_cancer_km
 
 `within_cancer` (per-endpoint C-index evaluation, both cohorts), `figure3` and
 `within_cancer_joint` (joint Cox fits) run their CPU-bound work on a process pool
-(`figures/prep/parallel.py`). The worker count comes from `FIGURE_PREP_N_JOBS`, then
-`SLURM_CPUS_PER_TASK`, then the core count (`within_cancer` also takes `--n-jobs`); each worker's
+(`figures/prep/parallel.py`). The worker count is `FIGURE_PREP_N_JOBS` if set, otherwise
+16 capped at the CPU allocation (`SLURM_CPUS_PER_TASK`, else the core count); `within_cancer`
+also takes `--n-jobs`; each worker's
 polars/BLAS threads are capped to its share of that allocation. Results are collected in
 submission order, so the output CSVs are the same as a serial run (`FIGURE_PREP_N_JOBS=1`).
+`within_cancer` writes the full-cohort outputs as soon as that phase finishes, then the
+modality-cohort outputs. A rerun after an interruption reloads a completed phase (tracked in
+`FIGURE_DATA_DIR/.within_cancer_checkpoint`, keyed on the thresholds) and evaluates only the rest;
+`--restart` discards that checkpoint, and the notebook passes it when the module is forced.
 
 ## Where to start
 

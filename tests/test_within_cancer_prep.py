@@ -595,3 +595,64 @@ def test_parallel_endpoints_match_serial(score_tree):
     assert set(serial[0]["event"]) == {"death", "progression"}
     for expected, actual in zip(serial, parallel):
         assert actual.equals(expected)
+
+
+def _run_cli(monkeypatch, *extra):
+    monkeypatch.setattr(sys, "argv", ["within_cancer", "--min-patients", "2", "--min-events", "1", *extra])
+    prep.main()
+
+
+def test_interrupted_run_writes_full_cohort_and_resumes_modality_phase(score_tree, monkeypatch):
+    root, _, _ = score_tree
+    output = root / "figure_data"
+    monkeypatch.setattr(prep, "FIGURE_DATA_DIR", str(output))
+    _run_cli(monkeypatch)
+    expected = {name: (output / name).read_text() for name in
+                [*prep.PHASE_FILES["fig2"].values(), *prep.PHASE_FILES["fig3"].values(), prep.AUDIT_FILE]}
+    assert not (output / prep.CHECKPOINT_DIR).exists()
+    for name in expected:
+        (output / name).unlink()
+
+    real = prep._run_endpoint_tasks
+    phases_run = []
+
+    def interrupt_modality(tasks, context, pool, progress):
+        phase = tasks[0][0]
+        phases_run.append(phase)
+        if phase == "fig3":
+            raise KeyboardInterrupt
+        return real(tasks, context, pool, progress)
+
+    monkeypatch.setattr(prep, "_run_endpoint_tasks", interrupt_modality)
+    with pytest.raises(KeyboardInterrupt):
+        _run_cli(monkeypatch)
+    # Full-cohort outputs and the audit so far are on disk; modality outputs are not.
+    for name in prep.PHASE_FILES["fig2"].values():
+        assert (output / name).read_text() == expected[name]
+    assert not any((output / name).exists() for name in prep.PHASE_FILES["fig3"].values())
+    assert (output / prep.CHECKPOINT_DIR / "fig2.json").exists()
+
+    def track(tasks, context, pool, progress):
+        phases_run.append(tasks[0][0])
+        return real(tasks, context, pool, progress)
+
+    phases_run.clear()
+    monkeypatch.setattr(prep, "_run_endpoint_tasks", track)
+    _run_cli(monkeypatch)
+    assert phases_run == ["fig3"]
+    for name, text in expected.items():
+        assert (output / name).read_text() == text
+    assert not (output / prep.CHECKPOINT_DIR).exists()
+
+
+def test_checkpoint_ignored_on_restart_or_changed_thresholds(score_tree, monkeypatch):
+    root, _, _ = score_tree
+    output = root / "figure_data"
+    monkeypatch.setattr(prep, "FIGURE_DATA_DIR", str(output))
+    checkpoint = prep.PhaseCheckpoint(output, min_patients=2, min_events=1)
+    frames = prep.prepare_within_cancer(min_patients=2, min_events=1, checkpoint=checkpoint)
+    fig2 = {"results": frames[0], "counts": frames[3], "audit": pl.DataFrame(schema=prep.AUDIT_SCHEMA)}
+    checkpoint.save("fig2", fig2, frames[2])
+    assert checkpoint.load("fig2")["results"].equals(frames[0])
+    assert prep.PhaseCheckpoint(output, min_patients=3, min_events=1).load("fig2") is None
+    assert prep.PhaseCheckpoint(output, min_patients=2, min_events=1, restart=True).load("fig2") is None

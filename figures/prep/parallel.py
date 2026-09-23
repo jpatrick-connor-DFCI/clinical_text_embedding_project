@@ -8,9 +8,10 @@ are sized to its share of the allocation so N workers do not oversubscribe the
 node. Results always come back in submission order, so parallel output is
 identical to the serial loop.
 
-The worker count comes from FIGURE_PREP_N_JOBS, then SLURM_CPUS_PER_TASK, then
-the machine's core count. With one worker nothing is spawned and callers run
-their serial path.
+The worker count comes from FIGURE_PREP_N_JOBS; otherwise it is
+DEFAULT_WORKERS (16), capped at the CPU allocation (SLURM_CPUS_PER_TASK, else the
+machine's core count). With one worker nothing is spawned and callers run their
+serial path.
 """
 
 from __future__ import annotations
@@ -25,6 +26,9 @@ from typing import Iterator
 logger = logging.getLogger(__name__)
 
 N_JOBS_ENV = "FIGURE_PREP_N_JOBS"
+# Spawned workers each import polars/sksurv/lifelines, so an uncapped default on
+# a large node spends minutes (and many GB) just starting processes.
+DEFAULT_WORKERS = 16
 _THREAD_VARS = (
     "POLARS_MAX_THREADS", "OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS",
     "NUMEXPR_NUM_THREADS", "BLIS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS",
@@ -39,7 +43,8 @@ def _allocated_cpus() -> int:
 
 
 def resolve_workers(n_jobs: int | None = None) -> int:
-    """Worker count: explicit n_jobs, else FIGURE_PREP_N_JOBS, else the CPU allocation."""
+    """Worker count: explicit n_jobs, else FIGURE_PREP_N_JOBS, else
+    DEFAULT_WORKERS capped at the CPU allocation."""
     if n_jobs is not None:
         return max(1, int(n_jobs))
     raw = os.getenv(N_JOBS_ENV)
@@ -51,7 +56,7 @@ def resolve_workers(n_jobs: int | None = None) -> int:
         else:
             if value > 0:
                 return value
-    return _allocated_cpus()
+    return min(DEFAULT_WORKERS, _allocated_cpus())
 
 
 @contextmanager
@@ -65,6 +70,7 @@ def process_pool(n_workers: int, *, initializer=None, initargs: tuple = ()) -> I
         yield None
         return
     threads = str(max(1, _allocated_cpus() // n_workers))
+    print(f"  starting {n_workers} worker process(es), {threads} thread(s) each", flush=True)
     saved = {var: os.environ.get(var) for var in _THREAD_VARS}
     os.environ.update({var: threads for var in _THREAD_VARS})
     try:

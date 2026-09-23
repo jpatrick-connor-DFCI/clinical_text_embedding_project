@@ -3,6 +3,9 @@ suppressPackageStartupMessages({ library(ggplot2); library(dplyr) })
 source("R/figure_utils.R")
 source("R/within_cancer_utils.R")
 
+# Median-delta annotation in each facet's bottom-right corner (ggplot mm units).
+MEDIAN_DELTA_TEXT_SIZE <- 4.5
+
 # `d` holds endpoint rows and `summary` the per-cancer rows for the facets shown;
 # facets follow the factor levels of `d$cancer_type` when it is a factor.
 build_within_cancer_scatter <- function(d, summary, subtitle, ncol = 3) {
@@ -12,7 +15,7 @@ build_within_cancer_scatter <- function(d, summary, subtitle, ncol = 3) {
     geom_abline(slope = 1, intercept = 0, color = "grey55", linetype = "dashed") +
     geom_point(aes(color = scheme), size = 1.25, alpha = 0.6) +
     geom_text(data = ann, aes(x = 0.97, y = 0.03, label = label), inherit.aes = FALSE,
-              hjust = 1, vjust = 0, size = MANUSCRIPT_SMALL_TEXT_SIZE) +
+              hjust = 1, vjust = 0, size = MEDIAN_DELTA_TEXT_SIZE, fontface = "bold") +
     facet_wrap(~cancer_type, ncol = ncol, labeller = label_wrap_gen(30)) +
     scale_color_manual(values = SCHEME_COLORS, labels = SCHEME_LABELS, name = NULL) +
     scale_x_continuous(limits = c(0, 1), breaks = c(0, 0.5, 1)) +

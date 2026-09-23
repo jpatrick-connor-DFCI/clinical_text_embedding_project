@@ -47,6 +47,13 @@ modality-cohort events, with Python warnings suppressed for the preparation run.
 Endpoints are evaluated in parallel worker processes (--n-jobs; see
 figures.prep.parallel); results are assembled in task order, so the outputs
 match a serial run exactly.
+
+The CLI runs two phases, full cohort (fig2) then modality cohort (fig3), and
+writes each phase's CSVs, plus the audit so far, as soon as the phase
+finishes. If a run is interrupted, the next run reloads the completed phase from
+those CSVs (FIGURE_DATA_DIR/.within_cancer_checkpoint records which phases are
+done and at which thresholds) and evaluates only the rest. --restart discards
+the checkpoint; it is removed automatically once both phases are complete.
 Only status == 'ok' rows should be plotted. n_fold_blocks counts blocks with
 at least one comparable pair; n_patients and n_events describe the full matched
 valid cohort, including patients in blocks with no comparable pairs.
@@ -57,7 +64,10 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import as_completed
 from functools import reduce
+import json
 from pathlib import Path
+import shutil
+import sys
 import warnings
 
 import numpy as np
@@ -575,13 +585,86 @@ def _run_endpoint_tasks(tasks: list[tuple], context: dict, pool, progress) -> li
     return [future.result() for future in futures]
 
 
+PHASES = (
+    ("fig2", "full_cohort_risk_scores", ("base",), "Full cohort"),
+    ("fig3", "held_out_risk_scores", tuple(m for m in MODALITY_ORDER if m != "text"), "Modality cohort"),
+)
+# Per-phase outputs and the FIGURE_DATA_DIR file each is written to.
+PHASE_FILES = {
+    "fig2": {"results": "fig2_within_cancer_cindex.csv",
+             "counts": "fig2_within_cancer_event_counts.csv"},
+    "fig3": {"results": "fig3_within_cancer_cindex.csv",
+             "counts": "fig3_within_cancer_event_counts.csv",
+             "modalities": "fig3_within_cancer_modality_cindex.csv"},
+}
+PHASE_SCHEMAS = {"results": RESULT_SCHEMA, "counts": COUNT_SCHEMA,
+                 "modalities": MODALITY_RESULT_SCHEMA, "audit": AUDIT_SCHEMA}
+AUDIT_FILE = "within_cancer_audit.csv"
+CHECKPOINT_DIR = ".within_cancer_checkpoint"
+
+
+class PhaseCheckpoint:
+    """Write each phase's CSVs as soon as it finishes, and reload them on a rerun.
+
+    A phase is resumable when its marker (written last, after its CSVs and audit
+    rows) records the same thresholds as this run. Like the notebook's skip
+    check, this tests presence, not freshness: pass restart=True (--restart)
+    after upstream scores change. The checkpoint is removed once every phase
+    is complete, so a later run recomputes from scratch.
+    """
+
+    def __init__(self, output: Path, *, min_patients: int, min_events: int, restart: bool = False):
+        self.output = Path(output)
+        self.dir = self.output / CHECKPOINT_DIR
+        self.params = {"min_patients": min_patients, "min_events": min_events}
+        if restart:
+            self.clear()
+
+    def _marker(self, phase: str) -> Path:
+        return self.dir / f"{phase}.json"
+
+    def load(self, phase: str) -> dict[str, pl.DataFrame] | None:
+        marker = self._marker(phase)
+        paths = {key: self.output / name for key, name in PHASE_FILES[phase].items()}
+        paths["audit"] = self.dir / f"{phase}_audit.csv"
+        try:
+            if json.loads(marker.read_text()) != self.params:
+                return None
+            return {key: pl.read_csv(path, schema=PHASE_SCHEMAS[key]) for key, path in paths.items()}
+        except (OSError, ValueError, pl.exceptions.PolarsError):
+            return None
+
+    def save(self, phase: str, frames: dict[str, pl.DataFrame], audit: pl.DataFrame) -> None:
+        """Write the phase's CSVs, the audit so far, then the phase marker."""
+        self.dir.mkdir(parents=True, exist_ok=True)
+        for key, name in PHASE_FILES[phase].items():
+            frames[key].write_csv(self.output / name)
+        frames["audit"].write_csv(self.dir / f"{phase}_audit.csv")
+        audit.write_csv(self.output / AUDIT_FILE)
+        self._marker(phase).write_text(json.dumps(self.params))
+
+    def clear(self) -> None:
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+
+def _phase_frames(outputs: list[dict[str, list]]) -> dict[str, pl.DataFrame]:
+    def concat(key, sort):
+        frames = [frame for output in outputs for frame in output[key]]
+        return pl.concat(frames).sort(*sort) if frames else pl.DataFrame(schema=PHASE_SCHEMAS[key])
+    return {
+        "results": concat("results", ("scheme", "event", "cancer_type", "comparator")),
+        "counts": concat("counts", ("scheme", "event", "cancer_type")),
+        "modalities": concat("modalities", ("scheme", "event", "cancer_type", "modality")),
+        "audit": pl.DataFrame([row for output in outputs for row in output["audit"]],
+                              schema=AUDIT_SCHEMA),
+    }
+
+
 def _prepare_within_cancer(
     *, min_patients: int, min_events: int, show_progress: bool, n_jobs: int = 1,
+    checkpoint: PhaseCheckpoint | None = None,
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     audit: list[dict] = []
-    results: dict[str, list[pl.DataFrame]] = {"fig2": [], "fig3": []}
-    modality_results: list[pl.DataFrame] = []
-    counts: dict[str, list[pl.DataFrame]] = {"fig2": [], "fig3": []}
     try:
         cancer = _load_cancer_types(Path(FEATURE_PATH) / "cancer_type_df.csv.gz")
     except _READ_ERRORS as exc:
@@ -612,11 +695,15 @@ def _prepare_within_cancer(
 
     context = {"cancer": cancer, "sources": sources,
                "min_patients": min_patients, "min_events": min_events}
-    all_tasks = {}
-    for comparison, subdir, comparators, description in (
-        ("fig2", "full_cohort_risk_scores", ["base"], "Full cohort"),
-        ("fig3", "held_out_risk_scores", [m for m in MODALITY_ORDER if m != "text"], "Modality cohort"),
-    ):
+    phases: dict[str, dict[str, pl.DataFrame]] = {}
+    pending = {}
+    for comparison, subdir, comparators, description in PHASES:
+        cached = checkpoint.load(comparison) if checkpoint is not None else None
+        if cached is not None:
+            if show_progress:
+                print(f"{description}: loaded from checkpoint", file=sys.stderr, flush=True)
+            phases[comparison] = cached
+            continue
         tasks = []
         for scheme, (_, columns, _, _) in sources.items():
             root = Path(scheme_results_dir(scheme)) / subdir
@@ -624,36 +711,26 @@ def _prepare_within_cancer(
             # audit orphan risk directories rather than silently discarding them.
             directories = {p.name for p in root.iterdir() if p.is_dir()} if root.is_dir() else set()
             events = {c[3:] for c in columns if c.startswith("tt_")}
-            tasks.extend((comparison, scheme, event, root / event, comparators)
+            tasks.extend((comparison, scheme, event, root / event, list(comparators))
                          for event in sorted(events | directories))
-        all_tasks[comparison] = (tasks, description)
+        pending[comparison] = (tasks, description)
 
-    n_workers = min(resolve_workers(n_jobs), max((len(t) for t, _ in all_tasks.values()), default=1))
-    with process_pool(n_workers, initializer=_init_worker, initargs=(context,)) as pool:
-        for comparison, (tasks, description) in all_tasks.items():
+    def audit_so_far() -> pl.DataFrame:
+        return pl.concat([pl.DataFrame(audit, schema=AUDIT_SCHEMA),
+                          *(phases[key]["audit"] for key, *_ in PHASES if key in phases)])
+
+    n_workers = min(resolve_workers(n_jobs), max((len(t) for t, _ in pending.values()), default=1))
+    with process_pool(n_workers if pending else 1, initializer=_init_worker, initargs=(context,)) as pool:
+        for comparison, (tasks, description) in pending.items():
             with tqdm(total=len(tasks), desc=description, unit="event", leave=True,
                       dynamic_ncols=True, disable=not show_progress) as progress:
-                for output in _run_endpoint_tasks(tasks, context, pool, progress):
-                    audit.extend(output["audit"])
-                    results[comparison].extend(output["results"])
-                    counts[comparison].extend(output["counts"])
-                    modality_results.extend(output["modalities"])
-    frames = [
-        pl.concat(results[key]).sort("scheme", "event", "cancer_type", "comparator")
-        if results[key] else pl.DataFrame(schema=RESULT_SCHEMA)
-        for key in ("fig2", "fig3")
-    ]
-    count_frames = [
-        pl.concat(counts[key]).sort("scheme", "event", "cancer_type")
-        if counts[key] else pl.DataFrame(schema=COUNT_SCHEMA)
-        for key in ("fig2", "fig3")
-    ]
-    modality_frame = (
-        pl.concat(modality_results).sort("scheme", "event", "cancer_type", "modality")
-        if modality_results else pl.DataFrame(schema=MODALITY_RESULT_SCHEMA)
-    )
-    return (frames[0], frames[1], pl.DataFrame(audit, schema=AUDIT_SCHEMA), *count_frames,
-            modality_frame)
+                phases[comparison] = _phase_frames(_run_endpoint_tasks(tasks, context, pool, progress))
+            if checkpoint is not None:
+                checkpoint.save(comparison, phases[comparison], audit_so_far())
+    if checkpoint is not None:
+        checkpoint.clear()
+    return (phases["fig2"]["results"], phases["fig3"]["results"], audit_so_far(),
+            phases["fig2"]["counts"], phases["fig3"]["counts"], phases["fig3"]["modalities"])
 
 
 def _evaluate_all_modalities(
@@ -690,7 +767,7 @@ def _evaluate_all_modalities(
 
 def prepare_within_cancer(
     *, min_patients: int = 20, min_events: int = 5, show_progress: bool = True,
-    n_jobs: int | None = 1,
+    n_jobs: int | None = 1, checkpoint: PhaseCheckpoint | None = None,
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """Return Fig2 metrics, Fig3 metrics, audit, full counts, modality counts and
     shared-cohort per-modality C-indices.
@@ -699,6 +776,8 @@ def prepare_within_cancer(
     entries are persisted instead of printed. Exceptions still propagate.
     Endpoints are evaluated on n_jobs worker processes (None: FIGURE_PREP_N_JOBS,
     then the SLURM/CPU allocation); outputs are identical to the serial run.
+    With a checkpoint, each phase (full cohort, then modality cohort) is written
+    when it finishes and a completed phase is reloaded instead of recomputed.
     """
     if min_patients < 2 or min_events < 1:
         raise ValueError("min_patients must be >= 2 and min_events must be >= 1")
@@ -706,7 +785,7 @@ def prepare_within_cancer(
         warnings.simplefilter("ignore")
         return _prepare_within_cancer(
             min_patients=min_patients, min_events=min_events, show_progress=show_progress,
-            n_jobs=n_jobs,
+            n_jobs=n_jobs, checkpoint=checkpoint,
         )
 
 
@@ -715,25 +794,21 @@ def main() -> None:
     parser.add_argument("--min-patients", type=int, default=20)
     parser.add_argument("--min-events", type=int, default=5)
     parser.add_argument("--n-jobs", type=int, default=None,
-                        help="worker processes (default: FIGURE_PREP_N_JOBS, then the CPU allocation)")
+                        help="worker processes (default: FIGURE_PREP_N_JOBS, else 16 capped at the CPU allocation)")
+    parser.add_argument("--restart", action="store_true",
+                        help="ignore phases completed by an interrupted run and recompute both")
     args = parser.parse_args()
     if args.min_patients < 2 or args.min_events < 1:
         parser.error("--min-patients must be >= 2 and --min-events must be >= 1")
-    frames = prepare_within_cancer(min_patients=args.min_patients, min_events=args.min_events,
-                                   n_jobs=args.n_jobs)
-    names = (
-        "fig2_within_cancer_cindex.csv", "fig3_within_cancer_cindex.csv",
-        "within_cancer_audit.csv", "fig2_within_cancer_event_counts.csv",
-        "fig3_within_cancer_event_counts.csv", "fig3_within_cancer_modality_cindex.csv",
-    )
     # CSV-only output avoids importing figures.io's matplotlib runtime or its
     # warning/print messages. The only normal terminal output is the two bars.
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        output = Path(FIGURE_DATA_DIR)
-        output.mkdir(parents=True, exist_ok=True)
-        for frame, name in zip(frames, names):
-            frame.write_csv(output / name)
+    # Each phase's CSVs (and the audit so far) are written as the phase finishes.
+    output = Path(FIGURE_DATA_DIR)
+    output.mkdir(parents=True, exist_ok=True)
+    checkpoint = PhaseCheckpoint(output, min_patients=args.min_patients,
+                                 min_events=args.min_events, restart=args.restart)
+    prepare_within_cancer(min_patients=args.min_patients, min_events=args.min_events,
+                          n_jobs=args.n_jobs, checkpoint=checkpoint)
 
 
 if __name__ == "__main__":
