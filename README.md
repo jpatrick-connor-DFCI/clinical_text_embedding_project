@@ -159,8 +159,10 @@ python -m figures.prep.within_cancer_km
 `within_cancer_joint` (joint Cox fits) run their CPU-bound work on a process pool
 (`figures/prep/parallel.py`). The worker count is `FIGURE_PREP_N_JOBS` if set, otherwise
 16 capped at the CPU allocation (`SLURM_CPUS_PER_TASK`, else the core count); `within_cancer`
-also takes `--n-jobs`; each worker's
-polars/BLAS threads are capped to its share of that allocation. Results are collected in
+also takes `--n-jobs`. Each worker runs one polars/BLAS thread (`FIGURE_PREP_WORKER_THREADS`
+overrides). On Linux the worker count is also reduced, with a notice, to fit the per-user
+thread limit (`ulimit -u`, 900 on some cluster nodes) given the threads you already have
+running; exceeding it crashes workers with "Resource temporarily unavailable". Results are collected in
 submission order, so the output CSVs are the same as a serial run (`FIGURE_PREP_N_JOBS=1`).
 `within_cancer` writes the full-cohort outputs as soon as that phase finishes, then the
 modality-cohort outputs. A rerun after an interruption reloads a completed phase (tracked in
