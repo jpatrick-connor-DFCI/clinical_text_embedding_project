@@ -5,7 +5,7 @@ source("R/within_cancer_utils.R")
 
 # `d` holds endpoint rows and `summary` the per-cancer rows for the facets shown;
 # facets follow the factor levels of `d$cancer_type` when it is a factor.
-build_within_cancer_scatter <- function(d, summary, subtitle) {
+build_within_cancer_scatter <- function(d, summary, subtitle, ncol = 3) {
   ann <- summary %>%
     mutate(label = sprintf("median delta=%+.3f", median_delta_cindex))
   ggplot(d, aes(comparator_cindex, text_cindex)) +
@@ -13,7 +13,7 @@ build_within_cancer_scatter <- function(d, summary, subtitle) {
     geom_point(aes(color = scheme), size = 1.25, alpha = 0.6) +
     geom_text(data = ann, aes(x = 0.97, y = 0.03, label = label), inherit.aes = FALSE,
               hjust = 1, vjust = 0, size = MANUSCRIPT_SMALL_TEXT_SIZE) +
-    facet_wrap(~cancer_type, ncol = 3, labeller = label_wrap_gen(30)) +
+    facet_wrap(~cancer_type, ncol = ncol, labeller = label_wrap_gen(30)) +
     scale_color_manual(values = SCHEME_COLORS, labels = SCHEME_LABELS, name = NULL) +
     scale_x_continuous(limits = c(0, 1), breaks = c(0, 0.5, 1)) +
     scale_y_continuous(limits = c(0, 1), breaks = c(0, 0.5, 1)) +
@@ -82,5 +82,44 @@ render_figure2_within_cancer_selected <- function() {
   invisible(summary)
 }
 
+# Selected v2: every recorded cancer type except the pooled OTHER category, on a
+# single page of 7 columns (3 rows for 21 types).
+V2_NCOL <- 7L
+
+cancer_display_name <- function(code) {
+  ifelse(code %in% names(SELECTED_CANCER_TYPES), SELECTED_CANCER_TYPES[code],
+         ifelse(nchar(code) <= 3, code, tools::toTitleCase(tolower(gsub("_", " ", code)))))
+}
+
+render_figure2_within_cancer_selected_v2 <- function() {
+  stem <- "figS2_within_cancer_selected_v2_cindex"
+  clear_within_cancer_report(stem, "figure2")
+  metrics <- read_within_cancer_data("fig2_within_cancer_cindex.csv")
+  if (nrow(metrics)) {
+    metrics <- metrics %>%
+      mutate(cancer_type = toupper(trimws(as.character(cancer_type)))) %>%
+      filter(cancer_type != "OTHER")
+  }
+  excluded <- within_cancer_exclusions()
+  summary <- summarize_within_cancer(metrics, "base", excluded)
+  if (!nrow(summary)) {
+    message("[figure2 selected v2 supplement] SKIPPED: no eligible text/base comparisons outside OTHER")
+    return(invisible(NULL))
+  }
+  levels <- sort(unique(cancer_display_name(summary$cancer_type)))
+  as_display <- function(x) factor(cancer_display_name(x), levels = levels)
+  d <- eligible_within_cancer(metrics, "base", excluded) %>% mutate(cancer_type = as_display(cancer_type))
+  shown <- summary %>% mutate(cancer_type = as_display(cancer_type))
+  p <- build_within_cancer_scatter(d, shown, "Existing pan-cancer models; matched held-out patients",
+                                   ncol = V2_NCOL)
+  n_rows <- ceiling(length(levels) / V2_NCOL)
+  save_panel(p, stem, "figure2", width = 0.6 + 2.3 * V2_NCOL, height = 1.9 + 2.4 * n_rows)
+  caption <- within_cancer_caption(2, metrics, summary, length(excluded))
+  caption <- paste(caption, "The pooled OTHER cancer-type category is omitted.", sep = "\n\n")
+  save_within_cancer_report(summary, caption, stem)
+  invisible(summary)
+}
+
 render_figure2_within_cancer()
 render_figure2_within_cancer_selected()
+render_figure2_within_cancer_selected_v2()

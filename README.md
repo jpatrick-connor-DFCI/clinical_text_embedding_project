@@ -67,6 +67,12 @@ held-out modality risk scores within the cancer type and using the same eligibil
 fit variants as `fig3_joint_betas.csv`. It writes `fig3_within_cancer_joint_betas.csv` and a
 per-stratum status table, `fig3_within_cancer_joint_fits.csv`.
 
+`figures.prep.within_cancer_km` splits the Figure 2c/d cohort (patients with a known major stage
+and a full-cohort overall-survival text risk score) by selected cancer type, recomputing text risk
+quartiles within each type. It writes `fig2_km_stage_vs_risk_by_cancer.csv` and
+`fig2_stage_vs_risk_cindex_by_cancer.csv` (stage and text-risk C-index per cancer type, with a
+status for types below `--min-patients` 20 / `--min-events` 5).
+
 Before evaluating each endpoint, the count tables report valid patients, observed
 events, and non-events (`n_non_events`) by cancer type, including endpoints with no
 trained risk scores and strata with zero eligible patients. Full-cohort membership
@@ -94,7 +100,9 @@ Each supplement also writes a single-page selected-cancer version
 (`figS2_within_cancer_selected_cindex`, `figS3_within_cancer_selected_cindex`) limited to
 Breast, Leukemia, Lung, Bowel, Brain, Skin, Pancreas, Lymphoma, and CUP
 (`SELECTED_CANCER_TYPES` in `R/within_cancer_utils.R`); in the heatmap, a selected type
-with no eligible endpoints keeps a grey "Unavailable" row. The Figure 3 supplement also
+with no eligible endpoints keeps a grey "Unavailable" row. S2 also writes
+`figS2_within_cancer_selected_v2_cindex`: every recorded cancer type except the pooled OTHER
+category on one page, 7 panels per row. The Figure 3 supplement also
 writes within-cancer modality ranks, mirroring Figure 3a: for each endpoint and cancer type
 with every modality evaluable, modalities are ranked by their shared-cohort C-index from
 `fig3_within_cancer_modality_cindex.csv` (1 = best; ties averaged). Heatmaps of
@@ -108,6 +116,10 @@ group: `figS3_within_cancer_joint_betas` (coefficient violins per cancer type, a
 and `figS3_within_cancer_joint_significant` (BH-FDR significant endpoints per cancer and
 modality, as in Figure 3b), both on complete-case endpoints within each cancer type and the
 `MANUSCRIPT_JOINT_COX_VARIANT` fit.
+`R/plot_figure_2_supp_cancer_km.R` renders Figure 2c/d per selected cancer type to the `figure2`
+group: `figS2_within_cancer_km_stage` (overall survival by stage) and
+`figS2_within_cancer_km_risk` (by within-cancer text risk quartile), 3×3 grids annotated with the
+per-cancer C-index and log-rank p.
 Risk-score files must contain `outer_fold`; older files are skipped with an audit
 entry and can be regenerated with the corresponding training/risk runner's
 `--overwrite` flag. With the shared endpoint filter enabled, rendering also needs
@@ -140,6 +152,7 @@ python -m pipelines.training.run_full_cohort_event --scheme death_met --event de
 python -m figures.prep.figure2
 python -m figures.prep.within_cancer
 python -m figures.prep.within_cancer_joint
+python -m figures.prep.within_cancer_km
 ```
 
 ## Where to start
@@ -147,7 +160,7 @@ python -m figures.prep.within_cancer_joint
 - Understanding the pipeline DAG: [`notebooks/README.md`](notebooks/README.md) walks the stages in
   run order, from cohort build through to the rendered figures.
 - Reproducing or extending the manuscript figures: `figures/prep/figure0.py` … `figure5.py`
-  plus `figures/prep/within_cancer.py` and `within_cancer_joint.py`,
+  plus `figures/prep/within_cancer.py`, `within_cancer_joint.py` and `within_cancer_km.py`,
   rendered via the R scripts in `R/`. `notebooks/4_figures/` drives both steps.
 - Running on the cluster: `slurm/launch_*.sh` build manifests and submit the array jobs. They
   default `PROJECT_ROOT` to the cluster checkout path; override it to run elsewhere.

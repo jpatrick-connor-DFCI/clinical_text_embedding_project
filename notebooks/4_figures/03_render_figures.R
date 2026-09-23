@@ -41,7 +41,9 @@
 # PNG/PDF files to the figure2 and figure3 output groups (later pages add _page2,
 # etc.), with matching summary CSVs under tables/ and legends under captions/.
 # Each also writes a single-page *_within_cancer_selected_cindex version limited to
-# Breast, Leukemia, Lung, Bowel, Brain, Skin, Pancreas, Lymphoma, and CUP.
+# Breast, Leukemia, Lung, Bowel, Brain, Skin, Pancreas, Lymphoma, and CUP. S2 also
+# writes figS2_within_cancer_selected_v2_cindex: all cancer types except OTHER on a
+# single page, 7 panels per row.
 # The S3 script also writes mean within-cancer modality-rank heatmaps (as in
 # Figure 3a) for all cancer types (figS3_within_cancer_rank_cindex) and the
 # selected ones (figS3_within_cancer_rank_selected_cindex), ranking the shared-cohort
@@ -50,6 +52,10 @@
 # selected cancer type (figures.prep.within_cancer_joint): coefficient violins
 # (figS3_within_cancer_joint_betas) and significant-endpoint counts
 # (figS3_within_cancer_joint_significant) in the figure3 group.
+# plot_figure_2_supp_cancer_km.R renders Figure 2c/d within each selected cancer
+# type (figures.prep.within_cancer_km): KM grids by stage
+# (figS2_within_cancer_km_stage) and by within-cancer text risk quartile
+# (figS2_within_cancer_km_risk) in the figure2 group.
 # plot_figure_os_within_cancer.R writes figOS_within_cancer_cindex to the figure_os
 # group: the overall-survival (death_met/death) C-index for those cancer types,
 # text versus base and versus each other modality.
@@ -115,6 +121,7 @@ SCRIPTS <- c(
   "plot_figure_2_supp.R",
   "plot_figure_2_supp_anchor.R",
   "plot_figure_2_supp_cancer.R",
+  "plot_figure_2_supp_cancer_km.R",
   "plot_figure_2_supp_family.R",
   "plot_figure_3.R",
   "plot_figure_3_supp_cancer.R",
