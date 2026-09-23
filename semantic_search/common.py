@@ -63,8 +63,17 @@ SPACES = ["concat"]
 BASELINE_SPACE = "cancer_type_baseline"
 BASELINE_SPACES = [BASELINE_SPACE]
 
+# The full, uncompressed concat embeddings (3 x 768 = 2304 dims) with no PCA
+# step: answers whether blockwise PCA compression itself costs accuracy, by
+# comparing directly against `concat`. Reuses FULL_SPACE_SOURCE's feature file
+# rather than writing a second copy of the same embeddings under a new name;
+# see `train_prediction_models.run`.
+FULL_SPACE = "concat_full"
+FULL_SPACES = [FULL_SPACE]
+FULL_SPACE_SOURCE = "concat"
+
 PC_SPACES = [note_type.lower() for note_type in NOTE_TYPES]
-FEATURE_SPACES = SPACES + PC_SPACES + BASELINE_SPACES
+FEATURE_SPACES = SPACES + PC_SPACES + BASELINE_SPACES + FULL_SPACES
 
 # CLUSTERS_DIR, FIGURES_DIR, and their helpers are retained only so earlier
 # exploratory artifacts and notebooks remain readable. The active exploratory
@@ -111,6 +120,11 @@ def feature_path(space: str, window: str) -> str:
         raise ValueError(
             f"{space!r} is built in memory from the covariate files and has no "
             "feature artifact; see train_prediction_models.load_baseline_features."
+        )
+    if space in FULL_SPACES:
+        raise ValueError(
+            f"{space!r} reuses {FULL_SPACE_SOURCE!r}'s feature artifact and has no "
+            f"file of its own; use feature_path({FULL_SPACE_SOURCE!r}, window) instead."
         )
     return os.path.join(FEATURES_DIR, f"{space}_{window}.parquet")
 

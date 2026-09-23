@@ -26,6 +26,12 @@ where indication largely determines therapy. It skips PCA (a one-hot matrix is
 already low-dimensional) and is refused for the ``cancer_type`` target, where its
 features would be that target's own labels.
 
+A second selectable space, ``concat_full``, reuses ``concat``'s feature file but
+skips blockwise PCA entirely, so XGBoost trains on all 2304 raw embedding
+dimensions instead of the compressed 100. It answers whether PCA compression
+itself costs accuracy, by comparing directly against ``concat`` on the same
+patients and folds.
+
 Run:
     python -m semantic_search.train_prediction_models
     python -m semantic_search.train_prediction_models --windows pretreatment
@@ -33,6 +39,8 @@ Run:
     python -m semantic_search.train_prediction_models \
         --targets treatment_ici treatment_tki \
         --spaces concat cancer_type_baseline --cohort-mode common
+    python -m semantic_search.train_prediction_models \
+        --spaces concat concat_full --cohort-mode common
 """
 
 from __future__ import annotations
@@ -91,6 +99,9 @@ from semantic_search.common import (  # noqa: E402
     BASELINE_SPACE,
     BASELINE_SPACES,
     DEFAULT_WINDOWS,
+    FULL_SPACE,
+    FULL_SPACE_SOURCE,
+    FULL_SPACES,
     MODELS_DIR,
     PATIENT_KEY,
     PREDICTION_META_DIR,
@@ -324,9 +335,10 @@ def _feature_blocks(feature_cols: list[str], space: str) -> dict[str, list[int]]
 
     The baseline space has no embedding blocks and skips PCA entirely, so it
     returns an empty mapping -- the sentinel `_make_block_transformer` reads as
-    "pass the features through unchanged".
+    "pass the features through unchanged". `concat_full` uses the same sentinel:
+    it wants the raw embedding columns with no PCA at all.
     """
-    if space in BASELINE_SPACES:
+    if space in BASELINE_SPACES or space in FULL_SPACES:
         return {}
     blocks = {
         note_type: [
@@ -890,11 +902,17 @@ def train_one(
         "estimator": final_estimator,
         "classes": classes,
         "feature_columns": feature_cols,
-        "transformed_feature_columns": [
-            f"{note_type}_PC{component}"
-            for note_type, count in PCA_COMPONENTS.items()
-            for component in range(1, count + 1)
-        ],
+        # A blockless space (baseline or concat_full) fits no PCA, so its
+        # transformed columns are just its raw feature columns, unchanged.
+        "transformed_feature_columns": (
+            [
+                f"{note_type}_PC{component}"
+                for note_type, count in PCA_COMPONENTS.items()
+                for component in range(1, count + 1)
+            ]
+            if feature_blocks
+            else feature_cols
+        ),
         "patient_key": PATIENT_KEY,
         "target": target,
         "space": space,
@@ -973,11 +991,11 @@ def _merge_write(path: str, rows: list[dict], key_cols: list[str]) -> None:
     if os.path.exists(path):
         old = pl.read_csv(path)
         if "space" in old.columns:
-            # SPACES + BASELINE_SPACES, not SPACES: an embedding-only run must
-            # not silently drop the baseline rows a previous run wrote, since
-            # the baseline is the reference those embedding rows are read
-            # against.
-            old = old.filter(pl.col("space").is_in(SPACES + BASELINE_SPACES))
+            # SPACES + BASELINE_SPACES + FULL_SPACES, not SPACES: an
+            # embedding-only run must not silently drop the baseline or
+            # full-embedding rows a previous run wrote, since those are the
+            # reference/comparison points those embedding rows are read against.
+            old = old.filter(pl.col("space").is_in(SPACES + BASELINE_SPACES + FULL_SPACES))
         if "model" in old.columns:
             old = old.filter(pl.col("model").is_in(MODELS))
         if all(column in old.columns for column in key_cols):
@@ -1074,6 +1092,10 @@ def run(
                         feature_frames[space] = load_baseline_features()
                     except (FileNotFoundError, ValueError) as error:
                         print(f"  [{window}] {space} unavailable: {error}", flush=True)
+                elif space in FULL_SPACES:
+                    # No feature file of its own: reuses concat's, at full width.
+                    if os.path.exists(feature_path(FULL_SPACE_SOURCE, window)):
+                        feature_frames[space] = load_features(FULL_SPACE_SOURCE, window)
                 elif os.path.exists(feature_path(space, window)):
                     feature_frames[space] = load_features(space, window)
             missing_spaces = [space for space in run_spaces if space not in feature_frames]
@@ -1143,7 +1165,9 @@ def run(
                             }
                         )
                     else:
-                        source_path = feature_path(space, window)
+                        # `concat_full` reuses `concat`'s file; stat that one.
+                        source_space = FULL_SPACE_SOURCE if space in FULL_SPACES else space
+                        source_path = feature_path(source_space, window)
                         source_stat = os.stat(source_path)
                         run_context.update(
                             {
@@ -1252,10 +1276,11 @@ def main() -> None:
     parser.add_argument(
         "--spaces",
         nargs="+",
-        choices=SPACES + BASELINE_SPACES,
+        choices=SPACES + BASELINE_SPACES + FULL_SPACES,
         default=SPACES,
         help=f"Feature spaces to train. {BASELINE_SPACE!r} is a non-text "
-        "reference: one-hot cancer type and nothing else.",
+        f"reference: one-hot cancer type and nothing else. {FULL_SPACE!r} reuses "
+        f"{FULL_SPACE_SOURCE!r}'s features at full width, with no PCA compression.",
     )
     parser.add_argument("--windows", nargs="+", choices=WINDOWS, default=DEFAULT_WINDOWS)
     parser.add_argument("--models", nargs="+", choices=MODELS, default=MODELS)

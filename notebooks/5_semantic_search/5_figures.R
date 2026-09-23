@@ -26,6 +26,10 @@
 # it has not shown it reads anything beyond diagnosis. It is absent for the
 # cancer_type target, where its features would be that target's own labels.
 #
+# concat_full reuses concat's embeddings at full width (2304 dims, no PCA),
+# through the same nested CV. Comparing it against concat isolates whether
+# blockwise PCA compression itself costs accuracy.
+#
 # Render with:
 #   Rscript notebooks/5_semantic_search/5_figures.R
 
@@ -34,7 +38,7 @@
 # defaults (or set the corresponding env vars below) to change what renders.
 params <- list(
   pc_spaces = c("clinician", "imaging", "pathology"),
-  prediction_spaces = c("concat", "cancer_type_baseline"),
+  prediction_spaces = c("concat", "cancer_type_baseline", "concat_full"),
   windows = c("alltime", "pretreatment"),
   pc_window = "alltime",
   max_pcs = 20
@@ -71,9 +75,9 @@ WINDOWS <- unique(as.character(params$windows))
 PC_WINDOW <- as.character(params$pc_window)
 MAX_PCS <- as.integer(params$max_pcs)
 AVAILABLE_PC_SPACES <- c("clinician", "imaging", "pathology")
-# Mirrors semantic_search.common: SPACES + BASELINE_SPACES for the supervised
-# arm, and WINDOWS for the note selection.
-AVAILABLE_PREDICTION_SPACES <- c("concat", "cancer_type_baseline")
+# Mirrors semantic_search.common: SPACES + BASELINE_SPACES + FULL_SPACES for
+# the supervised arm, and WINDOWS for the note selection.
+AVAILABLE_PREDICTION_SPACES <- c("concat", "cancer_type_baseline", "concat_full")
 AVAILABLE_WINDOWS <- c("alltime", "pretreatment")
 if (!length(PC_SPACES) || any(!PC_SPACES %in% AVAILABLE_PC_SPACES)) {
   stop("pc_spaces must contain only: ", paste(AVAILABLE_PC_SPACES, collapse = ", "))
@@ -147,7 +151,8 @@ display_window <- function(x) {
 }
 display_space <- function(x) {
   dplyr::recode(x,
-    concat = "Embeddings (3 x 768)", cancer_type_baseline = "Cancer type only",
+    concat = "Embeddings (3 x 768 PCs)", cancer_type_baseline = "Cancer type only",
+    concat_full = "Embeddings (full, no PCA)",
     .default = x
   )
 }
@@ -160,7 +165,7 @@ DRUG_CLASS_TARGETS <- c(
   "treatment_tki", "treatment_monoclonal_antibody", "treatment_adc"
 )
 WINDOW_FILL <- c(alltime = "#3B6FB6", pretreatment = "#D98C34")
-SPACE_SHAPE <- c(concat = 16, cancer_type_baseline = 17)
+SPACE_SHAPE <- c(concat = 16, cancer_type_baseline = 17, concat_full = 15)
 theme_report <- theme_minimal(base_size = 11) +
   theme(panel.grid.minor = element_blank(),
         plot.title = element_text(face = "bold"),
@@ -756,9 +761,19 @@ confusion_data <- bind_rows(lapply(seq_len(nrow(prediction_grid)), function(i) {
   if (length(files) == 0) return(NULL)
   bind_rows(lapply(files, function(path) {
     target_slug <- sub(suffix, "", basename(path))
-    as.data.frame(arrow::read_parquet(path)) %>%
+    preds <- as.data.frame(arrow::read_parquet(path))
+    labels <- sort(unique(c(preds$true_label, preds$predicted_label)))
+    preds %>%
       count(true_label, predicted_label, name = "n") %>%
-      group_by(true_label) %>% mutate(row_fraction = n / sum(n)) %>% ungroup() %>%
+      # Complete the label x label grid so unobserved (true, predicted) pairs
+      # are explicit zeros rather than missing tiles ggplot would leave blank.
+      tidyr::complete(
+        true_label = labels, predicted_label = labels,
+        fill = list(n = 0)
+      ) %>%
+      group_by(true_label) %>%
+      mutate(row_fraction = ifelse(sum(n) > 0, n / sum(n), 0)) %>%
+      ungroup() %>%
       mutate(
         target = target_slug,
         target_label = display_target(target_slug),
@@ -927,6 +942,9 @@ if (nrow(metrics_summary) > 0 && any(metrics_summary$is_drug_class)) {
 #   folds and seed. It is the reference an embedding space must beat to claim it
 #   reads more than diagnosis, and it is unavailable for the cancer_type target
 #   by construction.
+# - concat_full reuses concat's feature file at full width (2304 dims) with no
+#   PCA step, through the same folds and seed. Comparing it against concat
+#   isolates whether blockwise PCA compression itself costs accuracy.
 # - The six drug-class targets are ever-exposure labels over the GPT
 #   MOA_Category vocabulary, so neither window is leak-free for them, and the
 #   regex definitions need the cluster-side coverage audit
