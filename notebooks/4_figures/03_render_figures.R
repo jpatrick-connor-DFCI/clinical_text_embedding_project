@@ -29,7 +29,7 @@
 # The within-cancer supplements evaluate existing pooled models on matched patients
 # within each recorded cancer type, using the independent figures.prep.within_cancer
 # outputs. S2 plots text versus base C-indices in cancer-type facets, with points
-# colored by endpoint family, endpoint counts, and median paired differences.
+# colored by endpoint family and the median paired difference at lower right.
 # S3 is a cancer-by-modality heatmap of median paired text-minus-comparator
 # C-index differences; cells report median absolute C-indices and endpoint counts.
 # The median paired difference need not equal the difference of the two medians.

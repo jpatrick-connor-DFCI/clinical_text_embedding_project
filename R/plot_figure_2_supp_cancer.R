@@ -7,12 +7,12 @@ source("R/within_cancer_utils.R")
 # facets follow the factor levels of `d$cancer_type` when it is a factor.
 build_within_cancer_scatter <- function(d, summary, subtitle) {
   ann <- summary %>%
-    mutate(label = sprintf("n=%d endpoints\nmedian delta=%+.3f", n_endpoints, median_delta_cindex))
+    mutate(label = sprintf("median delta=%+.3f", median_delta_cindex))
   ggplot(d, aes(comparator_cindex, text_cindex)) +
     geom_abline(slope = 1, intercept = 0, color = "grey55", linetype = "dashed") +
     geom_point(aes(color = scheme), size = 1.25, alpha = 0.6) +
-    geom_text(data = ann, aes(x = 0.03, y = 0.97, label = label), inherit.aes = FALSE,
-              hjust = 0, vjust = 1, size = MANUSCRIPT_SMALL_TEXT_SIZE) +
+    geom_text(data = ann, aes(x = 0.97, y = 0.03, label = label), inherit.aes = FALSE,
+              hjust = 1, vjust = 0, size = MANUSCRIPT_SMALL_TEXT_SIZE) +
     facet_wrap(~cancer_type, ncol = 3, labeller = label_wrap_gen(30)) +
     scale_color_manual(values = SCHEME_COLORS, labels = SCHEME_LABELS, name = NULL) +
     scale_x_continuous(limits = c(0, 1), breaks = c(0, 0.5, 1)) +

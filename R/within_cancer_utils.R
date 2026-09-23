@@ -196,8 +196,9 @@ within_cancer_caption <- function(number, metrics, summary, n_excluded, selected
   }
   display <- if (number == 2) {
     paste("Each point represents one endpoint within the indicated cancer type; colors",
-          "identify coding families. The diagonal denotes equal performance. Facet labels",
-          "report endpoint counts and median paired text-minus-base C-index differences.")
+          "identify coding families. The diagonal denotes equal performance. The lower-right",
+          "value in each panel is the median paired text-minus-base C-index difference;",
+          "endpoint counts are in the accompanying table.")
   } else {
     paste("Rows denote cancer types and columns denote comparator modalities. Cell text",
           "reports median Text / Comparator C-indices, the median paired difference",
