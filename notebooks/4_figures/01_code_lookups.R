@@ -1,9 +1,42 @@
----
-title: "Generate code lookups (R tier)"
-output: html_document
----
+# Generate code lookups (R tier)
+#
+# Runs the two pipelines/preprocessing/generate_*.R scripts that build the phecode
+# lookup tables figures.prep.figure2 labels its panels from. This is the only R
+# dependency in the otherwise Python figure-data prep tier, split out here so
+# 4_figures/02 runs under a plain Python kernel with no Rscript on PATH.
+#
+# Like the other R scripts, both generators source("R/config.R") with a relative
+# path, so this script sets the R working directory to the repo root before
+# sourcing anything.
+#
+# Writes to CODE_PATH ($DATA_PATH/code_data/):
+#   icd10_to_phecode_mapping.csv - used by figures.prep.figure2 (cross-scheme
+#     event dedup + phecode labels), pipelines.preprocessing.generate_embedding_prediction_datasets
+#   icd10_unmapped_codes.csv - diagnostic only - codes no phecode covers
+#   phecode_descriptions.csv - used by figures.prep.figure2 (phecode label fallback)
+#
+# These outputs are static reference data. They change only when the Phecode
+# package tables or the cohort's set of unique ICD-10 codes change, so this
+# script is a one-time bootstrap - re-run it after a cohort rebuild (1_data/01)
+# or a Phecode package upgrade, not before every 4_figures/02.
+#
+# Prep tier: 02_figure_data.ipynb (Python kernel) - run after this.
+# Render tier: 03_render_figures.R.
+#
+# Prerequisites
+# --------------
+# Beyond the figure-rendering packages (Rscript R/install_packages.R), these
+# generators need arrow and the Phecode data package, which is GitHub-only:
+#
+#   install.packages(c("data.table", "arrow", "devtools"))
+#   devtools::install_github("vcastro/Phecode")
+#
+# generate_icd10_to_phecode_mapping.R also reads SURV_PATH/timestamped_icd_info.parquet,
+# so step 1_data/01 must have run.
+#
+# Render with:
+#   Rscript notebooks/4_figures/01_code_lookups.R
 
-```{r setup, include=FALSE}
 find_repo_root <- function() {
   d <- normalizePath(getwd(), mustWork = TRUE)
   while (nchar(d) > 1) {
@@ -17,48 +50,10 @@ find_repo_root <- function() {
 }
 
 REPO_ROOT <- find_repo_root()
-knitr::opts_knit$set(root.dir = REPO_ROOT)
-```
+setwd(REPO_ROOT)
 
-Runs the two `pipelines/preprocessing/generate_*.R` scripts that build the phecode lookup tables
-`figures.prep.figure2` labels its panels from. This is the **only** R dependency in the otherwise
-Python figure-data prep tier, split out here so `4_figures/02` runs under a plain Python kernel with no
-`Rscript` on `PATH`.
+## ---- preflight ----
 
-Like the other R scripts, both generators `source("R/config.R")` with a relative path, so this
-document sets the R working directory to the repo root (via `knitr::opts_knit$set(root.dir = ...)`,
-which — unlike a bare `setwd()` in a chunk — persists across all chunks) before sourcing anything.
-
-Writes to `CODE_PATH` (`$DATA_PATH/code_data/`):
-
-| Output | Used by |
-|---|---|
-| `icd10_to_phecode_mapping.csv` | `figures.prep.figure2` (cross-scheme event dedup + phecode labels), `pipelines.preprocessing.generate_embedding_prediction_datasets` |
-| `icd10_unmapped_codes.csv` | diagnostic only — codes no phecode covers |
-| `phecode_descriptions.csv` | `figures.prep.figure2` (phecode label fallback) |
-
-**These outputs are static reference data.** They change only when the Phecode package tables or
-the cohort's set of unique ICD-10 codes change, so this document is a **one-time bootstrap** —
-re-run it after a cohort rebuild (`1_data/01`) or a Phecode package upgrade, not before
-every `4_figures/02`.
-
-- **Prep tier**: [02_figure_data.ipynb](02_figure_data.ipynb) (Python kernel) — run after this.
-- **Render tier**: [03_render_figures.Rmd](03_render_figures.Rmd) (R Markdown).
-
-## Prerequisites
-
-Beyond the figure-rendering packages (`Rscript R/install_packages.R`), these generators need
-`arrow` and the Phecode data package, which is GitHub-only:
-
-```
-install.packages(c("data.table", "arrow", "devtools"))
-devtools::install_github("vcastro/Phecode")
-```
-
-`generate_icd10_to_phecode_mapping.R` also reads `SURV_PATH/timestamped_icd_info.parquet`, so
-step `1_data/01` must have run.
-
-```{r preflight}
 source(file.path(REPO_ROOT, "R", "config.R"))
 
 # Set to TRUE to re-run the generators even when their outputs already exist.
@@ -88,9 +83,9 @@ if (length(missing_pkgs) > 0) {
   cat("\nMissing R packages: ", paste(missing_pkgs, collapse = ", "),
       "\n  See the prerequisites above.\n", sep = "")
 }
-```
 
-```{r generate}
+## ---- generate ----
+
 icd_parquet <- file.path(SURV_PATH, "timestamped_icd_info.parquet")
 if (!file.exists(icd_parquet)) {
   stop(icd_parquet, " not found - run notebook 1_data/01 before generating the ICD->phecode mapping.")
@@ -116,9 +111,9 @@ for (g in GENERATORS) {
 
 cat("\nDone. Code lookups written to ", CODE_PATH, "\n", sep = "")
 cat("Next: 02_figure_data.ipynb\n")
-```
 
-```{r verify}
+## ---- verify ----
+
 # Verify what 4_figures/02 will actually pick up.
 mapping_path <- file.path(CODE_PATH, "icd10_to_phecode_mapping.csv")
 desc_path <- file.path(CODE_PATH, "phecode_descriptions.csv")
@@ -143,22 +138,17 @@ if (file.exists(desc_path)) {
 } else {
   cat("phecode_descriptions.csv MISSING - figure2 phecode panels will show bare codes.\n")
 }
-```
 
-## Running without R
-
-`4_figures/02` does not hard-fail on missing lookups — `figures.prep.figure2` falls back to raw codes and
-logs the miss counts (`_report_lookup_misses()`) at the end of its run. What you lose:
-
-- **Cross-scheme event dedup is disabled** — `icd3_post`/`icd4_post`/`phecode_post` events that
-  denote the same phenotype are no longer collapsed.
-- **Phecode panels show bare codes** (`250.2`) instead of descriptions (`Type 2 diabetes`).
-
-That is fine for a diagnostic run and **not** fine for manuscript figures. If you need final
-figures on a machine without R, generate these CSVs elsewhere and copy them into `CODE_PATH`.
-
-Render with:
-
-```
-Rscript -e 'rmarkdown::render("notebooks/4_figures/01_code_lookups.Rmd")'
-```
+## ---- Running without R ----
+#
+# 4_figures/02 does not hard-fail on missing lookups - figures.prep.figure2 falls
+# back to raw codes and logs the miss counts (_report_lookup_misses()) at the end
+# of its run. What you lose:
+#
+#  - Cross-scheme event dedup is disabled - icd3_post/icd4_post/phecode_post events
+#    that denote the same phenotype are no longer collapsed.
+#  - Phecode panels show bare codes (250.2) instead of descriptions (Type 2 diabetes).
+#
+# That is fine for a diagnostic run and not fine for manuscript figures. If you
+# need final figures on a machine without R, generate these CSVs elsewhere and
+# copy them into CODE_PATH.

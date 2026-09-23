@@ -1022,7 +1022,7 @@ def test_pretreatment_window_selects_only_pre_anchor_notes():
 def test_negative_class_labels_are_identifiable_by_prefix():
     """The figures tier finds the positive class by the absence of a NON_ prefix.
 
-    05_figures.Rmd computes drug-class prevalence with `!grepl("^NON_", class)`,
+    5_figures.R computes drug-class prevalence with `!grepl("^NON_", class)`,
     so renaming a label such that the negative class loses the prefix -- or the
     positive class gains it -- would silently invert the reported prevalence.
     """
@@ -1037,7 +1037,7 @@ def test_negative_class_labels_are_identifiable_by_prefix():
 def test_figures_target_display_names_cover_every_target():
     """Every trained target needs a display name in both tiers.
 
-    display_target() in 05_figures.Rmd mirrors TARGET_DISPLAY_NAMES; a target
+    display_target() in 5_figures.R mirrors TARGET_DISPLAY_NAMES; a target
     missing from the Python map would also be missing from the figure legend.
     """
     from semantic_search.prediction_targets import TARGETS, TARGET_DISPLAY_NAMES

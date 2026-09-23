@@ -44,7 +44,7 @@ from shared.stages import STAGE_ORDER, load_stage_map, normalize_stage
 from survival import find_icd_code
 
 # code_data/ (CODE_PATH) holds the code lookups this module labels its panels from. They are
-# built by notebooks/4_figures/01_code_lookups.Rmd (which runs the R generators in
+# built by notebooks/4_figures/01_code_lookups.R (which runs the R generators in
 # pipelines/preprocessing/); this module only reads them. See _initialize_code_lookups().
 CODE_LOOKUP_FILES = (
     "icd10_to_phecode_mapping.csv",
@@ -210,7 +210,7 @@ def _initialize_code_lookups() -> None:
     """Load all code-description inputs used by Figure 2.
 
     The lookups themselves are built by the R scripts in pipelines/preprocessing/, driven by
-    notebooks/4_figures/01_code_lookups.Rmd. They are static reference data — regenerated only
+    notebooks/4_figures/01_code_lookups.R. They are static reference data — regenerated only
     on a cohort rebuild or a Phecode package upgrade — so this module reads them and never
     invokes R, keeping the whole Python figure tier runnable without Rscript on PATH.
 
@@ -223,7 +223,7 @@ def _initialize_code_lookups() -> None:
     if missing:
         print(
             "  [code lookups] WARNING: missing " + ", ".join(missing)
-            + " — falling back to raw codes; run notebooks/4_figures/01_code_lookups.Rmd"
+            + " — falling back to raw codes; run notebooks/4_figures/01_code_lookups.R"
         )
 
     global ICD_DESCRIPTIONS

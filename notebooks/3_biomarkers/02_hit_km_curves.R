@@ -1,19 +1,10 @@
----
-title: "Biomarker hits: Kaplan-Meier curves"
-output:
-  html_document:
-    toc: true
-    toc_float: true
----
-
-This report renders every FDR-significant marker-by-ICI hit twice: an unweighted
-Kaplan-Meier estimate and a stabilized, truncated ATE-weighted estimate on the
-same common-support-trimmed population used by the biomarker screen. In addition
-to the PNGs, it writes compiled, long-format CSVs for every curve and at-risk
-table, plus an export manifest.
-
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+# Biomarker hits: Kaplan-Meier curves
+#
+# This script renders every FDR-significant marker-by-ICI hit twice: an unweighted
+# Kaplan-Meier estimate and a stabilized, truncated ATE-weighted estimate on the
+# same common-support-trimmed population used by the biomarker screen. In addition
+# to the PNGs, it writes compiled, long-format CSVs for every curve and at-risk
+# table, plus an export manifest.
 
 find_repo_root <- function(start = getwd()) {
   candidate <- normalizePath(start, mustWork = TRUE)
@@ -27,7 +18,6 @@ find_repo_root <- function(start = getwd()) {
 }
 
 REPO_ROOT <- find_repo_root()
-knitr::opts_knit$set(root.dir = REPO_ROOT)
 setwd(REPO_ROOT)
 
 suppressPackageStartupMessages({
@@ -65,14 +55,12 @@ GROUP_COLORS <- c("marker-" = "#4C72B0", "marker+" = "#C44E52")
 GROUP_LINES <- c("non-ICI" = "dashed", "ICI" = "solid")
 
 dir.create(KM_OUT_DIR, recursive = TRUE, showWarnings = FALSE)
-```
 
-## Inputs and hit consolidation
+## ---- Inputs and hit consolidation ----
+#
+# One panel is generated per unique (marker, cancer_type, cohort, ps_model).
+# When both weighted screens call the same hit, sig_in records both calls.
 
-One panel is generated per unique `(marker, cancer_type, cohort, ps_model)`.
-When both weighted screens call the same hit, `sig_in` records both calls.
-
-```{r inputs}
 if (!file.exists(HITS_FILE)) {
   stop(HITS_FILE, " not found. Run stage 6 (compile_IPTW_results) first.")
 }
@@ -100,17 +88,15 @@ if (nrow(hits) == 0) {
 }
 
 cat(nrow(panels), "unique hit panels\n")
-```
 
-## Population reconstruction
+## ---- Population reconstruction ----
+#
+# For cancer-specific hits, the propensity score is recalibrated within cancer
+# type by fitting treatment on the original propensity score. Both arms are then
+# restricted to their overlapping 0.5th-99.5th percentile support. Stabilized ATE
+# weights are truncated at their 1st and 99th percentiles. These constants match
+# pipelines/biomarkers/run_IPTW_analysis.py.
 
-For cancer-specific hits, the propensity score is recalibrated within cancer
-type by fitting treatment on the original propensity score. Both arms are then
-restricted to their overlapping 0.5th--99.5th percentile support. Stabilized ATE
-weights are truncated at their 1st and 99th percentiles. These constants match
-`pipelines/biomarkers/run_IPTW_analysis.py`.
-
-```{r helpers}
 safe_name <- function(x) gsub("[^[:alnum:]_.-]", "_", as.character(x))
 
 effective_sample_size <- function(w) {
@@ -311,19 +297,17 @@ render_hit <- function(df, curves, risk, row, info, p_unweighted, p_weighted, ou
     plot_annotation(title = paste(title_bits, collapse = "\n"))
   ggsave(output_file, composed, width = 13.5, height = 7.2, dpi = DPI, bg = "white")
 }
-```
 
-## Export
+## ---- Export ----
+#
+# The long-format CSVs are regenerated atomically at the end of each successful
+# run:
+#
+#  - KM_compiled_curves.csv: survival estimates and uncertainty at every event time.
+#  - KM_compiled_at_risk.csv: unweighted and weighted at-risk totals at fixed plot times.
+#  - KM_export_manifest.csv: one row per requested hit, including skips, group support,
+#    effective sample size, propensity support, and within-ICI log-rank p-values.
 
-The long-format CSVs are regenerated atomically at the end of each successful
-report run:
-
-- `KM_compiled_curves.csv`: survival estimates and uncertainty at every event time.
-- `KM_compiled_at_risk.csv`: unweighted and weighted at-risk totals at fixed plot times.
-- `KM_export_manifest.csv`: one row per requested hit, including skips, group support,
-  effective sample size, propensity support, and within-ICI log-rank p-values.
-
-```{r export}
 curve_parts <- list()
 risk_parts <- list()
 manifest_parts <- list()
@@ -413,13 +397,12 @@ readr::write_csv(manifest, file.path(KM_OUT_DIR, "KM_export_manifest.csv"))
 
 if (nrow(manifest)) print(manifest %>% count(cohort, ps_model, status))
 cat("Output directory:", KM_OUT_DIR, "\n")
-```
 
-## Interpretation
-
-The interaction HR is a ratio of marker hazard ratios under ICI versus non-ICI;
-it is not a direct contrast between any two displayed curves. The log-rank values
-shown in each panel compare marker-positive with marker-negative patients only
-within the ICI arm and are descriptive, especially for the weighted estimate.
-Check the at-risk counts and effective sample sizes before interpreting tail
-separation or an extreme interaction HR.
+## ---- Interpretation ----
+#
+# The interaction HR is a ratio of marker hazard ratios under ICI versus non-ICI;
+# it is not a direct contrast between any two displayed curves. The log-rank values
+# shown in each panel compare marker-positive with marker-negative patients only
+# within the ICI arm and are descriptive, especially for the weighted estimate.
+# Check the at-risk counts and effective sample sizes before interpreting tail
+# separation or an extreme interaction HR.

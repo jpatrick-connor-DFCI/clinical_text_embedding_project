@@ -55,13 +55,13 @@ python -m semantic_search.correlate_pcs [--windows ...] [--max-pcs N]
 python -m semantic_search.train_prediction_models [--targets ...] [--overwrite]
 ```
 
-The corresponding notebooks are `01_aggregate.ipynb`, `02_pcs.ipynb`,
-`03_pc_correlations.ipynb`, `04_predict.ipynb`, and
-`05_figures.Rmd`. The R Markdown report reads completed stage-2--4 artifacts
+The corresponding notebooks live in [`notebooks/5_semantic_search/`](../notebooks/5_semantic_search/):
+`01_aggregate.ipynb`, `02_pcs.ipynb`, `03_pc_correlations.ipynb`, `04_predict.ipynb`, and
+`5_figures.R`. The R script reads completed stage-2--4 artifacts
 and renders PC-space, PC-association, and XGBoost-performance panels; it does
-not rerun model fitting. Its default `pc_spaces` parameter includes clinician,
+not rerun model fitting. Its default `pc_spaces` setting includes clinician,
 imaging, and pathology, producing note-type-specific exploratory panels in one
-render; its XGBoost panels consistently read the separate `concat` prediction
+run; its XGBoost panels consistently read the separate `concat` prediction
 artifacts.
 
 ## Principal components and clinical associations

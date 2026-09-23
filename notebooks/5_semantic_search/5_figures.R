@@ -1,47 +1,46 @@
----
-title: "Semantic-search figures"
-subtitle: "Patient embedding PC space, clinical associations, and XGBoost recovery"
-output:
-  html_document:
-    toc: true
-    toc_float: true
-    code_folding: hide
-params:
-  pc_spaces: ["clinician", "imaging", "pathology"]
-  prediction_spaces: ["concat", "cancer_type_baseline"]
-  windows: ["alltime", "pretreatment"]
-  pc_window: "alltime"
-  max_pcs: 20
----
+# Semantic-search figures
+# Patient embedding PC space, clinical associations, and XGBoost recovery
+#
+# This is the figures/reporting tier for the semantic-search arm. It reads the
+# artifacts produced by stages 2--4; it does not fit PCA models or retrain
+# classifiers. By default it reports clinician, imaging, and pathology PC
+# analyses for pc_window, plus the prediction analysis for every requested
+# feature space and note window.
+#
+# The prediction panels report both note windows side by side:
+#
+#  * alltime uses every note and is descriptive -- notes can contain information
+#    written after treatment or near an outcome, so these panels measure
+#    retrospective clinical-content recovery, not prospective prediction.
+#  * pretreatment pools only notes before first_treatment_date.
+#
+# The two windows cover different patient sets: a patient with no anchor date,
+# or with no pre-anchor notes in some note-type block, is absent from the
+# pretreatment features rather than missing a value. Differences between the two
+# windows therefore mix a change in information with a change in cohort, and the
+# metrics are not paired. Panels that place the windows side by side are for
+# reading the arms together, not for a paired test.
+#
+# cancer_type_baseline is a non-text reference space: one-hot cancer type and
+# nothing else, through the same nested CV. An embedding space that does not beat
+# it has not shown it reads anything beyond diagnosis. It is absent for the
+# cancer_type target, where its features would be that target's own labels.
+#
+# Render with:
+#   Rscript notebooks/5_semantic_search/5_figures.R
 
-This is the figures/reporting tier for the semantic-search arm. It reads the
-artifacts produced by stages 2--4; it does not fit PCA models or retrain
-classifiers. By default it reports clinician, imaging, and pathology PC
-analyses for `pc_window`, plus the prediction analysis for every requested
-feature space and note window.
+## ---- params ----
+# Equivalent to this document's former knitr `params:` block. Edit these
+# defaults (or set the corresponding env vars below) to change what renders.
+params <- list(
+  pc_spaces = c("clinician", "imaging", "pathology"),
+  prediction_spaces = c("concat", "cancer_type_baseline"),
+  windows = c("alltime", "pretreatment"),
+  pc_window = "alltime",
+  max_pcs = 20
+)
 
-The prediction panels report both note windows side by side:
-
-* `alltime` uses every note and is descriptive -- notes can contain information
-  written after treatment or near an outcome, so these panels measure
-  retrospective clinical-content recovery, not prospective prediction.
-* `pretreatment` pools only notes before `first_treatment_date`.
-
-The two windows cover **different patient sets**: a patient with no anchor date,
-or with no pre-anchor notes in some note-type block, is absent from the
-pretreatment features rather than missing a value. Differences between the two
-windows therefore mix a change in information with a change in cohort, and the
-metrics are not paired. Panels that place the windows side by side are for
-reading the arms together, not for a paired test.
-
-`cancer_type_baseline` is a non-text reference space: one-hot cancer type and
-nothing else, through the same nested CV. An embedding space that does not beat
-it has not shown it reads anything beyond diagnosis. It is absent for the
-`cancer_type` target, where its features would be that target's own labels.
-
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
-                      fig.width = 10, fig.height = 6, dpi = 160)
+## ---- setup ----
 
 find_repo_root <- function(start = getwd()) {
   candidate <- normalizePath(start, mustWork = TRUE)
@@ -55,7 +54,6 @@ find_repo_root <- function(start = getwd()) {
 }
 
 REPO_ROOT <- find_repo_root()
-knitr::opts_knit$set(root.dir = REPO_ROOT)
 setwd(REPO_ROOT)
 
 suppressPackageStartupMessages({
@@ -167,9 +165,9 @@ theme_report <- theme_minimal(base_size = 11) +
   theme(panel.grid.minor = element_blank(),
         plot.title = element_text(face = "bold"),
         legend.position = "bottom")
-```
 
-```{r inputs}
+## ---- inputs ----
+
 need_file(variance_file, "Explained-variance")
 
 pc_artifacts <- lapply(PC_SPACES, function(pc_space) {
@@ -258,13 +256,9 @@ if (nrow(metrics_summary) > 0) {
   cat("XGBoost runs: 0\n")
 }
 cat("Figure directory: ", FIGURE_DIR, "\n", sep = "")
-```
 
-## PC spaces
+## ---- PC spaces: Explained variance (scree-plot) ----
 
-### Explained variance
-
-```{r scree-plot}
 if (nrow(variance) == 0) {
   cat("No variance rows found for the requested PC spaces/window.\n")
 } else {
@@ -293,14 +287,12 @@ if (nrow(variance) == 0) {
     )
   }
 }
-```
 
-### PC1--PC2 score space
+## ---- PC1--PC2 score space ----
+#
+# Each point is a patient. Hexagonal binning keeps the display legible for a
+# large cohort and makes density structure visible without overplotting.
 
-Each point is a patient. Hexagonal binning keeps the display legible for a
-large cohort and makes density structure visible without overplotting.
-
-```{r pc-space}
 if (!all(c("PC1", "PC2") %in% names(scores))) {
   cat("At least PC1 and PC2 are required for this panel.\n")
 } else {
@@ -322,11 +314,9 @@ if (!all(c("PC1", "PC2") %in% names(scores))) {
     )
   }
 }
-```
 
-### Distribution of leading PC scores
+## ---- Distribution of leading PC scores ----
 
-```{r pc-score-distributions}
 score_pcs <- names(scores)[grepl("^PC[0-9]+$", names(scores))]
 score_pcs <- score_pcs[order(pc_number(score_pcs))]
 score_pcs <- head(score_pcs, min(12, length(score_pcs)))
@@ -353,15 +343,13 @@ if (length(score_pcs) == 0) {
     )
   }
 }
-```
 
-### Leading embedding-dimension loadings
+## ---- Leading embedding-dimension loadings ----
+#
+# PCs are fit within one note type, so each panel is specific to the selected
+# note type. The plot shows the ten embedding dimensions with the largest
+# absolute loadings for each leading PC.
 
-PCs are fit within one note type, so each panel is specific to the selected
-note type. The plot shows the ten embedding dimensions with the largest
-absolute loadings for each leading PC.
-
-```{r leading-loadings}
 top_loadings <- loadings %>%
   mutate(component = as.integer(component)) %>%
   filter(component <= MAX_PCS) %>%
@@ -390,25 +378,23 @@ if (nrow(top_loadings) == 0) {
     )
   }
 }
-```
 
-## Associations with PC scores
+## ---- Associations with PC scores ----
+#
+# Associations use Spearman correlation for continuous variables, Kruskal--Wallis
+# with epsilon-squared for categorical variables, and Cox proportional hazards
+# models for overall survival. FDR is adjusted across the full PC screen within
+# each clinical family, so association effect estimates are intentionally kept
+# separate by test type below.
 
-Associations use Spearman correlation for continuous variables, Kruskal--Wallis
-with epsilon-squared for categorical variables, and Cox proportional hazards
-models for overall survival. FDR is adjusted across the full PC screen within
-each clinical family, so association effect estimates are intentionally kept
-separate by test type below.
+## ---- Association discovery map ----
+#
+# For every clinical family and PC, the map displays the smallest within-family
+# FDR. The accompanying significant-association table gives the corresponding
+# variable names; omitting them here keeps the 20-PC overview legible. A
+# blank/white tile means no finite adjusted p-value was available, not evidence
+# of no association.
 
-### Association discovery map
-
-For every clinical family and PC, the map displays the smallest within-family
-FDR. The accompanying significant-association table gives the corresponding
-variable names; omitting them here keeps the 20-PC overview legible. A
-blank/white tile means no finite adjusted p-value was available, not evidence
-of no association.
-
-```{r association-map}
 if (nrow(associations) == 0) {
   cat("PC association results are absent. Run semantic_search.correlate_pcs first.\n")
 } else {
@@ -440,32 +426,27 @@ if (nrow(associations) == 0) {
     }
   }
 }
-```
 
-### Clinical-family join coverage
+## ---- Clinical-family join coverage ----
+#
+# Low join coverage means a family is evaluated on a selected subset of the PC
+# cohort. Inspect this before treating absence of an association as informative.
 
-Low join coverage means a family is evaluated on a selected subset of the PC
-cohort. Inspect this before treating absence of an association as informative.
-
-```{r association-coverage}
 if (nrow(association_coverage) > 0) {
-  knitr::kable(
+  print(
     association_coverage %>%
       select(space, family, n_pc_patients, n_matched, coverage, below_threshold) %>%
       arrange(space, coverage) %>%
-      mutate(coverage = scales::percent(coverage, accuracy = 0.1)),
-    caption = "Patient overlap between PC scores and each clinical family."
+      mutate(coverage = scales::percent(coverage, accuracy = 0.1))
   )
 }
-```
 
-### Effect-size overview by test type
+## ---- Effect-size overview by test type ----
+#
+# Spearman rho is signed; epsilon-squared is non-negative; Cox effects are hazard
+# ratios per one-PC standard deviation. They should not be compared on a common
+# numeric scale.
 
-Spearman rho is signed; epsilon-squared is non-negative; Cox effects are hazard
-ratios per one-PC standard deviation. They should not be compared on a common
-numeric scale.
-
-```{r association-effects}
 if (nrow(associations) > 0) {
   top_effects <- associations %>%
     filter(component <= MAX_PCS, is.finite(fdr), is.finite(effect)) %>%
@@ -495,11 +476,9 @@ if (nrow(associations) > 0) {
     }
   }
 }
-```
 
-### FDR-significant association table
+## ---- FDR-significant association table ----
 
-```{r significant-association-table}
 if (nrow(associations) > 0) {
   significant_associations <- associations %>%
     filter(is.finite(fdr), fdr < 0.05) %>% arrange(fdr, desc(abs(effect))) %>%
@@ -507,29 +486,25 @@ if (nrow(associations) > 0) {
   if (nrow(significant_associations) == 0) {
     cat("No FDR-significant PC associations in this completed result set.\n")
   } else {
-    knitr::kable(significant_associations, digits = 3,
-                 caption = "Up to 50 associations with FDR < 0.05, ordered by adjusted p-value.")
+    print(significant_associations, digits = 3)
   }
 }
-```
 
-## XGBoost clinical-label recovery
+## ---- XGBoost clinical-label recovery ----
+#
+# Each value below comes from out-of-fold predictions of the nested-CV XGBoost
+# workflow. The embedding preprocessing and blockwise PCA are fit inside each
+# training partition -- at both the inner (hyperparameter) and outer (evaluation)
+# level -- so no transform sees validation or test data. These are therefore valid
+# internal out-of-fold recovery metrics, but alltime labels may still be
+# directly documented in the notes.
+#
+# Unlike the exploratory PCA branch, the embedding space here is the concatenated
+# three-note-type representation by design. Panels report every requested feature
+# space (PREDICTION_SPACES) and note window (WINDOWS).
 
-Each value below comes from out-of-fold predictions of the nested-CV XGBoost
-workflow. The embedding preprocessing and blockwise PCA are fit inside each
-training partition -- at both the inner (hyperparameter) and outer (evaluation)
-level -- so no transform sees validation or test data. These are therefore valid
-internal out-of-fold recovery metrics, but `alltime` labels may still be
-directly documented in the notes.
+## ---- Aggregate out-of-fold metrics ----
 
-Unlike the exploratory PCA branch, the embedding space here is the concatenated
-three-note-type representation by design. Panels report every requested feature
-space (`r paste(PREDICTION_SPACES, collapse = ", ")`) and note window
-(`r paste(WINDOWS, collapse = ", ")`).
-
-### Aggregate out-of-fold metrics
-
-```{r xgboost-summary}
 if (nrow(metrics_summary) == 0) {
   cat("No XGBoost summary found for this space/window. Run semantic_search.train_prediction_models first.\n")
 } else {
@@ -565,28 +540,25 @@ if (nrow(metrics_summary) == 0) {
              width = max(12, 5 * length(PREDICTION_SPACES)),
              height = max(6, 3.6 * length(WINDOWS)))
 
-  knitr::kable(metrics_summary %>%
-    arrange(space, window, target) %>%
-    select(space_label, window_label, target_label, n_patients, n_classes,
-           all_of(available_metrics)), digits = 3,
-    col.names = c("Space", "Window", "Target", "n", "Classes",
-                  unname(metric_labels[available_metrics])),
-    caption = paste(
-      "Pooled out-of-fold performance. Each patient contributes exactly one",
-      "outer-fold prediction. n differs between windows because the",
-      "pretreatment features cover fewer patients, so rows are not paired."
-    ))
+  print(
+    metrics_summary %>%
+      arrange(space, window, target) %>%
+      select(space_label, window_label, target_label, n_patients, n_classes,
+             all_of(available_metrics)),
+    digits = 3
+  )
+  # Pooled out-of-fold performance. Each patient contributes exactly one
+  # outer-fold prediction. n differs between windows because the pretreatment
+  # features cover fewer patients, so rows are not paired.
 }
-```
 
-### AUROC by prediction task
+## ---- AUROC by prediction task ----
+#
+# This panel isolates the pooled out-of-fold macro one-vs-rest AUROC used in the
+# summary above. It gives every class equal weight within its task. For the six
+# binary drug-class targets it is the ordinary AUROC. The dashed line at 0.5 is
+# chance; it is the right reference for a one-vs-rest AUROC at any class balance.
 
-This panel isolates the pooled out-of-fold macro one-vs-rest AUROC used in the
-summary above. It gives every class equal weight within its task. For the six
-binary drug-class targets it is the ordinary AUROC. The dashed line at 0.5 is
-chance; it is the right reference for a one-vs-rest AUROC at any class balance.
-
-```{r xgboost-auroc-by-task, fig.height = 7}
 if (nrow(metrics_summary) > 0 && "macro_ovr_auc_pooled_oof" %in% names(metrics_summary)) {
   auc_by_task <- metrics_summary %>%
     filter(is.finite(macro_ovr_auc_pooled_oof)) %>%
@@ -630,21 +602,19 @@ if (nrow(metrics_summary) > 0 && "macro_ovr_auc_pooled_oof" %in% names(metrics_s
   save_panel(auc_plot, "07b_xgboost_auroc_by_task",
              width = max(9, 6 * length(PREDICTION_SPACES)), height = 7)
 }
-```
 
-### Embeddings versus the cancer-type baseline
+## ---- Embeddings versus the cancer-type baseline ----
+#
+# The question this answers is whether the notes carry signal beyond diagnosis.
+# Each arrow runs from the cancer-type-only AUROC to the embedding AUROC for the
+# same target and window; a rightward arrow means the embeddings add signal. The
+# comparison is within a window, never across, because the windows are different
+# cohorts.
+#
+# Targets absent from either space are omitted rather than shown as a partial
+# arrow. cancer_type never appears: the baseline is refused there because its
+# features would be that target's own labels.
 
-The question this answers is whether the notes carry signal beyond diagnosis.
-Each arrow runs from the cancer-type-only AUROC to the embedding AUROC for the
-same target and window; a rightward arrow means the embeddings add signal. The
-comparison is within a window, never across, because the windows are different
-cohorts.
-
-Targets absent from either space are omitted rather than shown as a partial
-arrow. `cancer_type` never appears: the baseline is refused there because its
-features would be that target's own labels.
-
-```{r xgboost-embedding-vs-baseline, fig.height = 6}
 if (nrow(metrics_summary) > 0 &&
     all(c("concat", "cancer_type_baseline") %in% as.character(metrics_summary$space)) &&
     "macro_ovr_auc_pooled_oof" %in% names(metrics_summary)) {
@@ -687,28 +657,23 @@ if (nrow(metrics_summary) > 0 &&
     save_panel(gap_plot, "07c_xgboost_embedding_vs_baseline",
                width = max(10, 6 * length(WINDOWS)), height = 6)
 
-    knitr::kable(
+    print(
       paired %>%
         arrange(window, desc(delta)) %>%
         select(window_label, target_label, cancer_type_baseline, concat, delta),
-      digits = 3,
-      col.names = c("Window", "Target", "Cancer type only", "Embeddings", "Difference"),
-      caption = paste(
-        "Embedding minus cancer-type-only pooled out-of-fold AUROC.",
-        "Positive means the notes add signal beyond diagnosis.",
-        "Both spaces use the same outer folds and seed within a window."
-      )
+      digits = 3
     )
+    # Embedding minus cancer-type-only pooled out-of-fold AUROC. Positive means
+    # the notes add signal beyond diagnosis. Both spaces use the same outer
+    # folds and seed within a window.
   }
 } else {
   cat("Both 'concat' and 'cancer_type_baseline' runs are required for this panel.\n",
       "Train the baseline with --spaces concat cancer_type_baseline.\n", sep = "")
 }
-```
 
-### Outer-fold stability
+## ---- Outer-fold stability ----
 
-```{r xgboost-fold-metrics}
 if (nrow(metrics_folds) > 0) {
   fold_columns <- intersect(c("balanced_accuracy", "macro_f1", "macro_ovr_auc", "macro_average_precision"),
                             names(metrics_folds))
@@ -739,11 +704,9 @@ if (nrow(metrics_folds) > 0) {
                width = 13, height = 7)
   }
 }
-```
 
-### Per-class recovery
+## ---- Per-class recovery ----
 
-```{r xgboost-class-metrics}
 if (nrow(metrics_class) > 0) {
   class_plot_data <- metrics_class %>%
     select(target_label, space_label, window_label, class, n,
@@ -779,11 +742,9 @@ if (nrow(metrics_class) > 0) {
     }
   }
 }
-```
 
-### Out-of-fold confusion matrices
+## ---- Out-of-fold confusion matrices ----
 
-```{r xgboost-confusion-matrices}
 # Every requested space x window, read from the artifact stem the trainer
 # writes: {target}__{space}__{window}__{model}.parquet.
 prediction_grid <- tidyr::expand_grid(space = PREDICTION_SPACES, window = WINDOWS)
@@ -848,29 +809,27 @@ if (is.null(confusion_data) || nrow(confusion_data) == 0) {
     )
   }
 }
-```
 
-## Drug-class targets
+## ---- Drug-class targets ----
+#
+# The six one-vs-rest drug-class targets are defined by regex over the
+# GPT-generated MOA_Category vocabulary, and a patient is positive if ever
+# exposed at any line of therapy. Three consequences to keep in view:
+#
+#  * Not leak-free in either window. Exposure can begin after the notes the
+#    model reads, so a pretreatment positive may be determined by a drug started
+#    years later. The window restricts the features, not the label.
+#  * Class imbalance drives the metrics. A rare class can reach a high
+#    accuracy at chance-level AUROC, which is why AUROC and average precision are
+#    reported alongside it.
+#  * estrogen and androgen_axis are sex-restricted to female and male
+#    patients by cohort GENDER, so their patient counts are far below the others
+#    by construction, not by attrition.
+#
+# The MOA regexes are unvalidated against the real vocabulary until
+# `python -m semantic_search.drug_classes` is run on the cluster; check its
+# coverage audit before treating these labels as settled.
 
-The six one-vs-rest drug-class targets are defined by regex over the
-GPT-generated `MOA_Category` vocabulary, and a patient is positive if **ever**
-exposed at any line of therapy. Three consequences to keep in view:
-
-* **Not leak-free in either window.** Exposure can begin after the notes the
-  model reads, so a `pretreatment` positive may be determined by a drug started
-  years later. The window restricts the features, not the label.
-* **Class imbalance drives the metrics.** A rare class can reach a high
-  accuracy at chance-level AUROC, which is why AUROC and average precision are
-  reported alongside it.
-* **`estrogen` and `androgen_axis` are sex-restricted** to female and male
-  patients by cohort `GENDER`, so their patient counts are far below the others
-  by construction, not by attrition.
-
-The MOA regexes are unvalidated against the real vocabulary until
-`python -m semantic_search.drug_classes` is run on the cluster; check its
-coverage audit before treating these labels as settled.
-
-```{r drug-class-balance, fig.height = 5}
 drug_class_balance <- if (is.null(class_counts)) tibble() else class_counts %>%
   filter(target %in% DRUG_CLASS_TARGETS,
          space %in% PREDICTION_SPACES, window %in% WINDOWS)
@@ -910,16 +869,13 @@ if (nrow(drug_class_balance) == 0) {
     theme(plot.margin = margin(5.5, 30, 5.5, 5.5))
   save_panel(balance_plot, "11_drug_class_prevalence", width = 10, height = 5)
 
-  knitr::kable(
+  print(
     balance %>% arrange(window_label, desc(fraction)),
-    digits = 3,
-    col.names = c("Target", "Window", "Positive class", "n positive", "Fraction"),
-    caption = "Positive-class size and prevalence per drug-class target and note window."
+    digits = 3
   )
+  # Positive-class size and prevalence per drug-class target and note window.
 }
-```
 
-```{r drug-class-auroc, fig.height = 5}
 if (nrow(metrics_summary) > 0 && any(metrics_summary$is_drug_class)) {
   drug_auc <- metrics_summary %>%
     filter(is_drug_class, is.finite(macro_ovr_auc_pooled_oof))
@@ -950,30 +906,30 @@ if (nrow(metrics_summary) > 0 && any(metrics_summary$is_drug_class)) {
     save_panel(drug_plot, "11b_drug_class_performance", width = 12, height = 6)
   }
 }
-```
 
-## Reproducibility and interpretation notes
-
-- PC scores use `L2 row normalization -> StandardScaler -> PCA` separately within clinician, imaging, or pathology patient means. The PC panels use a single window (`pc_window`); the prediction panels use every window in `windows`.
-- PC association FDR is corrected within `(space, window, clinical family)` across all screened PCs and variables. Check `pc_join_coverage.csv` before interpreting a sparsely matched family.
-- XGBoost models use nested stratified CV with every transform fit inside the training partition, at both the inner (hyperparameter) and outer (evaluation) level. No PCA or scaler sees validation or test rows. Reported summaries and confusion matrices use outer-fold predictions only.
-- The `alltime` and `pretreatment` windows cover **different patient sets**, because a patient missing an anchor date or missing pre-anchor notes in any note-type block is absent from the pretreatment features. Read the two arms side by side; do not test them as paired.
-- `cancer_type_baseline` is one-hot cancer type with no PCA, through the same folds and seed. It is the reference an embedding space must beat to claim it reads more than diagnosis, and it is unavailable for the `cancer_type` target by construction.
-- The six drug-class targets are ever-exposure labels over the GPT `MOA_Category` vocabulary, so neither window is leak-free for them, and the regex definitions need the cluster-side coverage audit (`python -m semantic_search.drug_classes`) before the labels are trusted.
-- The report writes PNG panels to `SEMANTIC_SEARCH_FIGURES_OUT`, or by default alongside `CLINICAL_FIGURES_OUT` at `../semantic_search/<pc-spaces>_<pc-window>`.
-
-Render, for example:
-
-```{r render-command, eval=FALSE}
-rmarkdown::render(
-  "semantic_search/notebooks/05_figures.Rmd",
-  output_file = "05_figures_all_pc_spaces.html",
-  params = list(
-    pc_spaces = c("clinician", "imaging", "pathology"),
-    prediction_spaces = c("concat", "cancer_type_baseline"),
-    windows = c("alltime", "pretreatment"),
-    pc_window = "alltime",
-    max_pcs = 20
-  )
-)
-```
+## ---- Reproducibility and interpretation notes ----
+#
+# - PC scores use L2 row normalization -> StandardScaler -> PCA separately within
+#   clinician, imaging, or pathology patient means. The PC panels use a single
+#   window (pc_window); the prediction panels use every window in windows.
+# - PC association FDR is corrected within (space, window, clinical family) across
+#   all screened PCs and variables. Check pc_join_coverage.csv before interpreting
+#   a sparsely matched family.
+# - XGBoost models use nested stratified CV with every transform fit inside the
+#   training partition, at both the inner (hyperparameter) and outer (evaluation)
+#   level. No PCA or scaler sees validation or test rows. Reported summaries and
+#   confusion matrices use outer-fold predictions only.
+# - The alltime and pretreatment windows cover different patient sets, because a
+#   patient missing an anchor date or missing pre-anchor notes in any note-type
+#   block is absent from the pretreatment features. Read the two arms side by
+#   side; do not test them as paired.
+# - cancer_type_baseline is one-hot cancer type with no PCA, through the same
+#   folds and seed. It is the reference an embedding space must beat to claim it
+#   reads more than diagnosis, and it is unavailable for the cancer_type target
+#   by construction.
+# - The six drug-class targets are ever-exposure labels over the GPT
+#   MOA_Category vocabulary, so neither window is leak-free for them, and the
+#   regex definitions need the cluster-side coverage audit
+#   (python -m semantic_search.drug_classes) before the labels are trusted.
+# - The report writes PNG panels to SEMANTIC_SEARCH_FIGURES_OUT, or by default
+#   alongside CLINICAL_FIGURES_OUT at ../semantic_search/<pc-spaces>_<pc-window>.
