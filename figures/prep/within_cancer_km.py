@@ -2,8 +2,9 @@
 
 Same cohort definition as fig2_km_stage_vs_risk.csv (patients with a known major
 stage and a held-out death text risk score from the full-cohort model), split by
-SELECTED_CANCER_TYPES (shared/palette.json). Risk quartiles are recomputed within
-each cancer type so every panel has four equal-frequency groups. Cancer types
+SELECTED_CANCER_TYPES (shared/palette.json). Risk quartiles are the pan-cancer ones
+of Figure 2d, cut over the whole known-stage cohort before the split, so a cancer
+type's patients can fall unevenly across (or be absent from) quartiles. Cancer types
 below the thresholds (default 20 patients, 5 deaths) are omitted from the KM
 table and recorded with a status in the C-index table.
 
@@ -23,9 +24,7 @@ import polars as pl
 
 from config import SURV_PATH
 from figures.io import save_figure_data
-from figures.prep.figure2 import (
-    RISK_QUARTILE_LABELS, _safe_quantiles, _stage_vs_risk, _stage_vs_risk_cindex,
-)
+from figures.prep.figure2 import _stage_vs_risk, _stage_vs_risk_cindex
 from figures.prep.within_cancer_joint import _selected_cancer_labels
 from shared.palette import SELECTED_CANCER_TYPES
 
@@ -43,7 +42,7 @@ CINDEX_SCHEMA = {
 def stage_vs_risk_by_cancer(
     pooled: pl.DataFrame, cancer: pl.DataFrame, *, min_patients: int = 20, min_events: int = 5,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """Split the pooled known-stage table by cancer type and re-cut risk quartiles."""
+    """Split the pooled known-stage table by cancer type, keeping its pan-cancer risk quartiles."""
     pooled = pooled.with_columns(pl.col("DFCI_MRN").cast(pl.String).str.strip_chars())
     labelled = pooled.join(cancer, on="DFCI_MRN", how="inner", validate="1:1")
     km: list[pl.DataFrame] = []
@@ -58,10 +57,6 @@ def stage_vs_risk_by_cancer(
                   "n": stratum.height, "n_events": n_events, "status": status}
                  for p in ("stage", "text_risk")], schema=CINDEX_SCHEMA))
             continue
-        stratum = stratum.with_columns(
-            _safe_quantiles(stratum["text_risk_score"], 4, RISK_QUARTILE_LABELS,
-                            f"text_risk/{cancer_type}").alias("risk_quartile")
-        )
         km.append(stratum.select(list(KM_SCHEMA)).cast(KM_SCHEMA))
         cindex.append(_stage_vs_risk_cindex(stratum).with_columns(
             pl.lit(cancer_type).alias("cancer_type"), pl.lit(n_events).alias("n_events"),

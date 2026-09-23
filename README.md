@@ -68,8 +68,8 @@ fit variants as `fig3_joint_betas.csv`. It writes `fig3_within_cancer_joint_beta
 per-stratum status table, `fig3_within_cancer_joint_fits.csv`.
 
 `figures.prep.within_cancer_km` splits the Figure 2c/d cohort (patients with a known major stage
-and a full-cohort overall-survival text risk score) by selected cancer type, recomputing text risk
-quartiles within each type. It writes `fig2_km_stage_vs_risk_by_cancer.csv` and
+and a full-cohort overall-survival text risk score) by selected cancer type, keeping the pan-cancer
+text risk quartiles of Figure 2d (cut over the whole cohort before the split). It writes `fig2_km_stage_vs_risk_by_cancer.csv` and
 `fig2_stage_vs_risk_cindex_by_cancer.csv` (stage and text-risk C-index per cancer type, with a
 status for types below `--min-patients` 20 / `--min-events` 5).
 
@@ -118,7 +118,7 @@ modality, as in Figure 3b), both on complete-case endpoints within each cancer t
 `MANUSCRIPT_JOINT_COX_VARIANT` fit.
 `R/plot_figure_2_supp_cancer_km.R` renders Figure 2c/d per selected cancer type to the `figure2`
 group: `figS2_within_cancer_km_stage` (overall survival by stage) and
-`figS2_within_cancer_km_risk` (by within-cancer text risk quartile), 3×3 grids annotated with the
+`figS2_within_cancer_km_risk` (by pan-cancer text risk quartile, within-type patients), 3×3 grids annotated with the
 per-cancer C-index and log-rank p.
 Risk-score files must contain `outer_fold`; older files are skipped with an audit
 entry and can be regenerated with the corresponding training/risk runner's

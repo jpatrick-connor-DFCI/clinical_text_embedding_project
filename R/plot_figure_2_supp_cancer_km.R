@@ -64,7 +64,8 @@ build_within_cancer_km <- function(d, summary, spec) {
   td_ci <- step_ci_df(td, c("cancer_type", "stratum"))
   ann <- summary %>% filter(shown) %>%
     mutate(cancer_type = factor(cancer_type, levels = cancers),
-           label = sprintf("%s=%.3f\nlog-rank %s", metric_label(), cindex, format_p_inline(logrank_p)))
+           label = sprintf("%s=%.3f\nlog-rank %s", metric_label(), cindex,
+                           vapply(logrank_p, format_p_inline, character(1))))
   ggplot(td, aes(time, estimate, color = stratum)) +
     geom_rect(data = td_ci,
               aes(xmin = time, xmax = time_next, ymin = conf.low, ymax = conf.high, fill = stratum),
@@ -89,8 +90,9 @@ within_cancer_km_caption <- function(summary, spec) {
     "Each panel shows Kaplan-Meier overall survival by major stage (I-IV) with 95% confidence bands."
   } else {
     paste("Each panel shows Kaplan-Meier overall survival by text risk quartile with 95% confidence",
-          "bands. Quartiles are recomputed within each cancer type, so every panel has four",
-          "equal-frequency groups; they differ from the pooled quartiles of Figure 2d.")
+          "bands. Quartiles are the pan-cancer quartiles of Figure 2d, defined across the whole",
+          "known-stage cohort; each panel plots only that cancer type's patients, so group sizes",
+          "differ and a quartile with no patients in a cancer type is absent.")
   }
   shown <- summary$cancer_type[summary$status == "ok"]
   hidden <- setdiff(names(SELECTED_CANCER_TYPES), shown)
