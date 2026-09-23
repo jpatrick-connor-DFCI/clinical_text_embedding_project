@@ -5,7 +5,7 @@ import gzip
 import numpy as np
 import polars as pl
 
-from figures.prep import figure3
+from figures.prep import figure3, parallel
 from figures.prep import within_cancer_joint as prep
 from shared.palette import SELECTED_CANCER_TYPES
 
@@ -73,3 +73,21 @@ def test_cancer_labels_are_normalized_and_restricted(tmp_path, monkeypatch):
     result = prep._selected_cancer_labels()
     assert result.to_dicts() == [{"DFCI_MRN": "1", "cancer_type": "BREAST"},
                                  {"DFCI_MRN": "2", "cancer_type": "LUNG"}]
+
+
+def test_parallel_fits_match_serial(monkeypatch):
+    frames = [("death", _event_frame(200, 4), ["text_risk_score", "stage_risk_score"]),
+              ("progression", _event_frame(150, 5).rename({"death": "progression", "tt_death": "tt_progression"}),
+               ["text_risk_score", "stage_risk_score"])]
+    monkeypatch.setattr(figure3, "_joint_event_frames", lambda scheme: iter(frames))
+    monkeypatch.setattr(prep, "_joint_event_frames", lambda scheme: iter(frames))
+    cancer = pl.DataFrame({"DFCI_MRN": [str(i) for i in range(200)],
+                           "cancer_type": ["BREAST"] * 120 + ["LUNG"] * 80})
+    serial_joint = figure3._joint_betas("death_met")
+    serial_cancer = prep.within_cancer_joint_betas("death_met", cancer)
+    with parallel.process_pool(2) as pool:
+        assert pool is not None
+        assert figure3._joint_betas("death_met", pool).equals(serial_joint)
+        for expected, actual in zip(serial_cancer, prep.within_cancer_joint_betas("death_met", cancer, pool)):
+            assert actual.equals(expected)
+    assert set(serial_joint["event"]) == {"death", "progression"}

@@ -45,6 +45,7 @@ from lifelines.exceptions import ConvergenceError
 from sklearn.preprocessing import StandardScaler
 
 from figures.io import save_figure_data
+from figures.prep.parallel import process_pool, resolve_workers
 from pipelines.training.slurm_array_utils import get_events_from_df
 from schemes import feature_held_out_dir, load_embedding_prediction_df, scheme_results_dir
 from shared.palette import MODALITY_ORDER
@@ -268,7 +269,19 @@ def _fit_joint_cox(merged: pl.DataFrame, risk_cols: list[str], *, scheme: str,
     return rows
 
 
-def _joint_betas(scheme: str) -> pl.DataFrame:
+def _fit_joint_cox_later(pool, merged: pl.DataFrame, risk_cols: list[str], **kwargs):
+    """Start one joint Cox fit on `pool` (or run it now when pool is None).
+
+    Returns a zero-argument callable giving the fit's rows, so callers can queue
+    every fit before waiting on any and still collect them in submission order.
+    """
+    if pool is None:
+        rows = _fit_joint_cox(merged, risk_cols, **kwargs)
+        return lambda: rows
+    return pool.submit(_fit_joint_cox, merged, risk_cols, **kwargs).result
+
+
+def _joint_betas(scheme: str, pool=None) -> pl.DataFrame:
     """Refit the joint Cox model per (scheme, event) so we have p-values.
 
     The held-out modality risk scores are produced at training time by
@@ -277,9 +290,9 @@ def _joint_betas(scheme: str) -> pl.DataFrame:
     the joint fit here with `lifelines.CoxPHFitter` on the same merged inputs
     (held-out modality risk scores × event surv data), standardizing features.
     """
-    rows: list[dict[str, object]] = []
-    for event, merged, risk_cols in _joint_event_frames(scheme):
-        rows.extend(_fit_joint_cox(merged, risk_cols, scheme=scheme, event=event))
+    fits = [_fit_joint_cox_later(pool, merged, risk_cols, scheme=scheme, event=event)
+            for event, merged, risk_cols in _joint_event_frames(scheme)]
+    rows: list[dict[str, object]] = [row for fit in fits for row in fit()]
     if rows:
         return pl.DataFrame(rows).select(JOINT_BETA_COLUMNS)
     return pl.DataFrame(schema={c: pl.Float64 for c in JOINT_BETA_COLUMNS})
@@ -290,8 +303,12 @@ def _modality_cindex_all() -> pl.DataFrame:
     return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame(schema={c: pl.Float64 for c in MODALITY_CINDEX_COLUMNS})
 
 
-def _joint_betas_all() -> pl.DataFrame:
-    frames = [f for f in _map_schemes(_joint_betas, "betas") if not f.is_empty()]
+def _joint_betas_all(n_jobs: int | None = None) -> pl.DataFrame:
+    # Scheme threads read inputs and queue fits; the fits themselves (GIL-bound
+    # lifelines) run on one shared process pool across all schemes.
+    with process_pool(resolve_workers(n_jobs)) as pool:
+        results = _map_schemes(lambda scheme: _joint_betas(scheme, pool), "betas")
+    frames = [f for f in results if not f.is_empty()]
     return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame(schema={c: pl.Float64 for c in JOINT_BETA_COLUMNS})
 
 

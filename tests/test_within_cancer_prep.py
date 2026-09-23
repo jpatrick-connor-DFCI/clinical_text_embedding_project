@@ -576,3 +576,22 @@ def test_all_modality_table_requires_every_modality(score_tree):
     assert set(modality["n_patients"]) == {5}
     cindex = dict(zip(modality["modality"], modality["cindex"]))
     assert cindex["stage"] == 1.0 and cindex["text"] == 0.0 and cindex["somatic"] == 0.5
+
+
+def test_parallel_endpoints_match_serial(score_tree):
+    tmp_path, full, features = score_tree
+    # A second endpoint so the pool has more than one task per comparison.
+    path = tmp_path / prep.embedding_file("death_met")
+    pl.read_parquet(path).with_columns(
+        pl.Series("progression", [1, 0, 1, 1, 0, 1]), pl.Series("tt_progression", [2., 1., 4., 3., 6., 5.]),
+    ).write_parquet(path)
+    for root in (full, features):
+        target = root.parent / "progression"
+        target.mkdir()
+        for file in root.iterdir():
+            (target / file.name).write_bytes(file.read_bytes())
+    serial = prep.prepare_within_cancer(min_patients=2, min_events=1, n_jobs=1)
+    parallel = prep.prepare_within_cancer(min_patients=2, min_events=1, n_jobs=2)
+    assert set(serial[0]["event"]) == {"death", "progression"}
+    for expected, actual in zip(serial, parallel):
+        assert actual.equals(expected)

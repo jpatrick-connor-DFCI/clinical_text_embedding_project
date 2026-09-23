@@ -24,8 +24,9 @@ import polars as pl
 from config import FEATURE_PATH
 from figures.io import save_figure_data
 from figures.prep.figure3 import (
-    JOINT_BETA_COLUMNS, _fit_joint_cox, _joint_event_frames, _map_schemes,
+    JOINT_BETA_COLUMNS, _fit_joint_cox_later, _joint_event_frames, _map_schemes,
 )
+from figures.prep.parallel import process_pool, resolve_workers
 from figures.prep.within_cancer import _load_cancer_types
 from shared.palette import SELECTED_CANCER_TYPES
 
@@ -51,34 +52,44 @@ def _selected_cancer_labels() -> pl.DataFrame:
 
 
 def within_cancer_joint_betas(
-    scheme: str, cancer: pl.DataFrame,
+    scheme: str, cancer: pl.DataFrame, pool=None,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """Joint Cox betas and per-stratum fit status for one scheme."""
-    betas: list[dict[str, object]] = []
-    fits: list[dict[str, object]] = []
+    """Joint Cox betas and per-stratum fit status for one scheme.
+
+    With a process pool, every (event, cancer type) fit is queued before any is
+    collected; results are gathered in the serial order.
+    """
+    pending = []
     for event, merged, risk_cols in _joint_event_frames(scheme):
         merged = merged.with_columns(pl.col("DFCI_MRN").cast(pl.String).str.strip_chars())
         labelled = merged.join(cancer, on="DFCI_MRN", how="inner", validate="1:1")
         for cancer_type in SELECTED_CANCER_TYPES:
             stratum = labelled.filter(pl.col("cancer_type") == cancer_type)
             n_events = int(stratum[event].sum()) if stratum.height else 0
-            rows = (_fit_joint_cox(stratum, risk_cols, scheme=scheme, event=event, tag=cancer_type)
-                    if stratum.height else [])
-            betas.extend({"cancer_type": cancer_type, **row} for row in rows)
-            fits.append({
-                "scheme": scheme, "event": event, "cancer_type": cancer_type,
-                "n": stratum.height, "n_events": n_events,
-                "n_modalities": len({row["modality"] for row in rows}),
-                "status": ("fitted" if rows else "not_fitted") if stratum.height else "no_patients",
-            })
+            fit = (_fit_joint_cox_later(pool, stratum, risk_cols, scheme=scheme, event=event,
+                                        tag=cancer_type)
+                   if stratum.height else (lambda: []))
+            pending.append((event, cancer_type, stratum.height, n_events, fit))
+    betas: list[dict[str, object]] = []
+    fits: list[dict[str, object]] = []
+    for event, cancer_type, n, n_events, fit in pending:
+        rows = fit()
+        betas.extend({"cancer_type": cancer_type, **row} for row in rows)
+        fits.append({
+            "scheme": scheme, "event": event, "cancer_type": cancer_type,
+            "n": n, "n_events": n_events,
+            "n_modalities": len({row["modality"] for row in rows}),
+            "status": ("fitted" if rows else "not_fitted") if n else "no_patients",
+        })
     return (pl.DataFrame(betas, schema=BETA_SCHEMA).select(WITHIN_CANCER_JOINT_BETA_COLUMNS),
             pl.DataFrame(fits, schema=FIT_SCHEMA))
 
 
-def prepare_within_cancer_joint() -> tuple[pl.DataFrame, pl.DataFrame]:
+def prepare_within_cancer_joint(n_jobs: int | None = None) -> tuple[pl.DataFrame, pl.DataFrame]:
     cancer = _selected_cancer_labels()
-    results = _map_schemes(lambda scheme: within_cancer_joint_betas(scheme, cancer),
-                           "within-cancer betas")
+    with process_pool(resolve_workers(n_jobs)) as pool:
+        results = _map_schemes(lambda scheme: within_cancer_joint_betas(scheme, cancer, pool),
+                               "within-cancer betas")
     betas = [b for b, _ in results if not b.is_empty()]
     fits = [f for _, f in results if not f.is_empty()]
     return (pl.concat(betas) if betas else pl.DataFrame(schema=BETA_SCHEMA),

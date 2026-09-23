@@ -44,6 +44,9 @@ Sparse matched strata have null pair/block counts because those are not computed
 Missing/malformed inputs and exclusions are recorded only in the audit CSV.
 The run displays one progress bar for all full-cohort events and one for all
 modality-cohort events, with Python warnings suppressed for the preparation run.
+Endpoints are evaluated in parallel worker processes (--n-jobs; see
+figures.prep.parallel); results are assembled in task order, so the outputs
+match a serial run exactly.
 Only status == 'ok' rows should be plotted. n_fold_blocks counts blocks with
 at least one comparable pair; n_patients and n_events describe the full matched
 valid cohort, including patients in blocks with no comparable pairs.
@@ -52,6 +55,7 @@ valid cohort, including patients in blocks with no comparable pairs.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import as_completed
 from functools import reduce
 from pathlib import Path
 import warnings
@@ -63,6 +67,7 @@ from sksurv.metrics import concordance_index_censored
 from tqdm.auto import tqdm
 
 from config import FEATURE_PATH, FIGURE_DATA_DIR, SURV_PATH
+from figures.prep.parallel import process_pool, resolve_workers
 from schemes import embedding_file, scheme_results_dir
 from shared.palette import MODALITY_ORDER
 
@@ -446,8 +451,132 @@ def evaluate_modalities(
     return pl.DataFrame(rows, schema=MODALITY_RESULT_SCHEMA).sort("cancer_type", "modality")
 
 
+def _evaluate_endpoint(task: tuple, context: dict) -> dict[str, list]:
+    """Evaluate one (comparison, scheme, event) endpoint task.
+
+    Pure function of its inputs so it can run in a worker process: returns the
+    endpoint's audit rows, comparison metrics, source counts and shared-cohort
+    modality metrics instead of appending to shared state.
+    """
+    comparison, scheme, event, directory, comparators = task
+    cancer = context["cancer"]
+    min_patients, min_events = context["min_patients"], context["min_events"]
+    out: dict[str, list] = {"audit": [], "results": [], "counts": [], "modalities": []}
+    audit = out["audit"]
+    source_path, columns, full, modality_cohort = context["sources"][scheme]
+    missing = {"DFCI_MRN", event, f"tt_{event}"} - columns
+    if missing:
+        _audit(audit, comparison, scheme, event, "", "missing_outcome_columns",
+               ", ".join(sorted(missing)))
+        return out
+    try:
+        outcomes = _read_outcomes(pl.scan_parquet(source_path), event)
+    except _READ_ERRORS as exc:
+        _audit(audit, comparison, scheme, event, "", "invalid_text_or_outcome_input", str(exc))
+        return out
+    cohort = full if comparison == "fig2" else modality_cohort
+    if cohort is not None:
+        event_counts = _pre_evaluation_counts(
+            outcomes, cohort, scheme=scheme, event=event,
+            min_patients=min_patients, min_events=min_events,
+            cancer_types=full.select("cancer_type"),
+        )
+        out["counts"].append(event_counts)
+        if not event_counts["eligible"].any():
+            _audit(audit, comparison, scheme, event, "", "no_eligible_cancer_types",
+                   "Source-cohort patient/event counts below thresholds; skipped prediction reads")
+            return out
+    # If membership sources are unavailable, score-derived
+    # comparisons remain usable; their source counts are unknown.
+    # Otherwise restrict evaluation to the source cohort counted
+    # above, so its counts are genuine upper bounds.
+    evaluation_cohort = full if cohort is None else cohort
+    outcomes = outcomes.join(
+        _event_cohort(evaluation_cohort, event).select("DFCI_MRN"),
+        on="DFCI_MRN", how="inner", validate="1:1",
+    )
+    try:
+        text_scores = _load_scores(directory / "text_risk_scores.csv", "text", "text")
+    except _READ_ERRORS as exc:
+        _audit(audit, comparison, scheme, event, "", "invalid_text_or_outcome_input", str(exc))
+        return out
+    modality_scores = {"text": text_scores}
+    for comparator in comparators:
+        try:
+            other = _load_scores(directory / f"{comparator}_risk_scores.csv", comparator, "comparator")
+        except _READ_ERRORS as exc:
+            _audit(audit, comparison, scheme, event, comparator, "invalid_comparator_input", str(exc))
+            continue
+        modality_scores[comparator] = other.rename({
+            "comparator_score": f"{comparator}_score",
+            "comparator_fold": f"{comparator}_fold",
+        })
+        paired, exclusions = _matched_patients(text_scores, other, outcomes, cancer)
+        for reason, count in exclusions.items():
+            if count:
+                _audit(audit, comparison, scheme, event, comparator, reason,
+                       "Excluded before matched within-cancer evaluation", count)
+        if paired.is_empty():
+            _audit(audit, comparison, scheme, event, comparator, "no_matched_patients",
+                   "No patients have valid paired predictions, outcomes, and cancer labels")
+            continue
+        metrics = evaluate_comparison(
+            paired, scheme=scheme, event=event, comparator=comparator,
+            min_patients=min_patients, min_events=min_events,
+        )
+        out["results"].append(metrics)
+        n_ok = metrics.filter(pl.col("status") == "ok").height
+        _audit(audit, comparison, scheme, event, comparator, "evaluated",
+               f"{n_ok}/{metrics.height} cancer strata eligible; "
+               f"min_patients={min_patients}; min_events={min_events}", paired.height)
+        for row in metrics.filter(pl.col("status") != "ok").iter_rows(named=True):
+            _audit(audit, comparison, scheme, event, comparator, row["status"],
+                   f"cancer_type={row['cancer_type']}; n_events={row['n_events']}; "
+                   f"n_comparable_pairs={row['n_comparable_pairs']}", row["n_patients"])
+    if comparison == "fig3":
+        _evaluate_all_modalities(
+            modality_scores, outcomes, cancer, audit, out["modalities"],
+            scheme=scheme, event=event,
+            min_patients=min_patients, min_events=min_events,
+        )
+    return out
+
+
+# Set once per worker process by _init_worker so tasks need not re-send the
+# cancer labels and cohort tables.
+_WORKER_CONTEXT: dict | None = None
+
+
+def _init_worker(context: dict) -> None:
+    global _WORKER_CONTEXT
+    warnings.simplefilter("ignore")
+    _WORKER_CONTEXT = context
+
+
+def _evaluate_endpoint_in_worker(task: tuple) -> dict[str, list]:
+    return _evaluate_endpoint(task, _WORKER_CONTEXT)
+
+
+def _run_endpoint_tasks(tasks: list[tuple], context: dict, pool, progress) -> list[dict[str, list]]:
+    """Evaluate tasks serially or on `pool`; results are in task order either way."""
+    if pool is None:
+        outputs = []
+        for task in tasks:
+            try:
+                outputs.append(_evaluate_endpoint(task, context))
+            finally:
+                # Missing files, sparse endpoints and all modality comparisons
+                # together still count as one completed endpoint task.
+                progress.update(1)
+        return outputs
+    futures = [pool.submit(_evaluate_endpoint_in_worker, task) for task in tasks]
+    for future in as_completed(futures):
+        progress.update(1)
+    return [future.result() for future in futures]
+
+
 def _prepare_within_cancer(
-    *, min_patients: int, min_events: int, show_progress: bool,
+    *, min_patients: int, min_events: int, show_progress: bool, n_jobs: int = 1,
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     audit: list[dict] = []
     results: dict[str, list[pl.DataFrame]] = {"fig2": [], "fig3": []}
@@ -468,7 +597,8 @@ def _prepare_within_cancer(
             _audit(audit, "fig3", "", "", "", "unavailable_modality_cohort_counts", str(exc))
         for scheme in SCHEMES:
             try:
-                source = pl.scan_parquet(Path(SURV_PATH) / embedding_file(scheme))
+                source_path = Path(SURV_PATH) / embedding_file(scheme)
+                source = pl.scan_parquet(source_path)
                 columns = set(source.collect_schema().names())
                 ids = _validate_ids(source.select("DFCI_MRN").collect(), f"{scheme} cohort")
                 full = ids.join(cancer, on="DFCI_MRN", how="inner", validate="1:1").filter(
@@ -476,10 +606,13 @@ def _prepare_within_cancer(
                 )
                 modality = (full.join(common_ids, on="DFCI_MRN", how="inner", validate="1:1")
                             if common_ids is not None else None)
-                sources[scheme] = (source, columns, full, modality)
+                sources[scheme] = (source_path, columns, full, modality)
             except _READ_ERRORS as exc:
                 _audit(audit, "all", scheme, "", "", "missing_outcome_input", str(exc))
 
+    context = {"cancer": cancer, "sources": sources,
+               "min_patients": min_patients, "min_events": min_events}
+    all_tasks = {}
     for comparison, subdir, comparators, description in (
         ("fig2", "full_cohort_risk_scores", ["base"], "Full cohort"),
         ("fig3", "held_out_risk_scores", [m for m in MODALITY_ORDER if m != "text"], "Modality cohort"),
@@ -491,91 +624,20 @@ def _prepare_within_cancer(
             # audit orphan risk directories rather than silently discarding them.
             directories = {p.name for p in root.iterdir() if p.is_dir()} if root.is_dir() else set()
             events = {c[3:] for c in columns if c.startswith("tt_")}
-            tasks.extend((scheme, event, root / event) for event in sorted(events | directories))
-        with tqdm(total=len(tasks), desc=description, unit="event", leave=True,
-                  dynamic_ncols=True, disable=not show_progress) as progress:
-            for scheme, event, directory in tasks:
-                try:
-                    source, columns, full, modality_cohort = sources[scheme]
-                    missing = {"DFCI_MRN", event, f"tt_{event}"} - columns
-                    if missing:
-                        _audit(audit, comparison, scheme, event, "", "missing_outcome_columns",
-                               ", ".join(sorted(missing)))
-                        continue
-                    try:
-                        outcomes = _read_outcomes(source, event)
-                    except _READ_ERRORS as exc:
-                        _audit(audit, comparison, scheme, event, "", "invalid_text_or_outcome_input", str(exc))
-                        continue
-                    cohort = full if comparison == "fig2" else modality_cohort
-                    if cohort is not None:
-                        event_counts = _pre_evaluation_counts(
-                            outcomes, cohort, scheme=scheme, event=event,
-                            min_patients=min_patients, min_events=min_events,
-                            cancer_types=full.select("cancer_type"),
-                        )
-                        counts[comparison].append(event_counts)
-                        if not event_counts["eligible"].any():
-                            _audit(audit, comparison, scheme, event, "", "no_eligible_cancer_types",
-                                   "Source-cohort patient/event counts below thresholds; skipped prediction reads")
-                            continue
-                    # If membership sources are unavailable, score-derived
-                    # comparisons remain usable; their source counts are unknown.
-                    # Otherwise restrict evaluation to the source cohort counted
-                    # above, so its counts are genuine upper bounds.
-                    evaluation_cohort = full if cohort is None else cohort
-                    outcomes = outcomes.join(
-                        _event_cohort(evaluation_cohort, event).select("DFCI_MRN"),
-                        on="DFCI_MRN", how="inner", validate="1:1",
-                    )
-                    try:
-                        text_scores = _load_scores(directory / "text_risk_scores.csv", "text", "text")
-                    except _READ_ERRORS as exc:
-                        _audit(audit, comparison, scheme, event, "", "invalid_text_or_outcome_input", str(exc))
-                        continue
-                    modality_scores = {"text": text_scores}
-                    for comparator in comparators:
-                        try:
-                            other = _load_scores(directory / f"{comparator}_risk_scores.csv", comparator, "comparator")
-                        except _READ_ERRORS as exc:
-                            _audit(audit, comparison, scheme, event, comparator, "invalid_comparator_input", str(exc))
-                            continue
-                        modality_scores[comparator] = other.rename({
-                            "comparator_score": f"{comparator}_score",
-                            "comparator_fold": f"{comparator}_fold",
-                        })
-                        paired, exclusions = _matched_patients(text_scores, other, outcomes, cancer)
-                        for reason, count in exclusions.items():
-                            if count:
-                                _audit(audit, comparison, scheme, event, comparator, reason,
-                                       "Excluded before matched within-cancer evaluation", count)
-                        if paired.is_empty():
-                            _audit(audit, comparison, scheme, event, comparator, "no_matched_patients",
-                                   "No patients have valid paired predictions, outcomes, and cancer labels")
-                            continue
-                        metrics = evaluate_comparison(
-                            paired, scheme=scheme, event=event, comparator=comparator,
-                            min_patients=min_patients, min_events=min_events,
-                        )
-                        results[comparison].append(metrics)
-                        n_ok = metrics.filter(pl.col("status") == "ok").height
-                        _audit(audit, comparison, scheme, event, comparator, "evaluated",
-                               f"{n_ok}/{metrics.height} cancer strata eligible; "
-                               f"min_patients={min_patients}; min_events={min_events}", paired.height)
-                        for row in metrics.filter(pl.col("status") != "ok").iter_rows(named=True):
-                            _audit(audit, comparison, scheme, event, comparator, row["status"],
-                                   f"cancer_type={row['cancer_type']}; n_events={row['n_events']}; "
-                                   f"n_comparable_pairs={row['n_comparable_pairs']}", row["n_patients"])
-                    if comparison == "fig3":
-                        _evaluate_all_modalities(
-                            modality_scores, outcomes, cancer, audit, modality_results,
-                            scheme=scheme, event=event,
-                            min_patients=min_patients, min_events=min_events,
-                        )
-                finally:
-                    # Missing files, sparse endpoints and all modality comparisons
-                    # together still count as one completed endpoint task.
-                    progress.update(1)
+            tasks.extend((comparison, scheme, event, root / event, comparators)
+                         for event in sorted(events | directories))
+        all_tasks[comparison] = (tasks, description)
+
+    n_workers = min(resolve_workers(n_jobs), max((len(t) for t, _ in all_tasks.values()), default=1))
+    with process_pool(n_workers, initializer=_init_worker, initargs=(context,)) as pool:
+        for comparison, (tasks, description) in all_tasks.items():
+            with tqdm(total=len(tasks), desc=description, unit="event", leave=True,
+                      dynamic_ncols=True, disable=not show_progress) as progress:
+                for output in _run_endpoint_tasks(tasks, context, pool, progress):
+                    audit.extend(output["audit"])
+                    results[comparison].extend(output["results"])
+                    counts[comparison].extend(output["counts"])
+                    modality_results.extend(output["modalities"])
     frames = [
         pl.concat(results[key]).sort("scheme", "event", "cancer_type", "comparator")
         if results[key] else pl.DataFrame(schema=RESULT_SCHEMA)
@@ -628,12 +690,15 @@ def _evaluate_all_modalities(
 
 def prepare_within_cancer(
     *, min_patients: int = 20, min_events: int = 5, show_progress: bool = True,
+    n_jobs: int | None = 1,
 ) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
     """Return Fig2 metrics, Fig3 metrics, audit, full counts, modality counts and
     shared-cohort per-modality C-indices.
 
     Warning suppression is scoped to this run, including all file reads. Audit
     entries are persisted instead of printed. Exceptions still propagate.
+    Endpoints are evaluated on n_jobs worker processes (None: FIGURE_PREP_N_JOBS,
+    then the SLURM/CPU allocation); outputs are identical to the serial run.
     """
     if min_patients < 2 or min_events < 1:
         raise ValueError("min_patients must be >= 2 and min_events must be >= 1")
@@ -641,6 +706,7 @@ def prepare_within_cancer(
         warnings.simplefilter("ignore")
         return _prepare_within_cancer(
             min_patients=min_patients, min_events=min_events, show_progress=show_progress,
+            n_jobs=n_jobs,
         )
 
 
@@ -648,10 +714,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--min-patients", type=int, default=20)
     parser.add_argument("--min-events", type=int, default=5)
+    parser.add_argument("--n-jobs", type=int, default=None,
+                        help="worker processes (default: FIGURE_PREP_N_JOBS, then the CPU allocation)")
     args = parser.parse_args()
     if args.min_patients < 2 or args.min_events < 1:
         parser.error("--min-patients must be >= 2 and --min-events must be >= 1")
-    frames = prepare_within_cancer(min_patients=args.min_patients, min_events=args.min_events)
+    frames = prepare_within_cancer(min_patients=args.min_patients, min_events=args.min_events,
+                                   n_jobs=args.n_jobs)
     names = (
         "fig2_within_cancer_cindex.csv", "fig3_within_cancer_cindex.csv",
         "within_cancer_audit.csv", "fig2_within_cancer_event_counts.csv",
