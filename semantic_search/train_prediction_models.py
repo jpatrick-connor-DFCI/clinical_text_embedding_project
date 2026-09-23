@@ -1,11 +1,18 @@
 """Train XGBoost clinical-label classifiers from blockwise embedding PCs.
 
-The default is a retrospective experiment on the single 3 x 768 concatenated
-feature space using all available notes. Within every CV training split, the
-three embedding blocks are independently compressed to 50 clinician/progress
-PCs, 25 imaging PCs, and 25 pathology PCs. One nested-CV histogram XGBoost
-classifier is then fit to the resulting 100 predictors with inverse-frequency
-sample weights.
+The default runs the single 3 x 768 concatenated feature space in both note
+windows: ``alltime`` (every note, a retrospective label-recovery experiment) and
+``pretreatment`` (notes pooled from before first_treatment_date only). The two
+windows cover different patient sets, so their metrics are reported side by side
+but are not paired.
+
+Within every CV training split, the three embedding blocks are independently
+compressed to 50 clinician/progress PCs, 25 imaging PCs, and 25 pathology PCs,
+and one nested-CV histogram XGBoost classifier is fit to the resulting 100
+predictors with inverse-frequency sample weights. Every transform is fit on the
+training rows alone and applied to the held-out rows, at both the inner
+(hyperparameter) and outer (evaluation) level, so no PCA sees validation or test
+data.
 
 For each setup the script writes out-of-fold predictions, a final model tuned
 on all available rows, and an auditable metadata JSON. Aggregate metrics and
@@ -21,7 +28,7 @@ features would be that target's own labels.
 
 Run:
     python -m semantic_search.train_prediction_models
-    python -m semantic_search.train_prediction_models --windows alltime pretreatment
+    python -m semantic_search.train_prediction_models --windows pretreatment
     python -m semantic_search.train_prediction_models --targets stage first_treatment
     python -m semantic_search.train_prediction_models \
         --targets treatment_ici treatment_tki \
@@ -1287,8 +1294,17 @@ def main() -> None:
 
     if "alltime" in args.windows:
         print(
-            "NOTE: alltime embeddings use the complete documented history. These runs measure "
+            "NOTE: alltime embeddings use the complete documented history. Those runs measure "
             "retrospective clinical-label recovery, not prospective prediction.",
+            flush=True,
+        )
+    if "pretreatment" in args.windows:
+        print(
+            "NOTE: pretreatment embeddings pool only notes before first_treatment_date. Those "
+            "runs cover a different, smaller patient set than alltime (no anchor date, or no "
+            "pre-anchor notes in some block, drops a patient), so the two windows' metrics are "
+            "not paired. They are also not leak-free for the ever-exposure drug-class targets, "
+            "whose labels can be set by a drug started after the notes end.",
             flush=True,
         )
 

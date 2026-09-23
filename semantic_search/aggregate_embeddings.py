@@ -12,6 +12,12 @@ for:
     alltime        every note, no anchor
     pretreatment   notes strictly before first_treatment_date
 
+Both windows are built by default. A patient is written to a window only if
+every note-type block has at least one finite embedding inside it, so the
+pretreatment files cover fewer patients than the alltime ones -- patients with no
+anchor date, or with no pre-anchor notes of some type, are absent rather than
+null.
+
 Pooling is a plain unweighted mean (not the production `time_decay_mean`): this
 arm asks what a patient's notes say on average, not what they said most recently.
 

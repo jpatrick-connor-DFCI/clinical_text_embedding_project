@@ -33,7 +33,7 @@ def test_semantic_search_builds_concat_and_isolated_note_type_spaces(monkeypatch
     spaces = aggregate_embeddings.build_spaces(pl.DataFrame(), np.empty((0, 0)))
 
     assert common.SPACES == ["concat"]
-    assert common.DEFAULT_WINDOWS == ["alltime"]
+    assert common.DEFAULT_WINDOWS == ["alltime", "pretreatment"]
     assert list(spaces) == ["concat", "clinician", "imaging", "pathology"]
     assert spaces["concat"].shape == (1, 7)
     assert spaces["concat"].get_column("DFCI_MRN").to_list() == [1]
@@ -950,3 +950,96 @@ def test_chemotherapy_categories_are_negative_for_all_six_classes():
 
     for category in ("Taxane", "Platinum Chemotherapy", "Antimetabolite", "Alkylating Agent"):
         assert not any(classify_moa_category(category, c) for c in DRUG_CLASSES), category
+
+
+def test_both_note_windows_run_by_default():
+    """Every stage must build the pre-first-treatment arm without an extra flag.
+
+    The windows are only comparable if each is actually produced; a default of
+    alltime alone silently reports one arm.
+    """
+    from semantic_search import common
+
+    assert common.DEFAULT_WINDOWS == ["alltime", "pretreatment"]
+    assert set(common.DEFAULT_WINDOWS) == set(common.WINDOWS)
+
+
+def test_windows_write_to_separate_artifacts():
+    """The two windows must coexist on disk, not overwrite one another."""
+    from semantic_search import train_prediction_models as tpm
+    from semantic_search.common import feature_path
+
+    assert feature_path("concat", "alltime") != feature_path("concat", "pretreatment")
+
+    stems = {
+        window: tpm._stem("treatment_ici", "concat", window, "xgboost")
+        for window in ("alltime", "pretreatment")
+    }
+    assert stems["alltime"] != stems["pretreatment"]
+    assert "pretreatment" in stems["pretreatment"]
+
+
+def test_window_is_part_of_the_run_signature():
+    """A window change must invalidate cached artifacts, not reuse them."""
+    from semantic_search import train_prediction_models as tpm
+
+    data = pl.DataFrame({"DFCI_MRN": [1, 2], "label": ["ICI", "NON_ICI"]})
+    cols = ["CLINICIAN_EMBEDDING_0", "CLINICIAN_EMBEDDING_1"]
+    kwargs = dict(
+        model="xgboost",
+        outer_folds=5,
+        inner_folds=3,
+        seed=1,
+        feature_blocks={"CLINICIAN": [0, 1]},
+    )
+
+    alltime = tpm._run_signature(data, cols, run_context={"window": "alltime"}, **kwargs)
+    pretreatment = tpm._run_signature(
+        data, cols, run_context={"window": "pretreatment"}, **kwargs
+    )
+
+    assert alltime != pretreatment
+
+
+def test_pretreatment_window_selects_only_pre_anchor_notes():
+    """The pretreatment arm is strictly-before, and unanchored notes drop out."""
+    from semantic_search import aggregate_embeddings as agg
+    from semantic_search.common import NOTE_TIMING_COL
+
+    notes = pl.DataFrame(
+        {
+            "DFCI_MRN": [1, 2, 3, 4, 5],
+            NOTE_TIMING_COL: [-30.0, -1.0, 0.0, 12.0, None],
+        }
+    )
+
+    assert agg._select_notes(notes, "alltime").height == 5
+    pretreatment = agg._select_notes(notes, "pretreatment")
+    # 0.0 is excluded (strictly before), as is the null-anchor patient.
+    assert pretreatment.get_column("DFCI_MRN").to_list() == [1, 2]
+
+
+def test_negative_class_labels_are_identifiable_by_prefix():
+    """The figures tier finds the positive class by the absence of a NON_ prefix.
+
+    05_figures.Rmd computes drug-class prevalence with `!grepl("^NON_", class)`,
+    so renaming a label such that the negative class loses the prefix -- or the
+    positive class gains it -- would silently invert the reported prevalence.
+    """
+    from semantic_search.drug_classes import DRUG_CLASS_LABELS
+
+    for drug_class, (positive, negative) in DRUG_CLASS_LABELS.items():
+        assert not positive.startswith("NON_"), drug_class
+        assert negative.startswith("NON_"), drug_class
+        assert negative == f"NON_{positive}", drug_class
+
+
+def test_figures_target_display_names_cover_every_target():
+    """Every trained target needs a display name in both tiers.
+
+    display_target() in 05_figures.Rmd mirrors TARGET_DISPLAY_NAMES; a target
+    missing from the Python map would also be missing from the figure legend.
+    """
+    from semantic_search.prediction_targets import TARGETS, TARGET_DISPLAY_NAMES
+
+    assert set(TARGETS) <= set(TARGET_DISPLAY_NAMES)

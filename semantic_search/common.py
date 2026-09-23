@@ -27,11 +27,25 @@ NOTE_TYPES = ["Clinician", "Imaging", "Pathology"]
 # Note-selection windows.
 #   alltime       every note a patient has, no anchor -- a cross-sectional
 #                 descriptor of the whole documented history.
-#   pretreatment  notes strictly before first_treatment_date, matching the
-#                 production survival arm (continuous_window=False,
-#                 max_note_window=0).  Leak-free against tt_death.
+#   pretreatment  notes strictly before first_treatment_date, pooled by the same
+#                 unweighted mean, matching the production survival arm
+#                 (continuous_window=False, max_note_window=0).  Leak-free
+#                 against tt_death.
+#
+# Both are defaults: every stage runs both windows unless told otherwise, so
+# each target is reported cross-sectionally and again from pre-first-treatment
+# notes alone.  Artifacts are keyed {space}_{window}, so the two coexist rather
+# than overwrite.  Two caveats on reading the pretreatment arm:
+#   * It is a different patient set, not just fewer notes.  Patients with no
+#     anchor date, or none of the three note-type blocks populated before it,
+#     drop out -- so pretreatment AUCs are not paired with alltime AUCs.
+#   * It is leak-free only against targets anchored at or after first treatment.
+#     The ever-exposure drug-class targets are NOT among them: exposure may
+#     occur at any line, so a positive label can be caused by a drug started
+#     long after the notes the model reads.  See
+#     prediction_targets.load_drug_class_target.
 WINDOWS = ["alltime", "pretreatment"]
-DEFAULT_WINDOWS = ["alltime"]
+DEFAULT_WINDOWS = ["alltime", "pretreatment"]
 
 # ``concat`` is retained exclusively for the supervised prediction workflow.
 # Exploratory PCA and clinical associations must use a single note type at a

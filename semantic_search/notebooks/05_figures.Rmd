@@ -8,21 +8,36 @@ output:
     code_folding: hide
 params:
   pc_spaces: ["clinician", "imaging", "pathology"]
-  prediction_space: "concat"
-  window: "alltime"
+  prediction_spaces: ["concat", "cancer_type_baseline"]
+  windows: ["alltime", "pretreatment"]
+  pc_window: "alltime"
   max_pcs: 20
 ---
 
 This is the figures/reporting tier for the semantic-search arm. It reads the
 artifacts produced by stages 2--4; it does not fit PCA models or retrain
 classifiers. By default it reports clinician, imaging, and pathology PC
-analyses for `alltime`, plus the separate `concat/alltime` prediction analysis.
-Change the parameters at render time to inspect a subset or another window.
+analyses for `pc_window`, plus the prediction analysis for every requested
+feature space and note window.
 
-The `alltime` window is descriptive: notes can contain information written
-after treatment or near an outcome. Consequently, these panels measure
-retrospective clinical-content recovery, rather than prospective prediction or
-independent validation.
+The prediction panels report both note windows side by side:
+
+* `alltime` uses every note and is descriptive -- notes can contain information
+  written after treatment or near an outcome, so these panels measure
+  retrospective clinical-content recovery, not prospective prediction.
+* `pretreatment` pools only notes before `first_treatment_date`.
+
+The two windows cover **different patient sets**: a patient with no anchor date,
+or with no pre-anchor notes in some note-type block, is absent from the
+pretreatment features rather than missing a value. Differences between the two
+windows therefore mix a change in information with a change in cohort, and the
+metrics are not paired. Panels that place the windows side by side are for
+reading the arms together, not for a paired test.
+
+`cancer_type_baseline` is a non-text reference space: one-hot cancer type and
+nothing else, through the same nested CV. An embedding space that does not beat
+it has not shown it reads anything beyond diagnosis. It is absent for the
+`cancer_type` target, where its features would be that target's own labels.
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
@@ -53,16 +68,32 @@ suppressPackageStartupMessages({
 source("R/config.R")
 
 PC_SPACES <- unique(as.character(params$pc_spaces))
-PREDICTION_SPACE <- params$prediction_space
-WINDOW <- params$window
+PREDICTION_SPACES <- unique(as.character(params$prediction_spaces))
+WINDOWS <- unique(as.character(params$windows))
+PC_WINDOW <- as.character(params$pc_window)
 MAX_PCS <- as.integer(params$max_pcs)
 AVAILABLE_PC_SPACES <- c("clinician", "imaging", "pathology")
+# Mirrors semantic_search.common: SPACES + BASELINE_SPACES for the supervised
+# arm, and WINDOWS for the note selection.
+AVAILABLE_PREDICTION_SPACES <- c("concat", "cancer_type_baseline")
+AVAILABLE_WINDOWS <- c("alltime", "pretreatment")
 if (!length(PC_SPACES) || any(!PC_SPACES %in% AVAILABLE_PC_SPACES)) {
   stop("pc_spaces must contain only: ", paste(AVAILABLE_PC_SPACES, collapse = ", "))
 }
-if (!identical(PREDICTION_SPACE, "concat")) {
-  stop("prediction_space must be 'concat': supervised XGBoost uses the concatenated space.")
+if (!length(PREDICTION_SPACES) || any(!PREDICTION_SPACES %in% AVAILABLE_PREDICTION_SPACES)) {
+  stop("prediction_spaces must contain only: ",
+       paste(AVAILABLE_PREDICTION_SPACES, collapse = ", "))
 }
+if (!length(WINDOWS) || any(!WINDOWS %in% AVAILABLE_WINDOWS)) {
+  stop("windows must contain only: ", paste(AVAILABLE_WINDOWS, collapse = ", "))
+}
+if (length(PC_WINDOW) != 1 || !PC_WINDOW %in% AVAILABLE_WINDOWS) {
+  stop("pc_window must be exactly one of: ", paste(AVAILABLE_WINDOWS, collapse = ", "))
+}
+# Fixed display order, so panels read alltime-then-pretreatment and
+# embeddings-then-baseline regardless of the order the params arrive in.
+WINDOWS <- AVAILABLE_WINDOWS[AVAILABLE_WINDOWS %in% WINDOWS]
+PREDICTION_SPACES <- AVAILABLE_PREDICTION_SPACES[AVAILABLE_PREDICTION_SPACES %in% PREDICTION_SPACES]
 SEMANTIC_SEARCH_PATH <- file.path(DATA_PATH, "semantic_search")
 PCS_DIR <- file.path(SEMANTIC_SEARCH_PATH, "pcs")
 RESULTS_DIR <- file.path(SEMANTIC_SEARCH_PATH, "results")
@@ -71,7 +102,7 @@ FIGURE_DIR <- Sys.getenv(
   "SEMANTIC_SEARCH_FIGURES_OUT",
   unset = file.path(
     dirname(FIGURE_OUT_DIR), "semantic_search",
-    paste(c(paste(PC_SPACES, collapse = "_"), WINDOW), collapse = "_")
+    paste(c(paste(PC_SPACES, collapse = "_"), PC_WINDOW), collapse = "_")
   )
 )
 dir.create(FIGURE_DIR, recursive = TRUE, showWarnings = FALSE)
@@ -94,13 +125,44 @@ save_panel <- function(plot, name, width = 10, height = 6) {
 }
 pc_number <- function(x) as.integer(sub("^PC", "", as.character(x)))
 display_pc_space <- function(x) tools::toTitleCase(x)
+# Kept in step with prediction_targets.TARGET_DISPLAY_NAMES; a target missing
+# here falls through to its raw slug rather than being dropped.
 display_target <- function(x) {
   dplyr::recode(x,
     cancer_type = "Cancer type", stage = "Cancer stage",
     first_treatment = "First treatment type", prostate_subtype = "Prostate phenotype",
+    n_lines = "Total lines of therapy",
+    treatment_estrogen = "Estrogen therapy (female patients)",
+    treatment_androgen_axis = "Androgen-axis therapy (male patients)",
+    treatment_ici = "Immune checkpoint inhibitor",
+    treatment_tki = "Tyrosine kinase inhibitor",
+    treatment_monoclonal_antibody = "Monoclonal antibody",
+    treatment_adc = "Antibody-drug conjugate",
     .default = x
   )
 }
+display_window <- function(x) {
+  dplyr::recode(x,
+    alltime = "All notes", pretreatment = "Pre-first-treatment notes",
+    .default = x
+  )
+}
+display_space <- function(x) {
+  dplyr::recode(x,
+    concat = "Embeddings (3 x 768)", cancer_type_baseline = "Cancer type only",
+    .default = x
+  )
+}
+# The six one-vs-rest drug-class targets. Their labels are "ever exposed, any
+# line", so a positive can be set by a drug started after the notes end --
+# the pretreatment window restricts what the model reads, not when the label is
+# determined. Flagged wherever those targets are plotted.
+DRUG_CLASS_TARGETS <- c(
+  "treatment_estrogen", "treatment_androgen_axis", "treatment_ici",
+  "treatment_tki", "treatment_monoclonal_antibody", "treatment_adc"
+)
+WINDOW_FILL <- c(alltime = "#3B6FB6", pretreatment = "#D98C34")
+SPACE_SHAPE <- c(concat = 16, cancer_type_baseline = 17)
 theme_report <- theme_minimal(base_size = 11) +
   theme(panel.grid.minor = element_blank(),
         plot.title = element_text(face = "bold"),
@@ -111,8 +173,8 @@ theme_report <- theme_minimal(base_size = 11) +
 need_file(variance_file, "Explained-variance")
 
 pc_artifacts <- lapply(PC_SPACES, function(pc_space) {
-  score_file <- file.path(PCS_DIR, sprintf("%s_%s_scores.parquet", pc_space, WINDOW))
-  loading_file <- file.path(PCS_DIR, sprintf("%s_%s_loadings.parquet", pc_space, WINDOW))
+  score_file <- file.path(PCS_DIR, sprintf("%s_%s_scores.parquet", pc_space, PC_WINDOW))
+  loading_file <- file.path(PCS_DIR, sprintf("%s_%s_loadings.parquet", pc_space, PC_WINDOW))
   need_file(score_file, paste(pc_space, "PC score"))
   need_file(loading_file, paste(pc_space, "PC loading"))
   list(
@@ -126,35 +188,75 @@ names(pc_artifacts) <- PC_SPACES
 scores <- bind_rows(lapply(pc_artifacts, function(x) x$scores))
 loadings <- bind_rows(lapply(pc_artifacts, function(x) x$loadings))
 variance <- readr::read_csv(variance_file, show_col_types = FALSE) %>%
-  filter(space %in% PC_SPACES, window == WINDOW) %>%
+  filter(space %in% PC_SPACES, window == PC_WINDOW) %>%
   mutate(component = as.integer(component)) %>% arrange(component)
 association_raw <- read_csv_if_present(association_file)
 associations <- if (is.null(association_raw)) tibble() else association_raw %>%
-  filter(space %in% PC_SPACES, window == WINDOW) %>%
+  filter(space %in% PC_SPACES, window == PC_WINDOW) %>%
   mutate(component = as.integer(component), fdr = as.numeric(fdr),
          p = as.numeric(p), effect = as.numeric(effect))
 coverage_raw <- read_csv_if_present(file.path(RESULTS_DIR, "pc_join_coverage.csv"))
 association_coverage <- if (is.null(coverage_raw)) tibble() else coverage_raw %>%
-  filter(space %in% PC_SPACES, window == WINDOW)
-summary_raw <- read_csv_if_present(file.path(RESULTS_DIR, "prediction_metrics_summary.csv"))
-metrics_summary <- if (is.null(summary_raw)) tibble() else summary_raw %>%
-  filter(space == PREDICTION_SPACE, window == WINDOW, model == "xgboost")
-folds_raw <- read_csv_if_present(file.path(RESULTS_DIR, "prediction_metrics_folds.csv"))
-metrics_folds <- if (is.null(folds_raw)) tibble() else folds_raw %>%
-  filter(space == PREDICTION_SPACE, window == WINDOW, model == "xgboost")
-class_raw <- read_csv_if_present(file.path(RESULTS_DIR, "prediction_metrics_by_class.csv"))
-metrics_class <- if (is.null(class_raw)) tibble() else class_raw %>%
-  filter(space == PREDICTION_SPACE, window == WINDOW, model == "xgboost")
+  filter(space %in% PC_SPACES, window == PC_WINDOW)
+# One filter for all three prediction tables: keep every requested space and
+# window so the panels below can facet on them, and order the factors once here.
+select_prediction_rows <- function(df) {
+  if (is.null(df)) return(tibble())
+  df %>%
+    filter(space %in% PREDICTION_SPACES, window %in% WINDOWS, model == "xgboost") %>%
+    mutate(
+      window = factor(window, levels = WINDOWS),
+      space = factor(space, levels = PREDICTION_SPACES),
+      window_label = factor(display_window(as.character(window)),
+                            levels = display_window(WINDOWS)),
+      space_label = factor(display_space(as.character(space)),
+                           levels = display_space(PREDICTION_SPACES)),
+      target_label = display_target(target),
+      is_drug_class = target %in% DRUG_CLASS_TARGETS
+    )
+}
+metrics_summary <- select_prediction_rows(
+  read_csv_if_present(file.path(RESULTS_DIR, "prediction_metrics_summary.csv"))
+)
+metrics_folds <- select_prediction_rows(
+  read_csv_if_present(file.path(RESULTS_DIR, "prediction_metrics_folds.csv"))
+)
+metrics_class <- select_prediction_rows(
+  read_csv_if_present(file.path(RESULTS_DIR, "prediction_metrics_by_class.csv"))
+)
+class_counts <- read_csv_if_present(file.path(RESULTS_DIR, "prediction_class_counts.csv"))
 
 pc_counts <- scores %>%
   group_by(pc_space) %>%
   summarise(n_patients = n(), .groups = "drop") %>%
   mutate(n_pcs = sum(grepl("^PC[0-9]+$", names(scores))))
-cat("PC association spaces: ", paste(PC_SPACES, collapse = ", "), " / ", WINDOW, "\n", sep = "")
+cat("PC association spaces: ", paste(PC_SPACES, collapse = ", "), " / ", PC_WINDOW, "\n", sep = "")
 print(pc_counts)
 cat("Associations: ", nrow(associations), " tests\n", sep = "")
-cat("XGBoost runs (", PREDICTION_SPACE, " / ", WINDOW, "): ",
-    nrow(metrics_summary), " target(s)\n", sep = "")
+cat("XGBoost spaces: ", paste(PREDICTION_SPACES, collapse = ", "), "\n", sep = "")
+cat("XGBoost windows: ", paste(WINDOWS, collapse = ", "), "\n", sep = "")
+if (nrow(metrics_summary) > 0) {
+  cat("XGBoost runs: ", nrow(metrics_summary), "\n", sep = "")
+  print(
+    metrics_summary %>%
+      count(space, window, name = "n_targets") %>%
+      arrange(space, window) %>%
+      as.data.frame()
+  )
+  # A space/window the trainer has not produced yet is a gap in the figure, not
+  # an error: say which, so a partial render is not mistaken for a complete one.
+  expected <- tidyr::expand_grid(space = PREDICTION_SPACES, window = WINDOWS)
+  observed <- metrics_summary %>% distinct(space, window) %>%
+    mutate(space = as.character(space), window = as.character(window))
+  missing_runs <- dplyr::anti_join(expected, observed, by = c("space", "window"))
+  if (nrow(missing_runs) > 0) {
+    cat("MISSING (not yet trained): ",
+        paste(missing_runs$space, missing_runs$window, sep = "/", collapse = ", "),
+        "\n", sep = "")
+  }
+} else {
+  cat("XGBoost runs: 0\n")
+}
 cat("Figure directory: ", FIGURE_DIR, "\n", sep = "")
 ```
 
@@ -210,7 +312,7 @@ if (!all(c("PC1", "PC2") %in% names(scores))) {
       coord_equal() +
       labs(
         title = paste("Patient embedding space: PC1 vs PC2 —", display_pc_space(pc_space_name)),
-        subtitle = sprintf("%s / %s; n = %s", pc_space_name, WINDOW,
+        subtitle = sprintf("%s / %s; n = %s", pc_space_name, PC_WINDOW,
                            format(nrow(space_scores), big.mark = ","))
       ) +
       theme_report
@@ -415,10 +517,15 @@ if (nrow(associations) > 0) {
 
 Each value below comes from out-of-fold predictions of the nested-CV XGBoost
 workflow. The embedding preprocessing and blockwise PCA are fit inside each
-training partition. These are therefore valid internal out-of-fold recovery
-metrics, but alltime labels may still be directly documented in the notes.
-Unlike the exploratory PCA branch, this uses the concatenated three-note-type
-representation (`r PREDICTION_SPACE`) by design.
+training partition -- at both the inner (hyperparameter) and outer (evaluation)
+level -- so no transform sees validation or test data. These are therefore valid
+internal out-of-fold recovery metrics, but `alltime` labels may still be
+directly documented in the notes.
+
+Unlike the exploratory PCA branch, the embedding space here is the concatenated
+three-note-type representation by design. Panels report every requested feature
+space (`r paste(PREDICTION_SPACES, collapse = ", ")`) and note window
+(`r paste(WINDOWS, collapse = ", ")`).
 
 ### Aggregate out-of-fold metrics
 
@@ -438,52 +545,164 @@ if (nrow(metrics_summary) == 0) {
     macro_average_precision_pooled_oof = "Macro average precision"
   )
   summary_long <- metrics_summary %>%
-    select(target, n_patients, all_of(available_metrics)) %>%
+    select(target_label, space_label, window_label, n_patients, all_of(available_metrics)) %>%
     pivot_longer(all_of(available_metrics), names_to = "metric", values_to = "value") %>%
-    mutate(target = display_target(target), metric = unname(metric_labels[metric]))
-  metric_plot <- ggplot(summary_long, aes(target, value, fill = metric)) +
+    mutate(metric = unname(metric_labels[metric]))
+  # One panel per space x window: a single dodged bar chart across all four
+  # combinations is unreadable, and stacking windows in one facet column keeps
+  # the y scale shared so the arms stay visually comparable.
+  metric_plot <- ggplot(summary_long, aes(target_label, value, fill = metric)) +
     geom_col(position = position_dodge(width = 0.8), width = 0.72) +
     geom_text(aes(label = sprintf("%.2f", value)), position = position_dodge(width = 0.8),
-              vjust = -0.25, size = 3) +
+              vjust = -0.25, size = 2.6) +
+    facet_grid(window_label ~ space_label) +
     scale_y_continuous(limits = c(0, 1.08)) +
-    labs(title = "Pooled out-of-fold XGBoost performance", x = NULL, y = "Metric value", fill = NULL) +
-    theme_report + theme(axis.text.x = element_text(angle = 25, hjust = 1))
-  save_panel(metric_plot, "07_xgboost_pooled_metrics", width = 12, height = 6)
+    labs(title = "Pooled out-of-fold XGBoost performance",
+         subtitle = "Rows are note windows (different patient sets); columns are feature spaces",
+         x = NULL, y = "Metric value", fill = NULL) +
+    theme_report + theme(axis.text.x = element_text(angle = 35, hjust = 1))
+  save_panel(metric_plot, "07_xgboost_pooled_metrics",
+             width = max(12, 5 * length(PREDICTION_SPACES)),
+             height = max(6, 3.6 * length(WINDOWS)))
 
   knitr::kable(metrics_summary %>%
-    select(target, n_patients, n_classes, all_of(available_metrics)) %>%
-    mutate(target = display_target(target)), digits = 3,
-    caption = "Pooled out-of-fold performance. Each patient contributes exactly one outer-fold prediction.")
+    arrange(space, window, target) %>%
+    select(space_label, window_label, target_label, n_patients, n_classes,
+           all_of(available_metrics)), digits = 3,
+    col.names = c("Space", "Window", "Target", "n", "Classes",
+                  unname(metric_labels[available_metrics])),
+    caption = paste(
+      "Pooled out-of-fold performance. Each patient contributes exactly one",
+      "outer-fold prediction. n differs between windows because the",
+      "pretreatment features cover fewer patients, so rows are not paired."
+    ))
 }
 ```
 
 ### AUROC by prediction task
 
 This panel isolates the pooled out-of-fold macro one-vs-rest AUROC used in the
-summary above. It gives every class equal weight within its task.
+summary above. It gives every class equal weight within its task. For the six
+binary drug-class targets it is the ordinary AUROC. The dashed line at 0.5 is
+chance; it is the right reference for a one-vs-rest AUROC at any class balance.
 
-```{r xgboost-auroc-by-task}
+```{r xgboost-auroc-by-task, fig.height = 7}
 if (nrow(metrics_summary) > 0 && "macro_ovr_auc_pooled_oof" %in% names(metrics_summary)) {
   auc_by_task <- metrics_summary %>%
+    filter(is.finite(macro_ovr_auc_pooled_oof)) %>%
     transmute(
-      target = display_target(target),
+      target, target_label, space, space_label, window, window_label, is_drug_class,
       auroc = macro_ovr_auc_pooled_oof
-    ) %>%
-    arrange(auroc) %>%
-    mutate(target = factor(target, levels = target))
-  auc_plot <- ggplot(auc_by_task, aes(target, auroc)) +
-    geom_col(fill = "#8E5BD8", width = 0.7) +
-    geom_text(aes(label = sprintf("%.2f", auroc)), hjust = -0.2, size = 3.5) +
+    )
+  # Order tasks by their embedding/alltime AUROC where available so the same
+  # row order is used in every facet and the arms stay visually alignable.
+  ordering <- auc_by_task %>%
+    filter(space == "concat") %>%
+    group_by(target_label) %>%
+    summarise(rank_auroc = max(auroc), .groups = "drop")
+  if (nrow(ordering) == 0) {
+    ordering <- auc_by_task %>%
+      group_by(target_label) %>%
+      summarise(rank_auroc = max(auroc), .groups = "drop")
+  }
+  auc_by_task <- auc_by_task %>%
+    left_join(ordering, by = "target_label") %>%
+    mutate(target_label = reorder(target_label, rank_auroc))
+
+  auc_plot <- ggplot(auc_by_task, aes(target_label, auroc, fill = window_label)) +
+    geom_hline(yintercept = 0.5, linetype = "dashed", colour = "grey55") +
+    geom_col(position = position_dodge(width = 0.75), width = 0.68) +
+    geom_text(aes(label = sprintf("%.2f", auroc)),
+              position = position_dodge(width = 0.75), hjust = -0.18, size = 2.8) +
     coord_flip(clip = "off") +
-    scale_y_continuous(limits = c(0, 1.05)) +
+    facet_wrap(~ space_label, ncol = length(PREDICTION_SPACES)) +
+    scale_y_continuous(limits = c(0, 1.08)) +
+    scale_fill_manual(values = setNames(unname(WINDOW_FILL[WINDOWS]),
+                                        display_window(WINDOWS)),
+                      name = NULL) +
     labs(
       title = "Pooled out-of-fold AUROC by prediction task",
-      subtitle = "Macro one-vs-rest AUROC",
+      subtitle = "Macro one-vs-rest AUROC; dashed line is chance (0.5)",
       x = NULL, y = "AUROC"
     ) +
     theme_report +
     theme(plot.margin = margin(5.5, 25, 5.5, 5.5))
-  save_panel(auc_plot, "07b_xgboost_auroc_by_task", width = 9, height = 5)
+  save_panel(auc_plot, "07b_xgboost_auroc_by_task",
+             width = max(9, 6 * length(PREDICTION_SPACES)), height = 7)
+}
+```
+
+### Embeddings versus the cancer-type baseline
+
+The question this answers is whether the notes carry signal beyond diagnosis.
+Each arrow runs from the cancer-type-only AUROC to the embedding AUROC for the
+same target and window; a rightward arrow means the embeddings add signal. The
+comparison is within a window, never across, because the windows are different
+cohorts.
+
+Targets absent from either space are omitted rather than shown as a partial
+arrow. `cancer_type` never appears: the baseline is refused there because its
+features would be that target's own labels.
+
+```{r xgboost-embedding-vs-baseline, fig.height = 6}
+if (nrow(metrics_summary) > 0 &&
+    all(c("concat", "cancer_type_baseline") %in% as.character(metrics_summary$space)) &&
+    "macro_ovr_auc_pooled_oof" %in% names(metrics_summary)) {
+  paired <- metrics_summary %>%
+    filter(is.finite(macro_ovr_auc_pooled_oof)) %>%
+    select(target, target_label, window, window_label, is_drug_class,
+           space, auroc = macro_ovr_auc_pooled_oof) %>%
+    mutate(space = as.character(space)) %>%
+    pivot_wider(names_from = space, values_from = auroc) %>%
+    filter(!is.na(concat), !is.na(cancer_type_baseline)) %>%
+    mutate(
+      delta = concat - cancer_type_baseline,
+      target_label = reorder(target_label, delta)
+    )
+  if (nrow(paired) == 0) {
+    cat("No target has both an embedding and a baseline run in the same window.\n")
+  } else {
+    gap_plot <- ggplot(paired, aes(y = target_label)) +
+      geom_hline(yintercept = 0, colour = NA) +
+      geom_segment(
+        aes(x = cancer_type_baseline, xend = concat, yend = target_label,
+            colour = delta > 0),
+        arrow = arrow(length = unit(0.16, "cm"), type = "closed"), linewidth = 0.7
+      ) +
+      geom_point(aes(x = cancer_type_baseline), colour = "#777777", size = 2) +
+      geom_vline(xintercept = 0.5, linetype = "dashed", colour = "grey60") +
+      facet_wrap(~ window_label, ncol = length(WINDOWS)) +
+      scale_colour_manual(
+        values = c(`TRUE` = "#2E7D57", `FALSE` = "#C84E4E"),
+        labels = c(`TRUE` = "Embeddings better", `FALSE` = "Baseline better"),
+        name = NULL
+      ) +
+      scale_x_continuous(limits = c(0, 1.02)) +
+      labs(
+        title = "Do the embeddings beat cancer type alone?",
+        subtitle = "Grey dot: cancer-type-only AUROC. Arrow tip: embedding AUROC.",
+        x = "Pooled out-of-fold AUROC", y = NULL
+      ) +
+      theme_report
+    save_panel(gap_plot, "07c_xgboost_embedding_vs_baseline",
+               width = max(10, 6 * length(WINDOWS)), height = 6)
+
+    knitr::kable(
+      paired %>%
+        arrange(window, desc(delta)) %>%
+        select(window_label, target_label, cancer_type_baseline, concat, delta),
+      digits = 3,
+      col.names = c("Window", "Target", "Cancer type only", "Embeddings", "Difference"),
+      caption = paste(
+        "Embedding minus cancer-type-only pooled out-of-fold AUROC.",
+        "Positive means the notes add signal beyond diagnosis.",
+        "Both spaces use the same outer folds and seed within a window."
+      )
+    )
+  }
+} else {
+  cat("Both 'concat' and 'cancer_type_baseline' runs are required for this panel.\n",
+      "Train the baseline with --spaces concat cancer_type_baseline.\n", sep = "")
 }
 ```
 
@@ -494,17 +713,31 @@ if (nrow(metrics_folds) > 0) {
   fold_columns <- intersect(c("balanced_accuracy", "macro_f1", "macro_ovr_auc", "macro_average_precision"),
                             names(metrics_folds))
   fold_long <- metrics_folds %>%
-    select(target, fold, all_of(fold_columns)) %>%
+    select(target_label, space_label, window_label, fold, all_of(fold_columns)) %>%
     pivot_longer(all_of(fold_columns), names_to = "metric", values_to = "value") %>%
-    mutate(target = display_target(target),
-           metric = gsub("_", " ", metric))
-  fold_plot <- ggplot(fold_long, aes(target, value)) +
-    geom_boxplot(fill = "#9AB9DC", outlier.shape = NA) +
-    geom_jitter(width = 0.1, height = 0, size = 1.8, colour = "#244A7B") +
-    facet_wrap(~ metric, scales = "free_y") +
-    labs(title = "Outer-fold metric stability", x = NULL, y = "Metric value") + theme_report +
-    theme(axis.text.x = element_text(angle = 25, hjust = 1))
-  save_panel(fold_plot, "08_xgboost_outer_fold_stability", width = 13, height = 7)
+    mutate(metric = gsub("_", " ", metric))
+  # One figure per feature space: overlaying both spaces' fold spreads in one
+  # panel hides which arm a wide interval belongs to.
+  for (space_name in levels(droplevels(fold_long$space_label))) {
+    space_folds <- fold_long %>% filter(space_label == space_name)
+    fold_plot <- ggplot(space_folds, aes(target_label, value, fill = window_label)) +
+      geom_boxplot(outlier.shape = NA, position = position_dodge(width = 0.8)) +
+      geom_point(position = position_jitterdodge(jitter.width = 0.12, dodge.width = 0.8),
+                 size = 1.4, alpha = 0.75, colour = "#244A7B") +
+      facet_wrap(~ metric, scales = "free_y") +
+      scale_fill_manual(values = setNames(unname(WINDOW_FILL[WINDOWS]),
+                                          display_window(WINDOWS)),
+                        name = NULL) +
+      labs(title = paste("Outer-fold metric stability —", space_name),
+           subtitle = "Spread across outer folds; each point is one fold",
+           x = NULL, y = "Metric value") +
+      theme_report +
+      theme(axis.text.x = element_text(angle = 35, hjust = 1))
+    save_panel(fold_plot,
+               paste0("08_xgboost_outer_fold_stability_",
+                      gsub("[^a-z0-9]+", "_", tolower(space_name))),
+               width = 13, height = 7)
+  }
 }
 ```
 
@@ -513,47 +746,84 @@ if (nrow(metrics_folds) > 0) {
 ```{r xgboost-class-metrics}
 if (nrow(metrics_class) > 0) {
   class_plot_data <- metrics_class %>%
-    select(target, class, n, recall, f1, ovr_auc, average_precision) %>%
-    pivot_longer(c(recall, f1, ovr_auc, average_precision), names_to = "metric", values_to = "value") %>%
-    mutate(target = display_target(target),
-           row = paste(target, class, sep = " — "),
+    select(target_label, space_label, window_label, class, n,
+           recall, f1, ovr_auc, average_precision) %>%
+    pivot_longer(c(recall, f1, ovr_auc, average_precision),
+                 names_to = "metric", values_to = "value") %>%
+    mutate(row = paste(target_label, class, sep = " — "),
            row = reorder(row, n))
-  class_plot <- ggplot(class_plot_data, aes(metric, row, fill = value)) +
-    geom_tile(colour = "white") +
-    geom_text(aes(label = ifelse(is.finite(value), sprintf("%.2f", value), "NA")), size = 3) +
-    scale_fill_viridis_c(limits = c(0, 1), na.value = "grey90", name = "Metric") +
-    labs(title = "Per-class out-of-fold performance", x = NULL, y = NULL) + theme_report
-  save_panel(class_plot, "09_xgboost_per_class_metrics", width = 11, height = 9)
+  # One heatmap per space x window: the row set differs between windows (a rare
+  # class can fall below the minimum in one and not the other), so faceting a
+  # shared axis would leave misleading blank rows.
+  for (space_name in levels(droplevels(class_plot_data$space_label))) {
+    for (window_name in levels(droplevels(class_plot_data$window_label))) {
+      cell <- class_plot_data %>%
+        filter(space_label == space_name, window_label == window_name)
+      if (nrow(cell) == 0) next
+      class_plot <- ggplot(cell, aes(metric, row, fill = value)) +
+        geom_tile(colour = "white") +
+        geom_text(aes(label = ifelse(is.finite(value), sprintf("%.2f", value), "NA")),
+                  size = 3) +
+        scale_fill_viridis_c(limits = c(0, 1), na.value = "grey90", name = "Metric") +
+        labs(title = "Per-class out-of-fold performance",
+             subtitle = paste(space_name, "/", window_name),
+             x = NULL, y = NULL) +
+        theme_report
+      save_panel(
+        class_plot,
+        paste0("09_xgboost_per_class_metrics_",
+               gsub("[^a-z0-9]+", "_", tolower(paste(space_name, window_name)))),
+        width = 11,
+        height = max(5, min(14, 0.26 * length(unique(cell$row)) + 3))
+      )
+    }
+  }
 }
 ```
 
 ### Out-of-fold confusion matrices
 
 ```{r xgboost-confusion-matrices}
-prediction_files <- list.files(
-  PREDICTIONS_DIR,
-  pattern = sprintf("__%s__%s__xgboost\\.parquet$", PREDICTION_SPACE, WINDOW),
-  full.names = TRUE
-)
-if (length(prediction_files) == 0) {
-  cat("No matching out-of-fold prediction files found.\n")
-} else {
-  confusion_data <- bind_rows(lapply(prediction_files, function(path) {
-    target <- sub(sprintf("__%s__%s__xgboost\\.parquet$", PREDICTION_SPACE, WINDOW), "", basename(path))
+# Every requested space x window, read from the artifact stem the trainer
+# writes: {target}__{space}__{window}__{model}.parquet.
+prediction_grid <- tidyr::expand_grid(space = PREDICTION_SPACES, window = WINDOWS)
+confusion_data <- bind_rows(lapply(seq_len(nrow(prediction_grid)), function(i) {
+  space_name <- prediction_grid$space[[i]]
+  window_name <- prediction_grid$window[[i]]
+  suffix <- sprintf("__%s__%s__xgboost\\.parquet$", space_name, window_name)
+  files <- list.files(PREDICTIONS_DIR, pattern = suffix, full.names = TRUE)
+  if (length(files) == 0) return(NULL)
+  bind_rows(lapply(files, function(path) {
+    target_slug <- sub(suffix, "", basename(path))
     as.data.frame(arrow::read_parquet(path)) %>%
       count(true_label, predicted_label, name = "n") %>%
       group_by(true_label) %>% mutate(row_fraction = n / sum(n)) %>% ungroup() %>%
-      mutate(target = display_target(target))
+      mutate(
+        target = target_slug,
+        target_label = display_target(target_slug),
+        space = space_name, window = window_name,
+        space_label = display_space(space_name),
+        window_label = display_window(window_name)
+      )
   }))
-  for (target_name in unique(confusion_data$target)) {
-    target_data <- confusion_data %>% filter(target == target_name)
+}))
+if (is.null(confusion_data) || nrow(confusion_data) == 0) {
+  cat("No matching out-of-fold prediction files found for the requested spaces/windows.\n")
+} else {
+  for (target_slug in unique(confusion_data$target)) {
+    target_data <- confusion_data %>% filter(target == target_slug)
+    target_name <- unique(target_data$target_label)[[1]]
     n_classes <- length(unique(c(target_data$true_label, target_data$predicted_label)))
+    # Facet the arms into one figure per target so the same target's confusion
+    # structure can be read across windows and spaces at a glance.
     confusion_plot <- ggplot(
       target_data, aes(predicted_label, true_label, fill = row_fraction)
     ) +
       geom_tile(colour = "white") +
+      facet_grid(window_label ~ space_label) +
       scale_fill_viridis_c(
-        labels = function(x) paste0(round(100 * x), "%"), name = "Row fraction"
+        labels = function(x) paste0(round(100 * x), "%"), name = "Row fraction",
+        limits = c(0, 1)
       ) +
       labs(
         title = paste("Out-of-fold confusion matrix:", target_name),
@@ -567,34 +837,142 @@ if (length(prediction_files) == 0) {
         aes(label = sprintf("%.0f%%", 100 * row_fraction)), size = 3
       )
     }
-    safe_target <- gsub("[^a-z0-9]+", "_", tolower(target_name))
+    safe_target <- gsub("[^a-z0-9]+", "_", tolower(target_slug))
+    n_facet_cols <- length(unique(target_data$space_label))
+    n_facet_rows <- length(unique(target_data$window_label))
     save_panel(
       confusion_plot,
       paste0("10_xgboost_confusion_", safe_target),
-      width = 10,
-      height = max(7, min(12, 0.38 * n_classes + 3))
+      width = max(8, 5 * n_facet_cols),
+      height = max(5, min(14, (0.32 * n_classes + 2.5) * n_facet_rows))
     )
+  }
+}
+```
+
+## Drug-class targets
+
+The six one-vs-rest drug-class targets are defined by regex over the
+GPT-generated `MOA_Category` vocabulary, and a patient is positive if **ever**
+exposed at any line of therapy. Three consequences to keep in view:
+
+* **Not leak-free in either window.** Exposure can begin after the notes the
+  model reads, so a `pretreatment` positive may be determined by a drug started
+  years later. The window restricts the features, not the label.
+* **Class imbalance drives the metrics.** A rare class can reach a high
+  accuracy at chance-level AUROC, which is why AUROC and average precision are
+  reported alongside it.
+* **`estrogen` and `androgen_axis` are sex-restricted** to female and male
+  patients by cohort `GENDER`, so their patient counts are far below the others
+  by construction, not by attrition.
+
+The MOA regexes are unvalidated against the real vocabulary until
+`python -m semantic_search.drug_classes` is run on the cluster; check its
+coverage audit before treating these labels as settled.
+
+```{r drug-class-balance, fig.height = 5}
+drug_class_balance <- if (is.null(class_counts)) tibble() else class_counts %>%
+  filter(target %in% DRUG_CLASS_TARGETS,
+         space %in% PREDICTION_SPACES, window %in% WINDOWS)
+if (nrow(drug_class_balance) == 0) {
+  cat("No class counts found for the drug-class targets.\n")
+} else {
+  balance <- drug_class_balance %>%
+    mutate(
+      target_label = display_target(target),
+      window_label = factor(display_window(window), levels = display_window(WINDOWS)),
+      # The positive class is the one whose label does not start with NON_.
+      is_positive = !grepl("^NON_", class)
+    ) %>%
+    group_by(target_label, window_label, space, cohort_mode) %>%
+    mutate(fraction = n / sum(n)) %>%
+    ungroup() %>%
+    filter(is_positive) %>%
+    distinct(target_label, window_label, class, n, fraction)
+  balance_plot <- ggplot(balance, aes(reorder(target_label, fraction), fraction,
+                                      fill = window_label)) +
+    geom_col(position = position_dodge(width = 0.75), width = 0.68) +
+    geom_text(aes(label = sprintf("%.1f%% (n=%s)", 100 * fraction,
+                                  format(n, big.mark = ","))),
+              position = position_dodge(width = 0.75), hjust = -0.08, size = 2.8) +
+    coord_flip(clip = "off") +
+    scale_y_continuous(labels = function(x) paste0(round(100 * x), "%"),
+                       limits = c(0, max(balance$fraction) * 1.55)) +
+    scale_fill_manual(values = setNames(unname(WINDOW_FILL[WINDOWS]),
+                                        display_window(WINDOWS)),
+                      name = NULL) +
+    labs(
+      title = "Positive-class prevalence in the drug-class targets",
+      subtitle = "Ever-exposed at any line; sex-restricted targets are within their own sex stratum",
+      x = NULL, y = "Positive fraction"
+    ) +
+    theme_report +
+    theme(plot.margin = margin(5.5, 30, 5.5, 5.5))
+  save_panel(balance_plot, "11_drug_class_prevalence", width = 10, height = 5)
+
+  knitr::kable(
+    balance %>% arrange(window_label, desc(fraction)),
+    digits = 3,
+    col.names = c("Target", "Window", "Positive class", "n positive", "Fraction"),
+    caption = "Positive-class size and prevalence per drug-class target and note window."
+  )
+}
+```
+
+```{r drug-class-auroc, fig.height = 5}
+if (nrow(metrics_summary) > 0 && any(metrics_summary$is_drug_class)) {
+  drug_auc <- metrics_summary %>%
+    filter(is_drug_class, is.finite(macro_ovr_auc_pooled_oof))
+  if (nrow(drug_auc) > 0) {
+    ap_col <- "macro_average_precision_pooled_oof"
+    drug_long <- drug_auc %>%
+      select(target_label, space_label, window_label,
+             AUROC = macro_ovr_auc_pooled_oof,
+             any_of(setNames(ap_col, "Average precision"))) %>%
+      pivot_longer(-c(target_label, space_label, window_label),
+                   names_to = "metric", values_to = "value") %>%
+      filter(is.finite(value))
+    drug_plot <- ggplot(drug_long, aes(target_label, value, fill = window_label)) +
+      geom_hline(yintercept = 0.5, linetype = "dashed", colour = "grey55") +
+      geom_col(position = position_dodge(width = 0.78), width = 0.7) +
+      coord_flip() +
+      facet_grid(space_label ~ metric) +
+      scale_fill_manual(values = setNames(unname(WINDOW_FILL[WINDOWS]),
+                                          display_window(WINDOWS)),
+                        name = NULL) +
+      labs(
+        title = "Drug-class target performance",
+        subtitle = paste("Dashed line is chance for AUROC only; for average",
+                         "precision chance is the positive prevalence above"),
+        x = NULL, y = "Metric value"
+      ) +
+      theme_report
+    save_panel(drug_plot, "11b_drug_class_performance", width = 12, height = 6)
   }
 }
 ```
 
 ## Reproducibility and interpretation notes
 
-- PC scores use `L2 row normalization -> StandardScaler -> PCA` separately within clinician, imaging, or pathology patient means.
+- PC scores use `L2 row normalization -> StandardScaler -> PCA` separately within clinician, imaging, or pathology patient means. The PC panels use a single window (`pc_window`); the prediction panels use every window in `windows`.
 - PC association FDR is corrected within `(space, window, clinical family)` across all screened PCs and variables. Check `pc_join_coverage.csv` before interpreting a sparsely matched family.
-- XGBoost models use nested stratified CV with blockwise PCA fit inside training partitions. Reported summaries and confusion matrices use outer-fold predictions only.
-- The report writes PNG panels to `SEMANTIC_SEARCH_FIGURES_OUT`, or by default alongside `CLINICAL_FIGURES_OUT` at `../semantic_search/<pc-spaces>_<window>`.
+- XGBoost models use nested stratified CV with every transform fit inside the training partition, at both the inner (hyperparameter) and outer (evaluation) level. No PCA or scaler sees validation or test rows. Reported summaries and confusion matrices use outer-fold predictions only.
+- The `alltime` and `pretreatment` windows cover **different patient sets**, because a patient missing an anchor date or missing pre-anchor notes in any note-type block is absent from the pretreatment features. Read the two arms side by side; do not test them as paired.
+- `cancer_type_baseline` is one-hot cancer type with no PCA, through the same folds and seed. It is the reference an embedding space must beat to claim it reads more than diagnosis, and it is unavailable for the `cancer_type` target by construction.
+- The six drug-class targets are ever-exposure labels over the GPT `MOA_Category` vocabulary, so neither window is leak-free for them, and the regex definitions need the cluster-side coverage audit (`python -m semantic_search.drug_classes`) before the labels are trusted.
+- The report writes PNG panels to `SEMANTIC_SEARCH_FIGURES_OUT`, or by default alongside `CLINICAL_FIGURES_OUT` at `../semantic_search/<pc-spaces>_<pc-window>`.
 
 Render, for example:
 
 ```{r render-command, eval=FALSE}
 rmarkdown::render(
   "semantic_search/notebooks/05_figures.Rmd",
-  output_file = "05_figures_all_pc_spaces_alltime.html",
+  output_file = "05_figures_all_pc_spaces.html",
   params = list(
     pc_spaces = c("clinician", "imaging", "pathology"),
-    prediction_space = "concat",
-    window = "alltime",
+    prediction_spaces = c("concat", "cancer_type_baseline"),
+    windows = c("alltime", "pretreatment"),
+    pc_window = "alltime",
     max_pcs = 20
   )
 )
