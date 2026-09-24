@@ -4,8 +4,9 @@
 #   b  Overall survival: text only, all modalities except text, all modalities
 #   c  Overall survival: paired differences between the panel-b models
 #   d  The panel-c differences across every endpoint (shared endpoint filter applied)
-# and a second page (figS3_combined_scatter) of per-endpoint C-index scatters, as in
-# Figure 2a: each modality vs. modality + text, all but text vs. all, all but text vs. text.
+# and two slide-sized (13.33 x 7.5 in) pages of per-endpoint C-index scatters, as in Figure 2a:
+# figS3_combined_scatter_modality_text (each modality vs. modality + text) and
+# figS3_combined_scatter_all_text (all but text vs. all, beside all but text vs. text).
 suppressPackageStartupMessages({ library(ggplot2); library(patchwork); library(dplyr) })
 source("R/figure_utils.R")
 source("R/within_cancer_utils.R")
@@ -199,14 +200,14 @@ build_combined_scatter <- function(deltas, contrasts, title) {
   lo <- min(c(d$reference_cindex, d$model_cindex)) - 0.02
   hi <- min(1.00, max(c(d$reference_cindex, d$model_cindex)) + 0.02)
   counts <- d %>% group_by(contrast) %>%
-    summarise(label = sprintf("%.0f%% above; n = %d", 100 * mean(delta_cindex > 0), n()),
+    summarise(label = sprintf("%.0f%% above", 100 * mean(delta_cindex > 0)),
               .groups = "drop")
   one <- nrow(contrasts) == 1
   p <- ggplot(d, aes(reference_cindex, model_cindex, color = plot_group, shape = plot_group)) +
     geom_abline(slope = 1, intercept = 0, linetype = "dotted", color = "#666666") +
-    geom_point(data = filter(d, plot_group != "death"), size = 1.0, alpha = 0.5) +
+    geom_point(data = filter(d, plot_group != "death"), size = 1.5, alpha = 0.5) +
     # Overall survival last, larger and opaque, as in Figure 2a.
-    geom_point(data = filter(d, plot_group == "death"), size = 2.2, alpha = 1) +
+    geom_point(data = filter(d, plot_group == "death"), size = 3, alpha = 1) +
     geom_text(data = counts, aes(x = lo + 0.01, y = hi - 0.01, label = label),
               inherit.aes = FALSE, hjust = 0, vjust = 1, size = MANUSCRIPT_SMALL_TEXT_SIZE,
               color = "grey25") +
@@ -226,11 +227,17 @@ build_combined_scatter <- function(deltas, contrasts, title) {
   if (one) {
     p + theme(legend.position = "none")
   } else {
-    p + facet_wrap(~contrast, nrow = 1,
+    # Two rows fit a 16:9 slide; the legend sits in the empty last facet slot.
+    p + facet_wrap(~contrast, nrow = 2,
                    labeller = as_labeller(setNames(unname(MODALITY_DISPLAY[contrasts$reference]), labels))) +
-      theme(legend.position = "bottom")
+      guides(color = guide_legend(override.aes = list(size = 3, alpha = 1))) +
+      theme(legend.position = "inside", legend.position.inside = c(0.84, 0.25),
+            legend.text = element_text(size = MANUSCRIPT_BASE_SIZE))
   }
 }
+
+# A panel carrying its figure letter; skipped placeholders pass through untouched.
+tag_panel <- function(p, tag) if (is_skipped_panel(p)) p else p + labs(tag = tag)
 
 combined_scatter_caption <- function(n_excluded) {
   paste(
@@ -240,8 +247,8 @@ combined_scatter_caption <- function(n_excluded) {
       "above it favor the y-axis model. (a) Each non-text modality alone (x) versus combined with",
       "the text risk score (y), one panel per modality. (b) All modalities except text (x) versus",
       "all modalities (y). (c) All modalities except text (x) versus text alone (y). Corner",
-      "values give the share of endpoints above the line and the number of endpoints; overall",
-      "survival (Death) is drawn larger."
+      "values give the share of endpoints above the line; overall survival (Death) is drawn",
+      "larger."
     ),
     paste(
       "Models, cohorts and C-indices are as in the combined-model supplement: stacked Cox models",
@@ -304,7 +311,8 @@ render_figure3_combined <- function() {
              scatter_modalities = "figS3_combined_scatter_modality_text",
              scatter_all = "figS3_combined_scatter_all",
              scatter_text = "figS3_combined_scatter_text",
-             scatter_compiled = "figS3_combined_scatter")
+             scatter_pair = "figS3_combined_scatter_all_text",
+             scatter_report = "figS3_combined_scatter")
   for (stem in stems) clear_within_cancer_report(stem, COMBINED_GROUP)
   cindex <- read_within_cancer_data("fig3_combined_cindex.csv")
   os <- read_within_cancer_data("fig3_combined_os_cindex.csv")
@@ -367,28 +375,31 @@ render_combined_scatters <- function(deltas, stems, n_excluded) {
     scatter_text = build_combined_scatter(deltas, pair("text", "all_minus_text"),
                                           "Text alone versus all other modalities")
   )
-  sizes <- list(scatter_modalities = c(14, 3.9), scatter_all = c(3.5, 3.2),
-                scatter_text = c(3.5, 3.2))
-  for (name in names(scatters)) {
-    save_panel(scatters[[name]], stems[[name]], COMBINED_GROUP,
-               width = sizes[[name]][1], height = sizes[[name]][2], dpi = 600)
+  # Sized for a 16:9 slide: the modality facets on one, the two others side by side on another.
+  slide <- c(13.33, 7.5)
+  save_panel(tag_panel(scatters$scatter_modalities, "a"), stems[["scatter_modalities"]],
+             COMBINED_GROUP, width = slide[1], height = slide[2], dpi = 600)
+  for (name in c("scatter_all", "scatter_text")) {
+    save_panel(scatters[[name]], stems[[name]], COMBINED_GROUP, width = 5, height = 4.6, dpi = 600)
   }
-  kept <- compact_panels(scatters)
-  if (is.null(kept)) return(invisible(NULL))
-  compiled <- if (length(kept) == length(scatters)) {
-    wrap_plots(kept, design = "AAAA\n#BC#", heights = c(1, 1.15))
-  } else {
-    wrap_plots(kept, ncol = 1)
+  kept <- compact_panels(scatters[c("scatter_all", "scatter_text")])
+  if (!is.null(kept)) {
+    tags <- c(scatter_all = "b", scatter_text = "c")[names(kept)]
+    # One shared legend for the slide; the standalone panels keep theirs off.
+    save_panel(wrap_plots(unname(kept), nrow = 1, guides = "collect") +
+                 plot_annotation(tag_levels = list(unname(tags))) &
+                 guides(color = guide_legend(override.aes = list(size = 3, alpha = 1))) &
+                 theme(legend.position = "bottom", legend.text = element_text(size = MANUSCRIPT_BASE_SIZE)),
+               stems[["scatter_pair"]], COMBINED_GROUP, width = slide[1], height = slide[2],
+               dpi = 600)
   }
-  save_panel(compiled + plot_annotation(tag_levels = "a"), stems[["scatter_compiled"]],
-             COMBINED_GROUP, width = 14, height = 8.5)
   if (!nrow(deltas)) return(invisible(NULL))
   scatter_table <- deltas %>%
     filter(model %in% c(paste0(COMBINED_NON_TEXT, "+text"), "all", "text"),
            reference %in% c(COMBINED_NON_TEXT, "all_minus_text")) %>%
     select(scheme, event, model, reference, reference_cindex, model_cindex, delta_cindex)
   save_within_cancer_report(scatter_table, combined_scatter_caption(n_excluded),
-                            stems[["scatter_compiled"]])
+                            stems[["scatter_report"]])
 }
 
 render_figure3_combined()

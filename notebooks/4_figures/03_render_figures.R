@@ -56,7 +56,8 @@
 # risk scores (figures.prep.figure3_combined): overall-survival C-indices for each
 # modality with and without text and for text / all but text / all, plus the paired
 # differences across endpoints (figS3_combined_models), and per-endpoint C-index
-# scatters as in Figure 2a (figS3_combined_scatter), in the figure3 group.
+# scatters as in Figure 2a on two slide-sized pages (figS3_combined_scatter_modality_text,
+# figS3_combined_scatter_all_text), in the figure3 group.
 # plot_figure_2_supp_cancer_km.R renders Figure 2c/d within each selected cancer
 # type (figures.prep.within_cancer_km): KM grids by stage
 # (figS2_within_cancer_km_stage) and by within-cancer text risk quartile
