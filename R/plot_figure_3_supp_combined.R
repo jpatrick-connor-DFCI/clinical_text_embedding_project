@@ -4,6 +4,8 @@
 #   b  Overall survival: text only, all modalities except text, all modalities
 #   c  Overall survival: paired differences between the panel-b models
 #   d  The panel-c differences across every endpoint (shared endpoint filter applied)
+# and a second page (figS3_combined_scatter) of per-endpoint C-index scatters, as in
+# Figure 2a: each modality vs. modality + text, all but text vs. all, all but text vs. text.
 suppressPackageStartupMessages({ library(ggplot2); library(patchwork); library(dplyr) })
 source("R/figure_utils.R")
 source("R/within_cancer_utils.R")
@@ -182,6 +184,79 @@ build_combined_endpoint_contrasts <- function(deltas, summary) {
     theme(legend.position = "bottom")
 }
 
+# Per-endpoint C-index scatter of `contrasts` (reference on x, model on y), styled
+# as Figure 2a with a dotted y = x line; one facet per contrast when there are several.
+build_combined_scatter <- function(deltas, contrasts, title) {
+  if (!nrow(deltas)) return(placeholder_panel("no endpoints with every combined model"))
+  d <- inner_join(deltas, contrasts, by = c("model", "reference"))
+  if (!nrow(d)) return(placeholder_panel(paste("no endpoints for", title)))
+  labels <- combined_contrast_label(contrasts$model, contrasts$reference)
+  d <- d %>% mutate(
+    contrast = factor(combined_contrast_label(model, reference), levels = labels),
+    plot_group = fig2a_plot_group(scheme, event)
+  )
+  # Unlike Figure 2a, no 0.45 floor: single-modality C-indices (e.g. PRS) sit near 0.5.
+  lo <- min(c(d$reference_cindex, d$model_cindex)) - 0.02
+  hi <- min(1.00, max(c(d$reference_cindex, d$model_cindex)) + 0.02)
+  counts <- d %>% group_by(contrast) %>%
+    summarise(label = sprintf("%.0f%% above; n = %d", 100 * mean(delta_cindex > 0), n()),
+              .groups = "drop")
+  one <- nrow(contrasts) == 1
+  p <- ggplot(d, aes(reference_cindex, model_cindex, color = plot_group, shape = plot_group)) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dotted", color = "#666666") +
+    geom_point(data = filter(d, plot_group != "death"), size = 1.0, alpha = 0.5) +
+    # Overall survival last, larger and opaque, as in Figure 2a.
+    geom_point(data = filter(d, plot_group == "death"), size = 2.2, alpha = 1) +
+    geom_text(data = counts, aes(x = lo + 0.01, y = hi - 0.01, label = label),
+              inherit.aes = FALSE, hjust = 0, vjust = 1, size = MANUSCRIPT_SMALL_TEXT_SIZE,
+              color = "grey25") +
+    scale_color_manual(values = FIG2A_GROUP_COLORS, labels = FIG2A_GROUP_LABELS,
+                       name = NULL, drop = FALSE) +
+    scale_shape_manual(values = FIG2A_GROUP_SHAPES, labels = FIG2A_GROUP_LABELS,
+                       name = NULL, drop = FALSE) +
+    scale_x_continuous(breaks = scales::breaks_pretty(4)) +
+    scale_y_continuous(breaks = scales::breaks_pretty(4)) +
+    coord_fixed(xlim = c(lo, hi), ylim = c(lo, hi), expand = FALSE) +
+    labs(x = if (one) paste(combined_model_label(contrasts$reference), "C-index") else "Modality alone C-index",
+         y = if (one) paste(combined_model_label(contrasts$model), "C-index") else "Modality + text C-index",
+         title = title) +
+    theme_manuscript() +
+    theme(plot.title = element_text(size = MANUSCRIPT_BASE_SIZE, face = "bold"),
+          panel.spacing.x = unit(1.2, "lines"))
+  if (one) {
+    p + theme(legend.position = "none")
+  } else {
+    p + facet_wrap(~contrast, nrow = 1,
+                   labeller = as_labeller(setNames(unname(MODALITY_DISPLAY[contrasts$reference]), labels))) +
+      theme(legend.position = "bottom")
+  }
+}
+
+combined_scatter_caption <- function(n_excluded) {
+  paste(
+    "Supplemental Figure 3. Per-endpoint C-indices of the combined-modality models.",
+    paste(
+      "Each point is one endpoint, plotted as in Figure 2a; the dotted line is y = x, so points",
+      "above it favor the y-axis model. (a) Each non-text modality alone (x) versus combined with",
+      "the text risk score (y), one panel per modality. (b) All modalities except text (x) versus",
+      "all modalities (y). (c) All modalities except text (x) versus text alone (y). Corner",
+      "values give the share of endpoints above the line and the number of endpoints; overall",
+      "survival (Death) is drawn larger."
+    ),
+    paste(
+      "Models, cohorts and C-indices are as in the combined-model supplement: stacked Cox models",
+      "cross-fitted on the out-of-fold modality risk scores, with every model for an endpoint",
+      "scored on the same patients and comparable pairs. Endpoints without every model evaluated",
+      "are omitted."
+    ),
+    if (isTRUE(FILTER_UNDERPERFORMING_ENDPOINTS)) {
+      sprintf(paste("The shared manuscript endpoint outlier filter is applied (%d endpoint",
+                    "keys excluded across the manuscript)."), n_excluded)
+    } else "The shared manuscript endpoint outlier filter is disabled.",
+    sep = "\n\n"
+  )
+}
+
 combined_caption <- function(os, n_excluded) {
   n_boot <- if (nrow(os)) max(os$n_boot) else NA
   paste(
@@ -225,7 +300,11 @@ render_figure3_combined <- function() {
              os_models = "figS3_combined_os_models",
              os_contrasts = "figS3_combined_os_contrasts",
              endpoints = "figS3_combined_endpoint_contrasts",
-             compiled = "figS3_combined_models")
+             compiled = "figS3_combined_models",
+             scatter_modalities = "figS3_combined_scatter_modality_text",
+             scatter_all = "figS3_combined_scatter_all",
+             scatter_text = "figS3_combined_scatter_text",
+             scatter_compiled = "figS3_combined_scatter")
   for (stem in stems) clear_within_cancer_report(stem, COMBINED_GROUP)
   cindex <- read_within_cancer_data("fig3_combined_cindex.csv")
   os <- read_within_cancer_data("fig3_combined_os_cindex.csv")
@@ -273,7 +352,43 @@ render_figure3_combined <- function() {
   }
   table <- left_join(table, summary, by = c("model", "reference"))
   save_within_cancer_report(table, combined_caption(os, length(excluded)), stems[["compiled"]])
+  render_combined_scatters(deltas, stems, length(excluded))
   invisible(table)
+}
+
+render_combined_scatters <- function(deltas, stems, n_excluded) {
+  pair <- function(model, reference) tibble::tibble(model = model, reference = reference)
+  scatters <- list(
+    scatter_modalities = build_combined_scatter(
+      deltas, pair(paste0(COMBINED_NON_TEXT, "+text"), COMBINED_NON_TEXT),
+      "Each modality with and without text"),
+    scatter_all = build_combined_scatter(deltas, pair("all", "all_minus_text"),
+                                         "All modalities with and without text"),
+    scatter_text = build_combined_scatter(deltas, pair("text", "all_minus_text"),
+                                          "Text alone versus all other modalities")
+  )
+  sizes <- list(scatter_modalities = c(14, 3.9), scatter_all = c(3.5, 3.2),
+                scatter_text = c(3.5, 3.2))
+  for (name in names(scatters)) {
+    save_panel(scatters[[name]], stems[[name]], COMBINED_GROUP,
+               width = sizes[[name]][1], height = sizes[[name]][2], dpi = 600)
+  }
+  kept <- compact_panels(scatters)
+  if (is.null(kept)) return(invisible(NULL))
+  compiled <- if (length(kept) == length(scatters)) {
+    wrap_plots(kept, design = "AAAA\n#BC#", heights = c(1, 1.15))
+  } else {
+    wrap_plots(kept, ncol = 1)
+  }
+  save_panel(compiled + plot_annotation(tag_levels = "a"), stems[["scatter_compiled"]],
+             COMBINED_GROUP, width = 14, height = 8.5)
+  if (!nrow(deltas)) return(invisible(NULL))
+  scatter_table <- deltas %>%
+    filter(model %in% c(paste0(COMBINED_NON_TEXT, "+text"), "all", "text"),
+           reference %in% c(COMBINED_NON_TEXT, "all_minus_text")) %>%
+    select(scheme, event, model, reference, reference_cindex, model_cindex, delta_cindex)
+  save_within_cancer_report(scatter_table, combined_scatter_caption(n_excluded),
+                            stems[["scatter_compiled"]])
 }
 
 render_figure3_combined()

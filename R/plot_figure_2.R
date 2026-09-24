@@ -17,22 +17,8 @@ source("R/publication_style.R")
 # ============================================================================
 # fig2a: text vs base scatter
 # ============================================================================
-# Legend groups: death_met is split into its own "Death" entry (the
-# single literal death event) and "Mets" (metastatic-site events), separate
-# from the death_met scheme's other rows.
-FIG2A_GROUP_ORDER <- c("death", "mets", "icd3_post", "icd4_post", "phecode_post")
-FIG2A_GROUP_LABELS <- c(death = "Death", mets = "Mets",
-                        icd3_post = SCHEME_LABELS[["icd3_post"]],
-                        icd4_post = SCHEME_LABELS[["icd4_post"]],
-                        phecode_post = SCHEME_LABELS[["phecode_post"]])
-FIG2A_GROUP_COLORS <- c(death = SCHEME_COLORS[["death_met"]], mets = "#F1948A",
-                        icd3_post = SCHEME_COLORS[["icd3_post"]],
-                        icd4_post = SCHEME_COLORS[["icd4_post"]],
-                        phecode_post = SCHEME_COLORS[["phecode_post"]])
-FIG2A_GROUP_SHAPES <- c(death = 18, mets = 17,
-                        icd3_post = SCHEME_SHAPES[["icd3_post"]],
-                        icd4_post = SCHEME_SHAPES[["icd4_post"]],
-                        phecode_post = SCHEME_SHAPES[["phecode_post"]])
+# Legend groups (FIG2A_GROUP_*) live in figure_utils.R, shared with the Figure 3
+# combined-model scatters.
 
 build_fig2a <- function(metrics, metric = METRIC) {
   if (nrow(metrics) == 0) return(placeholder_panel("fig2_full_cohort_metrics.csv empty"))

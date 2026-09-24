@@ -57,6 +57,29 @@ SCHEME_LABELS  <- c(death_met = "Death + Mets", icd3_post = "ICD10 (Level 3)",
                     icd4_post = "ICD10 (Level 4)", phecode_post = "PhecodeX")
 SCHEME_SHAPES  <- c(death_met = 18, icd3_post = 16, icd4_post = 17, phecode_post = 15)
 
+# Endpoint legend groups for C-index scatters (Figure 2a and the Figure 3
+# combined-model supplement): death_met is split into its own "Death" entry (the
+# single literal death event) and "Mets" (metastatic-site events).
+FIG2A_GROUP_ORDER <- c("death", "mets", "icd3_post", "icd4_post", "phecode_post")
+FIG2A_GROUP_LABELS <- c(death = "Death", mets = "Mets",
+                        icd3_post = SCHEME_LABELS[["icd3_post"]],
+                        icd4_post = SCHEME_LABELS[["icd4_post"]],
+                        phecode_post = SCHEME_LABELS[["phecode_post"]])
+FIG2A_GROUP_COLORS <- c(death = SCHEME_COLORS[["death_met"]], mets = "#F1948A",
+                        icd3_post = SCHEME_COLORS[["icd3_post"]],
+                        icd4_post = SCHEME_COLORS[["icd4_post"]],
+                        phecode_post = SCHEME_COLORS[["phecode_post"]])
+FIG2A_GROUP_SHAPES <- c(death = 18, mets = 17,
+                        icd3_post = SCHEME_SHAPES[["icd3_post"]],
+                        icd4_post = SCHEME_SHAPES[["icd4_post"]],
+                        phecode_post = SCHEME_SHAPES[["phecode_post"]])
+fig2a_plot_group <- function(scheme, event) {
+  group <- case_when(scheme == "death_met" & event == "death" ~ "death",
+                     scheme == "death_met" ~ "mets",
+                     TRUE ~ as.character(scheme))
+  factor(group, levels = FIG2A_GROUP_ORDER)
+}
+
 RISK_COLORS  <- c(low = "#2E86C1", mid = "#F28E2B", high = "#E74C3C")
 ORDINAL4     <- c("#2E86C1", "#58A55C", "#F28E2B", "#E74C3C")
 
