@@ -209,7 +209,7 @@ build_combined_scatter <- function(deltas, contrasts, title) {
     # Overall survival last, larger and opaque, as in Figure 2a.
     geom_point(data = filter(d, plot_group == "death"), size = 3, alpha = 1) +
     geom_text(data = counts, aes(x = lo + 0.01, y = hi - 0.01, label = label),
-              inherit.aes = FALSE, hjust = 0, vjust = 1, size = MANUSCRIPT_SMALL_TEXT_SIZE,
+              inherit.aes = FALSE, hjust = 0, vjust = 1, size = MANUSCRIPT_SMALL_TEXT_SIZE + 0.8,
               color = "grey25") +
     scale_color_manual(values = FIG2A_GROUP_COLORS, labels = FIG2A_GROUP_LABELS,
                        name = NULL, drop = FALSE) +
