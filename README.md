@@ -67,6 +67,14 @@ held-out modality risk scores within the cancer type and using the same eligibil
 fit variants as `fig3_joint_betas.csv`. It writes `fig3_within_cancer_joint_betas.csv` and a
 per-stratum status table, `fig3_within_cancer_joint_fits.csv`.
 
+`figures.prep.figure3_combined` fits stacked Cox models on the held-out modality risk scores
+for every endpoint: each non-text modality alone and with the text score, text alone, all
+modalities except text, and all modalities. Each score is standardized within its own outer
+fold, the stacking Cox fit is cross-fitted over the text model's outer folds, and every model
+for an endpoint is scored on one shared cohort and set of comparable pairs (fold-block C-index).
+It writes `fig3_combined_cindex.csv`, plus overall-survival patient-bootstrap intervals
+(`--n-boot`, default 1000) in `fig3_combined_os_cindex.csv` and `fig3_combined_os_delta.csv`.
+
 `figures.prep.within_cancer_km` splits the Figure 2c/d cohort (patients with a known major stage
 and a full-cohort overall-survival text risk score) by selected cancer type, keeping the pan-cancer
 text risk quartiles of Figure 2d (cut over the whole cohort before the split). It writes `fig2_km_stage_vs_risk_by_cancer.csv` and
@@ -116,6 +124,10 @@ group: `figS3_within_cancer_joint_betas` (coefficient violins per cancer type, a
 and `figS3_within_cancer_joint_significant` (BH-FDR significant endpoints per cancer and
 modality, as in Figure 3b), both on complete-case endpoints within each cancer type and the
 `MANUSCRIPT_JOINT_COX_VARIANT` fit.
+`R/plot_figure_3_supp_combined.R` renders those models to the `figure3` group as
+`figS3_combined_models` (panels also saved separately): overall survival for each modality with
+and without text, for text / all except text / all modalities, their paired differences, and
+those differences across all endpoints (shared endpoint filter applied).
 `R/plot_figure_2_supp_cancer_km.R` renders Figure 2c/d per selected cancer type to the `figure2`
 group: `figS2_within_cancer_km_stage` (overall survival by stage) and
 `figS2_within_cancer_km_risk` (by pan-cancer text risk quartile, within-type patients), 3×3 grids annotated with the
@@ -153,10 +165,11 @@ python -m figures.prep.figure2
 python -m figures.prep.within_cancer
 python -m figures.prep.within_cancer_joint
 python -m figures.prep.within_cancer_km
+python -m figures.prep.figure3_combined
 ```
 
 `within_cancer` (per-endpoint C-index evaluation, both cohorts), `figure3` and
-`within_cancer_joint` (joint Cox fits) run their CPU-bound work on a process pool
+`within_cancer_joint` (joint Cox fits) and `figure3_combined` (stacked Cox models) run their CPU-bound work on a process pool
 (`figures/prep/parallel.py`). The worker count is `FIGURE_PREP_N_JOBS` if set, otherwise
 16 capped at the CPU allocation (`SLURM_CPUS_PER_TASK`, else the core count); `within_cancer`
 also takes `--n-jobs`. Each worker runs one polars/BLAS thread (`FIGURE_PREP_WORKER_THREADS`

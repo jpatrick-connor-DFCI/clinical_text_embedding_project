@@ -52,6 +52,10 @@
 # selected cancer type (figures.prep.within_cancer_joint): coefficient violins
 # (figS3_within_cancer_joint_betas) and significant-endpoint counts
 # (figS3_within_cancer_joint_significant) in the figure3 group.
+# plot_figure_3_supp_combined.R renders stacked Cox models on the held-out modality
+# risk scores (figures.prep.figure3_combined): overall-survival C-indices for each
+# modality with and without text and for text / all but text / all, plus the paired
+# differences across endpoints (figS3_combined_models, figure3 group).
 # plot_figure_2_supp_cancer_km.R renders Figure 2c/d within each selected cancer
 # type (figures.prep.within_cancer_km): KM grids by stage
 # (figS2_within_cancer_km_stage) and by within-cancer text risk quartile
@@ -126,6 +130,7 @@ SCRIPTS <- c(
   "plot_figure_3.R",
   "plot_figure_3_supp_cancer.R",
   "plot_figure_3_supp_cancer_joint.R",
+  "plot_figure_3_supp_combined.R",
   "plot_figure_4.R",
   "plot_figure_4_supp.R",
   "plot_figure_5.R",
