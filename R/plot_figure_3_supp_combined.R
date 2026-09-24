@@ -1,6 +1,6 @@
 # Figure 3 supplement: stacked Cox models combining the held-out modality risk
 # scores (figures.prep.figure3_combined).
-#   a  Overall survival: each non-text modality alone vs. with the text score
+#   a  Overall survival: each non-text modality alone, text alone, and the two combined
 #   b  Overall survival: text only, all modalities except text, all modalities
 #   c  Overall survival: paired differences between the panel-b models
 #   d  The panel-c differences across every endpoint (shared endpoint filter applied)
@@ -69,34 +69,40 @@ build_combined_os_modalities <- function(os, delta) {
   if (!nrow(pairs)) return(placeholder_panel("no overall-survival modality/text pairs"))
   mods <- pairs$modality
   at <- setNames(rev(seq_along(mods)), mods)
-  points <- os %>%
-    filter(model %in% c(mods, paste0(mods, "+text"))) %>%
-    mutate(modality = sub("\\+text$", "", model),
-           variant = ifelse(grepl("\\+text$", model), "with_text", "alone"),
-           y = at[modality] + ifelse(variant == "alone", 0.16, -0.16))
-  text_cindex <- os$cindex[os$model == "text"]
-  p <- ggplot(points, aes(y = y)) +
-    geom_vline(xintercept = 0.5, color = "grey70", linetype = "dashed")
-  if (length(text_cindex) == 1) {
-    p <- p +
-      geom_vline(xintercept = text_cindex, color = MODALITY_COLORS[["text"]], linetype = "dotted") +
-      annotate("text", x = text_cindex, y = length(mods) + 0.55, label = "Text alone",
-               hjust = -0.08, size = MANUSCRIPT_SMALL_TEXT_SIZE, color = MODALITY_COLORS[["text"]])
+  # Three points per modality row: the modality alone, text alone (the same OS model
+  # repeated on every row), and the two combined.
+  offsets <- c(alone = 0.24, text = 0, with_text = -0.24)
+  alone <- os %>% filter(model %in% mods) %>% mutate(modality = model, variant = "alone")
+  with_text <- os %>% filter(model %in% paste0(mods, "+text")) %>%
+    mutate(modality = sub("\\+text$", "", model), variant = "with_text")
+  text <- os %>% filter(model == "text")
+  text <- if (nrow(text) == 1) {
+    tidyr::crossing(select(text, -any_of("modality")), modality = mods) %>% mutate(variant = "text")
+  } else {
+    alone[0, ]
   }
-  p +
-    geom_linerange(aes(xmin = ci_lower, xmax = ci_upper, color = modality), linewidth = 0.6) +
-    geom_point(aes(x = cindex, fill = modality, shape = variant), size = 2.4,
+  points <- bind_rows(alone, text, with_text) %>%
+    mutate(variant = factor(variant, levels = names(offsets)),
+           y = at[modality] + offsets[as.character(variant)],
+           color_key = ifelse(variant == "text", "text", modality))
+  ggplot(points, aes(y = y)) +
+    geom_vline(xintercept = 0.5, color = "grey70", linetype = "dashed") +
+    geom_linerange(aes(xmin = ci_lower, xmax = ci_upper, color = color_key), linewidth = 0.6) +
+    geom_point(aes(x = cindex, fill = color_key, shape = variant), size = 2.4,
                color = "grey15", stroke = 0.4) +
-    scale_shape_manual(values = c(alone = 21, with_text = 24),
-                       labels = c(alone = "Modality alone", with_text = "Modality + text"),
-                       name = NULL) +
+    scale_shape_manual(values = c(alone = 21, text = 22, with_text = 24),
+                       labels = c(alone = "Modality alone", text = "Text alone",
+                                  with_text = "Modality + text"),
+                       name = NULL, drop = FALSE) +
     scale_fill_manual(values = MODALITY_COLORS, guide = "none") +
     scale_color_manual(values = MODALITY_COLORS, guide = "none") +
     labelled_rows(unname(MODALITY_DISPLAY[mods]),
                   format_estimate(pairs$delta_cindex, pairs$ci_lower, pairs$ci_upper, signed = TRUE),
                   "Gain from adding text (95% CI)") +
-    guides(shape = guide_legend(override.aes = list(fill = "grey60"))) +
-    labs(x = "Overall survival C-index", y = NULL, title = "Each modality with and without text") +
+    guides(shape = guide_legend(override.aes = list(
+      fill = c("grey60", MODALITY_COLORS[["text"]], "grey60")))) +
+    labs(x = "Overall survival C-index", y = NULL,
+         title = "Each modality, text, and the two combined") +
     theme_combined() +
     theme(legend.position = "bottom")
 }
@@ -267,9 +273,10 @@ combined_caption <- function(os, n_excluded) {
   paste(
     "Supplemental Figure 3. Combining held-out modality risk scores with the text risk score.",
     paste(
-      "(a) Overall survival C-index of each non-text modality's risk score alone (circles) and",
-      "combined with the text risk score (triangles); the dotted line marks text alone and",
-      "right-hand values give the paired gain from adding text. (b) Overall survival C-index",
+      "(a) Overall survival C-index of each non-text modality's risk score alone (circles), the",
+      "text risk score alone (squares, repeated on every row), and the two combined",
+      "(triangles), with 95% bootstrap CIs; right-hand values give the paired gain of the",
+      "combined model over the modality alone. (b) Overall survival C-index",
       "of text alone, all non-text modalities combined, and all modalities combined. (c) Paired",
       "differences between the panel-b models for overall survival. (d) The panel-c differences",
       "for every endpoint where all models were evaluated; violins and points show endpoints",
@@ -330,7 +337,7 @@ render_figure3_combined <- function() {
     os_contrasts = build_combined_os_contrasts(delta),
     endpoints = build_combined_endpoint_contrasts(deltas, summary)
   )
-  sizes <- list(os_modalities = c(7, 4.2), os_models = c(6, 2.4), os_contrasts = c(7, 2.4),
+  sizes <- list(os_modalities = c(7, 5), os_models = c(6, 2.4), os_contrasts = c(7, 2.4),
                 endpoints = c(8, 3.6))
   for (name in names(panels)) {
     save_panel(panels[[name]], stems[[name]], COMBINED_GROUP,
