@@ -227,12 +227,10 @@ build_combined_scatter <- function(deltas, contrasts, title) {
   if (one) {
     p + theme(legend.position = "none")
   } else {
-    # Two rows fit a 16:9 slide; the legend sits in the empty last facet slot.
-    p + facet_wrap(~contrast, nrow = 2,
+    p + facet_wrap(~contrast, nrow = 1,
                    labeller = as_labeller(setNames(unname(MODALITY_DISPLAY[contrasts$reference]), labels))) +
       guides(color = guide_legend(override.aes = list(size = 3, alpha = 1))) +
-      theme(legend.position = "inside", legend.position.inside = c(0.84, 0.25),
-            legend.text = element_text(size = MANUSCRIPT_BASE_SIZE))
+      theme(legend.position = "bottom", legend.text = element_text(size = MANUSCRIPT_BASE_SIZE))
   }
 }
 
@@ -375,10 +373,11 @@ render_combined_scatters <- function(deltas, stems, n_excluded) {
     scatter_text = build_combined_scatter(deltas, pair("text", "all_minus_text"),
                                           "Text alone versus all other modalities")
   )
-  # Sized for a 16:9 slide: the modality facets on one, the two others side by side on another.
+  # Sized for a 16:9 slide (13.33 x 7.5 in): the five modality facets in one row across the
+  # full slide width, and the two others side by side on a second slide.
   slide <- c(13.33, 7.5)
   save_panel(tag_panel(scatters$scatter_modalities, "a"), stems[["scatter_modalities"]],
-             COMBINED_GROUP, width = slide[1], height = slide[2], dpi = 600)
+             COMBINED_GROUP, width = slide[1], height = 4.2, dpi = 600)
   for (name in c("scatter_all", "scatter_text")) {
     save_panel(scatters[[name]], stems[[name]], COMBINED_GROUP, width = 5, height = 4.6, dpi = 600)
   }

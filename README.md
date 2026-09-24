@@ -129,8 +129,8 @@ modality, as in Figure 3b), both on complete-case endpoints within each cancer t
 and without text, for text / all except text / all modalities, their paired differences, and
 those differences across all endpoints (shared endpoint filter applied).
 Two slide-sized (16:9) pages plot per-endpoint C-indices as in Figure 2a (dotted y = x):
-`figS3_combined_scatter_modality_text` (each modality alone vs. with text, one facet per
-modality) and `figS3_combined_scatter_all_text` (all except text vs. all modalities, beside all
+`figS3_combined_scatter_modality_text` (each modality alone vs. with text, five facets in one
+row at full slide width) and `figS3_combined_scatter_all_text` (all except text vs. all modalities, beside all
 except text vs. text alone); their caption and table are written under `figS3_combined_scatter`.
 `R/plot_figure_2_supp_cancer_km.R` renders Figure 2c/d per selected cancer type to the `figure2`
 group: `figS2_within_cancer_km_stage` (overall survival by stage) and
