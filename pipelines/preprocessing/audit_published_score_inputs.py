@@ -21,8 +21,8 @@ Checks performed (each printed as a section, see `_section`):
   2. Per-analyte coverage within 30 and 90 days before the anchor, for every
      lab this project's score catalog needs (LDH, albumin, hemoglobin, CRP,
      bilirubin, creatinine, calcium, ANC, WBC, platelets, INR).
-  3. Which INR and CRP raw test codes exist in LABS and whether the
-     PROFILE-testing lab-mapping CSV maps them.
+  3. Which INR and CRP raw test codes exist in LABS and whether
+     `shared.lab_harmonizer.ANALYTE_TEST_CODES` maps them.
   4. LDH value distributions by lab source / year (assay-drift check).
   5. CAREG stage / T-stage / histology completeness.
   6. Whether HEALTH_HISTORY (or any PROFILE_DATA table) carries an ECOG, KPS
@@ -32,8 +32,8 @@ Checks performed (each printed as a section, see `_section`):
   9. How often the IPI extranodal-site ICD proxy is present; if under 5% of
      the aggressive-NHL stratum, that item should be dropped from ipi_noecog.
 
-Run from the repo root, on the cluster (LABS.parquet and the PROFILE-testing
-checkout are cluster-only paths; there is nothing to run locally):
+Run from the repo root, on the cluster (LABS.parquet is a cluster-only path;
+there is nothing to run locally):
 
     python -m pipelines.preprocessing.audit_published_score_inputs --anchor treatment
 """
@@ -46,13 +46,9 @@ import os
 import polars as pl
 
 from anchors import DEFAULT_ANCHOR, anchor_suffix, date_col, ensure_anchor
-from config import (
-    FEATURE_PATH,
-    GLEASON_TIMELINE_PATH,
-    PROFILE_TESTING_REPO_PATH,
-    SURV_PATH,
-)
+from config import FEATURE_PATH, GLEASON_TIMELINE_PATH, SURV_PATH
 from pipelines.preprocessing import profile_sources as ps
+from shared.lab_harmonizer import ANALYTE_TEST_CODES
 
 try:
     from data.schema import assert_schema
@@ -64,13 +60,8 @@ MIN_EVENTS = 5
 UNDERPOWERED_PATIENTS = 100
 UNDERPOWERED_EVENTS = 30
 
-LAB_MAPPING_FILE = os.path.join(
-    PROFILE_TESTING_REPO_PATH,
-    "data_preprocessing_common/resources/lab_mappings/OMOP_to_DFCI_lab_ids.csv",
-)
-
-# collapsed_measurement names (PROFILE-testing lab mapping) needed by the
-# score catalog in shared/published_scores.py.
+# analyte names needed by the score catalog in shared/published_scores.py,
+# matching shared/lab_harmonizer.ANALYTE_TEST_CODES.
 NEEDED_ANALYTES = [
     "LDH",
     "Albumin",
@@ -123,34 +114,34 @@ def audit_labs_schema() -> pl.DataFrame:
         )
         .collect()
     )
-    print(f"COLLECT_DT range: {date_range.item(0, 'min_date')} to {date_range.item(0, 'max_date')}")
+    print(f"{ps.LAB_COLLECT_DT} range: {date_range.item(0, 'min_date')} to {date_range.item(0, 'max_date')}")
 
     return pl.DataFrame({"column": cols, "is_ref_range_candidate": [c in ref_range_cols for c in cols]})
 
 
 def audit_lab_mapping() -> pl.DataFrame:
-    """Whether the PROFILE-testing lab-mapping CSV maps every analyte this
-    project's score catalog needs, plus INR/CRP raw test-code coverage."""
-    _section("PROFILE-testing lab mapping coverage")
-    if not os.path.exists(LAB_MAPPING_FILE):
-        print(f"MISSING: {LAB_MAPPING_FILE} (check PROFILE_TESTING_REPO_PATH)")
-        return pl.DataFrame({"analyte": NEEDED_ANALYTES, "mapped": [False] * len(NEEDED_ANALYTES)})
-
-    mapping = pl.read_csv(LAB_MAPPING_FILE)
-    mapped_names = set(mapping.get_column("collapsed_measurement"))
+    """Whether this project's hand-built TEST_TYPE_CD -> analyte table
+    (`shared.lab_harmonizer.ANALYTE_TEST_CODES`) actually matches codes
+    present in real LABS.parquet, plus INR/CRP raw test-code coverage."""
+    _section("Lab TEST_TYPE_CD mapping coverage")
+    present_codes = set(
+        pl.scan_parquet(os.path.join(ps.PROFILE_DATA_PATH, "LABS.parquet"))
+        .select(pl.col(ps.LAB_TEST_CD).cast(pl.Utf8).str.to_uppercase().unique())
+        .collect(engine="streaming")
+        .get_column(ps.LAB_TEST_CD)
+    )
     rows = []
     for analyte in NEEDED_ANALYTES:
-        mapped = analyte in mapped_names
-        rows.append({"analyte": analyte, "mapped": mapped})
-        print(f"  {analyte}: {'mapped' if mapped else 'NOT MAPPED'}")
+        codes = ANALYTE_TEST_CODES.get(analyte, [])
+        matched = [c for c in codes if c in present_codes]
+        mapped = bool(matched)
+        rows.append({"analyte": analyte, "mapped": mapped, "matched_codes": ",".join(matched)})
+        print(f"  {analyte}: {'mapped' if mapped else 'NOT MAPPED'} (codes tried: {codes}; found: {matched})")
 
     for target in ("INR", "CRP"):
-        matches = mapping.filter(pl.col("collapsed_measurement") == target)
-        if matches.height == 0:
-            print(f"  {target}: no mapping row found")
-        else:
-            test_cds = matches.get_column("mapped_test_type_cds").to_list()
-            print(f"  {target} raw test codes: {test_cds}")
+        codes = ANALYTE_TEST_CODES.get(target, [])
+        matched = [c for c in codes if c in present_codes]
+        print(f"  {target} raw test codes tried: {codes}; found in LABS: {matched}")
 
     return pl.DataFrame(rows)
 
@@ -165,7 +156,7 @@ def audit_lab_coverage(cohort_df: pl.DataFrame, anchor: str) -> pl.DataFrame:
     labs = (
         ps.load_labs()
         .filter(pl.col(ps.MRN).is_in(cohort_mrns))
-        .with_columns(ps.lab_test_name_expr().alias("TEST_NAME"))
+        .with_columns(pl.col(ps.LAB_TEST_CD).cast(pl.Utf8).str.to_uppercase().alias("_test_cd_upper"))
         .join(cohort_df.lazy(), on=ps.MRN, how="left")
         .with_columns(
             (pl.col(anchor_date_col) - pl.col(ps.LAB_COLLECT_DT)).dt.total_days().alias("days_before_anchor")
@@ -178,7 +169,8 @@ def audit_lab_coverage(cohort_df: pl.DataFrame, anchor: str) -> pl.DataFrame:
     for window in LAB_WINDOWS_DAYS:
         windowed = labs.filter(pl.col("days_before_anchor") <= window)
         for analyte in NEEDED_ANALYTES:
-            analyte_hits = windowed.filter(pl.col("TEST_NAME").str.contains(analyte, literal=True))
+            codes = ANALYTE_TEST_CODES.get(analyte, [])
+            analyte_hits = windowed.filter(pl.col("_test_cd_upper").is_in(codes))
             n_patients = analyte_hits.get_column(ps.MRN).n_unique()
             rows.append({
                 "analyte": analyte,
@@ -198,8 +190,7 @@ def audit_ldh_distribution() -> pl.DataFrame:
     _section("LDH distribution by source and year")
     labs = (
         ps.load_labs()
-        .with_columns(ps.lab_test_name_expr().alias("TEST_NAME"))
-        .filter(pl.col("TEST_NAME").str.contains("LDH", literal=True))
+        .filter(pl.col(ps.LAB_TEST_CD).cast(pl.Utf8).str.to_uppercase().is_in(ANALYTE_TEST_CODES["LDH"]))
         .with_columns(pl.col(ps.LAB_COLLECT_DT).dt.year().alias("year"))
         .group_by("year")
         .agg(

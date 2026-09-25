@@ -1,15 +1,21 @@
 """Unit tests for pipelines/preprocessing/build_published_scores.py's
 windowing, pairing and eligibility logic, using small synthetic frames (no
-cluster data). An identity harmonizer stands in for consolidate_dfci_labs."""
+cluster data). `build_lab_features` is exercised end-to-end through the
+real, self-contained `shared.lab_harmonizer.harmonize_labs`, with
+`profile_sources.load_labs` monkeypatched to return synthetic raw LABS rows
+(real `TEST_TYPE_CD` codes and units, no PROFILE-testing dependency)."""
 
 import datetime as dt
 
 import polars as pl
 
+from pipelines.preprocessing import build_published_scores as bps
+from pipelines.preprocessing import profile_sources as ps
 from pipelines.preprocessing.build_published_scores import (
     _latest_day_median,
     _paired_latest_day,
     build_eligibility,
+    build_lab_features,
 )
 
 
@@ -96,6 +102,85 @@ class TestPairedLatestDay:
         assert out.filter(pl.col("DFCI_MRN") == "P1").height == 0
 
 
+class TestBuildLabFeatures:
+    """End-to-end through the real shared.lab_harmonizer.harmonize_labs,
+    with profile_sources.load_labs monkeypatched to synthetic raw rows."""
+
+    def _raw_labs(self, rows):
+        """rows: list of (mrn, test_cd, collect_dt, numeric_result, uom)."""
+        return pl.DataFrame({
+            "DFCI_MRN": [r[0] for r in rows],
+            ps.LAB_TEST_CD: [r[1] for r in rows],
+            ps.LAB_COLLECT_DT: [r[2] for r in rows],
+            ps.LAB_NUMERIC_RESULT: [r[3] for r in rows],
+            ps.LAB_RESULT_UOM: [r[4] for r in rows],
+        })
+
+    def test_harmonizes_and_windows_real_test_codes(self, monkeypatch):
+        anchor = dt.datetime(2024, 6, 1)
+        cohort_df = pl.DataFrame({"DFCI_MRN": ["P1"], "first_treatment_date": [anchor]})
+        raw = self._raw_labs([
+            ("P1", "LDH", dt.datetime(2024, 5, 20), 250.0, "U/L"),
+            ("P1", "ALB", dt.datetime(2024, 5, 20), 4.0, "g/dL"),
+            ("P1", "XYZ_UNMAPPED", dt.datetime(2024, 5, 20), 99.0, "mg/dL"),
+            # brackets the anchor so labs_observable is True for P1
+            ("P1", "LDH", dt.datetime(2024, 7, 1), 260.0, "U/L"),
+        ])
+        monkeypatch.setattr(ps, "load_labs", lambda columns=None: raw.lazy())
+
+        out = build_lab_features(cohort_df, "treatment", window_days=30)
+        row = out.filter(pl.col("DFCI_MRN") == "P1")
+        assert row["ldh"].item() == 250.0
+        assert row["albumin"].item() == 4.0
+        assert row["labs_observable"].item() is True
+
+    def test_pairs_dnlr_and_corrected_calcium_from_harmonized_labs(self, monkeypatch):
+        anchor = dt.datetime(2024, 6, 1)
+        cohort_df = pl.DataFrame({"DFCI_MRN": ["P1"], "first_treatment_date": [anchor]})
+        raw = self._raw_labs([
+            ("P1", "ANEU", dt.datetime(2024, 5, 15), 4.0, "10^3/uL"),
+            ("P1", "WBC", dt.datetime(2024, 5, 15), 9.0, "10^3/uL"),
+            ("P1", "CA", dt.datetime(2024, 5, 15), 8.5, "mg/dL"),
+            ("P1", "ALB", dt.datetime(2024, 5, 15), 3.0, "g/dL"),
+        ])
+        monkeypatch.setattr(ps, "load_labs", lambda columns=None: raw.lazy())
+
+        out = build_lab_features(cohort_df, "treatment", window_days=30)
+        row = out.filter(pl.col("DFCI_MRN") == "P1")
+        assert row["dnlr_anc"].item() == 4.0
+        assert row["dnlr_wbc"].item() == 9.0
+        # corrected_Ca = Ca + 0.8*(4 - alb) = 8.5 + 0.8*(4-3) = 9.3
+        assert row["corrected_calcium"].item() == 9.3
+
+    def test_unmapped_code_and_unsupported_unit_dropped(self, monkeypatch):
+        anchor = dt.datetime(2024, 6, 1)
+        cohort_df = pl.DataFrame({"DFCI_MRN": ["P1"], "first_treatment_date": [anchor]})
+        raw = self._raw_labs([
+            ("P1", "NOT_A_REAL_CODE", dt.datetime(2024, 5, 20), 1.0, "mg/dL"),
+            ("P1", "LDH", dt.datetime(2024, 5, 20), 250.0, "furlongs"),
+        ])
+        monkeypatch.setattr(ps, "load_labs", lambda columns=None: raw.lazy())
+
+        out = build_lab_features(cohort_df, "treatment", window_days=30)
+        row = out.filter(pl.col("DFCI_MRN") == "P1")
+        assert row["ldh"].item() is None
+
+    def test_labs_observable_false_outside_labs_date_range(self, monkeypatch):
+        anchor = dt.datetime(2024, 6, 1)
+        cohort_df = pl.DataFrame({"DFCI_MRN": ["P1", "P2"], "first_treatment_date": [anchor, dt.datetime(2030, 1, 1)]})
+        raw = self._raw_labs([
+            ("P1", "LDH", dt.datetime(2024, 5, 20), 250.0, "U/L"),
+            ("P1", "LDH", dt.datetime(2024, 7, 1), 260.0, "U/L"),
+        ])
+        monkeypatch.setattr(ps, "load_labs", lambda columns=None: raw.lazy())
+
+        out = build_lab_features(cohort_df, "treatment", window_days=30)
+        p1 = out.filter(pl.col("DFCI_MRN") == "P1")
+        p2 = out.filter(pl.col("DFCI_MRN") == "P2")
+        assert p1["labs_observable"].item() is True
+        assert p2["labs_observable"].item() is False
+
+
 class TestEligibility:
     def _base_frames(self):
         cohort_df = pl.DataFrame({
@@ -158,10 +243,9 @@ class TestEligibility:
         assert p4["_is_dlbcl"].item() is True
 
 
-# NOTE: build_lab_features's harmonizer round-trip (to_pandas/from_pandas)
-# requires pyarrow, which this local dev environment doesn't have (same
-# class of gap as numpy for test_figure3_combined_prep.py). That boundary is
-# exercised on the cluster per the plan's handoff notes ("Verify locally
-# with synthetic pytest fixtures only"); _latest_day_median, _paired_latest_day
-# and build_eligibility above cover the windowing/pairing/eligibility logic
-# that doesn't require crossing the pandas boundary.
+def test_module_no_longer_depends_on_profile_testing_repo():
+    """Guard against re-introducing the sibling PROFILE-testing repo
+    dependency: no PROFILE_TESTING_REPO_PATH, sys.path manipulation, or
+    dfci_labs import anywhere in the builder module."""
+    assert not hasattr(bps, "PROFILE_TESTING_REPO_PATH")
+    assert not hasattr(bps, "_load_harmonizer")

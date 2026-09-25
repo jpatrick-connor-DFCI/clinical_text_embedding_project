@@ -61,14 +61,6 @@ GLEASON_TIMELINE_PATH = os.environ.get(
     ),
 )
 
-# --- Lab harmonizer (sibling PROFILE-testing repo; consolidate_dfci_labs) ---
-# Cluster checkout path is a placeholder pending the user filling in the
-# real location; override with PROFILE_TESTING_REPO_PATH in the meantime.
-PROFILE_TESTING_REPO_PATH = os.environ.get(
-    "PROFILE_TESTING_REPO_PATH",
-    "/data/gusev/USERS/jpconnor/repos/PROFILE-testing/",
-)
-
 # --- Figure rendering output (Python figure-data prep + R plotting share this) ---
 FIGURE_OUT_DIR = os.environ.get(
     "CLINICAL_FIGURES_OUT",

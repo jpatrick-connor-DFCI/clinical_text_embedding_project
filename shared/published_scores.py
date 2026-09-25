@@ -15,8 +15,8 @@ variants via `ecog_free()` - each keeps a `performance_status` slot so the
 exact original version can be added later if a performance-status source
 ever becomes available.
 
-Units are the PROFILE-testing lab harmonizer's canonical units (see
-`consolidate_dfci_labs`):
+Units are this project's own lab harmonizer's canonical units (see
+`shared/lab_harmonizer.py`):
   - LDH in U/L
   - albumin and hemoglobin in g/dL
   - CRP, bilirubin, creatinine and calcium in mg/dL

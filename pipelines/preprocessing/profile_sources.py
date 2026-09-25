@@ -261,32 +261,6 @@ def load_labs(columns: list[str] | None = None) -> pl.LazyFrame:
     return lf
 
 
-def lab_test_name_expr(code_col: str = LAB_TEST_CD, descr_col: str = LAB_TEST_DESCR) -> pl.Expr:
-    """Vectorized polars port of PROFILE-testing's IPIO/data_preprocessing/
-    longitudinal_data_processing.py:generate_new_test_name_expr (~line 51),
-    reimplemented rather than imported because importing that module has
-    side effects. Builds the TEST_NAME string consolidate_dfci_labs expects:
-
-    - code is null -> str(descr). Faithfully reproduces the original's
-      `str(descr)` call even when descr is itself null: pandas' str(nan) is
-      the literal string "nan", so a null descr in this branch is coalesced
-      to the "nan" literal rather than left null.
-    - code == descr -> str(code).
-    - otherwise -> "{code} ({descr})".
-    """
-    code = pl.col(code_col)
-    descr = pl.col(descr_col)
-    descr_as_str = pl.when(descr.is_null()).then(pl.lit("nan")).otherwise(descr.cast(pl.Utf8))
-    code_as_str = code.cast(pl.Utf8)
-    return (
-        pl.when(code.is_null())
-        .then(descr_as_str)
-        .when(code == descr)
-        .then(code_as_str)
-        .otherwise(code_as_str + pl.lit(" (") + descr.cast(pl.Utf8) + pl.lit(")"))
-    )
-
-
 def registry_stage_expr(col: str) -> pl.Expr:
     """Vectorized polars port of PROFILE_data_processing/cancer_annotations.py:
     _clean_stage_expr (~line 553): extract the leading digit of a CAREG stage

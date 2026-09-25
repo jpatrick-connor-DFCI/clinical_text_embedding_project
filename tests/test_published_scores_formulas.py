@@ -3,8 +3,6 @@ boundaries, null handling, the ECOG lower-bound property, and registry
 integrity. No file I/O, no cluster data -- pure polars expressions evaluated
 against small synthetic frames."""
 
-import os
-
 import polars as pl
 import pytest
 
@@ -322,23 +320,14 @@ def test_score_expr_requires_items():
         sp.score_expr(empty)
 
 
-def test_analytes_present_in_harmonizer_mapping_csv():
-    mapping_path = os.path.join(
-        "..", "..", "Official CAIA Project Repos", "PROFILE-testing",
-        "data_preprocessing_common", "resources", "lab_mappings", "OMOP_to_DFCI_lab_ids.csv",
-    )
-    mapping_path = os.environ.get("PROFILE_TESTING_LAB_MAPPING_CSV", mapping_path)
-    if not os.path.exists(mapping_path):
-        pytest.skip(f"PROFILE-testing lab mapping CSV not found locally at {mapping_path}")
-
-    import csv
-    with open(mapping_path) as f:
-        reader = csv.DictReader(f)
-        mapped_names = {row["collapsed_measurement"] for row in reader}
+def test_analytes_present_in_harmonizer_mapping():
+    from shared.lab_harmonizer import ANALYTE_TEST_CODES
 
     needed = {"LDH", "Albumin", "Hemoglobin", "CRP", "Total bilirubin", "Creatinine", "Calcium", "Neutrophils absolute", "WBC", "Platelets", "INR"}
-    missing = needed - mapped_names
-    assert not missing, f"analytes missing from harmonizer mapping: {missing}"
+    missing = needed - set(ANALYTE_TEST_CODES)
+    assert not missing, f"analytes missing from shared.lab_harmonizer.ANALYTE_TEST_CODES: {missing}"
+    for analyte in needed:
+        assert ANALYTE_TEST_CODES[analyte], f"{analyte} has no mapped test codes"
 
 
 def test_dlbcl_subtype_names_nonempty_and_unique():

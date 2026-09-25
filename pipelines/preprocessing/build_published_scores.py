@@ -16,9 +16,10 @@ Inputs
 - Cancer type / group (`profile_sources.load_cancer_type`): raw
   `CANCER_GROUP`, not the >=500-patient-collapsed `cancer_type_df` (which
   would lose AGGR_NHL and LIVER/HCC-sized strata).
-- LABS (`profile_sources.load_labs`), harmonized through the sibling
-  PROFILE-testing repo's `consolidate_dfci_labs` (injectable, so tests don't
-  need the sibling repo checked out).
+- LABS (`profile_sources.load_labs`), harmonized in-repo by
+  `shared.lab_harmonizer.harmonize_labs` (exact `TEST_TYPE_CD` match against
+  a hand-built analyte/unit table for the ~10 analytes these scores need; no
+  external repo dependency).
 - The LLM Gleason timeline (`config.GLEASON_TIMELINE_PATH`) for CAPRA.
 
 No-leakage windowing
@@ -64,21 +65,19 @@ layered in once the audit confirms CAREG histology-field coverage).
 """
 
 import argparse
-import importlib.util
 import os
-import sys
-from typing import Callable
 
 import polars as pl
 
 from anchors import ANCHORS, DEFAULT_ANCHOR, age_col, anchor_suffix, date_col
-from config import FEATURE_PATH, GLEASON_TIMELINE_PATH, PROFILE_TESTING_REPO_PATH, SURV_PATH
+from config import FEATURE_PATH, GLEASON_TIMELINE_PATH, SURV_PATH
 try:
     from data.schema import assert_schema
 except ModuleNotFoundError:
     from pipelines.preprocessing.schema import assert_schema
 from pipelines.preprocessing import profile_sources as ps
 from pipelines.preprocessing.generate_all_non_text_covariates import _feature_path
+from shared.lab_harmonizer import harmonize_labs
 from shared.published_scores import (
     CATALOG_COLUMNS,
     CATALOG_SCORE_IDS,
@@ -112,31 +111,6 @@ COVERAGE_SCHEMA = {
     "n_complete": pl.Int64,
     "n_events_placeholder": pl.Int64,
 }
-
-HarmonizerFn = Callable[[pl.DataFrame, pl.DataFrame], pl.DataFrame]
-
-
-def _load_harmonizer() -> tuple[HarmonizerFn, pl.DataFrame]:
-    """Import `consolidate_dfci_labs` from the sibling PROFILE-testing repo
-    via a path-based import (not sys.path insertion, to avoid shadowing this
-    repo's own modules), and load its lab-mapping CSV."""
-    module_path = os.path.join(
-        PROFILE_TESTING_REPO_PATH, "data_preprocessing_common", "dfci_labs.py"
-    )
-    spec = importlib.util.spec_from_file_location("dfci_labs", module_path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot load consolidate_dfci_labs from {module_path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["dfci_labs"] = module
-    spec.loader.exec_module(module)
-
-    mapping_path = os.path.join(
-        PROFILE_TESTING_REPO_PATH, "data_preprocessing_common", "resources",
-        "lab_mappings", "OMOP_to_DFCI_lab_ids.csv",
-    )
-    mapping_df = pl.read_csv(mapping_path).to_pandas()
-    return module.consolidate_dfci_labs, mapping_df
-
 
 def _load_cohort_df() -> pl.DataFrame:
     return pl.read_parquet(os.path.join(SURV_PATH, "cohort_df.parquet"))
@@ -210,6 +184,9 @@ def _paired_latest_day(
         pl.col("_days_before_anchor").min().alias("_day_days_before"),
     )
     wide = per_day.pivot(on="_analyte_col_name", index=["DFCI_MRN", "_collect_day", "_day_days_before"], values="_day_value")
+    for col in (col_a, col_b):
+        if col not in wide.columns:
+            wide = wide.with_columns(pl.lit(None, dtype=pl.Float64).alias(col))
     both = wide.filter(pl.col(col_a).is_not_null() & pl.col(col_b).is_not_null())
     latest = both.sort(["DFCI_MRN", "_day_days_before"]).group_by("DFCI_MRN", maintain_order=True).first()
     return latest.select(
@@ -224,8 +201,6 @@ def build_lab_features(
     cohort_df: pl.DataFrame,
     anchor: str,
     window_days: int,
-    harmonizer: HarmonizerFn,
-    mapping_df: "object",
 ) -> pl.DataFrame:
     """Harmonize LABS for the cohort and window, then pivot to one
     wide row per patient with a `{col}` value and `{col}__days_before_anchor`
@@ -235,20 +210,18 @@ def build_lab_features(
     anchor_dates = cohort_df.select("DFCI_MRN", anchor_col)
 
     raw = ps.load_labs(
-        columns=["DFCI_MRN", ps.LAB_TEST_CD, ps.LAB_TEST_DESCR, ps.LAB_COLLECT_DT, ps.LAB_NUMERIC_RESULT]
+        columns=["DFCI_MRN", ps.LAB_TEST_CD, ps.LAB_COLLECT_DT, ps.LAB_NUMERIC_RESULT, ps.LAB_RESULT_UOM]
     ).filter(pl.col("DFCI_MRN").is_in(cohort_mrns)).collect()
 
-    raw = raw.with_columns(ps.lab_test_name_expr().alias("TEST_NAME"))
-    harmonized_pd = harmonizer(raw.to_pandas(), mapping_df)
-    harmonized = pl.from_pandas(harmonized_pd)
+    harmonized = harmonize_labs(
+        raw, test_cd_col=ps.LAB_TEST_CD, result_col=ps.LAB_NUMERIC_RESULT, uom_col=ps.LAB_RESULT_UOM,
+    )
 
-    needed_cols = [c for c in ("DFCI_MRN", "collapsed_measurement", "COLLECT_DT", "harmonized_value") if c in harmonized.columns]
-    if len(needed_cols) < 4:
-        raise ValueError(f"consolidate_dfci_labs output missing expected columns; got {harmonized.columns}")
-
-    labs = harmonized.select(needed_cols).rename({
-        "collapsed_measurement": "_analyte", "COLLECT_DT": "_collect_dt", "harmonized_value": "_value",
-    }).filter(pl.col("_analyte").is_in(NEEDED_ANALYTES))
+    labs = harmonized.select(
+        "DFCI_MRN", "_analyte",
+        pl.col(ps.LAB_COLLECT_DT).alias("_collect_dt"),
+        pl.col("_harmonized_value").alias("_value"),
+    ).filter(pl.col("_analyte").is_in(NEEDED_ANALYTES))
 
     labs = labs.with_columns(pl.col("_analyte").replace(_ANALYTE_COL).alias("_analyte_col_name"))
     labs = labs.join(anchor_dates, on="DFCI_MRN", how="inner").with_columns(
@@ -437,8 +410,7 @@ def main() -> None:
     cancer_group = _load_cancer_group()
     gleason = _load_gleason()
 
-    harmonizer, mapping_df = _load_harmonizer()
-    lab_features = build_lab_features(cohort_df, anchor, window_days, harmonizer, mapping_df)
+    lab_features = build_lab_features(cohort_df, anchor, window_days)
 
     eligibility = build_eligibility(cohort_df, anchor, careg, cancer_group, met_burden)
     score_frame = build_score_frame(cohort_df, anchor, lab_features, eligibility, gleason)
