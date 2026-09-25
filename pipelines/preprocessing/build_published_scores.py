@@ -54,12 +54,11 @@ Outputs
 Eligibility population notes
 -----------------------------
 Raw `CANCER_GROUP` values in PROFILE_data_processing's compiled
-CANCER_TYPE.parquet are `LIVER` and `KIDNEY`, not "HCC"/"RCC" — ALBI/MELD
-restrict LIVER to hepatocellular histology and IMDC/MSKCC restrict KIDNEY to
-renal-cell histology via CAREG ICD-O/histology text, falling back to the
-raw group alone when histology text is unavailable (this is the "modified,
-exploratory" surface the plan calls out; a stricter histology filter can be
-layered in once the audit confirms CAREG histology-field coverage).
+CANCER_TYPE.parquet are `LIVER` and `KIDNEY`, not "HCC"/"RCC". ALBI/MELD
+treat every LIVER patient as HCC. IMDC/MSKCC restrict KIDNEY to renal-cell
+carcinoma via the OncoTree `GENOMICS_CANCER_TYPE`, keeping KIDNEY patients
+with no genomic type (ICD-only). The same column drives the LIPI SCLC/carcinoid
+exclusion and the DLBCL flag; CAREG carries no histology text.
 "advanced" (mGPS/RMH eligibility) means `N_MET_SITES >= 1` from
 `met_burden_df`, or registry stage IV diagnosed on or before the anchor.
 """
@@ -142,6 +141,7 @@ def _load_careg_frame() -> pl.DataFrame:
 def _load_cancer_group() -> pl.DataFrame:
     return ps.load_cancer_type().select(
         pl.col(ps.MRN).alias("DFCI_MRN"), pl.col(ps.CANCER_GROUP).alias("CANCER_GROUP"),
+        pl.col("GENOMICS_CANCER_TYPE"),
     )
 
 
@@ -277,7 +277,6 @@ def build_eligibility(
         "DFCI_MRN",
         pl.col("DIAGNOSIS_DT").alias("_diagnosis_dt"),
         pl.col("_REGISTRY_STAGE"),
-        pl.col("HISTOLOGY_DESC") if "HISTOLOGY_DESC" in careg.columns else pl.lit(None, dtype=pl.String).alias("HISTOLOGY_DESC"),
     ).sort("_diagnosis_dt").group_by("DFCI_MRN", maintain_order=True).first()
 
     base = (
@@ -298,8 +297,13 @@ def build_eligibility(
     )
     advanced = (pl.col("N_MET_SITES") >= 1) | stage_iv_by_anchor.fill_null(False)
 
-    histology = pl.col("HISTOLOGY_DESC").fill_null("")
-    hcc = (pl.col("CANCER_GROUP") == "LIVER") & histology.str.contains(r"(?i)hepatocellular")
+    # CAREG has no histology column; the detailed type is CANCER_TYPE.parquet's
+    # OncoTree GENOMICS_CANCER_TYPE (null for ICD-only patients).
+    histology = (
+        pl.col("GENOMICS_CANCER_TYPE").fill_null("")
+        if "GENOMICS_CANCER_TYPE" in cancer_group.columns else pl.lit("")
+    )
+    hcc = pl.col("CANCER_GROUP") == "LIVER"
     rcc = (pl.col("CANCER_GROUP") == "KIDNEY") & (
         histology.str.contains(r"(?i)renal cell") | (histology == "")
     )

@@ -63,7 +63,7 @@ for _analyte, _units in {
     "LDH": _ACTIVITY_U_L,
     "Albumin": _MASS_G_DL,
     "Hemoglobin": _MASS_G_DL,
-    "CRP": _MASS_MG_DL,
+    "CRP": {**_MASS_MG_DL, "mg/l": 0.1},
     "Total bilirubin": _MASS_MG_DL,
     "Creatinine": _MASS_MG_DL,
     "Calcium": _MASS_MG_DL,

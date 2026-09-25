@@ -170,6 +170,10 @@ def _score_cohort(
     frame = score_df.select(
         "DFCI_MRN", f"{score.id}__eligible", f"{score.id}__complete", points_col,
         f"{score.id}__group", "labs_observable",
+    ).with_columns(
+        # An all-null column round-trips through CSV as String.
+        pl.col(points_col).cast(pl.Float64, strict=False),
+        pl.col(f"{score.id}__group").cast(pl.String),
     ).filter(
         pl.col(f"{score.id}__eligible").fill_null(False)
         & pl.col("labs_observable").fill_null(True)

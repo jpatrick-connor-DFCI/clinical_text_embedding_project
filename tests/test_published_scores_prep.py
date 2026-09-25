@@ -66,6 +66,25 @@ def test_score_cohort_filters_to_eligible_observable_complete_scored():
     assert frame["DFCI_MRN"].to_list() == ["P1"]
 
 
+
+def test_score_cohort_handles_all_null_points_read_back_from_csv(tmp_path):
+    """An all-null points/group column comes back from CSV as String; that used
+    to raise inside _score_cohort and get mislabeled missing_inputs."""
+    path = tmp_path / "published_scores_df.csv.gz"
+    pl.DataFrame({
+        "DFCI_MRN": ["P1", "P2"],
+        "mgps__eligible": [True, True],
+        "mgps__complete": [False, False],
+        "mgps__points": [None, None],
+        "mgps__group": [None, None],
+        "labs_observable": [True, True],
+    }, schema_overrides={"mgps__points": pl.Float64, "mgps__group": pl.String}).write_csv(path, compression="gzip")
+    score_df = pl.read_csv(path, schema_overrides={"DFCI_MRN": pl.String})
+    assert score_df.schema["mgps__points"] == pl.String
+    text = pl.DataFrame({"DFCI_MRN": ["P1", "P2"], "text_score": [0.1, 0.2], prep.TEXT_FOLD: [0.0, 1.0]})
+    outcomes = pl.DataFrame({"DFCI_MRN": ["P1", "P2"], "event_flag": [1.0, 0.0], "time": [1.0, 2.0]})
+    assert prep._score_cohort(score_df, text, outcomes, SCORE).is_empty()
+
 def test_evaluate_score_reports_every_model_and_bootstrap_contrasts():
     frame = _cohort(600, 1)
     cindex, delta = prep.evaluate_score(

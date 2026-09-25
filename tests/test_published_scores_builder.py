@@ -166,6 +166,15 @@ class TestBuildLabFeatures:
         row = out.filter(pl.col("DFCI_MRN") == 101)
         assert row["ldh"].item() is None
 
+    def test_crp_in_mg_per_l_converted_to_mg_per_dl(self, monkeypatch):
+        anchor = dt.datetime(2024, 6, 1)
+        cohort_df = pl.DataFrame({"DFCI_MRN": [101], "first_treatment_date": [anchor]})
+        raw = self._raw_labs([(101, "CRP", dt.datetime(2024, 5, 20), 15.0, "mg/L")])
+        monkeypatch.setattr(ps, "load_labs", lambda columns=None: raw.lazy())
+
+        out = build_lab_features(cohort_df, "treatment", window_days=30)
+        assert out.filter(pl.col("DFCI_MRN") == 101)["crp"].item() == 1.5
+
     def test_labs_observable_false_outside_labs_date_range(self, monkeypatch):
         anchor = dt.datetime(2024, 6, 1)
         cohort_df = pl.DataFrame({"DFCI_MRN": [101, 102], "first_treatment_date": [anchor, dt.datetime(2030, 1, 1)]})
@@ -200,14 +209,15 @@ class TestEligibility:
                 dt.datetime(2023, 1, 1),
             ],
             "_REGISTRY_STAGE": [4, 4, 1, 1],
-            "HISTOLOGY_DESC": [
-                "Hepatocellular Carcinoma", "Hepatocellular Carcinoma",
-                "Small Cell Lung Cancer", "Diffuse Large B-Cell Lymphoma, NOS",
-            ],
         })
         cancer_group = pl.DataFrame({
             "DFCI_MRN": [101, 102, 103, 104],
             "CANCER_GROUP": ["LIVER", "LIVER", "LUNG", "AGGR_NHL"],
+            # P2 is ICD-only (no genomic type); LIVER alone must still count as HCC.
+            "GENOMICS_CANCER_TYPE": [
+                "Hepatocellular Carcinoma", None,
+                "Small Cell Lung Cancer", "Diffuse Large B-Cell Lymphoma, NOS",
+            ],
         })
         met_burden = pl.DataFrame({
             "DFCI_MRN": [101, 102, 103, 104],
@@ -229,6 +239,8 @@ class TestEligibility:
         p1 = out.filter(pl.col("DFCI_MRN") == 101)
         assert p1["albi__eligible"].item() is True
         assert p1["meld__eligible"].item() is True
+        p2 = out.filter(pl.col("DFCI_MRN") == 102)
+        assert p2["albi__eligible"].item() is True
 
     def test_sclc_excluded_from_lipi(self):
         cohort_df, careg, cancer_group, met_burden = self._base_frames()
@@ -278,9 +290,11 @@ class TestMrnDtypeConsistency:
             "DFCI_MRN": [101, 102],
             "DIAGNOSIS_DT": [dt.datetime(2023, 1, 1), dt.datetime(2023, 1, 1)],
             "_REGISTRY_STAGE": [4, 1],
-            "HISTOLOGY_DESC": ["Hepatocellular Carcinoma", "Small Cell Lung Cancer"],
         })
-        cancer_group = pl.DataFrame({"DFCI_MRN": [101, 102], "CANCER_GROUP": ["LIVER", "LUNG"]})
+        cancer_group = pl.DataFrame({
+            "DFCI_MRN": [101, 102], "CANCER_GROUP": ["LIVER", "LUNG"],
+            "GENOMICS_CANCER_TYPE": ["Hepatocellular Carcinoma", "Small Cell Lung Cancer"],
+        })
 
         # Would previously raise SchemaError before this dtype fix.
         out = build_eligibility(cohort_df, "treatment", careg, cancer_group, met_burden)
