@@ -102,6 +102,16 @@ _ANALYTE_COL = {
     "Neutrophils absolute": "anc",
 }
 
+def _to_datetime_col(frame: pl.DataFrame, col: str) -> pl.DataFrame:
+    """Cast `col` to Datetime regardless of whether it arrives as Date,
+    Datetime or String -- `.cast(pl.Datetime, strict=False)` silently
+    returns all-null for a String column instead of parsing it, so String
+    columns must go through `str.to_datetime` instead."""
+    if frame.schema[col] == pl.String:
+        return frame.with_columns(pl.col(col).str.to_datetime(strict=False))
+    return frame.with_columns(pl.col(col).cast(pl.Datetime, strict=False))
+
+
 DEFAULT_LAB_WINDOW_DAYS = 30
 
 COVERAGE_SCHEMA = {
@@ -263,9 +273,9 @@ def build_eligibility(
     and SCLC-exclusion flags, and per-score eligibility booleans."""
     anchor_col = date_col(anchor)
 
-    diag = careg.select(
+    diag = _to_datetime_col(careg, "DIAGNOSIS_DT").select(
         "DFCI_MRN",
-        pl.col("DIAGNOSIS_DT").cast(pl.Datetime, strict=False).alias("_diagnosis_dt"),
+        pl.col("DIAGNOSIS_DT").alias("_diagnosis_dt"),
         pl.col("_REGISTRY_STAGE"),
         pl.col("HISTOLOGY_DESC") if "HISTOLOGY_DESC" in careg.columns else pl.lit(None, dtype=pl.String).alias("HISTOLOGY_DESC"),
     ).sort("_diagnosis_dt").group_by("DFCI_MRN", maintain_order=True).first()
@@ -326,10 +336,11 @@ def build_score_frame(
     """Join everything into one wide frame and score all 9 catalog entries."""
     age_column = age_col(anchor)
 
-    gleason_at_dx = gleason.join(
-        eligibility.select("DFCI_MRN", "_diagnosis_dt"), on="DFCI_MRN", how="left",
+    gleason_at_dx = _to_datetime_col(
+        gleason.join(eligibility.select("DFCI_MRN", "_diagnosis_dt"), on="DFCI_MRN", how="left"),
+        "gleason_date",
     ).with_columns(
-        (pl.col("gleason_date").cast(pl.Datetime, strict=False) - pl.col("_diagnosis_dt")).dt.total_days().alias("_gleason_offset")
+        (pl.col("gleason_date") - pl.col("_diagnosis_dt")).dt.total_days().alias("_gleason_offset")
     ).filter(
         (pl.col("_gleason_offset") >= -180) & (pl.col("_gleason_offset") <= 30)
         & (pl.col("gleason_date") <= pl.col("_diagnosis_dt").dt.offset_by("30d"))

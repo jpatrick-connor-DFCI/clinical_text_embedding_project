@@ -16,6 +16,7 @@ from pipelines.preprocessing.build_published_scores import (
     _paired_latest_day,
     build_eligibility,
     build_lab_features,
+    build_score_frame,
 )
 
 
@@ -284,3 +285,43 @@ class TestMrnDtypeConsistency:
         # Would previously raise SchemaError before this dtype fix.
         out = build_eligibility(cohort_df, "treatment", careg, cancer_group, met_burden)
         assert out.height == 2
+
+    def test_gleason_date_string_column_does_not_crash_build_score_frame(self, monkeypatch):
+        """Regression test: on the cluster, gleason_date arrives as a string
+        (or otherwise non-Datetime) column. build_score_frame previously
+        cast it to Datetime only inline inside an offset expression, which
+        doesn't persist -- a later filter comparing the *original* string
+        column against a Datetime raised InvalidOperationError."""
+        cohort_df = pl.DataFrame({
+            "DFCI_MRN": [101],
+            "first_treatment_date": [dt.datetime(2024, 6, 1)],
+            "AGE_AT_TREATMENTSTART": [65],
+        })
+        careg = pl.DataFrame({
+            "DFCI_MRN": [101],
+            "DIAGNOSIS_DT": [dt.datetime(2023, 1, 1)],
+            "_REGISTRY_STAGE": [1],
+            "HISTOLOGY_DESC": ["Prostate Adenocarcinoma"],
+        })
+        cancer_group = pl.DataFrame({"DFCI_MRN": [101], "CANCER_GROUP": ["PROSTATE"]})
+        met_burden = pl.DataFrame({"DFCI_MRN": [101], "N_MET_SITES": [0]})
+        eligibility = build_eligibility(cohort_df, "treatment", careg, cancer_group, met_burden)
+
+        monkeypatch.setattr(ps, "load_labs", lambda columns=None: pl.DataFrame(
+            schema={
+                "DFCI_MRN": pl.Int64, ps.LAB_TEST_CD: pl.String, ps.LAB_COLLECT_DT: pl.Datetime,
+                ps.LAB_NUMERIC_RESULT: pl.Float64, ps.LAB_RESULT_UOM: pl.String,
+            }
+        ).lazy())
+        lab_features = build_lab_features(cohort_df, "treatment", window_days=30)
+
+        gleason = pl.DataFrame({
+            "DFCI_MRN": [101],
+            "gleason_date": ["2023-01-15"],  # string, as on the cluster
+            "gleason_primary": [3],
+            "gleason_secondary": [4],
+        })
+
+        out = build_score_frame(cohort_df, "treatment", lab_features, eligibility, gleason)
+        assert out.height == 1
+        assert out["gleason_primary"].item() == 3
