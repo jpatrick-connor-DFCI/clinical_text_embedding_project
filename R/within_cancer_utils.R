@@ -9,6 +9,27 @@ if (!exists("SELECTED_CANCER_TYPES")) {
 OS_SCHEME <- "death_met"
 OS_EVENT <- "death"
 
+format_estimate <- function(estimate, lower, upper, signed = FALSE) {
+  sprintf(if (signed) "%+.3f (%.3f, %.3f)" else "%.3f (%.3f, %.3f)", estimate, lower, upper)
+}
+
+# Rows listed top to bottom, with right-hand labels on a secondary axis.
+labelled_rows <- function(left, right, right_name = NULL) {
+  at <- rev(seq_along(left))
+  scale_y_continuous(breaks = at, labels = left, expand = expansion(add = 0.6),
+                     sec.axis = sec_axis(~., breaks = at, labels = right, name = right_name))
+}
+
+theme_combined <- function() {
+  theme_manuscript() +
+    theme(axis.line.y.right = element_blank(), axis.ticks.y.right = element_blank(),
+          axis.text.y.right = element_text(size = MANUSCRIPT_BASE_SIZE - 3, color = "grey25"),
+          axis.title.y.right = element_text(size = MANUSCRIPT_BASE_SIZE - 3, color = "grey25"),
+          panel.grid.major.y = element_line(color = "grey93"),
+          plot.title = element_text(size = MANUSCRIPT_BASE_SIZE, face = "bold"),
+          plot.subtitle = element_text(size = MANUSCRIPT_BASE_SIZE - 3, color = "grey30"))
+}
+
 # Restrict rows to SELECTED_CANCER_TYPES, normalizing labels to their codes.
 # Types with no rows (e.g. pooled into OTHER below the preprocessing size
 # threshold, or ineligible for every endpoint) are reported, not invented.

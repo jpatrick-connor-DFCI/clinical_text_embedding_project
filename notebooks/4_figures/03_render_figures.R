@@ -65,6 +65,16 @@
 # plot_figure_os_within_cancer.R writes figOS_within_cancer_cindex to the figure_os
 # group: the overall-survival (death_met/death) C-index for those cancer types,
 # text versus base and versus each other modality.
+# plot_figure_published_scores.R renders published within-cancer-type prognostic
+# scores (MDCalc-style: mGPS, RMH, LIPI, ALBI, MELD, CAPRA-mod, and ECOG-free IPI/
+# IMDC/MSKCC) versus the held-out text risk score for overall survival
+# (figures.prep.published_scores): per-score C-index of the published score, text,
+# and both combined (figPS_published_cindex), their paired differences
+# (figPS_published_delta), the added-text Cox hazard ratio adjusted for the
+# published score with its LRT p-value (figPS_published_cox), and per-score KM
+# curves by published risk group (figPS_published_km), in the published_scores
+# group. Only the primary treatment-anchor, 30-day lab-window run is plotted; the
+# sequencing-anchor and 90-day-window sensitivity runs are in the report table only.
 # Supplemental caption wording is documented in figures/figure_captions.md.
 #
 # Compiled Figures 1, 2, and 4 render at 10 x 9 inches; Figure 3 renders at
@@ -136,7 +146,8 @@ SCRIPTS <- c(
   "plot_figure_4.R",
   "plot_figure_4_supp.R",
   "plot_figure_5.R",
-  "plot_figure_os_within_cancer.R"
+  "plot_figure_os_within_cancer.R",
+  "plot_figure_published_scores.R"
 )
 
 for (script in SCRIPTS) {

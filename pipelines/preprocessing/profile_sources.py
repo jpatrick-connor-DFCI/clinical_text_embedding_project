@@ -60,6 +60,13 @@ RAPIDHEME_TEST_TYPE = "RAPIDHEME_CLINICAL"
 CANCER_GROUP = "CANCER_GROUP"
 STAGE = "STAGE"
 
+# LABS (long format: one row per specimen/result)
+LAB_TEST_CD = "TEST_CD"
+LAB_TEST_DESCR = "TEST_DESCR"
+LAB_COLLECT_DT = "COLLECT_DT"
+LAB_NUMERIC_RESULT = "NUMERIC_RESULT"
+LAB_RESULT_UOM = "RESULT_UOM_NM"
+
 # CLINICAL_NOTES metadata (shared across PROGRESS/PATHOLOGY/IMAGING)
 RPT_ID = "RPT_ID"
 RPT_TEXT = "RPT_TEXT"
@@ -241,3 +248,58 @@ def load_and_explode_icd() -> pl.DataFrame:
         )
     )
     return df_long
+
+
+def load_labs(columns: list[str] | None = None) -> pl.LazyFrame:
+    """LABS.parquet: long-format, one row per specimen/result. Unlike the other
+    loaders here, this returns a LazyFrame uncollected -- LABS is far larger
+    than the other PROFILE_DATA tables, so callers should filter (cohort,
+    test codes, date window) before collecting."""
+    lf = pl.scan_parquet(_path("LABS.parquet"))
+    if columns is not None:
+        lf = lf.select(columns)
+    return lf
+
+
+def lab_test_name_expr(code_col: str = LAB_TEST_CD, descr_col: str = LAB_TEST_DESCR) -> pl.Expr:
+    """Vectorized polars port of PROFILE-testing's IPIO/data_preprocessing/
+    longitudinal_data_processing.py:generate_new_test_name_expr (~line 51),
+    reimplemented rather than imported because importing that module has
+    side effects. Builds the TEST_NAME string consolidate_dfci_labs expects:
+
+    - code is null -> str(descr). Faithfully reproduces the original's
+      `str(descr)` call even when descr is itself null: pandas' str(nan) is
+      the literal string "nan", so a null descr in this branch is coalesced
+      to the "nan" literal rather than left null.
+    - code == descr -> str(code).
+    - otherwise -> "{code} ({descr})".
+    """
+    code = pl.col(code_col)
+    descr = pl.col(descr_col)
+    descr_as_str = pl.when(descr.is_null()).then(pl.lit("nan")).otherwise(descr.cast(pl.Utf8))
+    code_as_str = code.cast(pl.Utf8)
+    return (
+        pl.when(code.is_null())
+        .then(descr_as_str)
+        .when(code == descr)
+        .then(code_as_str)
+        .otherwise(code_as_str + pl.lit(" (") + descr.cast(pl.Utf8) + pl.lit(")"))
+    )
+
+
+def registry_stage_expr(col: str) -> pl.Expr:
+    """Vectorized polars port of PROFILE_data_processing/cancer_annotations.py:
+    _clean_stage_expr (~line 553): extract the leading digit of a CAREG stage
+    code, treating '88'/'99' (STAGE_SENTINELS) and non-0-4 leading digits as
+    null. Callers coalesce BEST_AJCC_STAGE_CD -> PATH_STAGE_CD -> CLIN_STAGE_CD
+    across this expr, taking the first non-null, matching clean_registry_stage.
+    """
+    trimmed = pl.col(col).cast(pl.String).str.strip_chars()
+    digit = trimmed.str.extract(r"^(\d)", 1).cast(pl.Int8, strict=False)
+    return (
+        pl.when(trimmed.is_in(STAGE_SENTINELS) | trimmed.is_null())
+        .then(None)
+        .when(digit.is_between(0, 4))
+        .then(digit)
+        .otherwise(None)
+    )

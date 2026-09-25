@@ -75,6 +75,22 @@ for an endpoint is scored on one shared cohort and set of comparable pairs (fold
 It writes `fig3_combined_cindex.csv`, plus overall-survival patient-bootstrap intervals
 (`--n-boot`, default 1000) in `fig3_combined_os_cindex.csv` and `fig3_combined_os_delta.csv`.
 
+`figures.prep.published_scores` compares published within-cancer-type prognostic scores
+(MDCalc-style: mGPS, RMH, LIPI, ALBI, MELD, CAPRA-mod, and ECOG-free IPI/IMDC/MSKCC) against the
+held-out full-cohort text risk score for overall survival. For each score it evaluates three
+models — the published score alone, text alone, and the two combined — on the same eligible,
+lab-observable, complete-case patients and comparable pairs (fold-block C-index, blocks over the
+text model's outer folds). It reads `published_scores_df*.csv.gz`, written per (anchor, lab
+window) by `pipelines.preprocessing.build_published_scores`, itself fed by the read-only
+`pipelines.preprocessing.audit_published_score_inputs` feasibility audit. It writes
+`pubscore_cindex.csv`, `pubscore_delta.csv` (the three paired contrasts with bootstrap CIs),
+`pubscore_cox.csv` (text HR per SD and published HR per point, each adjusted for the other, with
+LRT p-values), `pubscore_km.csv`, and `pubscore_cohort.csv`. Only the primary treatment-anchor,
+30-day lab-window run is plotted (`R/plot_figure_published_scores.R`, `published_scores` output
+group); the sequencing-anchor and 90-day-window runs are sensitivity results kept in the report
+tables only. The ECOG-free variants are lower bounds scored with the original cutpoints, since no
+ECOG/KPS/performance-status source exists in this cohort.
+
 `figures.prep.within_cancer_km` splits the Figure 2c/d cohort (patients with a known major stage
 and a full-cohort overall-survival text risk score) by selected cancer type, keeping the pan-cancer
 text risk quartiles of Figure 2d (cut over the whole cohort before the split). It writes `fig2_km_stage_vs_risk_by_cancer.csv` and
@@ -170,6 +186,16 @@ python -m figures.prep.within_cancer
 python -m figures.prep.within_cancer_joint
 python -m figures.prep.within_cancer_km
 python -m figures.prep.figure3_combined
+```
+
+The published-score comparison (audit, builder, prep) is a separate standalone pipeline —
+run it via [`notebooks/1_data/01b_published_scores.ipynb`](notebooks/1_data/01b_published_scores.ipynb)
+or the equivalent commands directly:
+
+```bash
+python -m pipelines.preprocessing.audit_published_score_inputs --anchor treatment
+python -m pipelines.preprocessing.build_published_scores --anchor treatment
+python -m figures.prep.published_scores
 ```
 
 `within_cancer` (per-endpoint C-index evaluation, both cohorts), `figure3` and

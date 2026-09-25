@@ -53,6 +53,21 @@ AVPC_NEPC_LABELS_PATH = os.environ.get(
         "LLM_avpc_nepc_timeline/avpc_nepc_labels.parquet",
     ),
 )
+GLEASON_TIMELINE_PATH = os.environ.get(
+    "GLEASON_TIMELINE_PATH",
+    os.path.join(
+        LLM_ANNOTATIONS_DATA_PATH,
+        "LLM_gleason_timeline/gleason_timeline.parquet",
+    ),
+)
+
+# --- Lab harmonizer (sibling PROFILE-testing repo; consolidate_dfci_labs) ---
+# Cluster checkout path is a placeholder pending the user filling in the
+# real location; override with PROFILE_TESTING_REPO_PATH in the meantime.
+PROFILE_TESTING_REPO_PATH = os.environ.get(
+    "PROFILE_TESTING_REPO_PATH",
+    "/data/gusev/USERS/jpconnor/repos/PROFILE-testing/",
+)
 
 # --- Figure rendering output (Python figure-data prep + R plotting share this) ---
 FIGURE_OUT_DIR = os.environ.get(

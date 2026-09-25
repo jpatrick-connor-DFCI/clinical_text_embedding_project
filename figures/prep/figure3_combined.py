@@ -119,10 +119,12 @@ def _endpoint_cohort(directory: Path, outcomes: pl.DataFrame) -> pl.DataFrame:
     ).sort("DFCI_MRN")
 
 
-def _standardize_within_folds(frame: pl.DataFrame) -> pl.DataFrame:
+def _standardize_within_folds(
+    frame: pl.DataFrame, modalities: tuple[str, ...] = MODALITY_ORDER,
+) -> pl.DataFrame:
     """Add `{m}_z`: each score z-scored within its own outer fold (0 where constant)."""
     exprs = []
-    for m in MODALITY_ORDER:
+    for m in modalities:
         score, fold = pl.col(f"{m}_score"), f"{m}_fold"
         sd = score.std().over(fold)
         exprs.append(pl.when(sd > 0).then((score - score.mean().over(fold)) / sd)

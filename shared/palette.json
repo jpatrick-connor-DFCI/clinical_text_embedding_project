@@ -18,7 +18,9 @@
   },
   "MODEL_COLORS": {
     "text": "#D62728",
-    "base": "#4A4A4A"
+    "base": "#4A4A4A",
+    "published": "#1F77B4",
+    "published+text": "#9467BD"
   },
   "SELECTED_CANCER_TYPES": {
     "BREAST": "Breast",

@@ -39,27 +39,6 @@ combined_contrast_label <- function(model, reference) {
   paste(combined_model_label(model), "vs.", combined_model_label(reference))
 }
 
-format_estimate <- function(estimate, lower, upper, signed = FALSE) {
-  sprintf(if (signed) "%+.3f (%.3f, %.3f)" else "%.3f (%.3f, %.3f)", estimate, lower, upper)
-}
-
-# Rows listed top to bottom, with right-hand labels on a secondary axis.
-labelled_rows <- function(left, right, right_name = NULL) {
-  at <- rev(seq_along(left))
-  scale_y_continuous(breaks = at, labels = left, expand = expansion(add = 0.6),
-                     sec.axis = sec_axis(~., breaks = at, labels = right, name = right_name))
-}
-
-theme_combined <- function() {
-  theme_manuscript() +
-    theme(axis.line.y.right = element_blank(), axis.ticks.y.right = element_blank(),
-          axis.text.y.right = element_text(size = MANUSCRIPT_BASE_SIZE - 3, color = "grey25"),
-          axis.title.y.right = element_text(size = MANUSCRIPT_BASE_SIZE - 3, color = "grey25"),
-          panel.grid.major.y = element_line(color = "grey93"),
-          plot.title = element_text(size = MANUSCRIPT_BASE_SIZE, face = "bold"),
-          plot.subtitle = element_text(size = MANUSCRIPT_BASE_SIZE - 3, color = "grey30"))
-}
-
 build_combined_os_modalities <- function(os, delta) {
   if (!nrow(os) || !nrow(delta)) return(placeholder_panel("no overall-survival results"))
   pairs <- delta %>%
