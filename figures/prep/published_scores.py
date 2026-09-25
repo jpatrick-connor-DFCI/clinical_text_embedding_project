@@ -333,7 +333,7 @@ def evaluate_km(frame: pl.DataFrame, *, anchor: str, lab_window_days: int, score
     text_group = _safe_quantiles(frame["text_score"], n_groups, labels, f"{score.id}/text")
     text_tertile = _safe_quantiles(frame["text_score"], 3, ["low", "mid", "high"], f"{score.id}/text_tertile")
     return frame.select(
-        pl.lit(anchor).alias("anchor"), pl.lit(lab_window_days).alias("lab_window_days"),
+        pl.lit(anchor).alias("anchor"), pl.lit(lab_window_days, dtype=pl.Int64).alias("lab_window_days"),
         pl.lit(score.id).alias("score"), pl.lit(stratum).alias("stratum"),
         "DFCI_MRN", "time", "event_flag", "published_group",
     ).with_columns(
@@ -443,7 +443,7 @@ def prepare_published_scores(
 
     schemas = (CINDEX_SCHEMA, DELTA_SCHEMA, COX_SCHEMA, KM_SCHEMA, COHORT_SCHEMA)
     return tuple(
-        pl.concat([out[i] for out in outputs]) if outputs else pl.DataFrame(schema=schema)
+        pl.concat([out[i].cast(schema) for out in outputs]) if outputs else pl.DataFrame(schema=schema)
         for i, schema in enumerate(schemas)
     )
 

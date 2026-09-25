@@ -196,6 +196,8 @@ def test_evaluate_km_matches_group_sizes_and_schema():
     frame = _cohort(300, 8)
     km = prep.evaluate_km(frame, anchor="treatment", lab_window_days=30, score=SCORE)
     assert km.columns == list(prep.KM_SCHEMA)
+    # pl.lit(30) alone is Int32; a dtype mismatch broke the cross-task concat on the cluster.
+    assert km.schema["lab_window_days"] == prep.KM_SCHEMA["lab_window_days"]
     assert km.height == frame.height
     assert set(km["text_tertile"].unique()) <= {"low", "mid", "high"}
     assert set(km["text_group_matched"].unique()) <= {g.label for g in SCORE.risk_groups}
