@@ -325,3 +325,30 @@ class TestMrnDtypeConsistency:
         out = build_score_frame(cohort_df, "treatment", lab_features, eligibility, gleason)
         assert out.height == 1
         assert out["gleason_primary"].item() == 3
+
+
+class TestMissingItemsCsvWrite:
+    """Regression test: `{score}__missing_items` columns are pl.List(pl.String)
+    (from shared.published_scores.score_expr), which pl.DataFrame.write_csv
+    cannot serialize -- ComputeError: CSV format does not support nested
+    data. main() must join each list column to a string immediately before
+    the write, without changing score_expr's return type (formula tests
+    still assert it returns a real list)."""
+
+    def test_list_missing_items_column_round_trips_through_csv(self, tmp_path):
+        from shared.published_scores import CATALOG_SCORE_IDS
+
+        score_id = CATALOG_SCORE_IDS[0]
+        frame = pl.DataFrame({
+            "DFCI_MRN": [101, 102],
+            f"{score_id}__missing_items": [["item_a", "item_b"], []],
+        })
+        assert frame.schema[f"{score_id}__missing_items"] == pl.List(pl.String)
+
+        out_path = tmp_path / "published_scores_df.csv.gz"
+        frame.with_columns(
+            pl.col(f"{score_id}__missing_items").list.join(",")
+        ).write_csv(out_path, compression="gzip")
+
+        read_back = pl.read_csv(out_path)
+        assert read_back[f"{score_id}__missing_items"].to_list() == ["item_a,item_b", ""]

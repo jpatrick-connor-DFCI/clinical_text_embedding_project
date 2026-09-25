@@ -434,7 +434,14 @@ def main() -> None:
     suffix = anchor_suffix(anchor)
     lab_suffix = "" if window_days == DEFAULT_LAB_WINDOW_DAYS else f"__lab{window_days}d"
     out_path = os.path.join(FEATURE_PATH, f"published_scores_df{suffix}{lab_suffix}.csv.gz")
-    score_frame.write_csv(out_path, compression="gzip")
+    # CSV can't hold the list-typed `{score}__missing_items` columns -- join
+    # them to a comma-separated string only at this write boundary so
+    # `score_expr` can keep returning a true list expression for in-memory
+    # consumers (e.g. tests/test_published_scores_formulas.py).
+    missing_items_cols = [f"{s}__missing_items" for s in CATALOG_SCORE_IDS]
+    score_frame.with_columns(
+        pl.col(col).list.join(",") for col in missing_items_cols
+    ).write_csv(out_path, compression="gzip")
 
     coverage = build_coverage(score_frame)
     coverage_path = os.path.join(FEATURE_PATH, f"published_scores_coverage{suffix}{lab_suffix}.csv.gz")
