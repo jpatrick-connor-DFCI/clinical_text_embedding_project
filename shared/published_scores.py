@@ -197,10 +197,12 @@ def corrected_calcium_expr(ca_col: str, alb_col: str) -> pl.Expr:
 
 
 def hgb_lln_expr(hgb_col: str, gender_col: str) -> pl.Expr:
-    """Sex-specific hemoglobin lower limit of normal (REFERENCE_LIMITS)."""
+    """Sex-specific hemoglobin lower limit of normal (REFERENCE_LIMITS).
+    `gender_col` is this project's cohort GENDER encoding, `0 = MALE` /
+    `1 = FEMALE` (see `pipelines.preprocessing.build_cohort`), not a string."""
     male_lln, _ = REFERENCE_LIMITS["HGB_LLN_MALE"]
     female_lln, _ = REFERENCE_LIMITS["HGB_LLN_FEMALE"]
-    return pl.when(pl.col(gender_col) == "Male").then(pl.lit(male_lln)).otherwise(pl.lit(female_lln))
+    return pl.when(pl.col(gender_col) == 0).then(pl.lit(male_lln)).otherwise(pl.lit(female_lln))
 
 
 # ===========================================================================

@@ -351,7 +351,7 @@ def build_score_frame(
     frame = (
         cohort_df.select(
             "DFCI_MRN", pl.col(age_column).alias("age"),
-            pl.col("GENDER").alias("gender") if "GENDER" in cohort_df.columns else pl.lit(None, dtype=pl.String).alias("gender"),
+            pl.col("GENDER").alias("gender") if "GENDER" in cohort_df.columns else pl.lit(None, dtype=pl.Int64).alias("gender"),
         )
         .join(lab_features, on="DFCI_MRN", how="left")
         .join(eligibility, on="DFCI_MRN", how="left")

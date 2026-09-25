@@ -138,7 +138,7 @@ def test_imdc_time_to_treatment_boundary_364_vs_365():
     df = pl.DataFrame({
         "days": [364, 365],
         "hgb": [15.0, 15.0],
-        "gender": ["Male", "Male"],
+        "gender": [0, 0],  # 0 = MALE
         "ca": [9.0, 9.0],
         "anc": [3.0, 3.0],
         "plt": [200.0, 200.0],
@@ -156,7 +156,7 @@ def test_imdc_hgb_is_sex_specific():
     df = pl.DataFrame({
         "days": [400, 400],
         "hgb": [12.5, 12.5],  # below male LLN, above female LLN
-        "gender": ["Male", "Female"],
+        "gender": [0, 1],  # 0 = MALE, 1 = FEMALE
         "ca": [9.0, 9.0],
         "anc": [3.0, 3.0],
         "plt": [200.0, 200.0],
@@ -172,7 +172,7 @@ def test_mskcc_ldh_uses_1p5x_uln():
     df = pl.DataFrame({
         "ldh": [1.5 * ldh_uln, 1.5 * ldh_uln + 0.01],
         "hgb": [15.0, 15.0],
-        "gender": ["Male", "Male"],
+        "gender": [0, 0],  # 0 = MALE
         "ca": [9.0, 9.0],
         "days": [400, 400],
     })
@@ -234,13 +234,13 @@ def test_ecog_free_is_a_lower_bound_of_full_score(builder_name):
     elif builder_name == "imdc":
         full = sp.build_imdc("days", "hgb", "gender", "ca", "anc", "plt", "ecog", ELIGIBLE)
         df = pl.DataFrame({
-            "days": [400, 400], "hgb": [15.0, 15.0], "gender": ["Male", "Male"],
+            "days": [400, 400], "hgb": [15.0, 15.0], "gender": [0, 0],  # 0 = MALE
             "ca": [9.0, 9.0], "anc": [3.0, 3.0], "plt": [200.0, 200.0], "ecog": [0, 2],
         })
     else:
         full = sp.build_mskcc("ldh", "hgb", "gender", "ca", "days", "ecog", ELIGIBLE)
         df = pl.DataFrame({
-            "ldh": [100.0, 100.0], "hgb": [15.0, 15.0], "gender": ["Male", "Male"],
+            "ldh": [100.0, 100.0], "hgb": [15.0, 15.0], "gender": [0, 0],  # 0 = MALE
             "ca": [9.0, 9.0], "days": [400, 400], "ecog": [0, 2],
         })
 
