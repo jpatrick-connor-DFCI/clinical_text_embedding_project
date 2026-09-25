@@ -119,7 +119,7 @@ def _load_cohort_df() -> pl.DataFrame:
 def _load_met_burden(anchor: str) -> pl.DataFrame:
     return pl.read_csv(
         _feature_path("met_burden_df.csv.gz", anchor),
-        schema_overrides={"DFCI_MRN": pl.String},
+        schema_overrides={"DFCI_MRN": pl.Int64},
     ).select("DFCI_MRN", "N_MET_SITES")
 
 
@@ -139,14 +139,14 @@ def _load_gleason() -> pl.DataFrame:
     if not os.path.exists(GLEASON_TIMELINE_PATH):
         return pl.DataFrame(
             schema={
-                "DFCI_MRN": pl.String, "gleason_date": pl.Datetime,
+                "DFCI_MRN": pl.Int64, "gleason_date": pl.Datetime,
                 "gleason_primary": pl.Int64, "gleason_secondary": pl.Int64,
             }
         )
     return pl.read_parquet(
         GLEASON_TIMELINE_PATH,
         columns=["DFCI_MRN", "gleason_date", "gleason_primary", "gleason_secondary"],
-    ).with_columns(pl.col("DFCI_MRN").cast(pl.String))
+    ).with_columns(pl.col("DFCI_MRN").cast(pl.Int64, strict=False))
 
 
 def _latest_day_median(
