@@ -8,6 +8,7 @@ real, self-contained `shared.lab_harmonizer.harmonize_labs`, with
 import datetime as dt
 
 import polars as pl
+import pytest
 
 from pipelines.preprocessing import build_published_scores as bps
 from pipelines.preprocessing import profile_sources as ps
@@ -256,6 +257,28 @@ class TestEligibility:
         assert p4["_is_dlbcl"].item() is True
 
 
+@pytest.mark.parametrize(("histology", "eligible"), [
+    ("Renal Clear Cell Carcinoma", True),
+    ("Papillary Renal Cell Carcinoma", True),
+    ("Renal Non-Clear Cell Carcinoma", True),
+    ("Renal Medullary Carcinoma", True),
+    (None, True),  # ICD-only KIDNEY
+    ("Wilms' Tumor", False),
+    ("Renal Oncocytoma", False),
+    ("Upper Tract Urothelial Carcinoma", False),
+    ("Clear Cell Sarcoma of Kidney", False),
+])
+def test_rcc_eligibility_uses_oncotree_names(histology, eligible):
+    cohort_df = pl.DataFrame({"DFCI_MRN": [1], "first_treatment_date": [dt.datetime(2024, 6, 1)]})
+    careg = pl.DataFrame({"DFCI_MRN": [1], "DIAGNOSIS_DT": [dt.datetime(2023, 1, 1)], "_REGISTRY_STAGE": [4]})
+    cancer_group = pl.DataFrame({"DFCI_MRN": [1], "CANCER_GROUP": ["KIDNEY"], "GENOMICS_CANCER_TYPE": [histology]},
+                                schema_overrides={"GENOMICS_CANCER_TYPE": pl.String})
+    met_burden = pl.DataFrame({"DFCI_MRN": [1], "N_MET_SITES": [1]})
+    out = build_eligibility(cohort_df, "treatment", careg, cancer_group, met_burden)
+    assert out["imdc__eligible"].item() is eligible
+    assert out["mskcc_noecog__eligible"].item() is eligible
+
+
 def test_module_no_longer_depends_on_profile_testing_repo():
     """Guard against re-introducing the sibling PROFILE-testing repo
     dependency: no PROFILE_TESTING_REPO_PATH, sys.path manipulation, or
@@ -366,3 +389,61 @@ class TestMissingItemsCsvWrite:
 
         read_back = pl.read_csv(out_path)
         assert read_back[f"{score_id}__missing_items"].to_list() == ["item_a,item_b", ""]
+
+
+class TestPerformanceStatus:
+    """Note ECOG completes the full IMDC/MSKCC; the ECOG-free variants are unaffected."""
+
+    LABS = ("crp", "albumin", "ldh", "anc", "wbc", "bilirubin", "inr", "creatinine",
+            "hemoglobin", "corrected_calcium", "platelets")
+
+    def _score_frame(self, performance_status):
+        mrns = [201, 202, 203]
+        cohort_df = pl.DataFrame({
+            "DFCI_MRN": mrns, "first_treatment_date": [dt.datetime(2024, 6, 1)] * 3,
+            "AGE_AT_TREATMENTSTART": [65] * 3, "GENDER": [1] * 3,
+        })
+        careg = pl.DataFrame({
+            "DFCI_MRN": mrns, "DIAGNOSIS_DT": [dt.datetime(2022, 1, 1)] * 3, "_REGISTRY_STAGE": [4] * 3,
+        })
+        cancer_group = pl.DataFrame({"DFCI_MRN": mrns, "CANCER_GROUP": ["KIDNEY"] * 3,
+                                     "GENOMICS_CANCER_TYPE": ["Renal Clear Cell Carcinoma"] * 3})
+        met_burden = pl.DataFrame({"DFCI_MRN": mrns, "N_MET_SITES": [2] * 3})
+        eligibility = build_eligibility(cohort_df, "treatment", careg, cancer_group, met_burden)
+        normal = {"crp": 0.5, "albumin": 4.0, "ldh": 150.0, "anc": 4.0, "wbc": 7.0, "bilirubin": 0.8,
+                  "inr": 1.0, "creatinine": 1.0, "hemoglobin": 14.0, "corrected_calcium": 9.5, "platelets": 250.0}
+        lab_features = pl.DataFrame({"DFCI_MRN": mrns, **{k: [normal[k]] * 3 for k in self.LABS},
+                                     "labs_observable": [True] * 3})
+        gleason = pl.DataFrame(schema={"DFCI_MRN": pl.Int64, "gleason_date": pl.Datetime,
+                                       "gleason_primary": pl.Int64, "gleason_secondary": pl.Int64})
+        return build_score_frame(cohort_df, "treatment", lab_features, eligibility, gleason, performance_status)
+
+    def test_note_ecog_completes_full_imdc_and_mskcc(self):
+        performance_status = pl.DataFrame({
+            "DFCI_MRN": [201, 202], "ecog": [2.0, 1.0], "ecog__source": ["KPS", "ECOG"],
+            "ecog__days_before_anchor": [3, 10],
+        })
+        out = self._score_frame(performance_status).sort("DFCI_MRN")
+        for full in ("imdc", "mskcc"):
+            noecog = f"{full}_noecog"
+            assert out[f"{full}__eligible"].to_list() == out[f"{noecog}__eligible"].to_list() == [True] * 3
+            assert out[f"{full}__complete"].to_list() == [True, True, False]
+            assert out[f"{full}__item_{full}_ecog"].to_list() == [1, 0, None]
+            assert out[f"{noecog}__complete"].to_list() == [True] * 3
+            assert out[f"{full}__points"].to_list()[:2] == [out[f"{noecog}__points"][0] + 1, out[f"{noecog}__points"][1]]
+        assert out["ecog__source"].to_list() == ["KPS", "ECOG", None]
+
+    def test_without_performance_status_full_scores_are_incomplete(self):
+        out = self._score_frame(None)
+        assert not out["imdc__complete"].any() and out["imdc_noecog__complete"].all()
+
+    def test_load_performance_status_falls_back_when_notes_missing(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(bps, "note_score_path", lambda anchor: str(tmp_path / "missing.csv.gz"))
+        assert bps._load_performance_status("treatment").is_empty()
+        path = tmp_path / "notes.csv.gz"
+        pl.DataFrame({"DFCI_MRN": [1, 2], "ecog__note_value": [2.0, None], "ecog__note_source": ["KPS", None],
+                      "ecog__note_days_before_anchor": [4, None]}).write_csv(path, compression="gzip")
+        monkeypatch.setattr(bps, "note_score_path", lambda anchor: str(path))
+        loaded = bps._load_performance_status("treatment")
+        assert loaded.schema == pl.Schema(bps.PERFORMANCE_STATUS_SCHEMA)
+        assert loaded.rows() == [(1, 2.0, "KPS", 4)]

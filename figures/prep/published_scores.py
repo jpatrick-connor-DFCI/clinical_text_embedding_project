@@ -1,10 +1,26 @@
 """Published prognostic scores vs. the held-out text risk score (overall survival).
 
 For each score in `shared.published_scores.default_catalog()` (mgps, rmh, lipi, albi,
-meld, capra_mod, ipi_noecog, imdc_noecog, mskcc_noecog), evaluates three
-models within that score's eligible, lab-observable, complete-case, scored
-population, on one shared set of comparable pairs (`blocks = text_fold`, as
-in figure3_combined):
+meld, capra_mod, and ipi/imdc/mskcc each full and `_noecog`), evaluates up to
+two score sources separately:
+
+- `calculated`: the score computed by build_published_scores.py, within the
+  score's eligible, lab-observable, complete-case population. The full
+  IPI/IMDC/MSKCC take their performance-status item from note-documented
+  ECOG/KPS, so their complete cases are patients with one in the note
+  window; the `_noecog` variants score everyone else as a lower bound.
+- `regex`: the score as clinicians documented it in notes, regex-extracted by
+  pipelines/preprocessing/extract_note_scores.py (latest mention 0..90 days
+  before the anchor), within the same eligible population. Only scores in
+  `NOTE_SCORES` have this source (not the `_noecog` variants, which nobody
+  documents). IMDC/MSKCC are documented as a risk group (0/1/2), so the
+  `variant` is `documented`. The note score
+  does not depend on the lab window, so it is evaluated once per anchor,
+  under the 30-day lab-window key.
+
+Each source is evaluated on its own cohort. Within one (score, source) there
+are three models on one shared set of comparable pairs (`blocks = text_fold`,
+as in figure3_combined):
 
 - `published`: the raw points (or ALBI/MELD's continuous value) x direction,
   unfitted -- this is how the score is used clinically.
@@ -20,7 +36,9 @@ sequencing-anchor runs are sensitivity analyses (same code, different
 `--anchor`/`--lab-window-days`).
 
 Writes to FIGURE_DATA_DIR:
-- pubscore_cindex.csv  anchor, lab_window_days, score, variant, stratum, model,
+Every output carries a `source` column next to `score`.
+
+- pubscore_cindex.csv  anchor, lab_window_days, score, source, variant, stratum, model,
                        cindex, ci_lower, ci_upper, n_patients, n_events,
                        n_comparable_pairs, n_fold_blocks, n_boot, status
 - pubscore_delta.csv   the three paired contrasts (published+text - published,
@@ -37,13 +55,17 @@ Writes to FIGURE_DATA_DIR:
 - pubscore_cohort.csv  filtering counts, fraction of pairs tied on the
                        published score, Spearman(published, text), the
                        unblocked published C (comparable to validation
-                       papers), and the `underpowered` flag
+                       papers), and the `underpowered` flag. For `regex`
+                       rows, n_observable is null and n_complete counts
+                       eligible patients with a documented score.
+                       n_both_sources counts patients evaluated under both
+                       sources, and note_lookback_days gives the note
+                       window.
 
 Statuses mirror figure3_combined: ok, missing_inputs, too_few_patients,
 too_few_events, too_few_non_events, constant_published, fit_failed,
-no_comparable_pairs, no_performance_status_source (reserved for a future
-full-ECOG variant; every score built today is either exact with no
-performance-status item, or already ECOG-free).
+no_comparable_pairs, no_performance_status_source (reserved; the full
+IPI/IMDC/MSKCC fall to too_few_patients when little ECOG is documented).
 
 Command line: --n-boot (default 1000), --n-jobs.
 """
@@ -54,6 +76,7 @@ import argparse
 import os
 import warnings
 from concurrent.futures import as_completed
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -78,6 +101,7 @@ from figures.prep.figure3_combined import (
 )
 from figures.prep.parallel import process_pool, resolve_workers
 from figures.prep.within_cancer import _READ_ERRORS, _valid_fold
+from pipelines.preprocessing.extract_note_scores import NOTE_SCORES
 from schemes import full_cohort_risk_dir
 from shared.published_scores import PublishedScore, default_catalog
 
@@ -86,38 +110,46 @@ LAB_WINDOWS_TO_RUN = (30, 90)
 PRIMARY_ANCHOR = "treatment"
 PRIMARY_LAB_WINDOW = 30
 
+SOURCES = ("calculated", "regex")
+REGEX_VARIANT = "documented"
+
 TEXT_FOLD = "text_fold"
 PAIR_CHUNK = 512
 UNDERPOWERED_PATIENTS = 100
 UNDERPOWERED_EVENTS = 30
 
 CINDEX_SCHEMA = {
-    "anchor": pl.String, "lab_window_days": pl.Int64, "score": pl.String, "variant": pl.String,
-    "stratum": pl.String, "model": pl.String, "cindex": pl.Float64, "ci_lower": pl.Float64,
+    "anchor": pl.String, "lab_window_days": pl.Int64, "score": pl.String, "source": pl.String,
+    "variant": pl.String, "stratum": pl.String, "model": pl.String, "cindex": pl.Float64, "ci_lower": pl.Float64,
     "ci_upper": pl.Float64, "n_patients": pl.Int64, "n_events": pl.Int64,
     "n_comparable_pairs": pl.Int64, "n_fold_blocks": pl.Int64, "n_boot": pl.Int64, "status": pl.String,
 }
 DELTA_SCHEMA = {
-    "anchor": pl.String, "lab_window_days": pl.Int64, "score": pl.String, "stratum": pl.String,
+    "anchor": pl.String, "lab_window_days": pl.Int64, "score": pl.String, "source": pl.String,
+    "stratum": pl.String,
     "model": pl.String, "reference": pl.String, "delta_cindex": pl.Float64,
     "ci_lower": pl.Float64, "ci_upper": pl.Float64, "n_boot": pl.Int64,
 }
 COX_SCHEMA = {
-    "anchor": pl.String, "lab_window_days": pl.Int64, "score": pl.String, "stratum": pl.String,
+    "anchor": pl.String, "lab_window_days": pl.Int64, "score": pl.String, "source": pl.String,
+    "stratum": pl.String,
     "term": pl.String, "hr": pl.Float64, "ci_lower": pl.Float64, "ci_upper": pl.Float64,
     "lrt_p": pl.Float64, "n": pl.Int64, "n_events": pl.Int64, "status": pl.String,
 }
 KM_SCHEMA = {
-    "anchor": pl.String, "lab_window_days": pl.Int64, "score": pl.String, "stratum": pl.String,
+    "anchor": pl.String, "lab_window_days": pl.Int64, "score": pl.String, "source": pl.String,
+    "stratum": pl.String,
     "DFCI_MRN": pl.String, "time": pl.Float64, "event_flag": pl.Float64,
     "published_group": pl.String, "text_tertile": pl.String, "text_group_matched": pl.String,
 }
 COHORT_SCHEMA = {
-    "anchor": pl.String, "lab_window_days": pl.Int64, "score": pl.String, "stratum": pl.String,
+    "anchor": pl.String, "lab_window_days": pl.Int64, "score": pl.String, "source": pl.String,
+    "stratum": pl.String,
     "n_eligible": pl.Int64, "n_observable": pl.Int64, "n_complete": pl.Int64,
     "n_with_text": pl.Int64, "n_with_outcome": pl.Int64, "n_patients": pl.Int64,
     "n_events": pl.Int64, "frac_tied_published": pl.Float64, "spearman_published_text": pl.Float64,
     "unblocked_published_cindex": pl.Float64, "underpowered": pl.Boolean,
+    "n_both_sources": pl.Int64, "note_lookback_days": pl.Int64,
 }
 
 CATALOG = default_catalog()
@@ -133,6 +165,20 @@ def _score_df_path(anchor: str, lab_window_days: int) -> Path:
     suffix = "" if anchor == "treatment" else f"__{anchor}"
     lab_suffix = "" if lab_window_days == 30 else f"__lab{lab_window_days}d"
     return Path(FEATURE_PATH) / f"published_scores_df{suffix}{lab_suffix}.csv.gz"
+
+
+def _note_df_path(anchor: str) -> Path:
+    suffix = "" if anchor == "treatment" else f"__{anchor}"
+    return Path(FEATURE_PATH) / f"published_scores_note_df{suffix}.csv.gz"
+
+
+def _variant(score: PublishedScore, source: str) -> str:
+    return score.variant if source == "calculated" else REGEX_VARIANT
+
+
+def _regex_score(score: PublishedScore) -> PublishedScore:
+    """`score` with the note-documented scale's risk groups (e.g. IMDC 0/1/2)."""
+    return replace(score, risk_groups=NOTE_SCORES[score.id].risk_groups)
 
 
 def _load_text_scores() -> pl.DataFrame:
@@ -190,13 +236,36 @@ def _score_cohort(
     return frame.filter(valid.fill_null(False)).sort("DFCI_MRN")
 
 
+def _regex_cohort(
+    score_df: pl.DataFrame, note_df: pl.DataFrame, text: pl.DataFrame, outcomes: pl.DataFrame,
+    score: PublishedScore,
+) -> pl.DataFrame:
+    """Eligible (same population as `calculated`), with a documented note
+    score in the window, text-matched, outcome-matched."""
+    value_col, group_col = f"{score.id}__note_value", f"{score.id}__note_group"
+    notes = note_df.select(
+        pl.col("DFCI_MRN").cast(pl.String).str.strip_chars(),
+        pl.col(value_col).cast(pl.Float64, strict=False).alias("published_score"),
+        pl.col(group_col).cast(pl.String).alias("published_group"),
+    ).filter(pl.col("published_score").is_finite())
+    frame = score_df.filter(pl.col(f"{score.id}__eligible").fill_null(False)).select("DFCI_MRN")
+    frame = frame.join(notes, on="DFCI_MRN", how="inner", validate="1:1")
+    frame = frame.join(text, on="DFCI_MRN", how="inner", validate="1:1")
+    frame = frame.join(outcomes, on="DFCI_MRN", how="inner", validate="1:1")
+    valid = (
+        pl.col("time").is_finite() & (pl.col("time") > 0) & pl.col("event_flag").is_in([0.0, 1.0])
+        & pl.col("text_score").is_finite() & _valid_fold(TEXT_FOLD)
+    )
+    return frame.filter(valid.fill_null(False)).sort("DFCI_MRN")
+
+
 def _status_cindex_rows(
     anchor: str, lab_window_days: int, score: PublishedScore, stratum: str, status: str,
-    n: int | None = None, n_events: int | None = None,
+    n: int | None = None, n_events: int | None = None, source: str = "calculated",
 ) -> pl.DataFrame:
     return pl.DataFrame([{
-        "anchor": anchor, "lab_window_days": lab_window_days, "score": score.id,
-        "variant": score.variant, "stratum": stratum, "model": model, "cindex": None,
+        "anchor": anchor, "lab_window_days": lab_window_days, "score": score.id, "source": source,
+        "variant": _variant(score, source), "stratum": stratum, "model": model, "cindex": None,
         "ci_lower": None, "ci_upper": None, "n_patients": n, "n_events": n_events,
         "n_comparable_pairs": None, "n_fold_blocks": None, "n_boot": 0, "status": status,
     } for model in MODELS], schema=CINDEX_SCHEMA)
@@ -209,19 +278,23 @@ def _interval(values: np.ndarray) -> tuple[float, float]:
 
 def evaluate_score(
     frame: pl.DataFrame, *, anchor: str, lab_window_days: int, score: PublishedScore,
-    stratum: str = "all", n_boot: int = 0,
+    stratum: str = "all", n_boot: int = 0, source: str = "calculated",
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """C-index of published/text/published+text on `frame` (one score's cohort)."""
     n = frame.height
     n_events = int(frame["event_flag"].sum()) if n else 0
-    if n < MIN_PATIENTS:
-        return _status_cindex_rows(anchor, lab_window_days, score, stratum, "too_few_patients", n, n_events), pl.DataFrame(schema=DELTA_SCHEMA)
-    if n_events < MIN_EVENTS:
-        return _status_cindex_rows(anchor, lab_window_days, score, stratum, "too_few_events", n, n_events), pl.DataFrame(schema=DELTA_SCHEMA)
-    if n - n_events < MIN_EVENTS:
-        return _status_cindex_rows(anchor, lab_window_days, score, stratum, "too_few_non_events", n, n_events), pl.DataFrame(schema=DELTA_SCHEMA)
-    if frame["published_score"].n_unique() <= 1:
-        return _status_cindex_rows(anchor, lab_window_days, score, stratum, "constant_published", n, n_events), pl.DataFrame(schema=DELTA_SCHEMA)
+    gate = (
+        "too_few_patients" if n < MIN_PATIENTS
+        else "too_few_events" if n_events < MIN_EVENTS
+        else "too_few_non_events" if n - n_events < MIN_EVENTS
+        else "constant_published" if frame["published_score"].n_unique() <= 1
+        else None
+    )
+    if gate is not None:
+        return (
+            _status_cindex_rows(anchor, lab_window_days, score, stratum, gate, n, n_events, source),
+            pl.DataFrame(schema=DELTA_SCHEMA),
+        )
 
     frame = frame.with_columns((pl.col("published_score") * score.direction).alias("published_oriented"))
     frame = _standardize_within_folds(frame.rename({"text_score": "text_score_raw"}).with_columns(
@@ -250,8 +323,8 @@ def evaluate_score(
     for model in MODELS:
         model_status = ("fit_failed" if risks[model] is None else "ok" if n_pairs else "no_comparable_pairs")
         rows.append({
-            "anchor": anchor, "lab_window_days": lab_window_days, "score": score.id, "variant": score.variant,
-            "stratum": stratum, "model": model, "cindex": cindex.get(model), "ci_lower": None, "ci_upper": None,
+            "anchor": anchor, "lab_window_days": lab_window_days, "score": score.id, "source": source,
+            "variant": _variant(score, source), "stratum": stratum, "model": model, "cindex": cindex.get(model), "ci_lower": None, "ci_upper": None,
             "n_patients": n, "n_events": n_events, "n_comparable_pairs": n_pairs, "n_fold_blocks": n_blocks,
             "n_boot": n_boot if n_boot and cindex else 0, "status": model_status,
         })
@@ -267,8 +340,8 @@ def evaluate_score(
             row["ci_lower"], row["ci_upper"] = _interval(boot[row["model"]])
 
     delta_rows = [{
-        "anchor": anchor, "lab_window_days": lab_window_days, "score": score.id, "stratum": stratum,
-        "model": model, "reference": reference, "delta_cindex": cindex[model] - cindex[reference],
+        "anchor": anchor, "lab_window_days": lab_window_days, "score": score.id, "source": source,
+        "stratum": stratum, "model": model, "reference": reference, "delta_cindex": cindex[model] - cindex[reference],
         **dict(zip(("ci_lower", "ci_upper"), _interval(boot[model] - boot[reference]))),
         "n_boot": n_boot,
     } for model, reference in CONTRASTS if model in cindex and reference in cindex]
@@ -276,7 +349,10 @@ def evaluate_score(
     return pl.DataFrame(rows, schema=CINDEX_SCHEMA), pl.DataFrame(delta_rows, schema=DELTA_SCHEMA)
 
 
-def evaluate_cox(frame: pl.DataFrame, *, anchor: str, lab_window_days: int, score: PublishedScore, stratum: str = "all") -> pl.DataFrame:
+def evaluate_cox(
+    frame: pl.DataFrame, *, anchor: str, lab_window_days: int, score: PublishedScore, stratum: str = "all",
+    source: str = "calculated",
+) -> pl.DataFrame:
     """lifelines CoxPHFitter with standardized published+text, both terms;
     LRT p-values against each single-term nested fit. Guards on |coef|>5,
     mirroring figure3._fit_joint_cox's pathological-fit drop."""
@@ -321,15 +397,18 @@ def evaluate_cox(frame: pl.DataFrame, *, anchor: str, lab_window_days: int, scor
             lrt_p = float(chi2.sf(max(lrt, 0.0), df=1))
         srow = full.summary.loc[term]
         rows.append({
-            "anchor": anchor, "lab_window_days": lab_window_days, "score": score.id, "stratum": stratum,
-            "term": term, "hr": float(srow["exp(coef)"]), "ci_lower": float(srow["exp(coef) lower 95%"]),
+            "anchor": anchor, "lab_window_days": lab_window_days, "score": score.id, "source": source,
+            "stratum": stratum, "term": term, "hr": float(srow["exp(coef)"]), "ci_lower": float(srow["exp(coef) lower 95%"]),
             "ci_upper": float(srow["exp(coef) upper 95%"]), "lrt_p": lrt_p, "n": n, "n_events": n_events,
             "status": "ok",
         })
     return pl.DataFrame(rows, schema=COX_SCHEMA)
 
 
-def evaluate_km(frame: pl.DataFrame, *, anchor: str, lab_window_days: int, score: PublishedScore, stratum: str = "all") -> pl.DataFrame:
+def evaluate_km(
+    frame: pl.DataFrame, *, anchor: str, lab_window_days: int, score: PublishedScore, stratum: str = "all",
+    source: str = "calculated",
+) -> pl.DataFrame:
     if frame.is_empty():
         return pl.DataFrame(schema=KM_SCHEMA)
     n_groups = len(score.risk_groups)
@@ -338,7 +417,7 @@ def evaluate_km(frame: pl.DataFrame, *, anchor: str, lab_window_days: int, score
     text_tertile = _safe_quantiles(frame["text_score"], 3, ["low", "mid", "high"], f"{score.id}/text_tertile")
     return frame.select(
         pl.lit(anchor).alias("anchor"), pl.lit(lab_window_days, dtype=pl.Int64).alias("lab_window_days"),
-        pl.lit(score.id).alias("score"), pl.lit(stratum).alias("stratum"),
+        pl.lit(score.id).alias("score"), pl.lit(source).alias("source"), pl.lit(stratum).alias("stratum"),
         "DFCI_MRN", "time", "event_flag", "published_group",
     ).with_columns(
         text_tertile.alias("text_tertile"), text_group.alias("text_group_matched"),
@@ -346,11 +425,24 @@ def evaluate_km(frame: pl.DataFrame, *, anchor: str, lab_window_days: int, score
 
 
 def evaluate_cohort(
-    frame: pl.DataFrame, score_df: pl.DataFrame, *, anchor: str, lab_window_days: int, score: PublishedScore, stratum: str = "all",
+    frame: pl.DataFrame, score_df: pl.DataFrame, *, anchor: str, lab_window_days: int, score: PublishedScore,
+    stratum: str = "all", source: str = "calculated", note_df: pl.DataFrame | None = None,
+    n_both_sources: int | None = None,
 ) -> pl.DataFrame:
-    n_eligible = int(score_df[f"{score.id}__eligible"].fill_null(False).sum())
-    n_observable = int(score_df.filter(pl.col(f"{score.id}__eligible").fill_null(False))["labs_observable"].fill_null(True).sum())
-    n_complete = int(score_df.filter(pl.col(f"{score.id}__eligible").fill_null(False))[f"{score.id}__complete"].fill_null(False).sum())
+    eligible = score_df.filter(pl.col(f"{score.id}__eligible").fill_null(False))
+    n_eligible = eligible.height
+    note_lookback = None
+    if source == "calculated":
+        n_observable = int(eligible["labs_observable"].fill_null(True).sum())
+        n_complete = int(eligible[f"{score.id}__complete"].fill_null(False).sum())
+    else:
+        n_observable = None
+        documented = note_df.filter(
+            pl.col(f"{score.id}__note_value").cast(pl.Float64, strict=False).is_finite()
+        ).select(pl.col("DFCI_MRN").cast(pl.String).str.strip_chars())
+        n_complete = eligible.join(documented, on="DFCI_MRN", how="semi").height
+        if "note_lookback_days" in note_df.columns and note_df.height:
+            note_lookback = int(note_df["note_lookback_days"].max())
     n = frame.height
     n_events = int(frame["event_flag"].sum()) if n else 0
 
@@ -374,39 +466,81 @@ def evaluate_cohort(
 
     underpowered = n < UNDERPOWERED_PATIENTS or n_events < UNDERPOWERED_EVENTS
     return pl.DataFrame([{
-        "anchor": anchor, "lab_window_days": lab_window_days, "score": score.id, "stratum": stratum,
-        "n_eligible": n_eligible, "n_observable": n_observable, "n_complete": n_complete,
+        "anchor": anchor, "lab_window_days": lab_window_days, "score": score.id, "source": source,
+        "stratum": stratum, "n_eligible": n_eligible, "n_observable": n_observable, "n_complete": n_complete,
         "n_with_text": n, "n_with_outcome": n, "n_patients": n, "n_events": n_events,
         "frac_tied_published": frac_tied, "spearman_published_text": spearman,
         "unblocked_published_cindex": unblocked_c, "underpowered": underpowered,
+        "n_both_sources": n_both_sources, "note_lookback_days": note_lookback,
     }], schema=COHORT_SCHEMA)
 
 
+def _missing_outputs(
+    anchor: str, lab_window_days: int, score: PublishedScore, source: str,
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    empty_cohort = pl.DataFrame([{
+        "anchor": anchor, "lab_window_days": lab_window_days, "score": score.id, "source": source,
+        "stratum": "all",
+    }], schema=COHORT_SCHEMA)
+    return (
+        _status_cindex_rows(anchor, lab_window_days, score, "all", "missing_inputs", source=source),
+        pl.DataFrame(schema=DELTA_SCHEMA), pl.DataFrame(schema=COX_SCHEMA),
+        pl.DataFrame(schema=KM_SCHEMA), empty_cohort,
+    )
+
+
+def _evaluate_source(
+    frame: pl.DataFrame, score_df: pl.DataFrame, *, anchor: str, lab_window_days: int, score: PublishedScore,
+    source: str, n_boot: int, note_df: pl.DataFrame | None, n_both_sources: int | None,
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    keys = {"anchor": anchor, "lab_window_days": lab_window_days, "source": source}
+    source_score = score if source == "calculated" else _regex_score(score)
+    cindex, delta = evaluate_score(frame, score=source_score, n_boot=n_boot, **keys)
+    cox = evaluate_cox(frame, score=source_score, **keys)
+    km = evaluate_km(frame, score=source_score, **keys)
+    cohort = evaluate_cohort(
+        frame, score_df, score=source_score, note_df=note_df, n_both_sources=n_both_sources, **keys,
+    )
+    return cindex, delta, cox, km, cohort
+
+
 def _evaluate_task(task: tuple) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    """Both sources for one (anchor, lab window, score). The note score does
+    not depend on the lab window, so `regex` only runs under the primary one,
+    and only for scores clinicians document."""
     anchor, lab_window_days, score_id, n_boot = task
     score = CATALOG[score_id]
+    regex = lab_window_days == PRIMARY_LAB_WINDOW and score_id in NOTE_SCORES
+    sources = SOURCES if regex else ("calculated",)
     try:
         score_df = pl.read_csv(_score_df_path(anchor, lab_window_days), schema_overrides={"DFCI_MRN": pl.String})
         text = _load_text_scores()
         outcomes = _load_outcomes()
-        frame = _score_cohort(score_df, text, outcomes, score)
+        frames = {"calculated": _score_cohort(score_df, text, outcomes, score)}
     except _READ_ERRORS:
-        empty_cohort = pl.DataFrame([{
-            "anchor": anchor, "lab_window_days": lab_window_days, "score": score.id, "stratum": "all",
-            "n_eligible": None, "n_observable": None, "n_complete": None, "n_with_text": None,
-            "n_with_outcome": None, "n_patients": None, "n_events": None, "frac_tied_published": None,
-            "spearman_published_text": None, "unblocked_published_cindex": None, "underpowered": None,
-        }], schema=COHORT_SCHEMA)
-        return (
-            _status_cindex_rows(anchor, lab_window_days, score, "all", "missing_inputs"),
-            pl.DataFrame(schema=DELTA_SCHEMA), pl.DataFrame(schema=COX_SCHEMA),
-            pl.DataFrame(schema=KM_SCHEMA), empty_cohort,
-        )
-    cindex, delta = evaluate_score(frame, anchor=anchor, lab_window_days=lab_window_days, score=score, n_boot=n_boot)
-    cox = evaluate_cox(frame, anchor=anchor, lab_window_days=lab_window_days, score=score)
-    km = evaluate_km(frame, anchor=anchor, lab_window_days=lab_window_days, score=score)
-    cohort = evaluate_cohort(frame, score_df, anchor=anchor, lab_window_days=lab_window_days, score=score)
-    return cindex, delta, cox, km, cohort
+        outputs = [_missing_outputs(anchor, lab_window_days, score, source) for source in sources]
+        return tuple(pl.concat([out[i] for out in outputs]) for i in range(5))
+
+    note_df = None
+    if "regex" in sources:
+        try:
+            note_df = pl.read_csv(_note_df_path(anchor), schema_overrides={"DFCI_MRN": pl.String})
+            frames["regex"] = _regex_cohort(score_df, note_df, text, outcomes, score)
+        except _READ_ERRORS:
+            note_df = None
+    n_both = (
+        frames["calculated"].join(frames["regex"], on="DFCI_MRN", how="semi").height
+        if "regex" in frames else None
+    )
+    outputs = [
+        _evaluate_source(
+            frames[source], score_df, anchor=anchor, lab_window_days=lab_window_days, score=score,
+            source=source, n_boot=n_boot, note_df=note_df, n_both_sources=n_both,
+        ) if source in frames else _missing_outputs(anchor, lab_window_days, score, source)
+        for source in sources
+    ]
+    schemas = (CINDEX_SCHEMA, DELTA_SCHEMA, COX_SCHEMA, KM_SCHEMA, COHORT_SCHEMA)
+    return tuple(pl.concat([out[i].cast(schema) for out in outputs]) for i, schema in enumerate(schemas))
 
 
 def _tasks(n_boot: int) -> list[tuple]:

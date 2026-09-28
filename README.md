@@ -76,7 +76,7 @@ It writes `fig3_combined_cindex.csv`, plus overall-survival patient-bootstrap in
 (`--n-boot`, default 1000) in `fig3_combined_os_cindex.csv` and `fig3_combined_os_delta.csv`.
 
 `figures.prep.published_scores` compares published within-cancer-type prognostic scores
-(MDCalc-style: mGPS, RMH, LIPI, ALBI, MELD, CAPRA-mod, and ECOG-free IPI/IMDC/MSKCC) against the
+(MDCalc-style: mGPS, RMH, LIPI, ALBI, MELD, CAPRA-mod, IPI, IMDC and MSKCC) against the
 held-out full-cohort text risk score for overall survival. For each score it evaluates three
 models — the published score alone, text alone, and the two combined — on the same eligible,
 lab-observable, complete-case patients and comparable pairs (fold-block C-index, blocks over the
@@ -88,8 +88,18 @@ window) by `pipelines.preprocessing.build_published_scores`, itself fed by the r
 LRT p-values), `pubscore_km.csv`, and `pubscore_cohort.csv`. Only the primary treatment-anchor,
 30-day lab-window run is plotted (`R/plot_figure_published_scores.R`, `published_scores` output
 group); the sequencing-anchor and 90-day-window runs are sensitivity results kept in the report
-tables only. The ECOG-free variants are lower bounds scored with the original cutpoints, since no
-ECOG/KPS/performance-status source exists in this cohort.
+tables only. No structured performance-status source exists, so the full IPI/IMDC/MSKCC take
+ECOG (or KPS converted to ECOG) regex-extracted from progress notes 0-90 days before the anchor by
+`pipelines.preprocessing.extract_note_scores`, which must run before the builder; ECOG >= 2 scores
+the item (KPS < 80% for IMDC/MSKCC). Their `*_noecog` variants drop that item and are lower bounds
+scored with the original cutpoints, over the larger population without documented ECOG.
+Every score is evaluated from two sources, each on its own cohort: `calculated` (the builder's
+structured-data score) and `regex` (the score as documented in progress notes 0-90 days before
+the anchor, from `pipelines.preprocessing.extract_note_scores`, reviewed in
+`notebooks/1_data/01c_published_scores_note_regex.ipynb`). The regex source runs only for the
+primary lab-window key, and not for the `*_noecog` variants. Every output carries `source`; `pubscore_cohort.csv` adds
+`n_both_sources` (patients scored by both) and the figure labels each row with its evaluated
+patients and deaths, with a separate panel for eligible, scored, and evaluated counts.
 
 `figures.prep.within_cancer_km` splits the Figure 2c/d cohort (patients with a known major stage
 and a full-cohort overall-survival text risk score) by selected cancer type, keeping the pan-cancer
@@ -188,12 +198,13 @@ python -m figures.prep.within_cancer_km
 python -m figures.prep.figure3_combined
 ```
 
-The published-score comparison (audit, builder, prep) is a separate standalone pipeline —
+The published-score comparison (audit, note scores, builder, prep) is a separate standalone pipeline —
 run it via [`notebooks/1_data/01b_published_scores.ipynb`](notebooks/1_data/01b_published_scores.ipynb)
 or the equivalent commands directly:
 
 ```bash
 python -m pipelines.preprocessing.audit_published_score_inputs --anchor treatment
+python -m pipelines.preprocessing.extract_note_scores --anchor treatment  # before the builder: ECOG
 python -m pipelines.preprocessing.build_published_scores --anchor treatment
 python -m figures.prep.published_scores
 ```

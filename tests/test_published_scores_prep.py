@@ -122,8 +122,9 @@ def test_published_model_cindex_matches_direct_pair_weighted_concordance():
     assert published["cindex"] == pytest.approx(num / count)
 
 
-def test_serial_and_parallel_runs_match(tmp_path, monkeypatch):
-    frame = _cohort(300, 3)
+def _write_prep_inputs(tmp_path, monkeypatch, frame, *, note=True):
+    """Builder + note-score CSVs for `frame`; the note score documents every
+    other patient, as the calculated score's value (sometimes off by one)."""
     score_df = frame.select(
         "DFCI_MRN",
         pl.lit(True).alias("mgps__eligible"),
@@ -134,8 +135,16 @@ def test_serial_and_parallel_runs_match(tmp_path, monkeypatch):
     )
     text = frame.select("DFCI_MRN", "text_score", pl.col("text_fold").alias(prep.TEXT_FOLD))
     outcomes = frame.select("DFCI_MRN", "event_flag", "time")
-
     score_df.write_csv(tmp_path / "published_scores_df.csv.gz", compression="gzip")
+    if note:
+        documented = pl.int_range(pl.len()) % 2 == 0
+        note_value = (pl.col("published_score") + (pl.int_range(pl.len()) % 3 == 0).cast(pl.Float64)).clip(0, 2)
+        frame.select(
+            "DFCI_MRN",
+            pl.lit(90).alias("note_lookback_days"),
+            pl.when(documented).then(note_value).alias("mgps__note_value"),
+            pl.when(documented).then(note_value.cast(pl.Int64).cast(pl.String)).alias("mgps__note_group"),
+        ).write_csv(tmp_path / "published_scores_note_df.csv.gz", compression="gzip")
     monkeypatch.setattr(prep, "FEATURE_PATH", str(tmp_path))
     monkeypatch.setattr(prep, "_load_text_scores", lambda: text)
     monkeypatch.setattr(prep, "_load_outcomes", lambda: outcomes)
@@ -143,12 +152,74 @@ def test_serial_and_parallel_runs_match(tmp_path, monkeypatch):
     monkeypatch.setattr(prep, "ANCHORS_TO_RUN", ("treatment",))
     monkeypatch.setattr(prep, "LAB_WINDOWS_TO_RUN", (30,))
 
+
+def test_serial_and_parallel_runs_match(tmp_path, monkeypatch):
+    frame = _cohort(300, 3)
+    _write_prep_inputs(tmp_path, monkeypatch, frame)
+
     serial = prep.prepare_published_scores(n_boot=50, n_jobs=1, show_progress=False)
     parallel = prep.prepare_published_scores(n_boot=50, n_jobs=2, show_progress=False)
     for expected, actual in zip(serial, parallel):
         assert actual.equals(expected)
-    cindex = serial[0]
+    cindex, delta, cox, km, cohort = serial
     assert set(cindex["status"]) == {"ok"}
+    assert set(cindex["source"]) == set(prep.SOURCES)
+    assert dict(zip(cindex["source"], cindex["variant"])) == {"calculated": SCORE.variant, "regex": "documented"}
+    n = dict(zip(cindex["source"], cindex["n_patients"]))
+    assert n == {"calculated": 300, "regex": 150}
+    for table in (delta, cox, km, cohort):
+        assert set(table["source"]) == set(prep.SOURCES)
+    rows = {r["source"]: r for r in cohort.iter_rows(named=True)}
+    assert rows["regex"]["n_complete"] == 150 and rows["regex"]["n_observable"] is None
+    assert rows["regex"]["note_lookback_days"] == 90 and rows["calculated"]["note_lookback_days"] is None
+    assert rows["regex"]["n_both_sources"] == rows["calculated"]["n_both_sources"] == 150
+
+
+def test_missing_note_scores_mark_only_regex_missing_inputs(tmp_path, monkeypatch):
+    _write_prep_inputs(tmp_path, monkeypatch, _cohort(300, 3), note=False)
+    cindex, _, _, _, cohort = prep.prepare_published_scores(n_boot=0, n_jobs=1, show_progress=False)
+    status = dict(zip(cindex["source"], cindex["status"]))
+    assert status == {"calculated": "ok", "regex": "missing_inputs"}
+    assert cohort.filter(pl.col("source") == "regex")["n_patients"].to_list() == [None]
+
+
+def test_regex_runs_only_under_the_primary_lab_window(tmp_path, monkeypatch):
+    _write_prep_inputs(tmp_path, monkeypatch, _cohort(300, 3))
+    (tmp_path / "published_scores_df.csv.gz").rename(tmp_path / "published_scores_df__lab90d.csv.gz")
+    monkeypatch.setattr(prep, "LAB_WINDOWS_TO_RUN", (90,))
+    cindex = prep.prepare_published_scores(n_boot=0, n_jobs=1, show_progress=False)[0]
+    assert set(cindex["source"]) == {"calculated"}
+
+
+def test_regex_cohort_uses_eligibility_and_documented_value():
+    score_df = pl.DataFrame({
+        "DFCI_MRN": ["P1", "P2", "P3", "P4"],
+        "mgps__eligible": [True, True, False, True],
+        "mgps__complete": [False, True, True, True],
+        "labs_observable": [False, True, True, True],
+    })
+    note_df = pl.DataFrame({
+        "DFCI_MRN": [1, 2, 3, 4],  # builder writes Int64 MRNs
+        "mgps__note_value": [2.0, None, 1.0, 0.0],
+        "mgps__note_group": ["2", None, "1", "0"],
+    })
+    ids = ["1", "2", "3", "4"]
+    text = pl.DataFrame({"DFCI_MRN": ids, "text_score": [0.1, 0.2, 0.3, 0.4], prep.TEXT_FOLD: [0.0, 1.0, 2.0, 3.0]})
+    outcomes = pl.DataFrame({"DFCI_MRN": ids, "event_flag": [1.0, 0.0, 1.0, 0.0], "time": [1.0, 2.0, 3.0, 4.0]})
+    score_df = score_df.with_columns(pl.Series("DFCI_MRN", ids))
+    frame = prep._regex_cohort(score_df, note_df, text, outcomes, SCORE)
+    # P1 counts although its calculated score is incomplete/unobservable; P2 has
+    # no documented score; P3 is not eligible.
+    assert frame["DFCI_MRN"].to_list() == ["1", "4"]
+    assert frame["published_score"].to_list() == [2.0, 0.0]
+
+
+def test_regex_km_uses_the_note_scale_groups():
+    imdc = prep._regex_score(default_catalog()["imdc"])
+    frame = _cohort(300, 8)  # published_score 0-2 = favorable/intermediate/poor
+    km = prep.evaluate_km(frame, anchor="treatment", lab_window_days=30, score=imdc, source="regex")
+    assert set(km["text_group_matched"].unique()) <= {"favorable", "intermediate", "poor"}
+    assert km["source"].unique().to_list() == ["regex"]
 
 
 @pytest.mark.parametrize(("n", "event_rate", "status"), [
@@ -237,3 +308,13 @@ def test_evaluate_cohort_reports_spearman_and_unblocked_cindex():
     assert -1.0 <= row["spearman_published_text"] <= 1.0
     assert 0.0 <= row["unblocked_published_cindex"] <= 1.0
     assert row["underpowered"] is False
+
+
+def test_scores_without_a_note_source_run_calculated_only(tmp_path, monkeypatch):
+    """The `*_noecog` variants are not in NOTE_SCORES: no regex rows at all."""
+    _write_prep_inputs(tmp_path, monkeypatch, _cohort(300, 3))
+    monkeypatch.setattr(prep, "NOTE_SCORES", {})
+    cindex, *tables = prep.prepare_published_scores(n_boot=0, n_jobs=1, show_progress=False)
+    assert set(cindex["source"]) == {"calculated"} and set(cindex["status"]) == {"ok"}
+    for table in tables:
+        assert set(table["source"]) <= {"calculated"}

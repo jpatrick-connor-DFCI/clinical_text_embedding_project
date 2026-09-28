@@ -265,6 +265,22 @@ def test_ecog_free_raises_when_already_ecog_free():
         sp.ecog_free(ipi_noecog)
 
 
+@pytest.mark.parametrize("score_id", ["ipi", "imdc", "mskcc"])
+def test_performance_status_item_is_ecog_ge_2(score_id):
+    """ECOG >= 2 for all three (IMDC/MSKCC KPS < 80% on the ECOG-ACRIN scale)."""
+    item = sp.default_catalog()[score_id].performance_status
+    df = pl.DataFrame({"ecog": [0.0, 1.0, 2.0, 4.0, None]})
+    assert df.select(item.point_expr.alias("p"))["p"].to_list() == [0, 0, 1, 1, None]
+
+
+def test_catalog_has_full_and_ecog_free_variants():
+    catalog = sp.default_catalog()
+    assert set(catalog) == set(sp.CATALOG_SCORE_IDS)
+    for noecog, full in sp.ECOG_FREE_OF.items():
+        assert catalog[full].performance_status is not None
+        assert catalog[noecog].performance_status is None
+
+
 # ===========================================================================
 # Registry integrity
 # ===========================================================================

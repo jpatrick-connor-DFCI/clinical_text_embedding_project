@@ -9,11 +9,18 @@ DataFrame; this module only says how to turn columns into points.
 Scoring is complete-case: a score's `points` are null if any of its items
 is null, and a `missing_items` list records which item(s) were missing (see
 `score_expr`). ECOG/KPS is absent from every PROFILE_DATA and LLM-derived
-source (confirmed by `audit_published_score_inputs.py`'s performance-status
-check), so IPI, IMDC and MSKCC are only available as **ECOG-free modified**
-variants via `ecog_free()` - each keeps a `performance_status` slot so the
-exact original version can be added later if a performance-status source
-ever becomes available.
+structured source (confirmed by `audit_published_score_inputs.py`'s
+performance-status check). IPI, IMDC and MSKCC therefore come twice:
+  - the full score (`ipi`, `imdc`, `mskcc`), whose performance-status item
+    reads an `ecog` column regex-extracted from progress notes
+    (`pipelines/preprocessing/extract_note_scores.py`; a documented KPS is
+    converted to ECOG);
+  - the **ECOG-free modified** variant (`*_noecog`), scored for every
+    patient with the other items, whose points are a lower bound.
+All three performance-status items are ECOG >= 2. IPI defines it that way;
+IMDC and MSKCC define it as KPS < 80%, which is ECOG >= 2 on the ECOG-ACRIN
+conversion (ECOG 1 = KPS 80-90, ECOG 2 = KPS 60-70), so a converted KPS
+keeps the original threshold exactly.
 
 Units are this project's own lab harmonizer's canonical units (see
 `shared/lab_harmonizer.py`):
@@ -438,7 +445,7 @@ def build_capra_mod(
 
 
 # ===========================================================================
-# IPI, ECOG-free modified (aggressive NHL)
+# IPI, full or ECOG-free modified (aggressive NHL)
 # ===========================================================================
 
 def build_ipi(
@@ -514,7 +521,7 @@ def build_ipi(
 
 
 # ===========================================================================
-# IMDC, ECOG-free modified (advanced RCC)
+# IMDC, full or ECOG-free modified (advanced RCC)
 # ===========================================================================
 
 def build_imdc(
@@ -558,7 +565,8 @@ def build_imdc(
     if ecog_col is not None:
         performance_status = ScoreItem(
             "imdc_ecog", (ecog_col,),
-            pl.when(pl.col(ecog_col) >= 1).then(pl.lit(1)).when(pl.col(ecog_col) < 1).then(pl.lit(0)).otherwise(None),
+            # Original criterion KPS < 80% (see module docstring).
+            pl.when(pl.col(ecog_col) >= 2).then(pl.lit(1)).when(pl.col(ecog_col) < 2).then(pl.lit(0)).otherwise(None),
             ItemSource.PERFORMANCE_STATUS,
         )
 
@@ -592,7 +600,7 @@ def build_imdc(
 
 
 # ===========================================================================
-# MSKCC (Motzer), ECOG-free modified (advanced RCC)
+# MSKCC (Motzer), full or ECOG-free modified (advanced RCC)
 # ===========================================================================
 
 def build_mskcc(
@@ -628,7 +636,8 @@ def build_mskcc(
     if ecog_col is not None:
         performance_status = ScoreItem(
             "mskcc_ecog", (ecog_col,),
-            pl.when(pl.col(ecog_col) >= 1).then(pl.lit(1)).when(pl.col(ecog_col) < 1).then(pl.lit(0)).otherwise(None),
+            # Original criterion KPS < 80% (see module docstring).
+            pl.when(pl.col(ecog_col) >= 2).then(pl.lit(1)).when(pl.col(ecog_col) < 2).then(pl.lit(0)).otherwise(None),
             ItemSource.PERFORMANCE_STATUS,
         )
 
@@ -700,7 +709,7 @@ def register(score: PublishedScore) -> PublishedScore:
 
 
 def build_catalog(columns: dict[str, str], eligibility: dict[str, pl.Expr]) -> dict[str, PublishedScore]:
-    """Construct all 9 catalog scores against concrete builder column names,
+    """Construct all catalog scores against concrete builder column names,
     in one call, and return them as a fresh local dict (no shared mutable
     state, so this is safe to call more than once per process -- e.g. once
     at `figures/prep/published_scores.py` import time and again in tests).
@@ -728,24 +737,28 @@ def build_catalog(columns: dict[str, str], eligibility: dict[str, pl.Expr]) -> d
         columns["psa"], columns["gleason_primary"], columns["gleason_secondary"],
         columns["clinical_t_ge_t3a"], columns["age"], eligibility["capra_mod"],
     ))
-    _add(build_ipi(
-        columns["age"], columns["ldh"], columns["ann_arbor_stage_ge_3"],
-        columns["n_extranodal_sites"], None, eligibility["ipi_noecog"],
-    ))
-    _add(build_imdc(
-        columns["diagnosis_to_anchor_days"], columns["hemoglobin"], columns["gender"],
-        columns["corrected_calcium"], columns["anc"], columns["platelets"], None,
-        eligibility["imdc_noecog"],
-    ))
-    _add(build_mskcc(
-        columns["ldh"], columns["hemoglobin"], columns["gender"], columns["corrected_calcium"],
-        columns["diagnosis_to_anchor_days"], None, eligibility["mskcc_noecog"],
-    ))
+    # Full score (ECOG from notes) first, then its ECOG-free variant.
+    for ecog, suffix in ((columns["ecog"], ""), (None, "_noecog")):
+        _add(build_ipi(
+            columns["age"], columns["ldh"], columns["ann_arbor_stage_ge_3"],
+            columns["n_extranodal_sites"], ecog, eligibility[f"ipi{suffix}"],
+        ))
+    for ecog, suffix in ((columns["ecog"], ""), (None, "_noecog")):
+        _add(build_imdc(
+            columns["diagnosis_to_anchor_days"], columns["hemoglobin"], columns["gender"],
+            columns["corrected_calcium"], columns["anc"], columns["platelets"], ecog,
+            eligibility[f"imdc{suffix}"],
+        ))
+    for ecog, suffix in ((columns["ecog"], ""), (None, "_noecog")):
+        _add(build_mskcc(
+            columns["ldh"], columns["hemoglobin"], columns["gender"], columns["corrected_calcium"],
+            columns["diagnosis_to_anchor_days"], ecog, eligibility[f"mskcc{suffix}"],
+        ))
 
     return catalog
 
 
-# Canonical column-name map for the 9-score catalog: both
+# Canonical column-name map for the catalog: both
 # build_published_scores.py (real columns on its wide frame) and
 # figures/prep/published_scores.py (metadata only -- direction, risk_groups,
 # variant, continuous_formula -- no real eligibility data needed there) build
@@ -758,16 +771,18 @@ CATALOG_COLUMNS = {
     "clinical_t_ge_t3a": "clinical_t_ge_t3a", "age": "age",
     "ann_arbor_stage_ge_3": "ann_arbor_stage_ge_3", "n_extranodal_sites": "n_extranodal_sites",
     "diagnosis_to_anchor_days": "diagnosis_to_anchor_days", "hemoglobin": "hemoglobin", "gender": "gender",
-    "corrected_calcium": "corrected_calcium", "platelets": "platelets",
+    "corrected_calcium": "corrected_calcium", "platelets": "platelets", "ecog": "ecog",
 }
 CATALOG_SCORE_IDS = (
     "mgps", "rmh", "lipi", "albi", "meld", "capra_mod",
-    "ipi_noecog", "imdc_noecog", "mskcc_noecog",
+    "ipi", "ipi_noecog", "imdc", "imdc_noecog", "mskcc", "mskcc_noecog",
 )
+# Scores that share a population with their full-score sibling.
+ECOG_FREE_OF = {"ipi_noecog": "ipi", "imdc_noecog": "imdc", "mskcc_noecog": "mskcc"}
 
 
 def default_catalog() -> dict[str, PublishedScore]:
-    """The 9-score catalog with placeholder (always-true) eligibility --
+    """The catalog with placeholder (always-true) eligibility --
     for callers that only need score metadata (id, direction, risk_groups,
     variant, continuous_formula), such as figures/prep/published_scores.py,
     which reads real per-patient eligibility from the builder's CSV output

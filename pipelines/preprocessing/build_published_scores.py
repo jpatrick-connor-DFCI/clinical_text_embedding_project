@@ -1,6 +1,6 @@
 """Build the published-prognostic-score catalog (`shared/published_scores.py`)
 against real cohort data: mGPS, RMH, LIPI, ALBI, MELD, CAPRA (modified) and
-IPI/IMDC/MSKCC (ECOG-free modified).
+IPI/IMDC/MSKCC, each both full (ECOG from notes) and ECOG-free modified.
 
 Command line: `--anchor {treatment,sequencing} --lab-window-days 30`.
 
@@ -21,6 +21,12 @@ Inputs
   a hand-built analyte/unit table for the ~10 analytes these scores need; no
   external repo dependency).
 - The LLM Gleason timeline (`config.GLEASON_TIMELINE_PATH`) for CAPRA.
+- `published_scores_note_df{anchor_suffix}.csv.gz` from
+  `extract_note_scores.py` (run it first): `ecog__note_value`, the latest
+  ECOG (or KPS converted to ECOG) documented 0..90 days before the anchor,
+  as the performance-status item of the full IPI/IMDC/MSKCC. Without that
+  file the full scores are never complete and only the ECOG-free variants
+  are scored.
 
 No-leakage windowing
 ---------------------
@@ -56,9 +62,10 @@ Eligibility population notes
 Raw `CANCER_GROUP` values in PROFILE_data_processing's compiled
 CANCER_TYPE.parquet are `LIVER` and `KIDNEY`, not "HCC"/"RCC". ALBI/MELD
 treat every LIVER patient as HCC. IMDC/MSKCC restrict KIDNEY to renal-cell
-carcinoma via the OncoTree `GENOMICS_CANCER_TYPE`, keeping KIDNEY patients
-with no genomic type (ICD-only). The same column drives the LIPI SCLC/carcinoid
-exclusion and the DLBCL flag; CAREG carries no histology text.
+carcinoma via the OncoTree `GENOMICS_CANCER_TYPE` (`RCC_HISTOLOGY_PATTERN`),
+keeping KIDNEY patients with no genomic type (ICD-only). The same column
+drives the LIPI SCLC/carcinoid exclusion and the DLBCL flag; CAREG carries no
+histology text.
 "advanced" (mGPS/RMH eligibility) means `N_MET_SITES >= 1` from
 `met_burden_df`, or registry stage IV diagnosed on or before the anchor.
 """
@@ -77,9 +84,11 @@ except ModuleNotFoundError:
 from pipelines.preprocessing import profile_sources as ps
 from pipelines.preprocessing.generate_all_non_text_covariates import _feature_path
 from shared.lab_harmonizer import harmonize_labs
+from pipelines.preprocessing.extract_note_scores import note_score_path
 from shared.published_scores import (
     CATALOG_COLUMNS,
     CATALOG_SCORE_IDS,
+    ECOG_FREE_OF,
     DLBCL_SUBTYPE_NAMES,
     SCLC_CARCINOID_EXCLUSION_NAMES,
     build_catalog,
@@ -157,6 +166,30 @@ def _load_gleason() -> pl.DataFrame:
         GLEASON_TIMELINE_PATH,
         columns=["DFCI_MRN", "gleason_date", "gleason_primary", "gleason_secondary"],
     ).with_columns(pl.col("DFCI_MRN").cast(pl.Int64, strict=False))
+
+
+RCC_HISTOLOGY_PATTERN = r"(?i)renal cell|renal (non-)?clear cell carcinoma|renal medullary carcinoma"
+
+PERFORMANCE_STATUS_SCHEMA = {
+    "DFCI_MRN": pl.Int64, "ecog": pl.Float64, "ecog__source": pl.String, "ecog__days_before_anchor": pl.Int64,
+}
+
+
+def _load_performance_status(anchor: str) -> pl.DataFrame:
+    """Note-documented ECOG per patient (extract_note_scores output), or an
+    empty frame with a warning when that stage has not run."""
+    path = note_score_path(anchor)
+    notes = pl.read_csv(path, schema_overrides={"DFCI_MRN": pl.Int64}) if os.path.exists(path) else None
+    if notes is None or "ecog__note_value" not in notes.columns:
+        print(f"[published scores] WARNING: no note ECOG in {path}; run "
+              "pipelines.preprocessing.extract_note_scores first. Full IPI/IMDC/MSKCC will be incomplete.")
+        return pl.DataFrame(schema=PERFORMANCE_STATUS_SCHEMA)
+    return notes.select(
+        "DFCI_MRN",
+        pl.col("ecog__note_value").cast(pl.Float64, strict=False).alias("ecog"),
+        pl.col("ecog__note_source").cast(pl.String).alias("ecog__source"),
+        pl.col("ecog__note_days_before_anchor").cast(pl.Int64, strict=False).alias("ecog__days_before_anchor"),
+    ).filter(pl.col("ecog").is_not_null())
 
 
 def _latest_day_median(
@@ -304,8 +337,9 @@ def build_eligibility(
         if "GENOMICS_CANCER_TYPE" in cancer_group.columns else pl.lit("")
     )
     hcc = pl.col("CANCER_GROUP") == "LIVER"
+    # OncoTree RCC names; "Renal Clear Cell Carcinoma" lacks "renal cell".
     rcc = (pl.col("CANCER_GROUP") == "KIDNEY") & (
-        histology.str.contains(r"(?i)renal cell") | (histology == "")
+        histology.str.contains(RCC_HISTOLOGY_PATTERN) | (histology == "")
     )
     sclc_or_carcinoid = histology.str.contains(
         "|".join(SCLC_CARCINOID_EXCLUSION_NAMES), literal=False
@@ -331,13 +365,21 @@ def build_eligibility(
         (pl.col("CANCER_GROUP") == "AGGR_NHL").alias("ipi_noecog__eligible"),
         (pl.col("_advanced") & pl.col("_rcc")).alias("imdc_noecog__eligible"),
         (pl.col("_advanced") & pl.col("_rcc")).alias("mskcc_noecog__eligible"),
+    ).with_columns(
+        # A full score's population is its ECOG-free variant's.
+        pl.col(f"{noecog}__eligible").alias(f"{full}__eligible") for noecog, full in ECOG_FREE_OF.items()
     )
 
 
 def build_score_frame(
     cohort_df: pl.DataFrame, anchor: str, lab_features: pl.DataFrame, eligibility: pl.DataFrame, gleason: pl.DataFrame,
+    performance_status: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
-    """Join everything into one wide frame and score all 9 catalog entries."""
+    """Join everything into one wide frame and score every catalog entry.
+    `performance_status` is `_load_performance_status` output (None: no
+    ECOG, so the full IPI/IMDC/MSKCC are incomplete for everyone)."""
+    if performance_status is None:
+        performance_status = pl.DataFrame(schema=PERFORMANCE_STATUS_SCHEMA)
     age_column = age_col(anchor)
 
     gleason_at_dx = _to_datetime_col(
@@ -360,6 +402,7 @@ def build_score_frame(
         .join(lab_features, on="DFCI_MRN", how="left")
         .join(eligibility, on="DFCI_MRN", how="left")
         .join(gleason_at_dx, on="DFCI_MRN", how="left")
+        .join(performance_status, on="DFCI_MRN", how="left")
     )
 
     # PSA and clinical-T are not independently confirmed against a real
@@ -424,11 +467,12 @@ def main() -> None:
     careg = _load_careg_frame()
     cancer_group = _load_cancer_group()
     gleason = _load_gleason()
+    performance_status = _load_performance_status(anchor)
 
     lab_features = build_lab_features(cohort_df, anchor, window_days)
 
     eligibility = build_eligibility(cohort_df, anchor, careg, cancer_group, met_burden)
-    score_frame = build_score_frame(cohort_df, anchor, lab_features, eligibility, gleason)
+    score_frame = build_score_frame(cohort_df, anchor, lab_features, eligibility, gleason, performance_status)
 
     required = ["DFCI_MRN"] + [
         f"{s}__{suffix}" for s in CATALOG_SCORE_IDS for suffix in ("eligible", "complete")

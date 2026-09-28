@@ -257,7 +257,7 @@ def audit_performance_status() -> None:
             print(f"  {filename}: {hits}")
     if not found_any:
         print("  No ECOG/KPS/performance-status column found in any PROFILE_DATA table.")
-        print("  Confirms the plan's premise: IPI/IMDC/MSKCC must be built ECOG-free.")
+        print("  Full IPI/IMDC/MSKCC take ECOG from notes (extract_note_scores); *_noecog are ECOG-free.")
 
 
 def audit_gleason_timeline() -> None:
