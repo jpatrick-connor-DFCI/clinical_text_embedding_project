@@ -66,9 +66,10 @@
 # group: the overall-survival (death_met/death) C-index for those cancer types,
 # text versus base and versus each other modality.
 # plot_figure_published_scores.R renders published within-cancer-type prognostic
-# scores (MDCalc-style: mGPS, RMH, LIPI, ALBI, MELD, CAPRA-mod, and ECOG-free IPI/
-# IMDC/MSKCC) versus the held-out text risk score for overall survival
-# (figures.prep.published_scores): per-score C-index of the published score, text,
+# scores (MDCalc-style: mGPS, RMH, LIPI, ALBI, MELD, CAPRA-mod, and IPI/IMDC/MSKCC
+# full and ECOG-free, plus note-documented ECOG and KPS alone) versus the held-out
+# text risk score for overall survival (figures.prep.published_scores), showing
+# only scores with at least 50 evaluated patients: per-score C-index of the published score, text,
 # and both combined (figPS_published_cindex), their paired differences
 # (figPS_published_delta), the added-text Cox hazard ratio adjusted for the
 # published score with its LRT p-value (figPS_published_cox), and per-score KM

@@ -2,8 +2,10 @@
 # held-out text risk score for overall survival (figures.prep.published_scores).
 # No models are refitted here; C-indices, Cox HRs and KM groups come from the
 # Python prep tier. Each score appears twice: `calculated` from structured
-# data and `regex` as documented in clinical notes; every row is labelled
-# with its evaluated patients and deaths. Only the primary run (treatment
+# data and `regex` as documented in clinical notes, plus ECOG and KPS alone
+# (notes only); every row is labelled with its evaluated patients and deaths,
+# and rows with fewer than PS_MIN_PATIENTS are left out of the figures (the
+# report table keeps them, flagged by `in_figure`). Only the primary run (treatment
 # anchor, 30-day lab window) is plotted; the sequencing-anchor and 90-day-
 # window runs are sensitivity results left in the report tables only.
 suppressPackageStartupMessages({ library(ggplot2); library(patchwork); library(dplyr) })
@@ -26,7 +28,9 @@ PS_CONTRAST_LABELS <- c(
 PS_SCORES <- c(mgps = "mGPS", rmh = "RMH", lipi = "LIPI", albi = "ALBI", meld = "MELD",
                capra_mod = "CAPRA", ipi = "IPI", ipi_noecog = "IPI (ECOG-free)",
                imdc = "IMDC", imdc_noecog = "IMDC (ECOG-free)",
-               mskcc = "MSKCC", mskcc_noecog = "MSKCC (ECOG-free)")
+               mskcc = "MSKCC", mskcc_noecog = "MSKCC (ECOG-free)",
+               ecog_only = "ECOG", kps_only = "KPS")
+PS_MIN_PATIENTS <- 50L
 PS_SOURCES <- c(calculated = "calculated", regex = "notes (regex)")
 PS_COUNT_LEVELS <- c(n_eligible = "Eligible", n_complete = "Scored",
                      n_patients = "Evaluated", n_events = "Deaths")
@@ -44,13 +48,15 @@ ps_primary <- function(d) {
   d
 }
 
-# One row per (score, source) with patients evaluated, in catalog then source
-# order; `row` is the y-axis label shared by every panel.
+# One row per (score, source) with at least PS_MIN_PATIENTS evaluated, in
+# catalog then source order; `row` is the y-axis label shared by every panel,
+# so this is the single place that decides which scores are shown.
 ps_rows <- function(cohort) {
   d <- ps_primary(cohort)
   if (!nrow(d)) return(tibble::tibble(score = character(), source = character(), row = character()))
   d %>%
-    filter(score %in% names(PS_SCORES), source %in% names(PS_SOURCES)) %>%
+    filter(score %in% names(PS_SCORES), source %in% names(PS_SOURCES),
+           !is.na(n_patients), n_patients >= PS_MIN_PATIENTS) %>%
     mutate(
       n_label = ifelse(is.na(n_patients), "n = NA",
                        sprintf("n = %s, %s deaths", scales::comma(n_patients),
@@ -192,7 +198,8 @@ published_scores_caption <- function(cindex, cohort) {
       "(d) Hazard ratio per SD of the text risk score, adjusted for the published score, from a",
       "joint Cox model; annotated with the likelihood-ratio-test p-value for adding text.",
       "A separate panel shows Kaplan-Meier curves by published risk group, one per score and source.",
-      "Every row is labelled with its evaluated patients and deaths."
+      "Every row is labelled with its evaluated patients and deaths; scores with fewer than",
+      sprintf("%d evaluated patients are not shown.", PS_MIN_PATIENTS)
     ),
     paste(
       "Each score has two sources, evaluated on separate cohorts drawn from the same eligible",
@@ -209,6 +216,11 @@ published_scores_caption <- function(cindex, cohort) {
         "progress notes dated 0-%s days before the anchor (latest note used). These are the full",
         "published scores including performance status; IMDC and MSKCC are used as their",
         "documented risk group, ALBI as its grade."), lookback_text),
+      paste(
+        "ECOG and KPS are also evaluated alone, as documented in the same notes window, for every",
+        "cohort patient with one: ECOG as written (the upper end of a documented range) and KPS on",
+        "its 10-100 scale (lower is worse), with no conversion between the two."
+      ),
       "The text model already includes age, sex and cancer type."
     ),
     paste(
@@ -252,8 +264,8 @@ render_published_scores <- function() {
     km = build_published_km(km, rows)
   )
   row_height <- function(d) 1.6 + 0.55 * max(if (nrow(d)) n_distinct(d$score, d$source) else 0, 1)
-  ok_rows <- ps_primary(cindex) %>% filter(status == "ok")
-  km_primary <- ps_primary(km)
+  ok_rows <- ps_primary(cindex) %>% filter(status == "ok") %>% semi_join(rows, by = c("score", "source"))
+  km_primary <- ps_primary(km) %>% semi_join(rows, by = c("score", "source"))
   n_km <- if (nrow(km_primary)) max(nrow(distinct(km_primary, score, source)), 1) else 1
   sizes <- list(n = c(7.5, row_height(rows)), cindex = c(7.5, row_height(ok_rows)),
                 delta = c(7.5, row_height(ok_rows)), cox = c(7.5, row_height(ok_rows)),
@@ -270,7 +282,8 @@ render_published_scores <- function() {
 
   table <- ps_primary(cindex) %>%
     filter(status == "ok") %>%
-    select(score, source, variant, model, cindex, ci_lower, ci_upper, n_patients, n_events, n_boot)
+    select(score, source, variant, model, cindex, ci_lower, ci_upper, n_patients, n_events, n_boot) %>%
+    mutate(in_figure = n_patients >= PS_MIN_PATIENTS)
   cohort_cols <- intersect(c("score", "source", "n_eligible", "n_complete", "n_both_sources",
                              "frac_tied_published", "spearman_published_text",
                              "unblocked_published_cindex", "underpowered"), names(ps_primary(cohort)))

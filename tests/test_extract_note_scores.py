@@ -130,6 +130,12 @@ def test_performance_status_ecog_range_kps_and_latest_day():
     assert frame["ecog__note_source"].to_list() == ["ECOG", "KPS", "KPS", "KPS", "ECOG", None]
     assert frame["ecog__note_days_before_anchor"].to_list() == [5, 3, 3, 2, 2, None]
     assert frame["ecog__note_n_mentions"].to_list() == [2, 1, 1, 2, 2, None]
+    # ECOG and KPS alone: each from its own mentions, KPS unconverted.
+    assert frame["ecog_only__note_value"].to_list() == [2.0, None, None, 1.0, 2.0, None]
+    assert frame["ecog_only__note_group"].to_list() == ["2", None, None, "1", "2", None]
+    assert frame["ecog_only__note_n_mentions"].to_list() == [2, None, None, 1, 1, None]
+    assert frame["kps_only__note_value"].to_list() == [None, 70.0, 80.0, 60.0, 70.0, None]
+    assert frame["kps_only__note_group"].to_list() == [None, "60-70", "80-100", "60-70", "60-70", None]
 
 
 @pytest.mark.parametrize("string_dates", [False, True])

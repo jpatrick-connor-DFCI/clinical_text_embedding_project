@@ -39,6 +39,13 @@ a documented KPS converted on the ECOG-ACRIN scale (KPS 100 -> 0, 80-90 -> 1,
 60-70 -> 2, 40-50 -> 3, 10-30 -> 4). The conversion keeps IMDC/MSKCC's
 original KPS < 80% criterion exact at ECOG >= 2.
 
+Performance status is also a predictor on its own, in two scores that are
+not in the published catalog and have no calculated source
+(`PERFORMANCE_STATUS_SCORES`, every cohort patient eligible):
+- ecog_only: documented ECOG only (upper end of a range), no KPS conversion.
+- kps_only: documented KPS only, on its native 10-100 scale (higher is
+  better, so its direction is -1).
+
 No-leakage window: only mentions in notes dated 0..`lookback_days` days
 before the anchor count. The latest such note is used; ties on one date take
 the highest (worst) value. The same rule picks the performance status.
@@ -50,7 +57,8 @@ Outputs
   `{id}__note_value`, `{id}__note_group`, `{id}__note_days_before_anchor` and
   `{id}__note_n_mentions` (in-window mentions), plus `ecog__note_value`,
   `ecog__note_source` (ECOG or KPS), `ecog__note_days_before_anchor` and
-  `ecog__note_n_mentions`. Values are null when nothing was documented. No note text is written; per-match snippets for review
+  `ecog__note_n_mentions`, and the same four `__note_*` columns as the
+  scores for `ecog_only` and `kps_only`. Values are null when nothing was documented. No note text is written; per-match snippets for review
   are in notebooks/1_data/01c_published_scores_note_regex.ipynb.
 """
 
@@ -65,7 +73,9 @@ import polars as pl
 from anchors import ANCHORS, DEFAULT_ANCHOR, anchor_suffix, date_col
 from config import CLINICAL_NOTES_PATH, FEATURE_PATH, SURV_PATH
 from pipelines.preprocessing import profile_sources as ps
-from shared.published_scores import CATALOG_SCORE_IDS, ECOG_FREE_OF, RiskGroup, default_catalog, group_expr
+from shared.published_scores import (
+    CATALOG_SCORE_IDS, ECOG_FREE_OF, PublishedScore, RiskGroup, default_catalog, group_expr,
+)
 
 DEFAULT_LOOKBACK_DAYS = 90
 DEFAULT_NOTE_TYPES = ("PROGRESS_NOTES",)
@@ -270,6 +280,8 @@ _RCC_GROUPS = (RiskGroup("favorable", 0, 0), RiskGroup("intermediate", 1, 1), Ri
 _measure = pl.col("measure")
 _variant = pl.col("variant")
 _num = pl.col("value_num")
+# A documented ECOG, taking the upper end of a range such as "ECOG 1-2".
+_ecog_value = pl.coalesce(pl.col("value_hi").cast(pl.Float64, strict=False), _num)
 
 
 @dataclass(frozen=True)
@@ -320,6 +332,27 @@ NOTE_SCORES: dict[str, NoteScore] = {s.score_id: s for s in (
 )}
 assert set(NOTE_SCORES) == set(CATALOG_SCORE_IDS) - set(ECOG_FREE_OF)
 
+# Performance status alone, as documented: not catalog scores (no calculated
+# source, no eligibility restriction), so figures/prep/published_scores.py
+# takes their metadata from here. Risk groups run from lowest to highest risk.
+PERFORMANCE_STATUS_SCORES: dict[str, PublishedScore] = {s.id: s for s in (
+    PublishedScore(
+        "ecog_only", "ECOG performance status", "Oken et al., Am J Clin Oncol 1982", pl.lit(True), (),
+        (RiskGroup("0", 0, 0), RiskGroup("1", 1, 1), RiskGroup("2", 2, 2), RiskGroup("3-4", 3, 4)),
+    ),
+    PublishedScore(
+        "kps_only", "Karnofsky performance status", "Karnofsky & Burchenal 1949", pl.lit(True), (),
+        (RiskGroup("80-100", 80, 100), RiskGroup("60-70", 60, 70), RiskGroup("10-50", 10, 50)),
+        direction=-1,
+    ),
+)}
+PERFORMANCE_STATUS_NOTE_SCORES: dict[str, NoteScore] = {s.score_id: s for s in (
+    NoteScore("ecog_only", "ecog", _ecog_value, PERFORMANCE_STATUS_SCORES["ecog_only"].risk_groups,
+              "documented ECOG only (upper end of a range); KPS not converted"),
+    NoteScore("kps_only", "kps", _num, PERFORMANCE_STATUS_SCORES["kps_only"].risk_groups,
+              "documented KPS only, 10-100"),
+)}
+
 
 # ECOG-ACRIN KPS -> ECOG equivalents, as (lowest KPS, ECOG), checked top-down.
 _KPS_TO_ECOG = ((100, 0.0), (80, 1.0), (60, 2.0), (40, 3.0), (10, 4.0))
@@ -349,9 +382,7 @@ def performance_status_frame(in_window: pl.DataFrame) -> pl.DataFrame:
     on the ECOG scale, `ecog__note_source` (ECOG or KPS; ECOG wins a same-day
     tie at equal value), days before anchor and mention count."""
     rows = in_window.filter(pl.col("mention").is_in(["ecog", "kps"])).with_columns(
-        pl.when(pl.col("mention") == "ecog")
-        .then(pl.coalesce(pl.col("value_hi").cast(pl.Float64, strict=False), _num))
-        .otherwise(_kps_to_ecog(_num)).alias("_value"),
+        pl.when(pl.col("mention") == "ecog").then(_ecog_value).otherwise(_kps_to_ecog(_num)).alias("_value"),
         pl.col("mention").str.to_uppercase().alias("_source"),
     ).drop_nulls("_value")
     latest_day = pl.col("days_before_anchor") == pl.col("days_before_anchor").min()
@@ -368,12 +399,13 @@ def note_score_frame(
     """One row per cohort patient: the latest in-window documented value of
     every note score (ties on one date -> highest value), its risk group,
     its days before anchor and the number of in-window mentions, plus the
-    performance status (`performance_status_frame`)."""
+    performance status (`performance_status_frame`) and ECOG and KPS alone
+    (`PERFORMANCE_STATUS_NOTE_SCORES`)."""
     in_window = mentions.filter(pl.col("days_before_anchor").is_between(0, lookback_days))
     out = cohort.select("DFCI_MRN").unique().sort("DFCI_MRN").with_columns(
         pl.lit(lookback_days, dtype=pl.Int64).alias("note_lookback_days")
     )
-    for spec in NOTE_SCORES.values():
+    for spec in (*NOTE_SCORES.values(), *PERFORMANCE_STATUS_NOTE_SCORES.values()):
         value_col = f"{spec.score_id}__note_value"
         rows = (
             in_window.filter(pl.col("mention") == spec.mention)
@@ -381,7 +413,8 @@ def note_score_frame(
             .drop_nulls("_value")
         )
         latest = _latest_per_patient(rows, spec.score_id)
-        group = group_expr(replace(_CATALOG[spec.score_id], risk_groups=spec.risk_groups), value_col)
+        score = _CATALOG.get(spec.score_id) or PERFORMANCE_STATUS_SCORES[spec.score_id]
+        group = group_expr(replace(score, risk_groups=spec.risk_groups), value_col)
         latest = latest.with_columns(group.alias(f"{spec.score_id}__note_group"))
         out = out.join(latest, on="DFCI_MRN", how="left")
     return out.join(performance_status_frame(in_window), on="DFCI_MRN", how="left")
@@ -406,7 +439,7 @@ def main() -> None:
     os.makedirs(FEATURE_PATH, exist_ok=True)
     out_path = note_score_path(args.anchor)
     frame.write_csv(out_path, compression="gzip")
-    counts = ", ".join(f"{s}={frame[f'{s}__note_value'].is_not_null().sum()}" for s in (*NOTE_SCORES, "ecog"))
+    counts = ", ".join(f"{s}={frame[f'{s}__note_value'].is_not_null().sum()}" for s in (*NOTE_SCORES, "ecog", *PERFORMANCE_STATUS_NOTE_SCORES))
     print(f"[note scores] wrote {out_path} ({frame.height:,} patients; documented: {counts})")
 
 

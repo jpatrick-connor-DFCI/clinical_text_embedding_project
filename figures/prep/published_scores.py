@@ -18,6 +18,13 @@ two score sources separately:
   does not depend on the lab window, so it is evaluated once per anchor,
   under the 30-day lab-window key.
 
+Performance status is also evaluated alone, as two note-only scores from
+`PERFORMANCE_STATUS_SCORES` (`ecog_only`: documented ECOG; `kps_only`:
+documented KPS on its 10-100 scale, direction -1). They have only the
+`regex` source (variant `documented`), every cohort patient is eligible,
+and like the other note scores they run once per anchor under the 30-day
+lab-window key.
+
 Each source is evaluated on its own cohort. Within one (score, source) there
 are three models on one shared set of comparable pairs (`blocks = text_fold`,
 as in figure3_combined):
@@ -101,7 +108,7 @@ from figures.prep.figure3_combined import (
 )
 from figures.prep.parallel import process_pool, resolve_workers
 from figures.prep.within_cancer import _READ_ERRORS, _valid_fold
-from pipelines.preprocessing.extract_note_scores import NOTE_SCORES
+from pipelines.preprocessing.extract_note_scores import NOTE_SCORES, PERFORMANCE_STATUS_SCORES
 from schemes import full_cohort_risk_dir
 from shared.published_scores import PublishedScore, default_catalog
 
@@ -153,6 +160,7 @@ COHORT_SCHEMA = {
 }
 
 CATALOG = default_catalog()
+NOTE_ONLY_SCORES = PERFORMANCE_STATUS_SCORES
 MODELS = ("published", "text", "published+text")
 CONTRASTS = (
     ("published+text", "published"),
@@ -177,7 +185,10 @@ def _variant(score: PublishedScore, source: str) -> str:
 
 
 def _regex_score(score: PublishedScore) -> PublishedScore:
-    """`score` with the note-documented scale's risk groups (e.g. IMDC 0/1/2)."""
+    """`score` with the note-documented scale's risk groups (e.g. IMDC 0/1/2).
+    Note-only scores are already on that scale."""
+    if score.id not in NOTE_SCORES:
+        return score
     return replace(score, risk_groups=NOTE_SCORES[score.id].risk_groups)
 
 
@@ -509,6 +520,8 @@ def _evaluate_task(task: tuple) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFram
     not depend on the lab window, so `regex` only runs under the primary one,
     and only for scores clinicians document."""
     anchor, lab_window_days, score_id, n_boot = task
+    if score_id in NOTE_ONLY_SCORES:
+        return _evaluate_note_only_task(anchor, lab_window_days, NOTE_ONLY_SCORES[score_id], n_boot)
     score = CATALOG[score_id]
     regex = lab_window_days == PRIMARY_LAB_WINDOW and score_id in NOTE_SCORES
     sources = SOURCES if regex else ("calculated",)
@@ -543,12 +556,32 @@ def _evaluate_task(task: tuple) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFram
     return tuple(pl.concat([out[i].cast(schema) for out in outputs]) for i, schema in enumerate(schemas))
 
 
+def _evaluate_note_only_task(
+    anchor: str, lab_window_days: int, score: PublishedScore, n_boot: int,
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    """`regex` source only, with every cohort patient (every note_df row)
+    eligible; no builder output is read."""
+    try:
+        note_df = pl.read_csv(_note_df_path(anchor), schema_overrides={"DFCI_MRN": pl.String})
+        eligible = note_df.select(
+            pl.col("DFCI_MRN").cast(pl.String).str.strip_chars(), pl.lit(True).alias(f"{score.id}__eligible"),
+        )
+        frame = _regex_cohort(eligible, note_df, _load_text_scores(), _load_outcomes(), score)
+    except _READ_ERRORS:
+        return _missing_outputs(anchor, lab_window_days, score, "regex")
+    return _evaluate_source(
+        frame, eligible, anchor=anchor, lab_window_days=lab_window_days, score=score, source="regex",
+        n_boot=n_boot, note_df=note_df, n_both_sources=None,
+    )
+
+
 def _tasks(n_boot: int) -> list[tuple]:
     tasks = []
     for anchor in ANCHORS_TO_RUN:
         for lab_window_days in LAB_WINDOWS_TO_RUN:
             primary = anchor == PRIMARY_ANCHOR and lab_window_days == PRIMARY_LAB_WINDOW
-            for score_id in CATALOG:
+            score_ids = [*CATALOG, *NOTE_ONLY_SCORES] if lab_window_days == PRIMARY_LAB_WINDOW else CATALOG
+            for score_id in score_ids:
                 tasks.append((anchor, lab_window_days, score_id, n_boot if primary else 0))
     return tasks
 

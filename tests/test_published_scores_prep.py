@@ -149,6 +149,7 @@ def _write_prep_inputs(tmp_path, monkeypatch, frame, *, note=True):
     monkeypatch.setattr(prep, "_load_text_scores", lambda: text)
     monkeypatch.setattr(prep, "_load_outcomes", lambda: outcomes)
     monkeypatch.setattr(prep, "CATALOG", {"mgps": SCORE})
+    monkeypatch.setattr(prep, "NOTE_ONLY_SCORES", {})
     monkeypatch.setattr(prep, "ANCHORS_TO_RUN", ("treatment",))
     monkeypatch.setattr(prep, "LAB_WINDOWS_TO_RUN", (30,))
 
@@ -318,3 +319,49 @@ def test_scores_without_a_note_source_run_calculated_only(tmp_path, monkeypatch)
     assert set(cindex["source"]) == {"calculated"} and set(cindex["status"]) == {"ok"}
     for table in tables:
         assert set(table["source"]) <= {"calculated"}
+
+
+def test_performance_status_alone_is_regex_only_over_every_cohort_patient(tmp_path, monkeypatch):
+    """ECOG and KPS alone read the note_df only (no builder output), every
+    cohort patient is eligible, and they run once per anchor."""
+    frame = _cohort(300, 3)
+    _write_prep_inputs(tmp_path, monkeypatch, frame, note=False)
+    (tmp_path / "published_scores_df.csv.gz").unlink()
+    monkeypatch.setattr(prep, "CATALOG", {})
+    monkeypatch.setattr(prep, "NOTE_ONLY_SCORES", prep.PERFORMANCE_STATUS_SCORES)
+    monkeypatch.setattr(prep, "LAB_WINDOWS_TO_RUN", (30, 90))
+    documented = pl.int_range(pl.len()) % 3 != 0
+    ecog = pl.col("published_score") + (pl.int_range(pl.len()) % 2).cast(pl.Float64)  # 0-3
+    frame.select(
+        "DFCI_MRN",
+        pl.lit(90).alias("note_lookback_days"),
+        pl.when(documented).then(ecog).alias("ecog_only__note_value"),
+        pl.when(documented).then(ecog.cast(pl.Int64).cast(pl.String)).alias("ecog_only__note_group"),
+        pl.when(documented).then(100 - 20 * ecog).alias("kps_only__note_value"),
+        pl.lit(None, dtype=pl.String).alias("kps_only__note_group"),
+    ).write_csv(tmp_path / "published_scores_note_df.csv.gz", compression="gzip")
+
+    cindex, _, cox, km, cohort = prep.prepare_published_scores(n_boot=20, n_jobs=1, show_progress=False)
+    assert set(cindex["lab_window_days"]) == {30}
+    assert set(cindex["source"]) == {"regex"} and set(cindex["variant"]) == {"documented"}
+    assert set(cindex["status"]) == {"ok"}
+    assert set(cindex["score"]) == {"ecog_only", "kps_only"}
+    assert set(cindex["n_patients"]) == {200}
+    # KPS is ECOG reversed here, so with direction -1 the two published C-indices agree.
+    published = cindex.filter(pl.col("model") == "published")
+    c = dict(zip(published["score"], published["cindex"]))
+    assert c["ecog_only"] == pytest.approx(c["kps_only"]) and c["ecog_only"] > 0.5
+    rows = {r["score"]: r for r in cohort.iter_rows(named=True)}
+    assert rows["ecog_only"]["n_eligible"] == 300 and rows["ecog_only"]["n_complete"] == 200
+    assert rows["ecog_only"]["n_both_sources"] is None
+    assert set(cox["score"]) == {"ecog_only", "kps_only"}
+    assert set(km["score"]) == {"ecog_only", "kps_only"}
+
+
+def test_performance_status_alone_is_missing_inputs_on_an_old_note_df(tmp_path, monkeypatch):
+    """A note_df written before ecog_only/kps_only existed has no such columns."""
+    _write_prep_inputs(tmp_path, monkeypatch, _cohort(300, 3))
+    monkeypatch.setattr(prep, "CATALOG", {})
+    monkeypatch.setattr(prep, "NOTE_ONLY_SCORES", prep.PERFORMANCE_STATUS_SCORES)
+    cindex, *_ = prep.prepare_published_scores(n_boot=0, n_jobs=1, show_progress=False)
+    assert set(cindex["status"]) == {"missing_inputs"} and set(cindex["source"]) == {"regex"}
