@@ -108,7 +108,9 @@ from figures.prep.figure3_combined import (
 )
 from figures.prep.parallel import process_pool, resolve_workers
 from figures.prep.within_cancer import _READ_ERRORS, _valid_fold
-from pipelines.preprocessing.extract_note_scores import NOTE_SCORES, PERFORMANCE_STATUS_SCORES
+from pipelines.preprocessing.extract_note_scores import (
+    NOTE_SCORES, PERFORMANCE_STATUS_SCORES, read_note_score_frame,
+)
 from schemes import full_cohort_risk_dir
 from shared.published_scores import PublishedScore, default_catalog
 
@@ -537,7 +539,7 @@ def _evaluate_task(task: tuple) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFram
     note_df = None
     if "regex" in sources:
         try:
-            note_df = pl.read_csv(_note_df_path(anchor), schema_overrides={"DFCI_MRN": pl.String})
+            note_df = read_note_score_frame(_note_df_path(anchor), pl.String)
             frames["regex"] = _regex_cohort(score_df, note_df, text, outcomes, score)
         except _READ_ERRORS:
             note_df = None
@@ -562,7 +564,7 @@ def _evaluate_note_only_task(
     """`regex` source only, with every cohort patient (every note_df row)
     eligible; no builder output is read."""
     try:
-        note_df = pl.read_csv(_note_df_path(anchor), schema_overrides={"DFCI_MRN": pl.String})
+        note_df = read_note_score_frame(_note_df_path(anchor), pl.String)
         eligible = note_df.select(
             pl.col("DFCI_MRN").cast(pl.String).str.strip_chars(), pl.lit(True).alias(f"{score.id}__eligible"),
         )

@@ -157,3 +157,23 @@ def test_scan_note_mentions_end_to_end(tmp_path, string_dates):
     assert mentions["days_before_anchor"].unique().to_list() == [31]
     frame = ens.note_score_frame(mentions, cohort)
     assert frame["imdc__note_value"].to_list() == [1.0, None]
+
+
+def test_read_note_score_frame_keeps_late_non_numeric_groups(tmp_path):
+    """`ecog_only__note_group` looks numeric for the first rows and then
+    holds "3-4"; plain read_csv inference failed on that in the builder."""
+    n = 300
+    path = tmp_path / "published_scores_note_df.csv.gz"
+    pl.DataFrame({
+        "DFCI_MRN": list(range(n)),
+        "ecog_only__note_value": [float(i % 3) for i in range(n - 1)] + [3.0],
+        "ecog_only__note_group": [str(i % 3) for i in range(n - 1)] + ["3-4"],
+        "mgps__note_group": ["1"] * n,
+        "ecog__note_source": [None] * (n - 1) + ["KPS"],
+    }).write_csv(path, compression="gzip")
+    with pytest.raises(pl.exceptions.ComputeError):
+        pl.read_csv(path)
+    frame = ens.read_note_score_frame(path)
+    assert frame["ecog_only__note_group"][-1] == "3-4"
+    assert frame.schema["DFCI_MRN"] == pl.Int64 and frame.schema["mgps__note_group"] == pl.String
+    assert ens.read_note_score_frame(path, pl.String).schema["DFCI_MRN"] == pl.String

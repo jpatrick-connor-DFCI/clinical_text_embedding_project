@@ -84,7 +84,7 @@ except ModuleNotFoundError:
 from pipelines.preprocessing import profile_sources as ps
 from pipelines.preprocessing.generate_all_non_text_covariates import _feature_path
 from shared.lab_harmonizer import harmonize_labs
-from pipelines.preprocessing.extract_note_scores import note_score_path
+from pipelines.preprocessing.extract_note_scores import note_score_path, read_note_score_frame
 from shared.published_scores import (
     CATALOG_COLUMNS,
     CATALOG_SCORE_IDS,
@@ -179,7 +179,7 @@ def _load_performance_status(anchor: str) -> pl.DataFrame:
     """Note-documented ECOG per patient (extract_note_scores output), or an
     empty frame with a warning when that stage has not run."""
     path = note_score_path(anchor)
-    notes = pl.read_csv(path, schema_overrides={"DFCI_MRN": pl.Int64}) if os.path.exists(path) else None
+    notes = read_note_score_frame(path) if os.path.exists(path) else None
     if notes is None or "ecog__note_value" not in notes.columns:
         print(f"[published scores] WARNING: no note ECOG in {path}; run "
               "pipelines.preprocessing.extract_note_scores first. Full IPI/IMDC/MSKCC will be incomplete.")

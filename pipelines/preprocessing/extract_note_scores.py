@@ -424,6 +424,16 @@ def note_score_path(anchor: str) -> str:
     return os.path.join(FEATURE_PATH, f"published_scores_note_df{anchor_suffix(anchor)}.csv.gz")
 
 
+def read_note_score_frame(path, mrn_dtype: pl.DataType = pl.Int64) -> pl.DataFrame:
+    """Read `note_score_frame` output. Group and source columns are labels,
+    read as String: some look numeric for the first rows and then are not
+    (`ecog_only__note_group` is "0".."2" until a "3-4"), which breaks CSV
+    type inference."""
+    header = pl.read_csv(path, n_rows=0, infer_schema=False).columns
+    labels = {c: pl.String for c in header if c.endswith(("__note_group", "__note_source"))}
+    return pl.read_csv(path, schema_overrides={**labels, "DFCI_MRN": mrn_dtype})
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--anchor", choices=sorted(ANCHORS), default=DEFAULT_ANCHOR)
