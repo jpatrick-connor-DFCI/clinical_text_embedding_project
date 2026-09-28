@@ -14,9 +14,9 @@ states what it runs after and what depends on it.
 
 ## 2_models — time-to-event training and evaluation
 
-The four notebooks here share one structure: setup → configuration → preconditions → run →
-summary. Each wraps `pipelines.*` modules in subprocesses, is resumable, and reports what is on
-disk rather than assuming the run it just did is the only one that has happened.
+These notebooks share one structure: setup → configuration → preconditions → run → summary.
+Each wraps `pipelines.*` modules in subprocesses, is resumable, and reports what is on disk
+rather than assuming the run it just did is the only one that has happened.
 
 | # | Notebook | Tier | Notes |
 |---|---|---|---|
@@ -25,6 +25,7 @@ disk rather than assuming the run it just did is the only one that has happened.
 | 02 | [`2_models/02_within_vs_pan.ipynb`](2_models/02_within_vs_pan.ipynb) | cluster CPU | Optional within- vs pan-stratum training comparison for cancer type and first-line treatment class, one subprocess per `pipelines.trajectories.*` script, with per-run toggles. Both are long-running and resume from their own per-stratum checkpoints. No longer required by manuscript figures; the within-cancer supplements evaluate existing pooled models and do not use these outputs. |
 | 03 | [`2_models/03_mortality_trajectories.ipynb`](2_models/03_mortality_trajectories.ipynb) | cluster CPU | Landmark mortality risk trajectories (months 0–60) from `pipelines.trajectories.generate_mortality_trajectories`, with landmark coverage and at-risk denominators. **Fits one model at month 0 and re-scores it at every later landmark** (hyperparameters matched to the full-cohort runs), so trajectories are comparable across months. Resumable — each landmark is checkpointed as it completes. Must run **before** `4_figures/02` — `figures.prep.figure4` clusters these trajectories. |
 | 04 | [`2_models/04_full_cohort_risk_scores.ipynb`](2_models/04_full_cohort_risk_scores.ipynb) | cluster CPU | Held-out risk scores for the full-cohort models, once the SLURM arrays have completed. |
+| 05 | [`2_models/05_sequencing_os_comparison.ipynb`](2_models/05_sequencing_os_comparison.ipynb) | compute-backed Jupyter CPU session | Sequencing-anchored overall survival (`death_met:death`): full-cohort text versus baseline, then text versus stage, treatment, somatic, PRS, and metastatic burden on the common full-data cohort. Runs the existing training modules and summarizes their held-out test metrics. |
 
 ## 3_biomarkers — ICI biomarker discovery
 
