@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import numpy as np
 import polars as pl
@@ -373,7 +374,7 @@ def test_nested_cv_writes_oof_predictions_and_refit_xgboost(tmp_path, monkeypatc
     assert reused["artifacts"] == meta["artifacts"]
     assert reused_folds == on_disk["fold_metrics"]
 
-    with pytest.raises(ValueError, match="different cohort or CV configuration"):
+    with pytest.raises(ValueError, match="different cohort or CV configuration") as excinfo:
         training.train_one(
             data,
             feature_names,
@@ -387,6 +388,8 @@ def test_nested_cv_writes_oof_predictions_and_refit_xgboost(tmp_path, monkeypatc
             n_jobs=1,
             overwrite=False,
         )
+    # The error names the changed key, not just that something changed.
+    assert "seed: 9 -> 10" in str(excinfo.value)
 
 
 # --- n_lines target ------------------------------------------------------
@@ -877,6 +880,78 @@ def test_baseline_space_trains_end_to_end(tmp_path, monkeypatch):
     assert sorted(meta["classes"]) == ["ICI", "NON_ICI"]
     assert len(folds) == 3
     assert {row["class"] for row in per_class} == {"ICI", "NON_ICI"}
+
+
+def test_cohort_from_trains_baseline_on_the_reference_run_patients(tmp_path, monkeypatch, capsys):
+    """--cohort-from takes the cohort from an existing run's predictions and never
+    loads or retrains that space."""
+    from semantic_search import common, train_prediction_models as tpm
+
+    for attr in ("PREDICTIONS_DIR", "MODELS_DIR", "PREDICTION_META_DIR", "RESULTS_DIR"):
+        monkeypatch.setattr(tpm, attr, str(tmp_path / attr.lower()))
+    monkeypatch.setattr(tpm, "ensure_dirs", lambda: None)
+
+    # Labels cover 0..19 (even I, odd II); the reference concat run used 2..17;
+    # patient 17 has no cancer type, so the baseline cannot include them.
+    monkeypatch.setattr(
+        tpm, "load_target",
+        lambda target, **_: pl.DataFrame({"DFCI_MRN": list(range(20)), "label": ["I", "II"] * 10}),
+    )
+    monkeypatch.setattr(
+        tpm, "load_baseline_features",
+        lambda: pl.DataFrame({"DFCI_MRN": list(range(17)), "CANCER_TYPE_LUNG": [1, 0] * 8 + [1]}),
+    )
+
+    def fail_load_features(*args, **kwargs):
+        raise AssertionError("the cohort-from space must not be loaded")
+
+    monkeypatch.setattr(tpm, "load_features", fail_load_features)
+    reference_path = tpm._artifact_paths("stage", "concat", "alltime", "xgboost")["predictions"]
+    Path(reference_path).parent.mkdir(parents=True)
+    pl.DataFrame(
+        # Patient 3's label differs from the current label source.
+        {
+            "DFCI_MRN": list(range(2, 18)),
+            "true_label": ["I" if m % 2 == 0 or m == 3 else "II" for m in range(2, 18)],
+        }
+    ).write_parquet(reference_path)
+
+    trained = []
+
+    def fake_train_one(data, cols, **kwargs):
+        trained.append((kwargs["space"], data.get_column("DFCI_MRN").to_list()))
+        raise _Stop
+
+    class _Stop(Exception):
+        pass
+
+    monkeypatch.setattr(tpm, "train_one", fake_train_one)
+    with pytest.raises(_Stop):
+        tpm.run(
+            targets=["stage"], spaces=[common.BASELINE_SPACE], windows=["alltime"],
+            models=["xgboost"], cohort_mode="common", min_treatment_class_n=25,
+            treatment_granularity="category", avpc_nepc_labels_path=None,
+            outer_folds=2, inner_folds=2, seed=0, n_jobs=1, overwrite=False,
+            cohort_from="concat",
+        )
+
+    assert trained == [(common.BASELINE_SPACE, list(range(2, 17)))]
+    out = capsys.readouterr().out
+    assert "1 of 16 concat patients are not in this run" in out
+    assert "1 patients' labels differ" in out
+
+
+def test_cohort_from_space_cannot_also_be_trained():
+    from semantic_search import train_prediction_models as tpm
+
+    with pytest.raises(ValueError, match="not retrained"):
+        tpm.run(
+            targets=["stage"], spaces=["concat"], windows=["alltime"],
+            models=["xgboost"], cohort_mode="common", min_treatment_class_n=25,
+            treatment_granularity="category", avpc_nepc_labels_path=None,
+            outer_folds=2, inner_folds=2, seed=0, n_jobs=1, overwrite=False,
+            cohort_from="concat",
+        )
 
 
 def test_tki_class_excludes_non_tyrosine_kinase_inhibitors():

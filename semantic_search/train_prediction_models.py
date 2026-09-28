@@ -41,6 +41,8 @@ Run:
         --spaces concat cancer_type_baseline --cohort-mode common
     python -m semantic_search.train_prediction_models \
         --spaces concat concat_full --cohort-mode common
+    python -m semantic_search.train_prediction_models \
+        --spaces cancer_type_baseline --cohort-from concat
 """
 
 from __future__ import annotations
@@ -727,6 +729,40 @@ def _prepare_one_dataset(
     return joined.sort(PATIENT_KEY), cols, collapsed
 
 
+def _report_cohort_drift(
+    data: pl.DataFrame, reference: pl.DataFrame, cohort_from: str
+) -> None:
+    """Warn where a --cohort-from run is not on exactly the reference patients/labels.
+
+    Patients drop out if they lack a feature row in this space (e.g. no cancer
+    type for the baseline) or no longer carry a label; labels differ if the label
+    source changed after the reference run.  Either breaks the pairing, so it is
+    reported rather than silently absorbed.
+    """
+    joined = reference.join(
+        data.select(PATIENT_KEY, pl.col("label").cast(pl.String)),
+        on=PATIENT_KEY,
+        how="left",
+    )
+    missing = joined.get_column("label").null_count()
+    relabeled = joined.filter(
+        pl.col("label").is_not_null()
+        & (pl.col("label") != pl.col("true_label").cast(pl.String))
+    ).height
+    if missing:
+        print(
+            f"      WARNING: {missing:,} of {reference.height:,} {cohort_from} patients "
+            "are not in this run (no features in this space, or no current label)",
+            flush=True,
+        )
+    if relabeled:
+        print(
+            f"      WARNING: {relabeled:,} patients' labels differ from the {cohort_from} "
+            "run's; the label source has changed since it was trained",
+            flush=True,
+        )
+
+
 def _shared_mrns(
     labels: pl.DataFrame, feature_frames: dict[str, pl.DataFrame]
 ) -> pl.DataFrame:
@@ -771,10 +807,26 @@ def train_one(
     if not overwrite and all(os.path.exists(path) for path in paths.values()):
         with open(paths["meta"]) as handle:
             meta = json.load(handle)
-        if meta.get("run_signature") != _jsonable(signature):
+        stored = meta.get("run_signature") or {}
+        current = _jsonable(signature)
+        if stored != current:
+            # Name what changed: the fix differs (re-aggregated features, a
+            # touched label file, a shifted cohort) and the bare hash says nothing.
+            changed = []
+            for key in sorted(set(stored) | set(current)):
+                if stored.get(key) == current.get(key):
+                    continue
+                if key == "patient_label_sha256":
+                    changed.append(
+                        f"{key} (stored n_patients={meta.get('n_patients')}, "
+                        f"current={data.height})"
+                    )
+                else:
+                    changed.append(f"{key}: {stored.get(key)!r} -> {current.get(key)!r}")
             raise ValueError(
                 f"Existing artifacts for {_stem(target, space, window, model)} were built "
-                "with a different cohort or CV configuration; pass --overwrite to replace them."
+                "with a different cohort or CV configuration; pass --overwrite to replace "
+                "them. Changed:\n  " + "\n  ".join(changed)
             )
         print(f"    {model}: artifacts exist, reusing", flush=True)
         return meta, meta["fold_metrics"], meta["per_class_metrics"]
@@ -1020,10 +1072,16 @@ def run(
     seed: int,
     n_jobs: int,
     overwrite: bool,
+    cohort_from: str | None = None,
 ) -> pl.DataFrame:
-    ensure_dirs()
     if cohort_mode not in {"common", "per-space"}:
         raise ValueError("cohort_mode must be 'common' or 'per-space'")
+    if cohort_from is not None and cohort_from in spaces:
+        raise ValueError(
+            f"cohort_from={cohort_from!r} is also in spaces; it supplies the cohort "
+            "from its existing artifacts and is not retrained"
+        )
+    ensure_dirs()
 
     fold_rows: list[dict] = []
     summary_rows: list[dict] = []
@@ -1106,9 +1164,35 @@ def run(
                 continue
 
             labels_for_window = labels
+            reference = None
+            if cohort_from is not None:
+                # Train on exactly the patients an existing embedding run used,
+                # read from its out-of-fold predictions, so the comparison is
+                # paired without reloading or re-validating that run.
+                reference_path = _artifact_paths(target, cohort_from, window, models[0])[
+                    "predictions"
+                ]
+                if not os.path.exists(reference_path):
+                    print(
+                        f"  [{window}] no {cohort_from} predictions to take the cohort "
+                        f"from ({reference_path}); skipping",
+                        flush=True,
+                    )
+                    continue
+                reference = pl.read_parquet(
+                    reference_path, columns=[PATIENT_KEY, "true_label"]
+                )
+                labels_for_window = labels.join(
+                    reference.select(PATIENT_KEY), on=PATIENT_KEY, how="inner"
+                )
+                print(
+                    f"  [{window}] cohort from {cohort_from}: {reference.height:,} patients, "
+                    f"{labels_for_window.height:,} still labeled",
+                    flush=True,
+                )
             if cohort_mode == "common":
-                shared = _shared_mrns(labels, feature_frames)
-                labels_for_window = labels.join(shared, on=PATIENT_KEY, how="inner")
+                shared = _shared_mrns(labels_for_window, feature_frames)
+                labels_for_window = labels_for_window.join(shared, on=PATIENT_KEY, how="inner")
                 print(
                     f"  [{window}] common cohort across {len(feature_frames)} spaces: "
                     f"{labels_for_window.height:,}",
@@ -1116,7 +1200,11 @@ def run(
                 )
 
             for space, features in feature_frames.items():
-                source_labels = labels_for_window if cohort_mode == "common" else labels
+                source_labels = (
+                    labels_for_window
+                    if cohort_mode == "common" or cohort_from is not None
+                    else labels
+                )
                 data, cols, collapsed = _prepare_one_dataset(
                     features,
                     source_labels,
@@ -1132,6 +1220,8 @@ def run(
                 )
                 if collapsed:
                     print(f"      treatment labels collapsed to OTHER: {collapsed}", flush=True)
+                if reference is not None:
+                    _report_cohort_drift(data, reference, cohort_from)
                 for label, count in counts.items():
                     class_rows.append(
                         {
@@ -1291,6 +1381,15 @@ def main() -> None:
         help="Use a shared patient intersection for fair space comparisons (default), "
         "or maximize sample size separately for each space.",
     )
+    parser.add_argument(
+        "--cohort-from",
+        choices=SPACES + FULL_SPACES,
+        default=None,
+        help="Train on exactly the patients an existing run of this space used, read "
+        "from its out-of-fold predictions. That space is not loaded or retrained, so "
+        "e.g. `--spaces cancer_type_baseline --cohort-from concat` fits only the "
+        "baseline on the embedding cohort.",
+    )
     parser.add_argument("--min-treatment-class-n", type=int, default=25)
     parser.add_argument(
         "--treatment-granularity", choices=["category", "drug"], default="category"
@@ -1316,6 +1415,8 @@ def main() -> None:
         parser.error("--outer-folds and --inner-folds must both be >= 2")
     if args.n_jobs == 0 or args.n_jobs < -1:
         parser.error("--n-jobs must be -1 or a positive integer")
+    if args.cohort_from in args.spaces:
+        parser.error("--cohort-from must not also be in --spaces")
 
     if "alltime" in args.windows:
         print(
@@ -1347,6 +1448,7 @@ def main() -> None:
         seed=args.seed,
         n_jobs=args.n_jobs,
         overwrite=args.overwrite,
+        cohort_from=args.cohort_from,
     )
 
 
