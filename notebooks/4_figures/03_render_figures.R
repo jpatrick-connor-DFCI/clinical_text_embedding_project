@@ -93,27 +93,14 @@
 #   Rscript R/install_packages.R
 #
 # Each plot script is sys.source()-ed in its own environment so per-script ggplot objects
-# (p2a, p3b, ...) don't leak between them. R scripts always assume the working directory
-# is the repo root (they source("R/figure_utils.R") with a relative path), so this script
-# sets the R working directory to the repo root before sourcing anything.
+# (p2a, p3b, ...) don't leak between them. Every R script sources R/config.R (directly or
+# via R/figure_utils.R) by its absolute cluster path and reaches other repo files through
+# REPO_ROOT, so this runs from any working directory.
 #
 # Render with:
 #   Rscript notebooks/4_figures/03_render_figures.R
 
-find_repo_root <- function() {
-  d <- normalizePath(getwd(), mustWork = TRUE)
-  while (nchar(d) > 1) {
-    if (file.exists(file.path(d, "config.py")) &&
-        dir.exists(file.path(d, "R"))) return(d)
-    parent <- dirname(d)
-    if (parent == d) break
-    d <- parent
-  }
-  stop("Could not find repo root from ", getwd())
-}
-
-REPO_ROOT <- find_repo_root()
-setwd(REPO_ROOT)
+source("/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project/R/config.R")  # defines REPO_ROOT
 
 ## ---- find-root ----
 

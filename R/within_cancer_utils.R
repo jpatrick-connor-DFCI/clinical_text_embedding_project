@@ -4,7 +4,7 @@
 # SELECTED_CANCER_TYPES (CANCER_GROUP label -> display name, in display order)
 # comes from shared/palette.json via figure_utils.R, shared with the Python prep.
 if (!exists("SELECTED_CANCER_TYPES")) {
-  SELECTED_CANCER_TYPES <- unlist(jsonlite::fromJSON(file.path("shared", "palette.json"))$SELECTED_CANCER_TYPES)
+  SELECTED_CANCER_TYPES <- unlist(jsonlite::fromJSON(file.path(REPO_ROOT, "shared", "palette.json"))$SELECTED_CANCER_TYPES)
 }
 OS_SCHEME <- "death_met"
 OS_EVENT <- "death"

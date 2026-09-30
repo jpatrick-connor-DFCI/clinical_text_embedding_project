@@ -19,8 +19,8 @@ suppressPackageStartupMessages({
   library(scales); library(survival); library(ggsurvfit)
 })
 
-source("R/figure_utils.R")
-source("R/figure4_utils.R", local = TRUE)
+source("/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project/R/figure_utils.R")
+source(file.path(REPO_ROOT, "R", "figure4_utils.R"), local = TRUE)
 
 
 # ----------------------------------------------------------------------------

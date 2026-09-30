@@ -8,8 +8,8 @@ suppressPackageStartupMessages({
   library(survival); library(ggsurvfit)
 })
 
-source("R/figure_utils.R")
-source("R/publication_style.R")
+source("/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project/R/figure_utils.R")
+source(file.path(REPO_ROOT, "R", "publication_style.R"))
 # KM helpers (tidy_km, logrank_p, step_ci_df) now live in figure_utils.R so the
 # supplementary stage-stratified script (plot_figure_2_supp.R) can share them.
 

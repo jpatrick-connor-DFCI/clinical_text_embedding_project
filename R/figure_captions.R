@@ -1,6 +1,6 @@
 # Captions are versioned with the renderer; exact counts remain data-derived.
 figure_caption <- function(number, panels, missing_labels = character()) {
-  path <- file.path("figures", "manuscript_captions.json")
+  path <- file.path(REPO_ROOT, "figures", "manuscript_captions.json")
   spec <- jsonlite::fromJSON(path, simplifyVector = FALSE)[[as.character(number)]]
   if (is.null(spec)) return(NULL)
   text <- paste0("Figure ", number, ". ", spec$title, "\n\n", spec$text)

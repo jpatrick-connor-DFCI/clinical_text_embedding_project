@@ -1,8 +1,8 @@
 # Figure 3 supplement: the joint Cox model (Figure 3b/3c) refitted within each
 # selected cancer type (figures.prep.within_cancer_joint).
 suppressPackageStartupMessages({ library(ggplot2); library(dplyr) })
-source("R/figure_utils.R")
-source("R/within_cancer_utils.R")
+source("/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project/R/figure_utils.R")
+source(file.path(REPO_ROOT, "R", "within_cancer_utils.R"))
 
 JOINT_FDR_ALPHA <- 0.05
 JOINT_IQR_WHISKER <- 1.5

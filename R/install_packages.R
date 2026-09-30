@@ -1,7 +1,7 @@
 # Install R packages required by the manuscript-figure and biomarker-KM rendering pipelines.
 #
 # One-time bootstrap; safe to re-run (skips already-installed packages).
-#   Rscript R/install_packages.R   (run from the repo root)
+#   Rscript R/install_packages.R
 
 CRAN <- "https://cloud.r-project.org"
 

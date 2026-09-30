@@ -1,8 +1,9 @@
-# Rscript tests/test_figure3_rank_summary.R (from the repository root).
+# Rscript tests/test_figure3_rank_summary.R
+source("/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project/R/config.R")  # defines REPO_ROOT
 suppressPackageStartupMessages(library(dplyr))
 
 # Load the production helper without rendering figures or reading patient data.
-for (expr in parse("R/plot_figure_3.R")) {
+for (expr in parse(file.path(REPO_ROOT, "R", "plot_figure_3.R"))) {
   if (is.call(expr) && identical(expr[[1]], as.name("<-")) &&
       identical(expr[[2]], as.name("avg_rank_from_long"))) eval(expr)
 }

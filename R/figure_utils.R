@@ -1,7 +1,7 @@
 # Shared utilities for the manuscript-figure R rendering pipeline.
 #
 # Mirrors figures/io.py: paths, palettes, theme, IO, stats helpers, KM helper.
-# Each plot script does:  source("R/figure_utils.R")   (run from the repo root)
+# Each plot script does:  source("/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project/R/figure_utils.R")
 
 suppressPackageStartupMessages({
   library(ggplot2)
@@ -11,8 +11,8 @@ suppressPackageStartupMessages({
   library(ggsurvfit)
 })
 
-source("R/config.R")
-source("R/figure_captions.R")
+source("/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project/R/config.R")
+source(file.path(REPO_ROOT, "R", "figure_captions.R"))
 
 # ----------------------------------------------------------------------------
 # Manuscript figures use Harrell's C-index exclusively, including direct script
@@ -43,7 +43,7 @@ metric_tag <- function(metric = METRIC) paste0("_", metric_suffix(metric))
 # and R (here), so the two can no longer silently drift. Everything else below
 # (scheme/cohort/risk colors, etc.) has no Python-side consumer and stays local.
 # ----------------------------------------------------------------------------
-.palette <- jsonlite::fromJSON(file.path("shared", "palette.json"))
+.palette <- jsonlite::fromJSON(file.path(REPO_ROOT, "shared", "palette.json"))
 MODALITY_ORDER   <- .palette$MODALITY_ORDER
 MODALITY_COLORS  <- unlist(.palette$MODALITY_COLORS)
 MODALITY_DISPLAY <- unlist(.palette$MODALITY_DISPLAY)

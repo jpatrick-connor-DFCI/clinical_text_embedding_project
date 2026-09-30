@@ -13,7 +13,7 @@ suppressPackageStartupMessages({
   library(ggplot2); library(dplyr)
 })
 
-source("R/figure_utils.R")
+source("/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project/R/figure_utils.R")
 
 
 # One horizontal dot per model with its C-index printed alongside; `models` fixes

@@ -1,16 +1,17 @@
-# Run from the repository root: Rscript tests/test_within_cancer_summary.R
+# Rscript tests/test_within_cancer_summary.R
+source("/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project/R/config.R")  # defines REPO_ROOT
 # The synthetic endpoint summaries never read patient data or render figures.
 suppressPackageStartupMessages({ library(dplyr); library(ggplot2) })
 
 # Load the actual endpoint-exclusion helpers without figure_utils.R's package
 # dependencies and configured-output cleanup.
-for (expr in parse("R/figure_utils.R")) {
+for (expr in parse(file.path(REPO_ROOT, "R", "figure_utils.R"))) {
   if (is.call(expr) && identical(expr[[1]], as.name("<-")) &&
       as.character(expr[[2]]) %in% c(".event_key", "drop_excluded_events")) {
     eval(expr)
   }
 }
-source("R/within_cancer_utils.R")
+source(file.path(REPO_ROOT, "R", "within_cancer_utils.R"))
 
 close_to <- function(actual, expected) {
   isTRUE(all.equal(as.numeric(actual), as.numeric(expected), tolerance = 1e-12))
@@ -128,7 +129,7 @@ duplicate <- try(summarize_within_cancer(bind_rows(metrics, metrics[1, ]), "base
 stopifnot(inherits(duplicate, "try-error"))
 
 # Extract the production plot builder without sourcing the top-level renderer.
-for (expr in parse("R/plot_figure_3_supp_cancer.R")) {
+for (expr in parse(file.path(REPO_ROOT, "R", "plot_figure_3_supp_cancer.R"))) {
   if (is.call(expr) && identical(expr[[1]], as.name("<-")) &&
       identical(expr[[2]], as.name("build_within_cancer_modality_heatmap"))) eval(expr)
 }

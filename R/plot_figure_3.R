@@ -7,8 +7,8 @@ suppressPackageStartupMessages({
   library(forcats); library(scales); library(stringr)
 })
 
-source("R/figure_utils.R")
-source("R/publication_style.R")
+source("/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project/R/figure_utils.R")
+source(file.path(REPO_ROOT, "R", "publication_style.R"))
 
 FDR_ALPHA  <- 0.05
 IQR_WHISKER <- 1.5

@@ -3,8 +3,8 @@
 suppressPackageStartupMessages({
   library(ggplot2); library(dplyr); library(survival); library(ggsurvfit)
 })
-source("R/figure_utils.R")
-source("R/within_cancer_utils.R")
+source("/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project/R/figure_utils.R")
+source(file.path(REPO_ROOT, "R", "within_cancer_utils.R"))
 
 KM_STRATIFICATIONS <- list(
   stage = list(column = "stage_group", predictor = "stage", legend = "Stage",

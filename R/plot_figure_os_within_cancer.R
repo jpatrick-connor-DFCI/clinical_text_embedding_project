@@ -2,8 +2,8 @@
 # death endpoint from the Figure 2 (text vs base) and Figure 3 (text vs other
 # modalities) within-cancer evaluations. No models are refitted.
 suppressPackageStartupMessages({ library(ggplot2); library(dplyr) })
-source("R/figure_utils.R")
-source("R/within_cancer_utils.R")
+source("/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project/R/figure_utils.R")
+source(file.path(REPO_ROOT, "R", "within_cancer_utils.R"))
 
 OS_GROUP <- "figure_os"
 

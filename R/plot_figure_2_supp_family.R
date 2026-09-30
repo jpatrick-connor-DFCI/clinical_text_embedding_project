@@ -3,7 +3,7 @@
 suppressPackageStartupMessages({
   library(ggplot2); library(dplyr); library(scales)
 })
-source("R/figure_utils.R")
+source("/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project/R/figure_utils.R")
 
 metrics <- load_figure_data("fig2_full_cohort_metrics.csv")
 metrics <- drop_excluded_events(metrics, excluded_event_keys(metrics))

@@ -8,8 +8,8 @@
 # figS3_combined_scatter_modality_text (each modality vs. modality + text) and
 # figS3_combined_scatter_all_text (all but text vs. all, beside all but text vs. text).
 suppressPackageStartupMessages({ library(ggplot2); library(patchwork); library(dplyr) })
-source("R/figure_utils.R")
-source("R/within_cancer_utils.R")
+source("/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project/R/figure_utils.R")
+source(file.path(REPO_ROOT, "R", "within_cancer_utils.R"))
 
 COMBINED_GROUP <- "figure3"
 COMBINED_NON_TEXT <- setdiff(MODALITY_ORDER, "text")

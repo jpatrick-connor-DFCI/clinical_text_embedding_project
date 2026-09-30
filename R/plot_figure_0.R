@@ -10,7 +10,7 @@ suppressPackageStartupMessages({
   library(ggplot2); library(dplyr); library(scales)
 })
 
-source("R/figure_utils.R")
+source("/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project/R/figure_utils.R")
 
 CASCADE_ORDER <- c("full_cohort", "cancer_type", "text", "treatment", "stage",
                    "prs", "somatic", "metburden", "all")

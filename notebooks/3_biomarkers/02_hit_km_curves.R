@@ -6,20 +6,6 @@
 # to the PNGs, it writes compiled, long-format CSVs for every curve and at-risk
 # table, plus an export manifest.
 
-find_repo_root <- function(start = getwd()) {
-  candidate <- normalizePath(start, mustWork = TRUE)
-  repeat {
-    if (file.exists(file.path(candidate, "config.py")) &&
-        dir.exists(file.path(candidate, "pipelines"))) return(candidate)
-    parent <- dirname(candidate)
-    if (identical(parent, candidate)) stop("Could not find repository root from ", start)
-    candidate <- parent
-  }
-}
-
-REPO_ROOT <- find_repo_root()
-setwd(REPO_ROOT)
-
 suppressPackageStartupMessages({
   library(arrow)
   library(dplyr)
@@ -29,7 +15,7 @@ suppressPackageStartupMessages({
   library(survival)
   library(tidyr)
 })
-source("R/config.R")
+source("/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project/R/config.R")
 
 BIOMARKER_PATH <- file.path(DATA_PATH, "biomarker_analysis")
 COMPILED_DIR <- file.path(BIOMARKER_PATH, "compiled_results")

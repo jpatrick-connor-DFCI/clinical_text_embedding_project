@@ -1,7 +1,7 @@
 # Figure 2 supplement: pooled-model text/base predictions evaluated within cancer types.
 suppressPackageStartupMessages({ library(ggplot2); library(dplyr) })
-source("R/figure_utils.R")
-source("R/within_cancer_utils.R")
+source("/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project/R/figure_utils.R")
+source(file.path(REPO_ROOT, "R", "within_cancer_utils.R"))
 
 # `d` holds endpoint rows and `summary` the per-cancer rows for the facets shown;
 # facets follow the factor levels of `d$cancer_type` when it is a factor.

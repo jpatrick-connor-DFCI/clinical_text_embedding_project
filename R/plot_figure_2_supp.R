@@ -14,7 +14,7 @@ suppressPackageStartupMessages({
   library(scales); library(survival); library(ggsurvfit)
 })
 
-source("R/figure_utils.R")  # provides tidy_km, logrank_p, step_ci_df
+source("/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project/R/figure_utils.R")  # provides tidy_km, logrank_p, step_ci_df
 
 
 # ============================================================================

@@ -1,8 +1,9 @@
-# Single source of truth for DATA_PATH and paths derived from it, the R
-# counterpart to config.py. Scripts are run from the repo root (e.g.
-# `Rscript pipelines/preprocessing/generate_icd10_to_phecode_mapping.R` or
-# `Rscript R/plot_figure_2.R`), so this relative `source("R/config.R")`
-# resolves from that working directory.
+# Single source of truth for REPO_ROOT, DATA_PATH and paths derived from them, the R
+# counterpart to config.py. Every R entry point sources this file by its absolute
+# path, and every other repo file is reached through REPO_ROOT, so scripts run from
+# any working directory.
+
+REPO_ROOT <- "/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project"
 
 DATA_PATH <- Sys.getenv("CTEP_DATA_PATH", "/data/gusev/USERS/jpconnor/data/clinical_text_embedding_project/")
 

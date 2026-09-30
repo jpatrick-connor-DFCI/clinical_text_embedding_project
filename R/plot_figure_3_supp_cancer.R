@@ -1,7 +1,7 @@
 # Figure 3 supplement: paired within-cancer text/other-modality performance.
 suppressPackageStartupMessages({ library(ggplot2); library(dplyr) })
-source("R/figure_utils.R")
-source("R/within_cancer_utils.R")
+source("/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project/R/figure_utils.R")
+source(file.path(REPO_ROOT, "R", "within_cancer_utils.R"))
 
 # `cancer_labels`, if given, maps cancer codes to row labels.
 build_within_cancer_modality_heatmap <- function(summary, cancers, comparators, limit,

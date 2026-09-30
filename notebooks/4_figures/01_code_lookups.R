@@ -5,9 +5,8 @@
 # dependency in the otherwise Python figure-data prep tier, split out here so
 # 4_figures/02 runs under a plain Python kernel with no Rscript on PATH.
 #
-# Like the other R scripts, both generators source("R/config.R") with a relative
-# path, so this script sets the R working directory to the repo root before
-# sourcing anything.
+# Like the other R scripts, both generators source R/config.R by its absolute
+# cluster path (which defines REPO_ROOT), so this runs from any working directory.
 #
 # Writes to CODE_PATH ($DATA_PATH/code_data/):
 #   icd10_to_phecode_mapping.csv - used by figures.prep.figure2 (cross-scheme
@@ -37,24 +36,9 @@
 # Render with:
 #   Rscript notebooks/4_figures/01_code_lookups.R
 
-find_repo_root <- function() {
-  d <- normalizePath(getwd(), mustWork = TRUE)
-  while (nchar(d) > 1) {
-    if (file.exists(file.path(d, "config.py")) &&
-        dir.exists(file.path(d, "R"))) return(d)
-    parent <- dirname(d)
-    if (parent == d) break
-    d <- parent
-  }
-  stop("Could not find repo root from ", getwd())
-}
-
-REPO_ROOT <- find_repo_root()
-setwd(REPO_ROOT)
-
 ## ---- preflight ----
 
-source(file.path(REPO_ROOT, "R", "config.R"))
+source("/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project/R/config.R")
 
 # Set to TRUE to re-run the generators even when their outputs already exist.
 FORCE_REGENERATE <- FALSE

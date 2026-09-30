@@ -12,7 +12,7 @@
 #   CODE_PATH/icd10_to_phecode_mapping.csv
 #   CODE_PATH/icd10_unmapped_codes.csv
 #
-# Usage (from the repo root):
+# Usage (from any working directory):
 #   Rscript pipelines/preprocessing/generate_icd10_to_phecode_mapping.R
 
 library(Phecode)
@@ -20,7 +20,7 @@ library(data.table)
 library(arrow)
 
 # ── paths ────────────────────────────────────────────────────────────────────
-source("R/config.R")
+source("/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project/R/config.R")
 dir.create(CODE_PATH, showWarnings = FALSE, recursive = TRUE)
 
 # ── helpers ──────────────────────────────────────────────────────────────────

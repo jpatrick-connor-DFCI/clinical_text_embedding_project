@@ -9,8 +9,8 @@
 # anchor, 30-day lab window) is plotted; the sequencing-anchor and 90-day-
 # window runs are sensitivity results left in the report tables only.
 suppressPackageStartupMessages({ library(ggplot2); library(patchwork); library(dplyr) })
-source("R/figure_utils.R")
-source("R/within_cancer_utils.R")
+source("/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project/R/figure_utils.R")
+source(file.path(REPO_ROOT, "R", "within_cancer_utils.R"))
 
 PS_GROUP <- "published_scores"
 PS_ANCHOR <- "treatment"

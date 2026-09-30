@@ -1,11 +1,12 @@
-# Run from the repository root: Rscript tests/test_publication_risk_tables.R
+# Rscript tests/test_publication_risk_tables.R
+source("/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project/R/config.R")  # defines REPO_ROOT
 # Verify risk-set counts and stratum mapping, including landmark delayed entry.
 suppressPackageStartupMessages({
   library(dplyr)
   library(survival)
 })
 MODALITY_DISPLAY <- c(metburden = "Metastatic burden")
-source("R/publication_style.R")
+source(file.path(REPO_ROOT, "R", "publication_style.R"))
 
 d <- data.frame(time = c(2, 4, 6, 3, 5, 7),
                 event = c(1, 0, 1, 1, 0, 1),

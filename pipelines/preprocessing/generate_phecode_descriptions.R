@@ -11,14 +11,14 @@
 # Output:
 #   CODE_PATH/phecode_descriptions.csv   (phecode, description, source)
 #
-# Usage (from the repo root):
+# Usage (from any working directory):
 #   Rscript pipelines/preprocessing/generate_phecode_descriptions.R
 
 library(Phecode)
 library(data.table)
 
 # ── paths ────────────────────────────────────────────────────────────────────
-source("R/config.R")
+source("/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project/R/config.R")
 dir.create(CODE_PATH, showWarnings = FALSE, recursive = TRUE)
 
 # ── helpers ──────────────────────────────────────────────────────────────────

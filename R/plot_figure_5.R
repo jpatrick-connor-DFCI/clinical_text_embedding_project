@@ -12,7 +12,7 @@ suppressPackageStartupMessages({
   library(survival); library(ggsurvfit)
 })
 
-source("R/figure_utils.R")
+source("/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project/R/figure_utils.R")
 
 
 # ============================================================================

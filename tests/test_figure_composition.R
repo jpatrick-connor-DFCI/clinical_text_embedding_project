@@ -1,4 +1,5 @@
-# Run from the repository root with Rscript tests/test_figure_composition.R.
+# Rscript tests/test_figure_composition.R
+source("/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project/R/config.R")  # defines REPO_ROOT
 # Exercises real PNG/PDF composition using synthetic plots, without patient data.
 suppressPackageStartupMessages(library(ggplot2))
 
@@ -6,13 +7,13 @@ suppressPackageStartupMessages(library(ggplot2))
 # or trigger cleanup in the configured manuscript output directory.
 helpers <- c("metric_suffix", "metric_tag", "save_panel", "save_compiled_figure",
              "placeholder_panel", "is_skipped_panel", "skip_reason")
-for (expr in parse("R/figure_utils.R")) {
+for (expr in parse(file.path(REPO_ROOT, "R", "figure_utils.R"))) {
   if (is.call(expr) && identical(expr[[1]], as.name("<-")) &&
       as.character(expr[[2]]) %in% helpers) eval(expr)
 }
 METRIC <- "cindex"
 FILTER_UNDERPERFORMING_ENDPOINTS <- FALSE
-source("R/figure_captions.R")
+source(file.path(REPO_ROOT, "R", "figure_captions.R"))
 
 run_tests <- function() {
   output <- tempfile("figure-composition-")
