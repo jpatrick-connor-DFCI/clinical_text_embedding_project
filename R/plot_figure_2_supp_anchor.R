@@ -1,94 +1,76 @@
-# Render Figure 2 supplement: anchor sensitivity (treatment-date vs sequencing-date time-zero).
+# Render Figure 2 supplement: anchor sensitivity (overall survival from sequencing date).
 #
-# Two panels, each built on the both-anchors-eligible intersection cohort (so a shift is
-# attributable to the timescale, not to cohort composition):
-#   A  Paired scatter of the text model's per-event metric (C-index, per
-#      figure_utils.R::METRIC) under the sequencing anchor vs the treatment anchor,
-#      one point per (scheme, event); diagonal = no sensitivity to anchor choice.
-#   B  Delta (sequencing - treatment) per event, ordered by scheme, with a zero
-#      reference line — shows the direction/magnitude of any anchor-driven shift.
+# Shows only the outputs of notebooks/2_models/05_sequencing_os_comparison.ipynb
+# (death_met:death, t=0 at sequencing), in two panels on two different populations:
+#   A  Full sequencing-anchored cohort: text + baseline covariates vs the baseline model.
+#   B  Common full-data cohort (stage, treatment, somatic and germline all available):
+#      text vs each other modality.
+# The cohorts differ, so models are compared within a panel, never across.
 #
-# Reuses fig2_anchor_sensitivity.csv (prep_figure_2_anchor.py / figure2_anchor.py),
-# restricted to model == "text" and cohort == "intersection" rows.
+# Reads fig2_anchor_sensitivity.csv (figures/prep/figure2_anchor.py).
 
 suppressPackageStartupMessages({
-  library(ggplot2); library(patchwork); library(dplyr); library(tidyr)
+  library(ggplot2); library(dplyr)
 })
 
 source("R/figure_utils.R")
 
 
-# ============================================================================
-# Panel A: paired scatter, sequencing vs treatment
-# ============================================================================
-build_scatter_panel <- function(wide, metric = METRIC) {
-  if (nrow(wide) == 0) return(placeholder_panel("no both-anchor events"))
-  metric_col <- "cindex"
-  lims <- range(c(wide[[paste0(metric_col, "_treatment")]],
-                  wide[[paste0(metric_col, "_sequencing")]]), na.rm = TRUE)
+# One horizontal dot per model with its C-index printed alongside; `models` fixes
+# the row order (top to bottom) and `labels`/`colors` are keyed by model.
+build_cindex_dots <- function(d, models, labels, colors, title, metric = METRIC) {
+  if (nrow(d) == 0) return(placeholder_panel(sprintf("no %s rows", tolower(title))))
+  metric_col <- metric_suffix(metric)
+  d <- d %>%
+    filter(model %in% models, !is.na(.data[[metric_col]])) %>%
+    mutate(model = factor(model, levels = rev(models)))
+  if (nrow(d) == 0) return(placeholder_panel(sprintf("no finite %s for %s", metric_col, tolower(title))))
+  n_label <- d %>% filter(!is.na(n)) %>% distinct(n, n_events)
+  subtitle <- if (nrow(n_label) == 1) {
+    sprintf("n = %s patients, %s deaths", format(n_label$n, big.mark = ","),
+            format(n_label$n_events, big.mark = ","))
+  } else if (nrow(n_label) > 1) {
+    sprintf("n = %s-%s patients per model", format(min(n_label$n), big.mark = ","),
+            format(max(n_label$n), big.mark = ","))
+  }
 
-  ggplot(wide, aes(x = .data[[paste0(metric_col, "_treatment")]],
-                    y = .data[[paste0(metric_col, "_sequencing")]],
-                    color = scheme)) +
-    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "#999999") +
-    geom_point(size = 2, alpha = 0.75) +
-    scale_color_manual(values = SCHEME_COLORS, labels = SCHEME_LABELS, name = NULL) +
-    coord_equal(xlim = lims, ylim = lims) +
-    labs(x = sprintf("%s (treatment anchor)", metric_label(metric)),
-         y = sprintf("%s (sequencing anchor)", metric_label(metric)),
-         title = "Anchor sensitivity: paired event metrics") +
+  ggplot(d, aes(x = .data[[metric_col]], y = model, color = model)) +
+    geom_vline(xintercept = 0.5, linetype = "dashed", color = NS_GRAY) +
+    geom_segment(aes(x = 0.5, xend = .data[[metric_col]], yend = model), linewidth = 0.7) +
+    geom_point(size = 3) +
+    geom_text(aes(label = sprintf("%.3f", .data[[metric_col]])), hjust = -0.35,
+              size = MANUSCRIPT_SMALL_TEXT_SIZE, color = "grey25") +
+    scale_color_manual(values = colors, guide = "none") +
+    scale_y_discrete(labels = labels) +
+    scale_x_continuous(expand = expansion(mult = c(0.02, 0.15))) +
+    labs(x = sprintf("Overall survival %s (sequencing anchor)", metric_label(metric)),
+         y = NULL, title = title, subtitle = subtitle) +
     theme_manuscript() +
-    theme(legend.position = "bottom")
+    theme(panel.grid.major.y = element_line(color = "grey93"))
 }
 
 
-# ============================================================================
-# Panel B: per-event delta (sequencing - treatment), ordered by scheme
-# ============================================================================
-build_delta_panel <- function(wide, metric = METRIC) {
-  if (nrow(wide) == 0) return(placeholder_panel("no both-anchor events"))
-  metric_col <- "cindex"
-  d <- wide %>%
-    mutate(delta = .data[[paste0(metric_col, "_sequencing")]] - .data[[paste0(metric_col, "_treatment")]]) %>%
-    filter(!is.na(delta)) %>%
-    arrange(scheme, delta) %>%
-    mutate(row_id = row_number())
-
-  ggplot(d, aes(x = row_id, y = delta, color = scheme)) +
-    geom_hline(yintercept = 0, linetype = "dashed", color = "#999999") +
-    geom_point(size = 1.6, alpha = 0.8) +
-    scale_color_manual(values = SCHEME_COLORS, labels = SCHEME_LABELS, name = NULL) +
-    labs(x = "Event (ordered by scheme, then delta)",
-         y = sprintf("Delta %s (sequencing - treatment)", metric_label(metric)),
-         title = "Anchor sensitivity: per-event delta") +
-    theme_manuscript() +
-    theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(),
-          legend.position = "bottom")
-}
-
-
-# ============================================================================
-# Compose supplementary figure
-# ============================================================================
 sens <- load_figure_data("fig2_anchor_sensitivity.csv")
-
-# Same full-cohort exclusion as figure 2, recomputed here (separate process).
-sens <- drop_excluded_events(
-  sens, excluded_event_keys(load_figure_data("fig2_full_cohort_metrics.csv")))
-
-wide <- tibble::tibble()
-if (nrow(sens) > 0) {
-  text_intersection <- sens %>% filter(model == "text", cohort == "intersection")
-  wide <- text_intersection %>%
-    select(anchor, scheme, event, cindex) %>%
-    pivot_wider(names_from = anchor, values_from = cindex) %>%
-    filter(!is.na(cindex_treatment), !is.na(cindex_sequencing))
+if (nrow(sens) == 0) {
+  sens <- tibble::tibble(cohort = character(), model = character(), n = numeric(),
+                         n_events = numeric(), cindex = numeric())
 }
 
-pS_scatter <- build_scatter_panel(wide)
-pS_delta   <- build_delta_panel(wide)
+pS_full <- build_cindex_dots(
+  filter(sens, cohort == "full"),
+  models = c("text", "base"),
+  labels = c(text = "Text + base", base = "Base"),
+  colors = MODEL_COLORS[c("text", "base")],
+  title = "Full cohort"
+)
+pS_modalities <- build_cindex_dots(
+  filter(sens, cohort == "common"),
+  models = rev(MODALITY_ORDER),  # text on top, as in the palette's reverse order
+  labels = MODALITY_DISPLAY,
+  colors = MODALITY_COLORS,
+  title = "Common full-data cohort"
+)
 
-# Preserve the existing C-index panel filenames.
 .tag <- metric_tag(METRIC)
-save_panel(pS_scatter, paste0("figS_anchor_scatter", .tag), group = "figure2", width = 6.4, height = 6.4)
-save_panel(pS_delta,   paste0("figS_anchor_delta", .tag),   group = "figure2", width = 7.8, height = 5.2)
+save_panel(pS_full,       paste0("figS_anchor_full", .tag),       group = "figure2", width = 6.4, height = 3.2)
+save_panel(pS_modalities, paste0("figS_anchor_modalities", .tag), group = "figure2", width = 6.4, height = 4.6)

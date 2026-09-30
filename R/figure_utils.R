@@ -202,6 +202,8 @@ remove_retired_figures <- function() {
                            ignore.case = TRUE) |
                        (basename(dirname(files)) == "figure2" &
                           grepl("^figS_scheme_km_.*\\.(png|pdf)$", basename(files))) |
+                       (basename(dirname(files)) == "figure2" &
+                          grepl("^figS_anchor_(scatter|delta)_.*\\.(png|pdf)$", basename(files))) |
                        (basename(dirname(files)) == "figure4" &
                           grepl("^fig(S1a|S_stage_dynamics_crossed)\\.(png|pdf)$", basename(files))) |
                        (basename(dirname(files)) == "figure5" &

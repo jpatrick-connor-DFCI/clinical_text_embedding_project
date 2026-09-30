@@ -1,227 +1,104 @@
-"""Pre-compute inputs for the anchor-sensitivity supplement (treatment vs sequencing time-zero).
+"""Pre-compute inputs for the anchor-sensitivity supplement (sequencing-date time-zero).
 
-Compares full-cohort text/base model metrics under the two `anchors.py` time-zero definitions.
-Each arm is reported both on its own natural (eligible) cohort and on the intersection of
-patients eligible under both anchors, so a metric shift between anchors can be attributed to the
-timescale itself rather than to a change in cohort composition.
+Reads only the outputs of `notebooks/2_models/05_sequencing_os_comparison.ipynb`: overall
+survival (`death_met:death`) with t=0 at sequencing date, fit on two different populations:
+
+- "full"    full sequencing-anchored cohort, text + baseline covariates vs the baseline model
+            (run_full_cohort_event -> full_cohort/death/{text,base}_test.csv)
+- "common"  patients with stage, treatment, somatic and germline data, text vs each other
+            modality (run_feature_comp_task --modality all -> feature_comps/death/{mod}_test.csv)
+
+The two cohorts differ, so models are comparable only within a cohort.
 
 Writes to FIGURE_DATA_DIR:
-- fig2_anchor_sensitivity.csv     anchor, scheme, event, model, n, n_events, cindex, mean_auc, ibs
-                                   (model in {text, base}; one row per anchor x scheme x event x
-                                   model, restricted to events trained under both anchors, each
-                                   evaluated on both its natural cohort and the both-anchors-
-                                   eligible intersection — see `cohort` column: "natural" or
-                                   "intersection")
-- fig2_anchor_cohort_overlap.csv  scheme, n_treatment, n_sequencing, n_intersection
-                                   (patient-level eligible-cohort sizes per scheme, from each
-                                   anchor's embedding_prediction_df)
+- fig2_anchor_sensitivity.csv     cohort, model, n, n_events, cindex, mean_auc, ibs
+                                   (one row per cohort x model; model in {base, text} for
+                                   "full" and MODALITY_ORDER for "common"; n/n_events are the
+                                   cohort the model was fit within -- the prediction frame for
+                                   "full", the modality's own held-out risk-score file for
+                                   "common" -- while the metrics are on its held-out test split)
 """
 
 from __future__ import annotations
 
 import os
 
-import numpy as np
 import polars as pl
-from sksurv.metrics import concordance_index_censored, cumulative_dynamic_auc
-from sksurv.util import Surv
 
-from anchors import ANCHORS
+from config import SURV_PATH
 from figures.io import save_figure_data
 from pipelines.training.slurm_array_utils import filter_event_rows
-from schemes import full_cohort_event_dir, full_cohort_risk_dir, list_trained_events, load_embedding_prediction_df
-from shared.polars_utils import filter_finite_rows
+from schemes import embedding_file, feature_held_out_dir, full_cohort_event_dir, scheme_results_dir
+from shared.palette import MODALITY_ORDER
 
-SCHEMES = ["death_met", "icd3_post", "icd4_post", "phecode_post"]
-ANCHOR_LIST = sorted(ANCHORS.keys())
+# The endpoint and anchor the sequencing OS notebook fits.
+SCHEME = "death_met"
+EVENT = "death"
+ANCHOR = "sequencing"
 
-ANCHOR_SENSITIVITY_COLUMNS = [
-    "anchor", "scheme", "event", "model", "cohort", "n", "n_events", "cindex", "mean_auc", "ibs",
-]
-COHORT_OVERLAP_COLUMNS = ["scheme", "n_treatment", "n_sequencing", "n_intersection"]
-
-# Time-dependent-AUC/IBS evaluation grid, matching figure2.py's convention (5th-95th
-# percentile of observed follow-up, 50 points).
-AUC_TIME_GRID_POINTS = 50
-
-
-def _eval_times(tt: pl.Series) -> pl.Series:
-    lo, hi = tt.quantile(0.05), tt.quantile(0.95)
-    return pl.Series(
-        [lo + (hi - lo) * i / (AUC_TIME_GRID_POINTS - 1) for i in range(AUC_TIME_GRID_POINTS)]
-    )
+ANCHOR_SENSITIVITY_COLUMNS = ["cohort", "model", "n", "n_events", "cindex", "mean_auc", "ibs"]
+_SCHEMA = {
+    "cohort": pl.String, "model": pl.String, "n": pl.Int64, "n_events": pl.Int64,
+    "cindex": pl.Float64, "mean_auc": pl.Float64, "ibs": pl.Float64,
+}
 
 
-def _score_predictor(
-    evaluation_df: pl.DataFrame,
-    reference_df: pl.DataFrame,
-    event_col: str,
-    time_col: str,
-    score_col: str,
-) -> tuple[float, float]:
-    """(cindex, mean_auc) for a risk score on (event, time).
-
-    IBS is not computed here: it requires predicted survival-function curves, which
-    the held-out risk-score CSVs (a scalar linear predictor per patient) don't carry
-    — only the CV-time text_test.csv/base_test.csv files (used by
-    _natural_cohort_metrics) have it. The intersection-cohort rows leave ibs NaN.
-    """
-    event_arr = evaluation_df[event_col].cast(pl.Boolean).to_numpy()
-    time_arr = evaluation_df[time_col].cast(pl.Float64).to_numpy()
-    score_arr = evaluation_df[score_col].cast(pl.Float64).to_numpy()
+def _test_metrics(fp: str) -> dict | None:
+    """C-index, mean AUC(t) and IBS from a runner's one-row *_test.csv, or None if unavailable."""
     try:
-        cindex = concordance_index_censored(event_arr, time_arr, score_arr)[0]
-    except (ValueError, ZeroDivisionError):
-        cindex = float("nan")
-
-    if "outer_fold" not in evaluation_df.columns or "outer_fold" not in reference_df.columns:
-        raise ValueError("Risk scores predate nested CV; regenerate files with outer_fold metadata")
-    fold_aucs, fold_weights = [], []
-    for fold in evaluation_df["outer_fold"].unique().sort().to_list():
-        fold_eval = evaluation_df.filter(pl.col("outer_fold") == fold)
-        fold_ref = reference_df.filter(pl.col("outer_fold") != fold)
-        if fold_eval.is_empty() or fold_ref.is_empty():
-            continue
-        eval_time = fold_eval[time_col].cast(pl.Float64).to_numpy()
-        ref_time = fold_ref[time_col].cast(pl.Float64).to_numpy()
-        lo, hi = np.percentile(ref_time, [5, 95])
-        et = np.linspace(lo, hi, AUC_TIME_GRID_POINTS)
-        et = et[(et > eval_time.min()) & (et < eval_time.max())]
-        if len(et) == 0:
-            continue
-        try:
-            y_ref = Surv.from_arrays(
-                fold_ref[event_col].cast(pl.Boolean).to_numpy(), ref_time
-            )
-            y_eval = Surv.from_arrays(
-                fold_eval[event_col].cast(pl.Boolean).to_numpy(), eval_time
-            )
-            fold_aucs.append(float(cumulative_dynamic_auc(
-                y_ref, y_eval, fold_eval[score_col].to_numpy(), et
-            )[1]))
-            fold_weights.append(fold_eval.height)
-        except (ValueError, ZeroDivisionError):
-            pass
-    mean_auc = float(np.average(fold_aucs, weights=fold_weights)) if fold_aucs else float("nan")
-    return cindex, mean_auc
+        df = pl.read_csv(fp)
+    except FileNotFoundError:
+        print(f"  missing {fp}")
+        return None
+    if df.is_empty():
+        print(f"  empty {fp}")
+        return None
+    row = df.row(0, named=True)
+    return {"cindex": row["mean_c_index"], "mean_auc": row["mean_auc(t)"], "ibs": row.get("mean_ibs")}
 
 
-def _natural_cohort_metrics(anchor: str) -> pl.DataFrame:
-    """One row per (scheme, event, model) using each event's own test_data metrics file,
-    already computed on that anchor's natural (eligible) held-out test split."""
+def _outcomes() -> pl.DataFrame:
+    """DFCI_MRN, event flag and time for every patient with a valid death endpoint."""
+    fp = os.path.join(SURV_PATH, embedding_file(SCHEME, ANCHOR))
+    df = pl.read_parquet(fp, columns=["DFCI_MRN", EVENT, f"tt_{EVENT}"])
+    return filter_event_rows(df, EVENT)
+
+
+def _full_cohort_rows(outcomes: pl.DataFrame) -> list[dict]:
+    d = full_cohort_event_dir(SCHEME, EVENT, ANCHOR)
+    n, n_events = outcomes.height, int(outcomes[EVENT].sum())
     rows = []
-    for scheme in SCHEMES:
-        for event in list_trained_events(scheme, anchor):
-            d = full_cohort_event_dir(scheme, event, anchor)
-            try:
-                text = pl.read_csv(os.path.join(d, "text_test.csv")).row(0, named=True)
-                base = pl.read_csv(os.path.join(d, "base_test.csv")).row(0, named=True)
-            except (FileNotFoundError, KeyError, IndexError) as e:
-                print(f"  [{anchor}:{scheme}:{event}] skipped — {type(e).__name__}: {e}")
-                continue
-            pred_df = load_embedding_prediction_df(scheme, anchor)
-            event_df = filter_event_rows(pred_df, event)
-            n = len(event_df)
-            n_events = int(event_df[event].sum()) if event in event_df.columns else None
-            for model, row in (("text", text), ("base", base)):
-                rows.append({
-                    "anchor": anchor, "scheme": scheme, "event": event, "model": model,
-                    "cohort": "natural", "n": n, "n_events": n_events,
-                    "cindex": row["mean_c_index"], "mean_auc": row["mean_auc(t)"],
-                    "ibs": row["mean_ibs"],
-                })
-    return pl.DataFrame(rows, schema=ANCHOR_SENSITIVITY_COLUMNS) if rows else pl.DataFrame(schema=ANCHOR_SENSITIVITY_COLUMNS)
+    for model in ("base", "text"):
+        metrics = _test_metrics(os.path.join(d, f"{model}_test.csv"))
+        if metrics is not None:
+            rows.append({"cohort": "full", "model": model, "n": n, "n_events": n_events, **metrics})
+    return rows
 
 
-def _intersection_mrns() -> dict[str, frozenset]:
-    """Per-scheme MRN sets eligible under both anchors (natural embedding_prediction_df)."""
-    out = {}
-    for scheme in SCHEMES:
-        mrn_sets = []
-        for anchor in ANCHOR_LIST:
-            try:
-                df = load_embedding_prediction_df(scheme, anchor)
-            except FileNotFoundError:
-                mrn_sets.append(frozenset())
-                continue
-            mrn_sets.append(frozenset(df["DFCI_MRN"]))
-        out[scheme] = mrn_sets[0].intersection(*mrn_sets[1:]) if mrn_sets else frozenset()
-    return out
-
-
-def _intersection_cohort_metrics(anchor: str, intersection_mrns: dict[str, frozenset]) -> pl.DataFrame:
-    """Re-score each trained event's held-out risk scores restricted to the
-    both-anchors-eligible intersection, so metric shifts can be attributed to the
-    timescale rather than to a change in cohort composition."""
+def _common_cohort_rows(outcomes: pl.DataFrame) -> list[dict]:
+    d = os.path.join(scheme_results_dir(SCHEME, ANCHOR), "feature_comps", EVENT)
+    risk_dir = feature_held_out_dir(SCHEME, EVENT, ANCHOR)
     rows = []
-    for scheme in SCHEMES:
-        mrns = intersection_mrns.get(scheme, frozenset())
-        if not mrns:
+    for mod in MODALITY_ORDER:
+        metrics = _test_metrics(os.path.join(d, f"{mod}_test.csv"))
+        if metrics is None:
             continue
-        pred_df = load_embedding_prediction_df(scheme, anchor)
-        for event in list_trained_events(scheme, anchor):
-            risk_dir = full_cohort_risk_dir(scheme, event, anchor)
-            text_fp = os.path.join(risk_dir, "text_risk_scores.csv")
-            base_fp = os.path.join(risk_dir, "base_risk_scores.csv")
-            if not (os.path.exists(text_fp) and os.path.exists(base_fp)):
-                continue
-            event_df = filter_event_rows(pred_df, event)
-            event_df = event_df.filter(pl.col("DFCI_MRN").is_in(mrns))
-            if event_df.is_empty():
-                continue
-            surv_cols = ["DFCI_MRN", event, f"tt_{event}"]
-            for model, fp in (("text", text_fp), ("base", base_fp)):
-                risk_df = pl.read_csv(fp)
-                reference = risk_df.join(
-                    filter_event_rows(pred_df, event).select(surv_cols), on="DFCI_MRN"
-                )
-                merged = reference.filter(pl.col("DFCI_MRN").is_in(mrns))
-                score_col = "text_risk_score" if "text_risk_score" in merged.columns else "base_risk_score"
-                merged = filter_finite_rows(merged, [score_col, event, f"tt_{event}"])
-                if merged.is_empty():
-                    continue
-                cindex, mean_auc = _score_predictor(
-                    merged, reference, event, f"tt_{event}", score_col,
-                )
-                rows.append({
-                    "anchor": anchor, "scheme": scheme, "event": event, "model": model,
-                    "cohort": "intersection", "n": len(merged), "n_events": int(merged[event].sum()),
-                    "cindex": cindex, "mean_auc": mean_auc, "ibs": float("nan"),
-                })
-    return pl.DataFrame(rows, schema=ANCHOR_SENSITIVITY_COLUMNS) if rows else pl.DataFrame(schema=ANCHOR_SENSITIVITY_COLUMNS)
-
-
-def _cohort_overlap(intersection_mrns: dict[str, frozenset]) -> pl.DataFrame:
-    rows = []
-    for scheme in SCHEMES:
-        sizes = {}
-        for anchor in ANCHOR_LIST:
-            try:
-                df = load_embedding_prediction_df(scheme, anchor)
-                sizes[anchor] = df["DFCI_MRN"].n_unique()
-            except FileNotFoundError:
-                sizes[anchor] = 0
-        rows.append({
-            "scheme": scheme,
-            "n_treatment": sizes.get("treatment", 0),
-            "n_sequencing": sizes.get("sequencing", 0),
-            "n_intersection": len(intersection_mrns.get(scheme, frozenset())),
-        })
-    return pl.DataFrame(rows, schema=COHORT_OVERLAP_COLUMNS)
+        # Each modality drops its own NaN rows, so its cohort is the patients it scored.
+        n = n_events = None
+        risk_fp = os.path.join(risk_dir, f"{mod}_risk_scores.csv")
+        if os.path.exists(risk_fp):
+            scored = pl.read_csv(risk_fp, columns=["DFCI_MRN"]).unique()
+            n = scored.height
+            n_events = int(scored.join(outcomes, on="DFCI_MRN")[EVENT].sum())
+        rows.append({"cohort": "common", "model": mod, "n": n, "n_events": n_events, **metrics})
+    return rows
 
 
 def main() -> None:
-    intersection_mrns = _intersection_mrns()
-
-    frames = []
-    for anchor in ANCHOR_LIST:
-        frames.append(_natural_cohort_metrics(anchor))
-        frames.append(_intersection_cohort_metrics(anchor, intersection_mrns))
-    sensitivity_df = pl.concat(frames, how="vertical") if frames else pl.DataFrame(
-        schema=ANCHOR_SENSITIVITY_COLUMNS
-    )
+    outcomes = _outcomes()
+    rows = _full_cohort_rows(outcomes) + _common_cohort_rows(outcomes)
+    sensitivity_df = pl.DataFrame(rows, schema=_SCHEMA).select(ANCHOR_SENSITIVITY_COLUMNS)
     save_figure_data(sensitivity_df, "fig2_anchor_sensitivity.csv")
-    save_figure_data(_cohort_overlap(intersection_mrns), "fig2_anchor_cohort_overlap.csv")
 
 
 if __name__ == "__main__":
