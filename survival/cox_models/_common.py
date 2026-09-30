@@ -28,6 +28,16 @@ _SUPPRESSED_WARNINGS = [
 ]
 
 
+def _is_coxnet_overflow(exc: BaseException) -> bool:
+    """True for sksurv's "weights are too large" abort in Coxnet's coordinate descent.
+
+    The linear predictor overflowed, typically at a very small alpha where a (near-)separating
+    feature's coefficient diverges. A pair that fit on every CV fold can still hit this on the
+    larger final training set, so final fits fall back to the next-ranked CV candidate.
+    """
+    return isinstance(exc, ArithmeticError) or "weights are too large" in str(exc)
+
+
 def _make_surv_array(event: np.ndarray, time: np.ndarray) -> np.ndarray:
     """Build a sksurv-compatible structured survival array without list(zip(...)) overhead."""
     event = np.asarray(event)

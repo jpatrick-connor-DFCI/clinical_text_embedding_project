@@ -26,6 +26,7 @@ from sksurv.nonparametric import SurvivalFunctionEstimator
 
 from ._common import (
     _SUPPRESSED_WARNINGS,
+    _is_coxnet_overflow,
     _make_surv_array,
     evaluate_surv_model,
     apply_group_pca_np,
@@ -133,6 +134,69 @@ def _ipcw_reference_row(eval_data: str, fold: int | None, ids, y) -> dict:
         "reference_events": _json_array(y["Status"].astype(int)),
         "reference_times": _json_array(y["Survival_in_days"]),
     }
+
+
+def _fit_final_model(
+    valid_cv, X_trval, y_train_val, X_te, y_test, eval_times, penalty, max_iter, label,
+):
+    """Fit the best CV pair on train/val and score it on test.
+
+    Walks down the CV ranking past any (l1_ratio, alpha) whose train/val fit overflows (see
+    ``_is_coxnet_overflow``); any other failure still ends the search with no model. The returned
+    test_df records the pair actually fit and its CV score, so callers can tell a fallback apart
+    from the raw CV winner.
+    """
+    final_model = None
+    mean_auc, ibs, cidx = np.nan, np.nan, np.nan
+    auc_curve = np.full(len(eval_times), np.nan)
+    fit_l1, fit_alpha, fit_cv_auc = np.nan, np.nan, np.nan
+    ranked = valid_cv.sort("mean_auc(t)", descending=True)
+    for rank, cand in enumerate(ranked.iter_rows(named=True)):
+        l1, alpha = float(cand["l1_ratio"]), float(cand["alpha"])
+        try:
+            model = CoxnetSurvivalAnalysis(
+                alphas=[alpha],
+                l1_ratio=l1,
+                max_iter=max_iter,
+                fit_baseline_model=True,
+                penalty_factor=penalty,
+            )
+            model.fit(X_trval, y_train_val)
+        except Exception as e:
+            if _is_coxnet_overflow(e):
+                logger.warning(
+                    "Grid search final model (%s) overflowed at l1_ratio=%.3f alpha=%.3e "
+                    "(CV rank %d); trying the next CV candidate",
+                    label, l1, alpha, rank + 1,
+                )
+                continue
+            logger.warning("Grid search final model (%s) failed: %s", label, e)
+            break
+        try:
+            mean_auc, ibs, cidx, auc_curve = evaluate_surv_model(
+                model, X_te, y_train_val, y_test, eval_times,
+                return_auc_curve=True,
+            )
+        except Exception as e:
+            logger.warning("Grid search final model (%s) failed: %s", label, e)
+            break
+        if rank > 0:
+            logger.warning(
+                "Grid search final model (%s) fell back to CV rank %d: l1_ratio=%.3f alpha=%.3e",
+                label, rank + 1, l1, alpha,
+            )
+        final_model, fit_l1, fit_alpha, fit_cv_auc = model, l1, alpha, float(cand["mean_auc(t)"])
+        break
+    else:
+        logger.warning("Grid search final model (%s) failed: every CV candidate overflowed", label)
+
+    test_df = pl.DataFrame({
+        "mean_auc(t)": [mean_auc], "mean_ibs": [ibs], "mean_c_index": [cidx],
+        "auc_eval_times": [_json_array(eval_times)], "auc_curve": [_json_array(auc_curve)],
+        "selected_l1_ratio": [fit_l1], "selected_alpha": [fit_alpha],
+        "selected_cv_mean_auc(t)": [fit_cv_auc],
+    })
+    return test_df, final_model
 
 
 # ==========================================
@@ -324,14 +388,15 @@ def run_grid_CoxPH_parallel(
                     raise
                 print(f"[CV] Low-alpha refinement failed; retaining primary grid: {exc}", flush=True)
             else:
-                low_best = (
-                    low_result[1].filter(pl.col("mean_auc(t)").is_finite())
-                    .sort("mean_auc(t)", descending=True)
-                    .row(0, named=True)
-                )
+                # Compare the pairs each grid actually fit, not its raw CV winner: a low-alpha
+                # winner whose final fit overflowed must not displace a primary model that fit.
+                def _fitted_cv_auc(res) -> float:
+                    v = float(res[0]["selected_cv_mean_auc(t)"][0])
+                    return v if np.isfinite(v) else -np.inf
+
                 chosen = (
                     low_result
-                    if float(low_best["mean_auc(t)"]) > float(primary_best["mean_auc(t)"])
+                    if _fitted_cv_auc(low_result) > _fitted_cv_auc(result)
                     else result
                 )
                 combined_val = pl.concat([result[1], low_result[1]], how="vertical")
@@ -541,28 +606,10 @@ def _run_grid_no_pca(
     X_trval_scaled, X_test_scaled = _scale_continuous_train_test_np(
         X_trval_scaled, X_test_scaled, all_cols, continuous_vars)
 
-    try:
-        final_model = CoxnetSurvivalAnalysis(
-            alphas=[opt_alpha],
-            l1_ratio=opt_l1,
-            max_iter=max_iter,
-            fit_baseline_model=True,
-            penalty_factor=penalty_no_pca,
-        )
-        final_model.fit(X_trval_scaled, y_train_val)
-        mean_auc, ibs, cidx, auc_curve = evaluate_surv_model(
-            final_model, X_test_scaled, y_train_val, y_test, eval_times,
-            return_auc_curve=True,
-        )
-    except Exception as e:
-        logger.warning("Grid search final model (no PCA) failed: %s", e)
-        final_model, mean_auc, ibs, cidx = None, np.nan, np.nan, np.nan
-        auc_curve = np.full(len(eval_times), np.nan)
-
-    test_df = pl.DataFrame({
-        "mean_auc(t)": [mean_auc], "mean_ibs": [ibs], "mean_c_index": [cidx],
-        "auc_eval_times": [_json_array(eval_times)], "auc_curve": [_json_array(auc_curve)],
-    })
+    test_df, final_model = _fit_final_model(
+        valid_cv, X_trval_scaled, y_train_val, X_test_scaled, y_test, eval_times,
+        penalty_no_pca, max_iter, "no PCA",
+    )
     return test_df, cv_results_df, final_model
 
 
@@ -797,28 +844,10 @@ def _run_grid_with_pca(
 
         penalty_final = np.fromiter((0.0 if c in base_col_set else 1.0 for c in colnames), dtype=np.float32)
 
-        try:
-            final_model = CoxnetSurvivalAnalysis(
-                alphas=[opt_alpha],
-                l1_ratio=opt_l1,
-                max_iter=max_iter,
-                fit_baseline_model=True,
-                penalty_factor=penalty_final,
-            )
-            final_model.fit(X_trval, y_train_val)
-            mean_auc, ibs, cidx, auc_curve = evaluate_surv_model(
-                final_model, X_te, y_train_val, y_test, eval_times,
-                return_auc_curve=True,
-            )
-        except Exception as e:
-            logger.warning("Grid search final model (PCA) failed: %s", e)
-            final_model, mean_auc, ibs, cidx = None, np.nan, np.nan, np.nan
-            auc_curve = np.full(len(eval_times), np.nan)
-
-        test_df = pl.DataFrame({
-            "mean_auc(t)": [mean_auc], "mean_ibs": [ibs], "mean_c_index": [cidx],
-            "auc_eval_times": [_json_array(eval_times)], "auc_curve": [_json_array(auc_curve)],
-        })
+        test_df, final_model = _fit_final_model(
+            valid_cv, X_trval, y_train_val, X_te, y_test, eval_times,
+            penalty_final, max_iter, "PCA",
+        )
         return test_df, cv_results_df, final_model
 
     finally:

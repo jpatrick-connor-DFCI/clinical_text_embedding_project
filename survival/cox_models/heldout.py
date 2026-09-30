@@ -19,6 +19,7 @@ from sksurv.linear_model import CoxPHSurvivalAnalysis, CoxnetSurvivalAnalysis
 
 from ._common import (
     _SUPPRESSED_WARNINGS,
+    _is_coxnet_overflow,
     _make_surv_array,
     apply_group_pca_np,
     _scale_continuous_train_test_np,
@@ -503,26 +504,44 @@ def get_nested_heldout_risk_scores_CoxPH(
             adaptive_low_alphas=adaptive_low_alphas,
             show_progress=show_progress,
         )
-        best = (
+        ranked = (
             inner_val.filter(pl.col(primary_metric).is_finite())
             .sort(primary_metric, descending=True)
-            .row(0, named=True)
         )
-        l1_ratio = float(best["l1_ratio"])
-        alpha = float(best["alpha"])
-        scores[test_idx] = fit_predict_external_CoxPH(
-            train_df,
-            test_df,
-            base_cols,
-            continuous_vars,
-            penalized_cols,
-            event_col=event_col,
-            tstop_col=tstop_col,
-            l1_ratio=l1_ratio,
-            alpha=alpha,
-            max_iter=max_iter,
-            pca_config=pca_config,
-        )
+        # Walk down the inner ranking past any pair whose outer-train fit overflows (see
+        # _is_coxnet_overflow); selected_alpha/selected_l1_ratio record the pair actually used.
+        for rank, cand in enumerate(ranked.iter_rows(named=True)):
+            l1_ratio = float(cand["l1_ratio"])
+            alpha = float(cand["alpha"])
+            try:
+                fold_scores = fit_predict_external_CoxPH(
+                    train_df,
+                    test_df,
+                    base_cols,
+                    continuous_vars,
+                    penalized_cols,
+                    event_col=event_col,
+                    tstop_col=tstop_col,
+                    l1_ratio=l1_ratio,
+                    alpha=alpha,
+                    max_iter=max_iter,
+                    pca_config=pca_config,
+                )
+            except Exception as e:
+                if not _is_coxnet_overflow(e):
+                    raise
+                logger.warning(
+                    "Outer fold %d: Coxnet overflowed at l1_ratio=%.3f alpha=%.3e "
+                    "(inner rank %d); trying the next inner-CV candidate",
+                    fold_i, l1_ratio, alpha, rank + 1,
+                )
+                continue
+            break
+        else:
+            raise RuntimeError(
+                f"Outer fold {fold_i}: every inner-CV candidate overflowed in the Coxnet fit"
+            )
+        scores[test_idx] = fold_scores
         fold_ids[test_idx] = fold_i
         chosen_l1[test_idx] = l1_ratio
         chosen_alpha[test_idx] = alpha
