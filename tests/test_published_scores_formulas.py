@@ -282,6 +282,49 @@ def test_catalog_has_full_and_ecog_free_variants():
 
 
 # ===========================================================================
+# Khorana
+# ===========================================================================
+
+def test_khorana_site_points():
+    df = pl.DataFrame({"g": ["PANCREAS", "STOMACH", "LUNG", "AGGR_NHL", "UTERUS", "BREAST", "PROSTATE", None]})
+    out = df.select(sp.khorana_site_points_expr("g").alias("p"))["p"].to_list()
+    assert out == [2, 2, 1, 1, 1, 0, 0, None]
+
+
+def test_khorana_thresholds_and_groups():
+    df = pl.DataFrame({
+        "site": [0, 2, 1, 2],
+        "plt": [349.0, 350.0, 200.0, 400.0],
+        "hgb": [10.0, 9.9, 12.0, 8.0],
+        "esa": [False, False, False, True],
+        "wbc": [11.0, 11.1, 5.0, 12.0],
+        "bmi": [34.9, 35.0, 25.0, 40.0],
+    })
+    score = sp.build_khorana("site", "plt", "hgb", "esa", "wbc", "bmi", ELIGIBLE)
+    points, complete, _ = sp.score_expr(score)
+    out = df.select(points, complete).with_columns(sp.group_expr(score, "khorana__points").alias("g"))
+    assert out["khorana__points"].to_list() == [0, 6, 1, 6]
+    assert out["g"].to_list() == ["low (0)", "high (>=3)", "intermediate (1-2)", "high (>=3)"]
+    assert score.endpoint == ("vte", "vte")
+
+
+def test_khorana_hgb_or_esa_null_handling():
+    """An ESA scores the item without a hemoglobin; no ESA needs one."""
+    df = pl.DataFrame({
+        "hgb": [None, None, 11.0, 11.0, None],
+        "esa": [True, False, True, None, None],
+    })
+    item = sp.build_khorana("site", "plt", "hgb", "esa", "wbc", "bmi", ELIGIBLE).items[2]
+    assert item.name == "khorana_hgb_esa"
+    assert df.select(item.point_expr.alias("p"))["p"].to_list() == [1, None, 1, 0, None]
+
+
+def test_khorana_is_the_only_non_os_catalog_score():
+    catalog = sp.default_catalog()
+    assert {s.id for s in catalog.values() if s.endpoint != ("death_met", "death")} == {"khorana"}
+
+
+# ===========================================================================
 # Registry integrity
 # ===========================================================================
 
@@ -296,6 +339,7 @@ def _all_built_scores():
         sp.build_ipi("age", "ldh", "ann_arbor_ge3", "n_extranodal", None, ELIGIBLE),
         sp.build_imdc("days", "hgb", "gender", "ca", "anc", "plt", None, ELIGIBLE),
         sp.build_mskcc("ldh", "hgb", "gender", "ca", "days", None, ELIGIBLE),
+        sp.build_khorana("site", "plt", "hgb", "esa", "wbc", "bmi", ELIGIBLE),
     ]
 
 

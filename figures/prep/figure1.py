@@ -17,10 +17,13 @@ import polars as pl
 from config import FEATURE_PATH, SURV_PATH
 from figures.io import save_figure_data
 from pipelines.preprocessing.data_availability import modality_mrn_sets
-from schemes import SCHEMES, list_trained_events
+from schemes import list_trained_events
 from shared.stages import STAGE_ORDER, load_stage_map, normalize_stage
 
 ENDPOINT_COUNT_COLUMNS = ["scheme", "n_endpoints"]
+# The endpoint-atlas schemes, as in figure2/figure3 (not the `vte` scheme,
+# which only feeds the Khorana comparison).
+SCHEMES = ["death_met", "icd3_post", "icd4_post", "phecode_post"]
 
 
 # Raw, complete stage labels — cancer_stage_df.csv.gz now carries the raw

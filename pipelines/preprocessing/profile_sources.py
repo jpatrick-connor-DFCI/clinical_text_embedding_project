@@ -67,6 +67,18 @@ LAB_COLLECT_DT = "SPECIMEN_COLLECT_DT"
 LAB_NUMERIC_RESULT = "NUMERIC_RESULT"
 LAB_RESULT_UOM = "RESULT_UOM_NM"
 
+# HEALTH_HISTORY (long format: one row per vital/history entry; BMI is
+# HEALTH_HISTORY_TYPE == "BMI" with its value in RESULTS)
+HH_TYPE = "HEALTH_HISTORY_TYPE"
+HH_RESULTS = "RESULTS"
+HH_START_DT = "START_DT"
+HH_BMI_TYPE = "BMI"
+
+# MEDICATIONS (long format: every medication order, not only antineoplastics)
+MEDS_NCI_NM = "NCI_PREFERRED_MED_NM"
+MEDS_OTHER_NM = "OTHER_MED_NM"
+MEDS_START_DT = "MED_START_DT"
+
 # CLINICAL_NOTES metadata (shared across PROGRESS/PATHOLOGY/IMAGING)
 RPT_ID = "RPT_ID"
 RPT_TEXT = "RPT_TEXT"
@@ -256,6 +268,25 @@ def load_labs(columns: list[str] | None = None) -> pl.LazyFrame:
     than the other PROFILE_DATA tables, so callers should filter (cohort,
     test codes, date window) before collecting."""
     lf = pl.scan_parquet(_path("LABS.parquet"))
+    if columns is not None:
+        lf = lf.select(columns)
+    return lf
+
+
+def load_health_history(columns: list[str] | None = None) -> pl.LazyFrame:
+    """HEALTH_HISTORY.parquet: long-format vitals and history (BMI, weight,
+    ...). Returned lazy, like `load_labs`, for callers to filter first."""
+    lf = pl.scan_parquet(_path("HEALTH_HISTORY.parquet"))
+    if columns is not None:
+        lf = lf.select(columns)
+    return lf
+
+
+def load_medications(columns: list[str] | None = None) -> pl.LazyFrame:
+    """MEDICATIONS.parquet: long-format medication orders, all drug classes
+    (MEDICATIONS_SUMMARY only carries antineoplastic regimens). Returned
+    lazy, like `load_labs`."""
+    lf = pl.scan_parquet(_path("MEDICATIONS.parquet"))
     if columns is not None:
         lf = lf.select(columns)
     return lf

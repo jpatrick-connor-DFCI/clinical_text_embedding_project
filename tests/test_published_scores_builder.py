@@ -447,3 +447,73 @@ class TestPerformanceStatus:
         loaded = bps._load_performance_status("treatment")
         assert loaded.schema == pl.Schema(bps.PERFORMANCE_STATUS_SCHEMA)
         assert loaded.rows() == [(1, 2.0, "KPS", 4)]
+
+
+class TestKhorana:
+    ANCHOR = dt.datetime(2024, 6, 1)
+
+    def _anchor_dates(self, mrns):
+        return pl.DataFrame({"DFCI_MRN": mrns, "first_treatment_date": [self.ANCHOR] * len(mrns)})
+
+    def test_bmi_latest_in_window_day_with_implausible_values_dropped(self):
+        hh = pl.DataFrame({
+            "DFCI_MRN": [1, 1, 1, 2, 2, 3, 4],
+            ps.HH_TYPE: ["BMI", "BMI", "WEIGHT", "BMI", "BMI", "BMI", "BMI"],
+            ps.HH_RESULTS: ["30.0", "36.0", "90", "250", "33.5", "36", "37"],
+            ps.HH_START_DT: [
+                dt.datetime(2024, 5, 1), dt.datetime(2024, 5, 20), dt.datetime(2024, 5, 31),
+                dt.datetime(2024, 5, 30), dt.datetime(2024, 5, 10),  # 2: implausible latest value dropped
+                dt.datetime(2024, 6, 2),                            # 3: after the anchor
+                dt.datetime(2024, 4, 1),                            # 4: outside the 30-day window
+            ],
+        })
+        out = bps.build_bmi_feature(hh, self._anchor_dates([1, 2, 3, 4]), "first_treatment_date", 30)
+        assert sorted(out.rows()) == [(1, 36.0, 12), (2, 33.5, 22)]
+
+    def test_esa_ordered_in_window(self):
+        meds = pl.DataFrame({
+            "DFCI_MRN": [1, 2, 3, 4],
+            ps.MEDS_NCI_NM: ["Darbepoetin Alfa", None, "Epoetin Alfa", "Filgrastim"],
+            ps.MEDS_OTHER_NM: [None, "PROCRIT 40,000 unit/mL", None, None],
+            ps.MEDS_START_DT: [
+                dt.datetime(2024, 5, 25), dt.datetime(2024, 6, 1),
+                dt.datetime(2024, 6, 5),   # 3: after the anchor
+                dt.datetime(2024, 5, 25),  # 4: not an ESA
+            ],
+        })
+        out = bps.build_esa_feature(meds, self._anchor_dates([1, 2, 3, 4, 5]), "first_treatment_date", 30)
+        assert sorted(out.rows()) == [(1, True), (2, True), (3, False), (4, False), (5, False)]
+
+    def test_eligibility_and_scoring(self):
+        mrns = [301, 302, 303, 304, 305]
+        cohort_df = pl.DataFrame({
+            "DFCI_MRN": mrns, "first_treatment_date": [self.ANCHOR] * 5,
+            "AGE_AT_TREATMENTSTART": [65] * 5, "GENDER": [1] * 5,
+        })
+        careg = pl.DataFrame({"DFCI_MRN": mrns, "DIAGNOSIS_DT": [dt.datetime(2022, 1, 1)] * 5,
+                              "_REGISTRY_STAGE": [2] * 5})
+        cancer_group = pl.DataFrame({
+            "DFCI_MRN": mrns, "CANCER_GROUP": ["PANCREAS", "BREAST", "LEUKEMIA", "MYELOMA", None],
+            "GENOMICS_CANCER_TYPE": [None] * 5,
+        })
+        met_burden = pl.DataFrame({"DFCI_MRN": mrns, "N_MET_SITES": [0] * 5})
+        eligibility = build_eligibility(cohort_df, "treatment", careg, cancer_group, met_burden)
+        assert eligibility.sort("DFCI_MRN")["khorana__eligible"].to_list() == [True, True, False, False, False]
+
+        labs = {lab: [1.0] * 5 for lab in TestPerformanceStatus.LABS}
+        labs.update(platelets=[400.0] * 5, hemoglobin=[12.0] * 5, wbc=[7.0] * 5)
+        lab_features = pl.DataFrame({"DFCI_MRN": mrns, **labs, "labs_observable": [True] * 5})
+        gleason = pl.DataFrame(schema={"DFCI_MRN": pl.Int64, "gleason_date": pl.Datetime,
+                                       "gleason_primary": pl.Int64, "gleason_secondary": pl.Int64})
+        khorana_inputs = pl.DataFrame({
+            "DFCI_MRN": mrns, "bmi": [36.0, None, 20.0, 20.0, 20.0], "bmi__days_before_anchor": [1, None, 1, 1, 1],
+            "esa_recent": [False] * 5,
+        }, schema=bps.KHORANA_INPUTS_SCHEMA)
+        out = build_score_frame(
+            cohort_df, "treatment", lab_features, eligibility, gleason, None, khorana_inputs,
+        ).sort("DFCI_MRN")
+        assert out["khorana__points"].to_list()[:2] == [4, None]  # site 2 + PLT + BMI; no BMI
+        assert out["khorana__missing_items"].to_list()[1] == ["khorana_bmi"]
+
+        without = build_score_frame(cohort_df, "treatment", lab_features, eligibility, gleason)
+        assert not without["khorana__complete"].any()

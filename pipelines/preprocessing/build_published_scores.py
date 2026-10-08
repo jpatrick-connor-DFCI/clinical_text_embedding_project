@@ -1,6 +1,7 @@
 """Build the published-prognostic-score catalog (`shared/published_scores.py`)
 against real cohort data: mGPS, RMH, LIPI, ALBI, MELD, CAPRA (modified) and
-IPI/IMDC/MSKCC, each both full (ECOG from notes) and ECOG-free modified.
+IPI/IMDC/MSKCC, each both full (ECOG from notes) and ECOG-free modified, plus
+the Khorana VTE score.
 
 Command line: `--anchor {treatment,sequencing} --lab-window-days 30`.
 
@@ -21,6 +22,12 @@ Inputs
   a hand-built analyte/unit table for the ~10 analytes these scores need; no
   external repo dependency).
 - The LLM Gleason timeline (`config.GLEASON_TIMELINE_PATH`) for CAPRA.
+- HEALTH_HISTORY (`profile_sources.load_health_history`): BMI for Khorana,
+  under the same window as the labs (latest day, that day's median, values
+  outside 10-100 kg/m^2 dropped).
+- MEDICATIONS (`profile_sources.load_medications`): an erythropoiesis-
+  stimulating agent (`ESA_NAME_PATTERN`) ordered in the same window scores
+  Khorana's hemoglobin item; no such order is `esa_recent = False`.
 - `published_scores_note_df{anchor_suffix}.csv.gz` from
   `extract_note_scores.py` (run it first): `ecog__note_value`, the latest
   ECOG (or KPS converted to ECOG) documented 0..90 days before the anchor,
@@ -66,6 +73,9 @@ carcinoma via the OncoTree `GENOMICS_CANCER_TYPE` (`RCC_HISTOLOGY_PATTERN`),
 keeping KIDNEY patients with no genomic type (ICD-only). The same column
 drives the LIPI SCLC/carcinoid exclusion and the DLBCL flag; CAREG carries no
 histology text.
+Khorana is scored for every patient with a CANCER_GROUP outside
+`KHORANA_INELIGIBLE_GROUPS` (leukemia, myeloma/myeloid): solid tumors and
+lymphoma.
 "advanced" (mGPS/RMH eligibility) means `N_MET_SITES >= 1` from
 `met_burden_df`, or registry stage IV diagnosed on or before the anchor.
 """
@@ -90,10 +100,12 @@ from shared.published_scores import (
     CATALOG_SCORE_IDS,
     ECOG_FREE_OF,
     DLBCL_SUBTYPE_NAMES,
+    KHORANA_INELIGIBLE_GROUPS,
     SCLC_CARCINOID_EXCLUSION_NAMES,
     build_catalog,
     corrected_calcium_expr,
     group_expr,
+    khorana_site_points_expr,
     score_expr,
 )
 
@@ -298,12 +310,90 @@ def build_lab_features(
     return wide.with_columns(corrected_calcium_expr("cacorr_ca", "cacorr_alb").alias("corrected_calcium"))
 
 
+# Erythropoiesis-stimulating agents, generic and brand names.
+ESA_NAME_PATTERN = r"(?i)epoetin|darbepoetin|aranesp|epogen|procrit|retacrit|mircera"
+BMI_PLAUSIBLE_RANGE = (10.0, 100.0)
+
+KHORANA_INPUTS_SCHEMA = {
+    "DFCI_MRN": pl.Int64, "bmi": pl.Float64, "bmi__days_before_anchor": pl.Int64, "esa_recent": pl.Boolean,
+}
+
+
+def _days_before_anchor(frame: pl.DataFrame, dt_col: str, anchor_dates: pl.DataFrame, anchor_col: str) -> pl.DataFrame:
+    """Join anchor dates and add `_days_before_anchor` (anchor - `dt_col`)
+    and `_collect_day`, dropping rows where either date is missing."""
+    frame = _to_datetime_col(frame, dt_col)
+    if getattr(frame.schema[dt_col], "time_zone", None):
+        frame = frame.with_columns(pl.col(dt_col).dt.replace_time_zone(None))
+    anchors = _to_datetime_col(anchor_dates, anchor_col)
+    return frame.join(anchors, on="DFCI_MRN", how="inner").with_columns(
+        (pl.col(anchor_col) - pl.col(dt_col)).dt.total_days().alias("_days_before_anchor"),
+        pl.col(dt_col).dt.date().alias("_collect_day"),
+    ).drop_nulls("_days_before_anchor")
+
+
+def build_bmi_feature(
+    health_history: pl.DataFrame, anchor_dates: pl.DataFrame, anchor_col: str, window_days: int,
+) -> pl.DataFrame:
+    """`bmi` and `bmi__days_before_anchor` per patient from HEALTH_HISTORY
+    rows: the latest in-window day's median, implausible values dropped."""
+    lo, hi = BMI_PLAUSIBLE_RANGE
+    bmi = health_history.filter(pl.col(ps.HH_TYPE) == ps.HH_BMI_TYPE).select(
+        pl.col("DFCI_MRN").cast(pl.Int64, strict=False),
+        pl.col(ps.HH_START_DT),
+        pl.col(ps.HH_RESULTS).cast(pl.Float64, strict=False).alias("_value"),
+        pl.lit("bmi").alias("_analyte_col_name"),
+    ).filter(pl.col("_value").is_between(lo, hi))
+    bmi = _days_before_anchor(bmi, ps.HH_START_DT, anchor_dates, anchor_col)
+    return _latest_day_median(bmi, "bmi", anchor_col, window_days, "bmi")
+
+
+def build_esa_feature(
+    medications: pl.DataFrame, anchor_dates: pl.DataFrame, anchor_col: str, window_days: int,
+) -> pl.DataFrame:
+    """`esa_recent` per cohort patient: an ESA order started 0..window_days
+    before the anchor (False when there is none)."""
+    name = pl.concat_str(
+        [pl.col(ps.MEDS_NCI_NM).fill_null(""), pl.col(ps.MEDS_OTHER_NM).fill_null("")], separator=" ",
+    )
+    esa = medications.select(
+        pl.col("DFCI_MRN").cast(pl.Int64, strict=False), pl.col(ps.MEDS_START_DT), name.alias("_name"),
+    ).filter(pl.col("_name").str.contains(ESA_NAME_PATTERN))
+    esa = _days_before_anchor(esa, ps.MEDS_START_DT, anchor_dates, anchor_col).filter(
+        pl.col("_days_before_anchor").is_between(0, window_days)
+    )
+    esa_mrns = esa.get_column("DFCI_MRN").unique().implode()
+    return anchor_dates.select(
+        "DFCI_MRN", pl.col("DFCI_MRN").is_in(esa_mrns).alias("esa_recent"),
+    )
+
+
+def build_khorana_inputs(cohort_df: pl.DataFrame, anchor: str, window_days: int) -> pl.DataFrame:
+    """Load HEALTH_HISTORY and MEDICATIONS for the cohort and return
+    `KHORANA_INPUTS_SCHEMA` columns, one row per cohort patient."""
+    anchor_col = date_col(anchor)
+    anchor_dates = cohort_df.select(pl.col("DFCI_MRN").cast(pl.Int64), anchor_col)
+    cohort_mrns = anchor_dates.get_column("DFCI_MRN").unique().implode()
+    health_history = ps.load_health_history(
+        columns=["DFCI_MRN", ps.HH_TYPE, ps.HH_RESULTS, ps.HH_START_DT],
+    ).filter(pl.col("DFCI_MRN").is_in(cohort_mrns) & (pl.col(ps.HH_TYPE) == ps.HH_BMI_TYPE)).collect()
+    medications = ps.load_medications(
+        columns=["DFCI_MRN", ps.MEDS_NCI_NM, ps.MEDS_OTHER_NM, ps.MEDS_START_DT],
+    ).filter(pl.col("DFCI_MRN").is_in(cohort_mrns)).collect()
+    bmi = build_bmi_feature(health_history, anchor_dates, anchor_col, window_days)
+    esa = build_esa_feature(medications, anchor_dates, anchor_col, window_days)
+    print(f"[published scores] Khorana inputs: BMI for {bmi.height:,}, "
+          f"ESA for {int(esa['esa_recent'].sum()):,} of {anchor_dates.height:,} patients")
+    return esa.join(bmi, on="DFCI_MRN", how="left").select(list(KHORANA_INPUTS_SCHEMA))
+
+
 def build_eligibility(
     cohort_df: pl.DataFrame, anchor: str, careg: pl.DataFrame, cancer_group: pl.DataFrame, met_burden: pl.DataFrame,
 ) -> pl.DataFrame:
     """One row per cohort patient with the raw CANCER_GROUP, registry stage
     IV flag, "advanced" flag, diagnosis date/days-to-anchor, DLBCL/AGGR_NHL
-    and SCLC-exclusion flags, and per-score eligibility booleans."""
+    and SCLC-exclusion flags, Khorana site points, and per-score eligibility
+    booleans."""
     anchor_col = date_col(anchor)
 
     diag = _to_datetime_col(careg, "DIAGNOSIS_DT").select(
@@ -353,6 +443,7 @@ def build_eligibility(
         sclc_or_carcinoid.alias("_sclc_or_carcinoid"),
         dlbcl.alias("_is_dlbcl"),
         (pl.col("_REGISTRY_STAGE") <= 3).fill_null(False).alias("_ann_arbor_lt3"),
+        khorana_site_points_expr("CANCER_GROUP").alias("khorana_site_points"),
     )
 
     return base.with_columns(
@@ -365,6 +456,8 @@ def build_eligibility(
         (pl.col("CANCER_GROUP") == "AGGR_NHL").alias("ipi_noecog__eligible"),
         (pl.col("_advanced") & pl.col("_rcc")).alias("imdc_noecog__eligible"),
         (pl.col("_advanced") & pl.col("_rcc")).alias("mskcc_noecog__eligible"),
+        (pl.col("CANCER_GROUP").is_not_null() & ~pl.col("CANCER_GROUP").is_in(KHORANA_INELIGIBLE_GROUPS))
+        .alias("khorana__eligible"),
     ).with_columns(
         # A full score's population is its ECOG-free variant's.
         pl.col(f"{noecog}__eligible").alias(f"{full}__eligible") for noecog, full in ECOG_FREE_OF.items()
@@ -373,13 +466,17 @@ def build_eligibility(
 
 def build_score_frame(
     cohort_df: pl.DataFrame, anchor: str, lab_features: pl.DataFrame, eligibility: pl.DataFrame, gleason: pl.DataFrame,
-    performance_status: pl.DataFrame | None = None,
+    performance_status: pl.DataFrame | None = None, khorana_inputs: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """Join everything into one wide frame and score every catalog entry.
     `performance_status` is `_load_performance_status` output (None: no
-    ECOG, so the full IPI/IMDC/MSKCC are incomplete for everyone)."""
+    ECOG, so the full IPI/IMDC/MSKCC are incomplete for everyone).
+    `khorana_inputs` is `build_khorana_inputs` output (None: no BMI, so
+    Khorana is incomplete for everyone)."""
     if performance_status is None:
         performance_status = pl.DataFrame(schema=PERFORMANCE_STATUS_SCHEMA)
+    if khorana_inputs is None:
+        khorana_inputs = pl.DataFrame(schema=KHORANA_INPUTS_SCHEMA)
     age_column = age_col(anchor)
 
     gleason_at_dx = _to_datetime_col(
@@ -403,6 +500,7 @@ def build_score_frame(
         .join(eligibility, on="DFCI_MRN", how="left")
         .join(gleason_at_dx, on="DFCI_MRN", how="left")
         .join(performance_status, on="DFCI_MRN", how="left")
+        .join(khorana_inputs, on="DFCI_MRN", how="left")
     )
 
     # PSA and clinical-T are not independently confirmed against a real
@@ -470,9 +568,12 @@ def main() -> None:
     performance_status = _load_performance_status(anchor)
 
     lab_features = build_lab_features(cohort_df, anchor, window_days)
+    khorana_inputs = build_khorana_inputs(cohort_df, anchor, window_days)
 
     eligibility = build_eligibility(cohort_df, anchor, careg, cancer_group, met_burden)
-    score_frame = build_score_frame(cohort_df, anchor, lab_features, eligibility, gleason, performance_status)
+    score_frame = build_score_frame(
+        cohort_df, anchor, lab_features, eligibility, gleason, performance_status, khorana_inputs,
+    )
 
     required = ["DFCI_MRN"] + [
         f"{s}__{suffix}" for s in CATALOG_SCORE_IDS for suffix in ("eligible", "complete")

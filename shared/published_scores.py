@@ -1,5 +1,10 @@
 """Published within-cancer-type prognostic-score catalog (MDCalc-style: IPI,
-IMDC, mGPS, LIPI, ALBI, RMH, MSKCC, MELD, CAPRA).
+IMDC, mGPS, LIPI, ALBI, RMH, MSKCC, MELD, CAPRA), plus the Khorana VTE score.
+
+Every score predicts overall survival except Khorana, which predicts VTE.
+Each score's `endpoint` is the (scheme, event) it is evaluated against, so
+the OS comparison (`figures/prep/published_scores.py`) and the VTE comparison
+(`figures/prep/khorana_vte.py`) each take only their own scores.
 
 Pure polars expressions and frozen dataclasses only, in the style of
 `shared/icd10.py` - no file reading here. `pipelines/preprocessing/
@@ -37,7 +42,6 @@ builder):
 Excluded scores (considered and rejected, not merely omitted):
   - NPI: needs tumor grade, which this data doesn't have.
   - ISS: needs beta-2-microglobulin, which the lab harmonizer doesn't map.
-  - Khorana: predicts VTE, not survival.
   - BCLC, GPA, ELN: need ECOG, KPS or karyotype.
   - GPS: collinear with mGPS (its ECOG-free sibling would be identical).
 
@@ -62,6 +66,7 @@ class ItemSource(Enum):
     LLM = "llm"
     COHORT = "cohort"
     PERFORMANCE_STATUS = "performance_status"
+    VITAL = "vital"
 
 
 # --- Provisional reference limits (used unless the audit finds per-result
@@ -110,6 +115,7 @@ class PublishedScore:
     continuous_formula: pl.Expr | None = None
     performance_status: ScoreItem | None = None
     direction: int = 1  # 1 if higher points/formula = worse prognosis, -1 otherwise
+    endpoint: tuple[str, str] = ("death_met", "death")  # (scheme, event) the score predicts
 
     def __post_init__(self) -> None:
         if self.variant not in ("exact", "modified"):
@@ -671,6 +677,80 @@ def build_mskcc(
 
 
 # ===========================================================================
+# Khorana VTE score (ambulatory chemotherapy patients; solid tumors + lymphoma)
+# ===========================================================================
+
+# Site points over this project's CANCER_GROUP vocabulary. Khorana's
+# "gynecologic" is OVARY, UTERUS (which includes cervix) and VULVA; lymphoma is
+# LYMPHOMA plus the AGGR_NHL override. Everything else scores 0.
+KHORANA_VERY_HIGH_RISK_GROUPS = ("STOMACH", "PANCREAS")
+KHORANA_HIGH_RISK_GROUPS = (
+    "LUNG", "LYMPHOMA", "AGGR_NHL", "OVARY", "UTERUS", "VULVA", "BLADDER", "TESTIS", "GERM_CELL",
+)
+# Hematologic malignancies outside the score's derivation population.
+# MYELOMA includes the base MYELOID group, renamed at load.
+KHORANA_INELIGIBLE_GROUPS = ("LEUKEMIA", "MYELOMA")
+
+
+def khorana_site_points_expr(cancer_group_col: str) -> pl.Expr:
+    """Khorana site points (2 / 1 / 0) from CANCER_GROUP; null if it is null."""
+    group = pl.col(cancer_group_col)
+    return (
+        pl.when(group.is_null()).then(None)
+        .when(group.is_in(KHORANA_VERY_HIGH_RISK_GROUPS)).then(pl.lit(2))
+        .when(group.is_in(KHORANA_HIGH_RISK_GROUPS)).then(pl.lit(1))
+        .otherwise(pl.lit(0))
+    )
+
+
+def _khorana_hgb_esa_points(hgb_col: str, esa_col: str) -> pl.Expr:
+    """1 if Hgb < 10 g/dL or an ESA was ordered, 0 if Hgb >= 10 and no ESA,
+    null if Hgb is missing and no ESA (an ESA alone scores the item)."""
+    hgb = pl.col(hgb_col)
+    esa = pl.col(esa_col).fill_null(False)
+    return pl.when((hgb < 10) | esa).then(pl.lit(1)).when(hgb >= 10).then(pl.lit(0)).otherwise(None)
+
+
+def build_khorana(
+    site_points_col: str, plt_col: str, hgb_col: str, esa_col: str, wbc_col: str, bmi_col: str,
+    eligibility: pl.Expr,
+) -> PublishedScore:
+    items = (
+        ScoreItem("khorana_site", (site_points_col,), pl.col(site_points_col), ItemSource.REGISTRY),
+        ScoreItem(
+            "khorana_platelets", (plt_col,),
+            pl.when(pl.col(plt_col) >= 350).then(pl.lit(1)).when(pl.col(plt_col) < 350).then(pl.lit(0)).otherwise(None),
+            ItemSource.LAB,
+        ),
+        ScoreItem("khorana_hgb_esa", (hgb_col, esa_col), _khorana_hgb_esa_points(hgb_col, esa_col), ItemSource.LAB),
+        ScoreItem(
+            "khorana_wbc", (wbc_col,),
+            pl.when(pl.col(wbc_col) > 11).then(pl.lit(1)).when(pl.col(wbc_col) <= 11).then(pl.lit(0)).otherwise(None),
+            ItemSource.LAB,
+        ),
+        ScoreItem(
+            "khorana_bmi", (bmi_col,),
+            pl.when(pl.col(bmi_col) >= 35).then(pl.lit(1)).when(pl.col(bmi_col) < 35).then(pl.lit(0)).otherwise(None),
+            ItemSource.VITAL,
+        ),
+    )
+    return PublishedScore(
+        id="khorana",
+        display_name="Khorana VTE risk score",
+        citation="Khorana AA, Blood 2008",
+        eligibility=eligibility,
+        items=items,
+        risk_groups=(
+            RiskGroup("low (0)", 0, 0),
+            RiskGroup("intermediate (1-2)", 1, 2),
+            RiskGroup("high (>=3)", 3, 6),
+        ),
+        variant="exact",
+        endpoint=("vte", "vte"),
+    )
+
+
+# ===========================================================================
 # Fixed subtype-name lists (cite PROFILE_data_processing/cancer_annotations.py)
 # ===========================================================================
 
@@ -754,6 +834,10 @@ def build_catalog(columns: dict[str, str], eligibility: dict[str, pl.Expr]) -> d
             columns["ldh"], columns["hemoglobin"], columns["gender"], columns["corrected_calcium"],
             columns["diagnosis_to_anchor_days"], ecog, eligibility[f"mskcc{suffix}"],
         ))
+    _add(build_khorana(
+        columns["khorana_site_points"], columns["platelets"], columns["hemoglobin"], columns["esa_recent"],
+        columns["wbc"], columns["bmi"], eligibility["khorana"],
+    ))
 
     return catalog
 
@@ -772,10 +856,11 @@ CATALOG_COLUMNS = {
     "ann_arbor_stage_ge_3": "ann_arbor_stage_ge_3", "n_extranodal_sites": "n_extranodal_sites",
     "diagnosis_to_anchor_days": "diagnosis_to_anchor_days", "hemoglobin": "hemoglobin", "gender": "gender",
     "corrected_calcium": "corrected_calcium", "platelets": "platelets", "ecog": "ecog",
+    "khorana_site_points": "khorana_site_points", "esa_recent": "esa_recent", "bmi": "bmi",
 }
 CATALOG_SCORE_IDS = (
     "mgps", "rmh", "lipi", "albi", "meld", "capra_mod",
-    "ipi", "ipi_noecog", "imdc", "imdc_noecog", "mskcc", "mskcc_noecog",
+    "ipi", "ipi_noecog", "imdc", "imdc_noecog", "mskcc", "mskcc_noecog", "khorana",
 )
 # Scores that share a population with their full-score sibling.
 ECOG_FREE_OF = {"ipi_noecog": "ipi", "imdc_noecog": "imdc", "mskcc_noecog": "mskcc"}

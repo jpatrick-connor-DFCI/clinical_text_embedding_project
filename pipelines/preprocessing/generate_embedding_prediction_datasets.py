@@ -23,6 +23,7 @@ from tqdm import tqdm
 from anchors import DEFAULT_ANCHOR, anchor_suffix, date_col, ensure_anchor, note_time_col
 from config import CODE_PATH, NOTES_PATH, PROCESSED_DATA_PATH, SURV_PATH
 from shared.icd10 import normalize_icd10_undotted, to_icd10_level_3, to_icd10_level_4
+from shared.vte import ACUTE, classify_vte_icd, is_vte_phecode
 from survival import generate_survival_embedding_df, map_time_to_event
 from shared.polars_utils import filter_finite_rows
 
@@ -48,6 +49,7 @@ BASE_OUTPUT_COLS = [
     'AGE_AT_TREATMENTSTART', 'AGE_AT_SEQUENCING', 'GENDER',
 ]
 CORE_EVENT_COLS = ['death', 'tt_death']
+VTE_EVENTS = ['vte', 'vte_phecode']
 NOTE_TYPES = ['Clinician', 'Imaging', 'Pathology']
 MET_SITES = ['brain', 'bone', 'adrenal', 'liver', 'lung', 'node', 'peritoneal']
 
@@ -366,7 +368,7 @@ def _write_outputs(
     event_cols = _dedupe_in_order(event_cols)
     tt_event_cols = [f'tt_{event}' for event in event_cols]
 
-    # Always include core survival events (death, vte) so downstream scripts can use them
+    # Always include the core survival event (death) so downstream scripts can use it
     core_cols = [c for c in CORE_EVENT_COLS if c in cohort_df.columns]
     events_data_sub = cohort_df.select(BASE_OUTPUT_COLS + core_cols + event_cols + tt_event_cols)
     events_data_sub.write_parquet(os.path.join(SURV_PATH, surv_filename))
@@ -398,6 +400,70 @@ def _write_death_met_outputs(
 
     core_cols = [c for c in CORE_EVENT_COLS if c in cohort_df.columns and c not in event_cols and c not in tt_event_cols]
     events_data_sub = cohort_df.select(BASE_OUTPUT_COLS + core_cols + event_cols + tt_event_cols)
+    events_data_sub.write_parquet(os.path.join(SURV_PATH, surv_filename))
+
+    monthly_data = events_data_sub.join(pooled_embedding_df, on='DFCI_MRN', how='left')
+    embedding_cols = [col for col in pooled_embedding_df.columns if col != 'DFCI_MRN']
+    monthly_data = filter_finite_rows(monthly_data, embedding_cols)
+    monthly_data.write_parquet(os.path.join(SURV_PATH, embedding_filename))
+
+
+def _add_vte_events(
+    cohort_df: pl.DataFrame, icd_df: pl.DataFrame, phe_df: pl.DataFrame,
+) -> pl.DataFrame:
+    """Add `vte`/`tt_vte` (first acute PE/DVT ICD-10 code after the anchor,
+    `shared.vte`) and `vte_phecode`/`tt_vte_phecode` (first PE/DVT phecode
+    after the anchor), censored at `tt_death` by `map_time_to_event`.
+
+    Patients with any VTE record on or before the anchor - an acute or
+    history-of ICD-10 code, or a VTE phecode - are not at risk of a first
+    VTE: both events and times are set to null for them, so
+    `filter_event_rows` drops them from these endpoints only. One shared
+    prior-VTE set keeps both endpoints on the same at-risk population.
+    `icd_df`/`phe_df` carry `TIME_TO_ICD` relative to the anchor."""
+    icd = icd_df.select(
+        'DFCI_MRN', 'TIME_TO_ICD',
+        pl.col('DIAGNOSIS_ICD10_CD').map_elements(classify_vte_icd, return_dtype=pl.Utf8).alias('_VTE_CLASS'),
+    ).drop_nulls(['_VTE_CLASS', 'TIME_TO_ICD'])
+    phe = phe_df.filter(
+        pl.col('PHECODE').map_elements(is_vte_phecode, return_dtype=pl.Boolean)
+    ).select('DFCI_MRN', 'TIME_TO_ICD').drop_nulls('TIME_TO_ICD')
+
+    prior_mrns = (
+        pl.concat([icd.select('DFCI_MRN', 'TIME_TO_ICD'), phe])
+        .filter(pl.col('TIME_TO_ICD') <= 0)['DFCI_MRN'].unique().to_list()
+    )
+    prior = pl.col('DFCI_MRN').is_in(prior_mrns)
+
+    event_rows = {'vte': icd.filter(pl.col('_VTE_CLASS') == ACUTE), 'vte_phecode': phe}
+    for event, rows in event_rows.items():
+        tt_series, event_series = map_time_to_event(rows, cohort_df, 'DFCI_MRN', event, 'TIME_TO_ICD')
+        cohort_df = cohort_df.with_columns(
+            tt_series.cast(pl.Float64).alias(f'tt_{event}'), event_series.cast(pl.Float64).alias(event),
+        ).with_columns(
+            pl.when(prior).then(None).otherwise(pl.col(c)).alias(c) for c in (f'tt_{event}', event)
+        )
+        n_events = cohort_df.filter((pl.col(event) == 1) & (pl.col(f'tt_{event}') > 0)).height
+        print(f"  {event}: {n_events} post-anchor events")
+    n_prior = cohort_df.filter(prior).height
+    print(f"  VTE: {n_prior}/{cohort_df.height} patients excluded for VTE on or before the anchor")
+    return cohort_df
+
+
+def _write_vte_outputs(
+    base_cohort_df: pl.DataFrame,
+    icd_df: pl.DataFrame,
+    phe_df: pl.DataFrame,
+    pooled_embedding_df: pl.DataFrame,
+    surv_filename: str = 'vte_surv_df.parquet',
+    embedding_filename: str = 'vte_embedding_prediction_df.parquet',
+) -> None:
+    """The `vte` scheme. `death`/`tt_death` are left out so the scheme's
+    events (every `tt_*` column) are the VTE endpoints only; death is
+    trained under `death_met`."""
+    cohort_df = _add_vte_events(base_cohort_df.clone(), icd_df, phe_df)
+    tt_event_cols = [f'tt_{event}' for event in VTE_EVENTS]
+    events_data_sub = cohort_df.select(BASE_OUTPUT_COLS + VTE_EVENTS + tt_event_cols)
     events_data_sub.write_parquet(os.path.join(SURV_PATH, surv_filename))
 
     monthly_data = events_data_sub.join(pooled_embedding_df, on='DFCI_MRN', how='left')
@@ -561,6 +627,19 @@ def main() -> None:
     )
     phe_data = phe_data.drop_nulls(subset=['ICD10_NORM'])
     phe_data = phe_data.join(mapping_df.select(['ICD10_NORM', 'PHECODE']), on='ICD10_NORM', how='inner')
+
+    # =========================
+    # VTE DATASET (curated ICD-10 endpoint + phecode sensitivity endpoint)
+    # =========================
+    _write_vte_outputs(
+        base_cohort_df=base_cohort_df,
+        icd_df=split_ehr_icd_subset,
+        phe_df=phe_data,
+        pooled_embedding_df=pooled_embedding_df,
+        surv_filename=_suffixed('vte_surv_df.parquet', anchor),
+        embedding_filename=_suffixed('vte_embedding_prediction_df.parquet', anchor),
+    )
+
     phe_data = phe_data.filter(~pl.col('PHECODE').map_elements(_is_excluded_phecode, return_dtype=pl.Boolean))
 
     phecode_codes_raw = _dedupe_in_order(phe_data['PHECODE'].drop_nulls().to_list())

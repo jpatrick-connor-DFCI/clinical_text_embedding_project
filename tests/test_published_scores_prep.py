@@ -146,8 +146,8 @@ def _write_prep_inputs(tmp_path, monkeypatch, frame, *, note=True):
             pl.when(documented).then(note_value.cast(pl.Int64).cast(pl.String)).alias("mgps__note_group"),
         ).write_csv(tmp_path / "published_scores_note_df.csv.gz", compression="gzip")
     monkeypatch.setattr(prep, "FEATURE_PATH", str(tmp_path))
-    monkeypatch.setattr(prep, "_load_text_scores", lambda: text)
-    monkeypatch.setattr(prep, "_load_outcomes", lambda: outcomes)
+    monkeypatch.setattr(prep, "_load_text_scores", lambda anchor: text)
+    monkeypatch.setattr(prep, "_load_outcomes", lambda anchor: outcomes)
     monkeypatch.setattr(prep, "CATALOG", {"mgps": SCORE})
     monkeypatch.setattr(prep, "NOTE_ONLY_SCORES", {})
     monkeypatch.setattr(prep, "ANCHORS_TO_RUN", ("treatment",))
@@ -365,3 +365,31 @@ def test_performance_status_alone_is_missing_inputs_on_an_old_note_df(tmp_path, 
     monkeypatch.setattr(prep, "NOTE_ONLY_SCORES", prep.PERFORMANCE_STATUS_SCORES)
     cindex, *_ = prep.prepare_published_scores(n_boot=0, n_jobs=1, show_progress=False)
     assert set(cindex["status"]) == {"missing_inputs"} and set(cindex["source"]) == {"regex"}
+
+
+def test_os_catalog_excludes_khorana():
+    assert "khorana" not in prep.CATALOG
+    assert all(score.endpoint == prep.OS_ENDPOINT for score in prep.CATALOG.values())
+
+
+def test_loaders_read_the_anchor_and_endpoint_files(tmp_path, monkeypatch):
+    """Sequencing-anchor runs read sequencing-anchor text scores and outcomes."""
+    seen = {}
+
+    def _risk_dir(scheme, event, anchor):
+        seen["risk"] = (scheme, event, anchor)
+        return str(tmp_path)
+
+    pl.DataFrame({"DFCI_MRN": ["1"], "text_risk_score": [0.5], "outer_fold": [2]}).write_csv(
+        tmp_path / "text_risk_scores.csv")
+    pl.DataFrame({"DFCI_MRN": [1], "vte": [1.0], "tt_vte": [30.0], "death": [0.0], "tt_death": [99.0]}).write_parquet(
+        tmp_path / "vte__sequencing.parquet")
+    monkeypatch.setattr(prep, "full_cohort_risk_dir", _risk_dir)
+    monkeypatch.setattr(prep, "SURV_PATH", str(tmp_path))
+    monkeypatch.setattr(prep, "embedding_file", lambda scheme, anchor: f"{scheme}__{anchor}.parquet")
+
+    text = prep._load_text_scores("sequencing", ("vte", "vte"))
+    outcomes = prep._load_outcomes("sequencing", ("vte", "vte"))
+    assert seen["risk"] == ("vte", "vte", "sequencing")
+    assert text.rows() == [("1", 0.5, 2.0)]
+    assert outcomes.rows() == [("1", 1.0, 30.0)]

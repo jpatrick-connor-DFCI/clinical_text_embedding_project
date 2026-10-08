@@ -29,6 +29,12 @@ SCHEMES: dict[str, dict[str, str]] = {
         "embedding_file": "death_met_embedding_prediction_df.parquet",
         "results_dir": "death_met_results",
     },
+    # Curated-ICD and phecode VTE endpoints (shared/vte.py), with prior-VTE
+    # patients excluded; the Khorana comparison's endpoint.
+    "vte": {
+        "embedding_file": "vte_embedding_prediction_df.parquet",
+        "results_dir": "vte_results",
+    },
 }
 
 

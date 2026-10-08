@@ -30,7 +30,8 @@ ordinal/continuous scale:
 - imdc / mskcc: risk group favorable/intermediate/poor as 0/1/2. Documented
   points map to groups at 0 / 1-2 / >=3.
 Clinicians document the full IPI/IMDC/MSKCC, so these are keyed under the
-full-score ids; the ECOG-free `*_noecog` variants have no note source.
+full-score ids; the ECOG-free `*_noecog` variants and Khorana have no
+note source.
 
 Performance status (`performance_status_frame`) completes the calculated
 full IPI/IMDC/MSKCC in build_published_scores.py. It is one ECOG value per
@@ -330,7 +331,8 @@ NOTE_SCORES: dict[str, NoteScore] = {s.score_id: s for s in (
               .when(_measure == "points").then(_points_to_rcc_group()),
               _RCC_GROUPS, "full MSKCC risk group (with KPS) as 0/1/2; points grouped 0 / 1-2 / >=3"),
 )}
-assert set(NOTE_SCORES) == set(CATALOG_SCORE_IDS) - set(ECOG_FREE_OF)
+# Khorana (a VTE score) is not documented in notes either.
+assert set(NOTE_SCORES) == set(CATALOG_SCORE_IDS) - set(ECOG_FREE_OF) - {"khorana"}
 
 # Performance status alone, as documented: not catalog scores (no calculated
 # source, no eligibility restriction), so figures/prep/published_scores.py

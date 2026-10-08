@@ -1,8 +1,9 @@
 """Published prognostic scores vs. the held-out text risk score (overall survival).
 
-For each score in `shared.published_scores.default_catalog()` (mgps, rmh, lipi, albi,
-meld, capra_mod, and ipi/imdc/mskcc each full and `_noecog`), evaluates up to
-two score sources separately:
+For each overall-survival score in `shared.published_scores.default_catalog()`
+(mgps, rmh, lipi, albi, meld, capra_mod, and ipi/imdc/mskcc each full and
+`_noecog`; the Khorana VTE score is evaluated by `figures/prep/khorana_vte.py`),
+evaluates up to two score sources separately:
 
 - `calculated`: the score computed by build_published_scores.py, within the
   score's eligible, lab-observable, complete-case population. The full
@@ -32,7 +33,8 @@ as in figure3_combined):
 - `published`: the raw points (or ALBI/MELD's continuous value) x direction,
   unfitted -- this is how the score is used clinically.
 - `text`: the raw out-of-fold full-cohort OS text risk score
-  (`full_cohort_risk_dir("death_met", "death")/text_risk_scores.csv`).
+  (`full_cohort_risk_dir("death_met", "death", anchor)/text_risk_scores.csv`),
+  with outcomes from the same anchor's embedding file.
 - `published+text`: `_cross_fitted_risk([points, text_z], ...)`, imported
   from figure3_combined, with `text_z` the text score z-scored within its
   own outer fold via `_standardize_within_folds(frame, modalities=("text",))`.
@@ -93,7 +95,7 @@ from lifelines import CoxPHFitter
 from lifelines.exceptions import ConvergenceError
 from scipy.stats import spearmanr, chi2
 
-from config import FEATURE_PATH
+from config import FEATURE_PATH, SURV_PATH
 from figures.io import save_figure_data
 from figures.prep.figure2 import _safe_quantiles
 from figures.prep.figure3_combined import (
@@ -111,7 +113,7 @@ from figures.prep.within_cancer import _READ_ERRORS, _valid_fold
 from pipelines.preprocessing.extract_note_scores import (
     NOTE_SCORES, PERFORMANCE_STATUS_SCORES, read_note_score_frame,
 )
-from schemes import full_cohort_risk_dir
+from schemes import embedding_file, full_cohort_risk_dir
 from shared.published_scores import PublishedScore, default_catalog
 
 ANCHORS_TO_RUN = ("treatment", "sequencing")
@@ -161,7 +163,8 @@ COHORT_SCHEMA = {
     "n_both_sources": pl.Int64, "note_lookback_days": pl.Int64,
 }
 
-CATALOG = default_catalog()
+OS_ENDPOINT = ("death_met", "death")
+CATALOG = {score_id: score for score_id, score in default_catalog().items() if score.endpoint == OS_ENDPOINT}
 NOTE_ONLY_SCORES = PERFORMANCE_STATUS_SCORES
 MODELS = ("published", "text", "published+text")
 CONTRASTS = (
@@ -194,8 +197,10 @@ def _regex_score(score: PublishedScore) -> PublishedScore:
     return replace(score, risk_groups=NOTE_SCORES[score.id].risk_groups)
 
 
-def _load_text_scores() -> pl.DataFrame:
-    path = Path(full_cohort_risk_dir("death_met", "death")) / "text_risk_scores.csv"
+def _load_text_scores(anchor: str = PRIMARY_ANCHOR, endpoint: tuple[str, str] = OS_ENDPOINT) -> pl.DataFrame:
+    """Out-of-fold full-cohort text risk scores for `endpoint` (scheme, event)."""
+    scheme, event = endpoint
+    path = Path(full_cohort_risk_dir(scheme, event, anchor)) / "text_risk_scores.csv"
     scores = pl.read_csv(path, schema_overrides={"DFCI_MRN": pl.String})
     score_col = "text_risk_score" if "text_risk_score" in scores.columns else "risk_score"
     return scores.select(
@@ -205,14 +210,15 @@ def _load_text_scores() -> pl.DataFrame:
     )
 
 
-def _load_outcomes() -> pl.DataFrame:
-    from schemes import embedding_file
-    from config import SURV_PATH
-    source = pl.scan_parquet(os.path.join(SURV_PATH, embedding_file("death_met")))
+def _load_outcomes(anchor: str = PRIMARY_ANCHOR, endpoint: tuple[str, str] = OS_ENDPOINT) -> pl.DataFrame:
+    """`event_flag` and `time` for `endpoint` (scheme, event) from that
+    scheme's embedding file for `anchor`."""
+    scheme, event = endpoint
+    source = pl.scan_parquet(os.path.join(SURV_PATH, embedding_file(scheme, anchor)))
     frame = source.select(
         "DFCI_MRN",
-        pl.col("death").cast(pl.Float64, strict=False).alias("event_flag"),
-        pl.col("tt_death").cast(pl.Float64, strict=False).alias("time"),
+        pl.col(event).cast(pl.Float64, strict=False).alias("event_flag"),
+        pl.col(f"tt_{event}").cast(pl.Float64, strict=False).alias("time"),
     ).collect()
     return frame.with_columns(pl.col("DFCI_MRN").cast(pl.String).str.strip_chars())
 
@@ -529,8 +535,8 @@ def _evaluate_task(task: tuple) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFram
     sources = SOURCES if regex else ("calculated",)
     try:
         score_df = pl.read_csv(_score_df_path(anchor, lab_window_days), schema_overrides={"DFCI_MRN": pl.String})
-        text = _load_text_scores()
-        outcomes = _load_outcomes()
+        text = _load_text_scores(anchor)
+        outcomes = _load_outcomes(anchor)
         frames = {"calculated": _score_cohort(score_df, text, outcomes, score)}
     except _READ_ERRORS:
         outputs = [_missing_outputs(anchor, lab_window_days, score, source) for source in sources]
@@ -568,7 +574,7 @@ def _evaluate_note_only_task(
         eligible = note_df.select(
             pl.col("DFCI_MRN").cast(pl.String).str.strip_chars(), pl.lit(True).alias(f"{score.id}__eligible"),
         )
-        frame = _regex_cohort(eligible, note_df, _load_text_scores(), _load_outcomes(), score)
+        frame = _regex_cohort(eligible, note_df, _load_text_scores(anchor), _load_outcomes(anchor), score)
     except _READ_ERRORS:
         return _missing_outputs(anchor, lab_window_days, score, "regex")
     return _evaluate_source(
