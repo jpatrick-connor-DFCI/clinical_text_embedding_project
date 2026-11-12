@@ -60,6 +60,9 @@ export OMP_NUM_THREADS="$THREADS"
 export MKL_NUM_THREADS="$THREADS"
 export OPENBLAS_NUM_THREADS="$THREADS"
 export NUMEXPR_NUM_THREADS="$THREADS"
+# Polars/Rayon otherwise size their pool to every core on the node, not the SLURM allocation.
+export POLARS_MAX_THREADS=${POLARS_MAX_THREADS:-$THREADS}
+export RAYON_NUM_THREADS=${RAYON_NUM_THREADS:-$THREADS}
 
 mkdir -p slurm/note_transformer
 
