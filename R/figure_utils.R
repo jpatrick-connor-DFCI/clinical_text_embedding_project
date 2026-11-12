@@ -234,9 +234,9 @@ retire_main_panels <- function(number, labels) {
 # Wrap each complete panel as one grob to preserve nested layouts and legends.
 # Panel names provide the printed letters and standalone-file identifiers.
 save_compiled_figure <- function(panels, number, width, height,
-                                 design = NULL, ncol = 2, heights = NULL) {
+                                 design = NULL, ncol = 2, heights = NULL,
+                                 name = paste0("figure", number, metric_tag())) {
   group <- paste0("figure", number)
-  name <- paste0(group, metric_tag())
   if (is.null(names(panels)) || any(!nzchar(names(panels))) || anyDuplicated(names(panels))) {
     stop("Compiled figures require unique panel labels")
   }

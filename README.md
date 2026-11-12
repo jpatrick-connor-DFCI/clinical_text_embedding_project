@@ -7,13 +7,37 @@ improve survival prediction and identify genomic biomarkers of treatment respons
 
 The tree is organized by pipeline stage rather than by file type:
 
-- `pipelines/` — `preprocessing/`, `training/`, `trajectories/`, `biomarkers/`
+- `pipelines/` — `preprocessing/`, `training/`, `trajectories/`, `biomarkers/`, `note_transformer/`
 - `survival/` — Cox model fitting, checkpointing, evaluation
 - `figures/prep/` — main-figure and supplemental preparation modules, which write the CSVs the R tier plots from
 - `R/` — figure rendering and shared plot utilities
 - `notebooks/` — thin driver notebooks, grouped by stage
 - `shared/` — palette and stage logic used across pipelines and figures
 - `data/` — versioned lookup tables and their loaders
+- `manuscript_drafts/` — main manuscript and figure/table assets
+
+The main rough draft (reviewed 13 October 2026) is
+[Main Clinical Text Embedding Project Manuscript](<manuscript_drafts/Main Clinical Text Embedding Project Manuscript.docx>).
+The drafted Introduction and Discussion are merged into this document with
+tracked changes and one consolidated bibliography. Results and Methods retain
+their reviewed text apart from citation renumbering; figures and captions are
+unchanged. Substantive review suggestions are in comments. The superseded
+standalone Introduction/Discussion draft has been removed from the repository.
+The current figure export uses the full clinical-text workflow for Figure 1,
+published-score comparisons in Figure 2e, modality comparisons in Figure 3, and
+mortality trajectories in Figure 4. The current curated package is
+[`manuscript_drafts/manuscript_export/`](manuscript_drafts/manuscript_export/),
+mirrored to the Desktop export. Supplementary Table 1 combines cohort eligibility,
+data availability, cancer types, and stage distributions; endpoint counts remain
+in Supplementary Table 2. The main manuscript contains Figures 1–4 and
+Supplementary Figures S1–S11; the corresponding curated supplementary files are
+`Figures/Supplementary/fig_s1.png` through `fig_s11.png`, with matching captions.
+Table files remain separate, with their existing identifiers. Historical export
+manifests preserve their original source filenames and numbering.
+Superseded manuscript drafts and review documents, including archived copies,
+were removed on 13 October 2026. Figure and table assets and their archives remain.
+The cohort-table renderer reads the preserved consolidated CSV by default, so
+regeneration does not depend on a removed manuscript draft.
 
 Render manuscript panels and compiled Figures 1–4 with:
 
@@ -29,19 +53,58 @@ panel letters and without individual plot titles, saved as `png/figureN/figureN_
 are retained. Missing panels are skipped with their reasons logged; available
 panels retain their original file identifiers, and the compiled figure lists unavailable
 panels in its caption. If every panel is missing, that figure is skipped and the
-remaining figures still render. Figure 1c follows the PROFILE-testing cohort
-flowchart style, with cumulative patient counts in connected rectangular boxes.
+remaining figures still render. This renderer produces working source artwork;
+the export script applies the curated supplementary selection.
 
 The main figures use the following panel order. Individual files are
 `figNa_cindex`, `figNb_cindex`, etc.; these identifiers follow reading order in
-the compiled figures (Figure 3c spans the bottom row).
+the compiled figures (Figure 2e spans the third row; Figure 3c spans the bottom row).
 
-| Figure | a | b | c | d |
-| --- | --- | --- | --- | --- |
-| 1 | Cancer-type pie | Stage barplot | Cohort availability flowchart | Outcome endpoints |
-| 2 | Base vs. text C-index | Delta-C-index violin | Stage KM | Text-risk quartile KM |
-| 3 | Modality rank | Significant endpoints | Joint Cox violins | — |
-| 4 | Risk-score heatmap | KM by risk trajectory | Risk dynamics by stage | Stage I–II rising vs. stage IV falling risk KM |
+| Figure | a | b | c | d | e |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Patient text representation | Endpoint prediction | Main manuscript analyses | — | — |
+| 2 | Base vs. text C-index | Delta-C-index violin | Stage KM | Text-risk quartile KM | Published score, text, and combined C-index |
+| 3 | Modality rank | Significant endpoints | Joint Cox violins | — | — |
+| 4 | Risk-score heatmap | KM by risk trajectory | Risk dynamics by stage | Stage I–II rising vs. stage IV falling risk KM | — |
+
+The earlier cohort/data-availability and cancer-type/stage plots remain as working
+source artwork under `manuscript_figures/figureS1` and `figureS21` (within the PNG/PDF
+directories). They are excluded from the curated export. The consolidated
+Supplementary Table 1 preserves the source counts and reported percentages, with
+separate denominators for eligibility (65,080), cancer types (46,914), and known
+stage (30,827). Original Supplementary Tables 1, 3, and 4 are archived after
+consolidation; the remaining table identifiers are preserved.
+Figure 1 uses the full `figures/workflow/clinical_text_workflow.png` and vector PDF;
+regenerate them with `python3 figures/render_workflow.py`.
+
+Figure 2e selects mGPS, RMH, LIPI, ALBI, MELD, IPI, IMDC and MSKCC with ECOG,
+ECOG, and KPS. It retains calculated and note-documented sources with at least
+50 evaluated patients and excludes ECOG-free variants and CAPRA. Absent model
+estimates are labeled unavailable. The broader score report remains available
+separately. The default renderer omits the legacy ICI biomarker Figure 5.
+
+To refresh a local export from saved vector artwork and the aggregate score table
+when the preparation data are unavailable, run:
+
+```bash
+python3 figures/render_workflow.py
+python3 figures/render_published_score_panel.py --table manuscript_drafts/manuscript_figures/tables/figPS_published_scores.csv --output-stem /tmp/clinical-figure-revision/fig2e_cindex
+# macOS PDF rasterizer (the main PDFs retain vector artwork):
+swiftc figures/render_pdf.swift -o /tmp/render_clinical_pdf
+python3 figures/revise_saved_figures.py --score-panel /tmp/clinical-figure-revision/fig2e_cindex.pdf --pdf-renderer /tmp/render_clinical_pdf
+python3 figures/render_cohort_summary_table.py
+python3 figures/curate_manuscript_supplements.py --package manuscript_drafts/manuscript_export --revision-date 2026-10-12
+python3 figures/curate_manuscript_supplements.py --package "/path/to/existing/Desktop/export" --revision-date 2026-10-12
+```
+
+The saved-artwork revision archives prior Figures 1/2 before replacing them, uses
+original vector panels, and marks the absent ALBI combined estimate. It requires
+the existing Figure 1 archive in `manuscript_drafts/archive/`. The exporter updates
+four main figures, retains only the selected supplementary figures, archives
+excluded artwork, removes the retired main Figure 5, and refreshes the index and
+checksums. Run `figures/curate_manuscript_supplements.py` to install the consolidated
+table and update table metadata before refreshing the figure export. The source
+Word manuscript is preserved.
 
 Within-versus-pan training comparisons and top-event plots are retired, including
 the top-event supplement. Their inputs are no longer required by Figure 2 preparation.
@@ -167,8 +230,9 @@ entry and can be regenerated with the corresponding training/risk runner's
 `--overwrite` flag. With the shared endpoint filter enabled, rendering also needs
 `fig2_full_cohort_metrics.csv` from `figures.prep.figure2`.
 
-Compiled Figures 1, 2, and 4 render at 10 × 9 inches; Figure 3 renders at
-10 × 8.2 inches, with 600-dpi PNGs. KM panels omit number-at-risk tables.
+Figure 1 preserves the workflow artwork at its native size. Figure 2 uses a full-width
+score panel in the third row, below two paired rows; Figures 3 and 4 retain their existing layouts.
+Compiled exports include 600-dpi PNGs and vector PDFs. KM panels omit number-at-risk tables.
 Captions identify panels by letter. Standalone panels retain their plot titles and filenames.
 The renderer also writes `_captioned.png` / `_captioned.pdf` review copies and
 standalone legends in `CLINICAL_FIGURES_OUT/captions/`. Caption wording is maintained
@@ -222,6 +286,25 @@ submission order, so the output CSVs are the same as a serial run (`FIGURE_PREP_
 modality-cohort outputs. A rerun after an interruption reloads a completed phase (tracked in
 `FIGURE_DATA_DIR/.within_cancer_checkpoint`, keyed on the thresholds) and evaluates only the rest;
 `--restart` discards that checkpoint, and the notebook passes it when the module is forced.
+
+## Note-level survival transformer (OS)
+
+`pipelines/note_transformer/` adapts Intae Moon's note-survival transformer, which models each
+patient's sequence of note embeddings instead of one pooled vector, to overall survival
+(`death_met:death`). The Cox text cohort and its exact 20% test split are reused, with a validation set
+carved from the training patients. Landmarks are 0, 90, 180 and 365 days, and a note counts at a landmark
+only if its fractional elapsed time from the raw timestamps is at most the landmark.
+
+```bash
+python -m pipelines.note_transformer.prepare_os_inputs --anchor treatment
+python -m pipelines.note_transformer.run_os_transformer --anchor treatment --stage all
+```
+
+The test stage compares the transformer with the Cox text and base out-of-fold scores on the same patient
+pairs within Cox folds, a descriptive comparison because the models train on different partitions.
+`notebooks/2_models/07_note_transformer_os.ipynb` drives both modules, and
+`slurm/launch_note_transformer.sh` submits them as one job (GPU via `GPU_GRES`). The code is not licensed
+for redistribution; see [`pipelines/note_transformer/README.md`](pipelines/note_transformer/README.md).
 
 ## Where to start
 

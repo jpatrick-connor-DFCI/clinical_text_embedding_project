@@ -3,15 +3,20 @@ figure_caption <- function(number, panels, missing_labels = character()) {
   path <- file.path(REPO_ROOT, "figures", "manuscript_captions.json")
   spec <- jsonlite::fromJSON(path, simplifyVector = FALSE)[[as.character(number)]]
   if (is.null(spec)) return(NULL)
-  text <- paste0("Figure ", number, ". ", spec$title, "\n\n", spec$text)
+  figure_label <- if (grepl("^S[0-9]+$", as.character(number))) {
+    paste0("Supplementary Figure ", sub("^S", "", as.character(number)))
+  } else {
+    paste0("Figure ", number)
+  }
+  text <- paste0(figure_label, ". ", spec$title, "\n\n", spec$text)
   details <- unlist(lapply(panels, function(p) attr(p, "caption_detail", exact = TRUE)),
                     use.names = FALSE)
   if (length(details)) text <- paste(text, paste(details, collapse = " "), sep = "\n\n")
-  if (number %in% 1:3 && isTRUE(FILTER_UNDERPERFORMING_ENDPOINTS)) {
+  if (number %in% c(2, 3, "S1") && isTRUE(FILTER_UNDERPERFORMING_ENDPOINTS)) {
     text <- paste(text, sprintf(paste0("Endpoint analyses use the configured two-sided ",
       "outlier filter: text-minus-base C-index differences outside the mean +/- %s ",
       "standard deviations are excluded."), EVENT_EXCLUSION_SD), sep = "\n\n")
-  } else if (number %in% 1:3) {
+  } else if (number %in% c(2, 3, "S1")) {
     text <- paste(text, "The endpoint outlier filter is disabled.", sep = "\n\n")
   }
   if (length(missing_labels)) text <- paste(text,

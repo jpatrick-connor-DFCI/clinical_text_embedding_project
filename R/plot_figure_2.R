@@ -1,5 +1,6 @@
 # Figure 2: a base-vs-text C-index scatter, b delta-C-index violin,
-# c survival by stage, d survival by text-risk quartile.
+# c survival by stage, d survival by text-risk quartile,
+# e published score/text/combined C-indices.
 # Individual panels and compiled PNG/PDF with panel letters and no plot titles.
 
 suppressPackageStartupMessages({
@@ -10,6 +11,8 @@ suppressPackageStartupMessages({
 
 source("/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project/R/figure_utils.R")
 source(file.path(REPO_ROOT, "R", "publication_style.R"))
+source(file.path(REPO_ROOT, "R", "within_cancer_utils.R"))
+source(file.path(REPO_ROOT, "R", "published_score_utils.R"))
 # KM helpers (tidy_km, logrank_p, step_ci_df) now live in figure_utils.R so the
 # supplementary stage-stratified script (plot_figure_2_supp.R) can share them.
 
@@ -195,10 +198,17 @@ metrics <- load_figure_data("fig2_full_cohort_metrics.csv")
 EXCLUDED_EVENTS <- excluded_event_keys(metrics)
 metrics <- drop_excluded_events(metrics, EXCLUDED_EVENTS)
 
-retire_main_panels(2, letters[1:4])
+retire_main_panels(2, letters[1:5])
 
 p2a <- build_fig2a(metrics)
 p2b <- build_fig2b(metrics)
+published_cindex <- read_within_cancer_data("pubscore_cindex.csv")
+published_cohort <- read_within_cancer_data("pubscore_cohort.csv")
+published_rows <- ps_rows(published_cohort, scores = PS_MAIN_SCORES)
+p2e <- build_published_cindex(published_cindex, published_rows, disclose_missing = TRUE)
+# Reserve enough vertical space for each score/source row without compressing
+# the survival curves. The current ten-score selection gives a 6.1-inch panel.
+published_height <- 1.6 + 0.45 * max(nrow(published_rows), 1L)
 km_panels <- build_stage_and_risk_km()
 p2c <- km_panels$stage
 p2d <- km_panels$quartile
@@ -208,7 +218,11 @@ save_panel(p2a, paste0("fig2a", .tag), group = "figure2", width = 3.5, height = 
 save_panel(p2b, paste0("fig2b", .tag), group = "figure2", width = 3.5, height = 3.2, dpi = 600)
 save_panel(p2c, paste0("fig2c", .tag), group = "figure2", width = 3.5, height = 3.2, dpi = 600)
 save_panel(p2d, paste0("fig2d", .tag), group = "figure2", width = 3.5, height = 3.2, dpi = 600)
+save_panel(p2e, paste0("fig2e", .tag), group = "figure2",
+           width = COMPILED_FIGURE_WIDTH, height = published_height, dpi = 600)
 save_compiled_figure(
-  list(a = p2a, b = p2b, c = p2c, d = p2d),
-  number = 2, width = COMPILED_FIGURE_WIDTH, height = COMPILED_FIGURE_HEIGHT
+  list(a = p2a, b = p2b, c = p2c, d = p2d, e = p2e),
+  number = 2, width = COMPILED_FIGURE_WIDTH, height = COMPILED_FIGURE_HEIGHT + published_height,
+  design = "ab\ncd\nee", heights = c(COMPILED_FIGURE_HEIGHT / 2,
+                                       COMPILED_FIGURE_HEIGHT / 2, published_height)
 )

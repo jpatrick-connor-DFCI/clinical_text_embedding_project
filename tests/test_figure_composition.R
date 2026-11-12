@@ -81,6 +81,32 @@ run_tests <- function() {
             file.exists(file.path(FIGURE_OUT_DIR, "captions", "figure3.md")),
             file.exists(file.path(PDF_OUT_DIR, "figure3", "figure3_cindex_captioned.pdf")))
 
+  # Figure 1 has one full-width schematic over the two cohort summaries. The
+  # endpoint-count panels and their filter disclosure now belong to supplement 1.
+  files <- save_compiled_figure(list(a = panels$a, b = panels$b, c = panels$h),
+                               1, width = 10, height = 8.9,
+                               design = "aa\nbc", heights = c(4.4, 4.5))
+  labels <- text_labels(patchwork::patchworkGrob(captured))
+  main_caption <- readLines(file.path(FIGURE_OUT_DIR, "captions", "figure1.md"))
+  stopifnot(length(files) == 2L, all(file.info(files)$size > 0),
+            all(vapply(c("a", "b", "c"), function(x) sum(labels == x) == 1L, logical(1))),
+            !any(grepl("endpoint outlier filter", main_caption, fixed = TRUE)))
+
+  files <- save_compiled_figure(list(a = panels$a, b = panels$b),
+                               "S1", width = 7.1, height = 4.5,
+                               name = "figS1_cohort_endpoints_cindex")
+  supplement_caption <- readLines(file.path(FIGURE_OUT_DIR, "captions", "figureS1.md"))
+  stopifnot(length(files) == 2L, all(file.info(files)$size > 0),
+            all(grepl("figS1_cohort_endpoints_cindex", basename(files), fixed = TRUE)),
+            startsWith(supplement_caption[[1]], "Supplementary Figure 1."),
+            any(grepl("endpoint outlier filter is disabled", supplement_caption, fixed = TRUE)),
+            file.exists(file.path(PDF_OUT_DIR, "figureS1", "figS1_cohort_endpoints_cindex_captioned.pdf")))
+  save_compiled_figure(list(a = placeholder_panel("no data")),
+                       "S1", width = 7.1, height = 4.5,
+                       name = "figS1_cohort_endpoints_cindex")
+  stopifnot(!any(file.exists(files)),
+            !file.exists(file.path(FIGURE_OUT_DIR, "captions", "figureS1.md")))
+
   # NULL is an implementation error, not an expected absence of data.
   result <- try(save_compiled_figure(list(a = panels$a, b = NULL), 4, 8, 4), silent = TRUE)
   stopifnot(inherits(result, "try-error"))

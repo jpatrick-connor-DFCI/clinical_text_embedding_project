@@ -1,0 +1,207 @@
+{
+  "current_verification": {
+    "cli_walkthrough": {
+      "commands": [
+        {
+          "command": [
+            "python",
+            "train_note_survival_transformer.py",
+            "--config",
+            "configs/synthetic_cpu_config.json",
+            "--note_embeddings_path",
+            "data/synthetic/notes.npy",
+            "--note_metadata_path",
+            "data/synthetic/notes.csv",
+            "--outcomes_path",
+            "data/synthetic/outcomes.csv",
+            "--splits_path",
+            "data/synthetic/splits.csv",
+            "--embedding_model_id",
+            "synthetic-v1",
+            "--output_dir",
+            "results/single"
+          ],
+          "label": "train"
+        },
+        {
+          "command": [
+            "python",
+            "search_note_survival_transformer.py",
+            "--config",
+            "configs/synthetic_cpu_config.json",
+            "--note_embeddings_path",
+            "data/synthetic/notes.npy",
+            "--note_metadata_path",
+            "data/synthetic/notes.csv",
+            "--outcomes_path",
+            "data/synthetic/outcomes.csv",
+            "--splits_path",
+            "data/synthetic/splits.csv",
+            "--embedding_model_id",
+            "synthetic-v1",
+            "--search_space_json",
+            "configs/synthetic_search_space.json",
+            "--num_trials",
+            "2",
+            "--search_seed",
+            "42",
+            "--output_dir",
+            "results/search"
+          ],
+          "label": "search"
+        },
+        {
+          "command": [
+            "python",
+            "search_note_survival_transformer.py",
+            "--config",
+            "configs/synthetic_cpu_config.json",
+            "--note_embeddings_path",
+            "data/synthetic/notes.npy",
+            "--note_metadata_path",
+            "data/synthetic/notes.csv",
+            "--outcomes_path",
+            "data/synthetic/outcomes.csv",
+            "--splits_path",
+            "data/synthetic/splits.csv",
+            "--embedding_model_id",
+            "synthetic-v1",
+            "--search_space_json",
+            "configs/synthetic_search_space.json",
+            "--num_trials",
+            "2",
+            "--search_seed",
+            "42",
+            "--output_dir",
+            "results/search",
+            "--resume"
+          ],
+          "label": "resume"
+        },
+        {
+          "command": [
+            "python",
+            "predict_note_survival_transformer.py",
+            "--checkpoint",
+            "results/search/best_model.pt",
+            "--note_embeddings_path",
+            "data/synthetic/notes.npy",
+            "--note_metadata_path",
+            "data/synthetic/notes.csv",
+            "--outcomes_path",
+            "data/synthetic/outcomes.csv",
+            "--splits_path",
+            "data/synthetic/splits.csv",
+            "--embedding_model_id",
+            "synthetic-v1",
+            "--evaluate_test",
+            "--output_dir",
+            "results/search/test"
+          ],
+          "label": "test"
+        },
+        {
+          "command": [
+            "python",
+            "-m",
+            "note_survival_transformer.synthetic_example",
+            "--output_dir",
+            "data/new_patients",
+            "--n_patients",
+            "24",
+            "--input_dim",
+            "8",
+            "--seed",
+            "456"
+          ],
+          "label": "new_data"
+        },
+        {
+          "command": [
+            "python",
+            "predict_note_survival_transformer.py",
+            "--checkpoint",
+            "results/search/best_model.pt",
+            "--note_embeddings_path",
+            "data/new_patients/notes.npy",
+            "--note_metadata_path",
+            "data/new_patients/notes.csv",
+            "--patient_ids_path",
+            "data/new_patients/patient_ids.csv",
+            "--embedding_model_id",
+            "synthetic-v1",
+            "--landmarks=-2,0.5,2",
+            "--output_csv",
+            "results/new_patient_predictions.csv"
+          ],
+          "label": "inference"
+        }
+      ],
+      "new_patient_prediction_rows": 72,
+      "search_failed_trials": 0,
+      "search_successful_trials": 2,
+      "search_used_test_predictions": false,
+      "status": "PASS"
+    },
+    "cuda_execution_validated": false,
+    "environment": {
+      "lifelines": "0.27.8",
+      "numpy": "1.24.4",
+      "pandas": "1.4.4",
+      "python": "3.9.20",
+      "tested_device": "cpu",
+      "torch": "2.5.0+cu124"
+    },
+    "git_generated_artifacts_committed": false,
+    "isolated_install": {
+      "imported_outside_repository": true,
+      "original_modules_loaded": false,
+      "prediction_equivalence": true,
+      "prediction_rows": 144,
+      "status": "PASS"
+    },
+    "original_modules_required": false,
+    "real_clinical_data_validated": false,
+    "status": "PASS",
+    "syntax_files": 15,
+    "synthetic_demo": {
+      "epochs_per_trial": 3,
+      "failed_trials": 0,
+      "outcome_free_prediction_rows": 144,
+      "search_resume_verified": true,
+      "successful_trials": 2
+    },
+    "unit_tests_failed": 0,
+    "unit_tests_passed": 25,
+    "unit_tests_seconds": 4.451
+  },
+  "portable_python_sha256": {
+    "note_survival_transformer/__init__.py": "49ecbc61d946174659f4bcd5efc9023933970a815805a0a8e49e4ef951b7ae39",
+    "note_survival_transformer/config.py": "fb064395e8db84bde6b4dfec460a92303e71e68cace7f746863d739eefe60960",
+    "note_survival_transformer/dataset.py": "38187fcf664181d7a4421fee0fbba3afff81f686a9acd7d0a180b469b66fb7ee",
+    "note_survival_transformer/evaluate.py": "bcb3818ed17d2fab5692338ba59af9c0a731df8bf9387d7bda43429acf8a9c66",
+    "note_survival_transformer/hparam_search.py": "9af3501148bed0061cf276953923d8fbb4ae605af1fd5e6afe402f34d85a3fb3",
+    "note_survival_transformer/losses.py": "407cc3278f034975eab930ae727089e547612ee60645600f56e3f4e62d18a3a3",
+    "note_survival_transformer/model.py": "e82e5cdaa196a3166e9cbee11ed737cdc35d740b858293ea72f9f9a778b74265",
+    "note_survival_transformer/predict.py": "be80bf96c33bf729a43494f7f87bc394a4677b708332a82fefa8936cd3f842d8",
+    "note_survival_transformer/risk_sets.py": "27a62856eaaafcb76a49aa49241ad07a5b27edfddc2b3210e1b9ea9032f82d2e",
+    "note_survival_transformer/synthetic_example.py": "cda79c78c1cc6873f7961e2b50693778c6bd4bf58ba4d1dcc1f3ce7999081daf",
+    "note_survival_transformer/train.py": "6c3aa360c5d2f9930ed0941e2f9f097ec68c9b157ae562bfd046c8fb747a7c12",
+    "predict_note_survival_transformer.py": "921377764613c7a5800ecf983be790363166ad252626697b63b02e6fc89e9b53",
+    "search_note_survival_transformer.py": "058b2b349187155c63c205e1415a1743a69e4a6c4e64f14c7051ac7896bb4459",
+    "tests/test_note_survival.py": "315f08e24cac87856de568e1b4ddf79d0574ce53d0ff74950a1e51a85e801567",
+    "train_note_survival_transformer.py": "203feaa6714549d183fc7a54fe35e73b21fecb8b7d9bebafc3c4b0b72d59fecb"
+  },
+  "previous_verification": {
+    "environment": {
+      "lifelines": "0.27.8",
+      "numpy": "1.24.4",
+      "pandas": "1.4.4",
+      "python": "3.9.20",
+      "tested_device": "cpu",
+      "torch": "2.5.0+cu124"
+    },
+    "tests_failed": 0,
+    "tests_passed": 25
+  }
+}

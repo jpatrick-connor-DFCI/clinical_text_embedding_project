@@ -15,7 +15,11 @@ if [ "$#" -gt 0 ]; then
   scripts=()
   for a in "$@"; do scripts+=("R/$(basename "$a")"); done
 else
-  scripts=(R/plot_figure_*.R)
+  scripts=()
+  for script in R/plot_figure_*.R; do
+    # The legacy ICI biomarker figure is outside the four-figure manuscript.
+    [[ "$script" == "R/plot_figure_5.R" ]] || scripts+=("$script")
+  done
 fi
 
 fail=0

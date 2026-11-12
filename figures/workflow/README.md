@@ -1,12 +1,12 @@
 # Manuscript workflow schematic
 
-- `clinical_text_workflow.pdf`: vector artwork with embedded TrueType fonts.
+- `clinical_text_workflow.pdf`: vector artwork with embedded Nimbus Sans fonts.
 - `clinical_text_workflow.svg`: editable vector artwork; labels remain editable text.
 - `clinical_text_workflow.png`: 600-dpi raster artwork.
 - `clinical_text_workflow_preview.png`: lightweight preview.
 - `caption.md`: standalone manuscript legend.
 
-The canvas is 180 × 166.5 mm. The figure is a conceptual schematic, generated without patient data or estimated results. It covers the main manuscript analyses only. A figure number is deliberately left unassigned in the caption.
+The canvas is 180 × 158.55 mm. This is main Figure 1: a conceptual schematic generated without patient data or estimated results. Its embedded panels cover patient representation, endpoint prediction, and the main manuscript analyses (predictive performance and published scores, modality comparisons, and mortality trajectories). The artwork retains the a/b/c panel letters; the figure title and descriptive panel headings belong in the caption.
 
 Regenerate from the repository root with:
 
@@ -14,7 +14,7 @@ Regenerate from the repository root with:
 python3 figures/render_workflow.py
 ```
 
-The renderer requires matplotlib and numpy, and checks that all text stays within the canvas. SVG text uses DejaVu Sans; install that font when editing on another machine or use the PDF for submission. The default output directory is adjacent to the renderer under `figures/workflow/`. Existing manuscript figure renderers are independent of this standalone schematic.
+The renderer requires matplotlib and numpy, and checks that all text stays within the canvas. Text uses Nimbus Sans regular and bold to match the other manuscript figures. `figures/manuscript_fonts.py` resolves the installed font or prepares the local Ghostscript font for Matplotlib. SVG labels remain editable; install Nimbus Sans when editing on another machine or use the PDF with embedded fonts for submission. The default output directory is adjacent to the renderer under `figures/workflow/`. `R/plot_figure_1.R` copies the PNG and vector PDF into the manuscript Figure 1 outputs and creates a captioned review copy. The curated manuscript export presents cohort eligibility, data availability, cancer types, and stage distributions in Supplementary Table 1, with endpoint counts in Supplementary Table 2. The earlier overview figures are excluded from the active export. The older `model_schematic` assets are retained as source artwork but are no longer used in the manuscript figure layout.
 
 ## Method provenance
 

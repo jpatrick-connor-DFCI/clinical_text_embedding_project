@@ -1,5 +1,7 @@
-# Figure 1: a cancer-type pie, b stage counts, c cohort-availability flow,
-# d outcome endpoints. Individual panels and compiled PNG/PDF with panel letters and no plot titles.
+# Figure 1: the complete clinical-text workflow (representation, models, analyses).
+# Supplementary Figure 1: a eligible oncology cohort, b outcome endpoints.
+# Supplementary Figure 21: a cancer-type composition, b stage distribution.
+# Individual panels and compiled PNG/PDF with panel letters and no plot titles.
 
 suppressPackageStartupMessages({
   library(ggplot2); library(patchwork); library(dplyr); library(tidyr)
@@ -25,7 +27,7 @@ stage_label <- function(x) {
 
 
 # ============================================================================
-# fig1c: cumulative cohort flow (cancer-type availability explicit)
+# figS1a: cumulative cohort flow (cancer-type availability explicit)
 # ============================================================================
 build_cohort_flow <- function() {
   d <- load_figure_data("fig0_data_availability.csv")
@@ -36,7 +38,7 @@ build_cohort_flow <- function() {
   if (anyNA(d$stage) || anyDuplicated(d$stage) ||
       any(!is.finite(d$n_patients)) || any(d$n_patients < 0) ||
       any(diff(d$n_patients) > 0)) {
-    stop("Figure 1c requires unique, ordered cumulative cohort counts")
+    stop("Supplementary Figure 1a requires unique, ordered cumulative cohort counts")
   }
   # Keep named eligibility steps even when no patients are lost. Only collapse
   # the last modality if it duplicates the explicitly named final cohort.
@@ -68,7 +70,7 @@ build_cohort_flow <- function() {
 
 
 # ============================================================================
-# fig1d: endpoint counts per scheme
+# figS1b: endpoint counts per scheme
 # ============================================================================
 # Counts per scheme, recounted from the per-event full-cohort metrics after the
 # same exclusion the rest of the manuscript applies. fig1_endpoint_counts.csv is
@@ -83,7 +85,7 @@ build_cohort_flow <- function() {
 trimmed_endpoint_counts <- function() {
   m <- load_figure_data("fig2_full_cohort_metrics.csv")
   if (nrow(m) == 0 || !all(c("scheme", "event") %in% names(m))) {
-    message("[fig1d] fig2_full_cohort_metrics.csv unusable (absent, empty, or no ",
+    message("[figS1b] fig2_full_cohort_metrics.csv unusable (absent, empty, or no ",
             "scheme/event columns) -- cannot trim")
     return(tibble::tibble())
   }
@@ -92,7 +94,7 @@ trimmed_endpoint_counts <- function() {
   # untrimmed counts, so say so rather than looking like a successful trim.
   needed <- paste0(c("base_", "text_"), metric_suffix(METRIC))
   if (!all(needed %in% names(m))) {
-    message(sprintf("[fig1d] fig2_full_cohort_metrics.csv lacks %s -- cannot trim on %s",
+    message(sprintf("[figS1b] fig2_full_cohort_metrics.csv lacks %s -- cannot trim on %s",
                     paste(setdiff(needed, names(m)), collapse = "/"), metric_label(METRIC)))
     return(tibble::tibble())
   }
@@ -102,7 +104,7 @@ trimmed_endpoint_counts <- function() {
   out <- m %>%
     distinct(scheme, event) %>%
     count(scheme, name = "n_endpoints")
-  message(sprintf("[fig1d] endpoints trimmed on %s: %d -> %d",
+  message(sprintf("[figS1b] endpoints trimmed on %s: %d -> %d",
                   metric_label(METRIC), n_before, sum(out$n_endpoints)))
   out
 }
@@ -113,7 +115,7 @@ build_endpoint_counts <- function() {
   if (nrow(d) == 0) {
     # Fallback: no per-event metrics available, so report the untrimmed counts
     # rather than blanking the panel.
-    message("[fig1d] FALLING BACK to untrimmed fig1_endpoint_counts.csv")
+    message("[figS1b] FALLING BACK to untrimmed fig1_endpoint_counts.csv")
     d <- load_figure_data("fig1_endpoint_counts.csv")
   }
   if (nrow(d) == 0) return(placeholder_panel("fig1_endpoint_counts.csv empty"))
@@ -135,14 +137,65 @@ build_endpoint_counts <- function() {
     theme(panel.grid.major.y = element_line(color = "grey90"),
           axis.text.x = element_text(hjust = 0.5, size = 9, face = "plain"))
   if (untrimmed) attr(p, "caption_detail") <- paste(
-    "Panel d uses unfiltered aggregate endpoint counts because per-endpoint",
+    "Panel b uses unfiltered aggregate endpoint counts because per-endpoint",
     "results were unavailable; the endpoint filter was not applied to this panel.")
   p
 }
 
 
 # ============================================================================
-# fig1a: cancer-type pie of cohort composition
+# fig1: full clinical-text workflow, rendered without patient data
+# ============================================================================
+build_clinical_text_workflow <- function() {
+  path <- file.path(REPO_ROOT, "figures", "workflow", "clinical_text_workflow.png")
+  if (!file.exists(path)) {
+    return(placeholder_panel("figures/workflow/clinical_text_workflow.png unavailable"))
+  }
+  if (!requireNamespace("png", quietly = TRUE)) {
+    return(placeholder_panel("R package 'png' is required for the workflow review copy"))
+  }
+  art <- png::readPNG(path)
+  # The full workflow already contains its own a/b/c labels. Preserve its native
+  # aspect ratio and do not wrap it in the compiled-figure panel-label machinery.
+  ggplot() +
+    annotation_custom(grid::rasterGrob(art, interpolate = FALSE),
+                      xmin = 0, xmax = 1, ymin = 0, ymax = 1) +
+    scale_x_continuous(limits = c(0, 1), expand = c(0, 0)) +
+    scale_y_continuous(limits = c(0, 1), expand = c(0, 0)) +
+    coord_fixed(ratio = dim(art)[1] / dim(art)[2], expand = FALSE) +
+    theme_void() + theme(plot.margin = margin(0, 0, 0, 0))
+}
+
+save_clinical_text_workflow <- function() {
+  name <- paste0("figure1", metric_tag())
+  workflow_dir <- file.path(REPO_ROOT, "figures", "workflow")
+  sources <- file.path(workflow_dir, paste0("clinical_text_workflow.", c("png", "pdf")))
+  if (!all(file.exists(sources))) {
+    stop("Full workflow artwork is missing; run python3 figures/render_workflow.py")
+  }
+  dirs <- c(file.path(PNG_OUT_DIR, "figure1"), file.path(PDF_OUT_DIR, "figure1"))
+  for (dir in dirs) dir.create(dir, showWarnings = FALSE, recursive = TRUE)
+  outputs <- file.path(dirs, paste0(name, c(".png", ".pdf")))
+  # Keep the submission PDF vector-based and retain the original 600-dpi PNG.
+  if (!all(file.copy(sources, outputs, overwrite = TRUE))) {
+    stop("Could not export the full clinical-text workflow")
+  }
+  message(sprintf("[figure1] %s / %s", outputs[1], outputs[2]))
+  review <- build_clinical_text_workflow()
+  if (!is_skipped_panel(review)) {
+    save_captioned_figure(review, figure_caption(1, list(a = review)), name,
+                          "figure1", width = 180 / 25.4, height = 166.5 / 25.4)
+  } else {
+    unlink(c(file.path(dirs, paste0(name, "_captioned", c(".png", ".pdf"))),
+             file.path(FIGURE_OUT_DIR, "captions", paste0("figure1.", c("md", "txt")))))
+    message("[figure1] Captioned review unavailable: ", skip_reason(review))
+  }
+  invisible(outputs)
+}
+
+
+# ============================================================================
+# figS21a: cancer-type pie of cohort composition
 # ============================================================================
 build_cancer_pie <- function() {
   d <- load_figure_data("fig1_cancer_type_counts.csv")
@@ -182,7 +235,7 @@ build_cancer_pie <- function() {
 
 
 # ============================================================================
-# fig1b: cancer stage breakdown (with stage label fix: 2.0 -> Stage II)
+# figS21b: cancer stage breakdown (with stage label fix: 2.0 -> Stage II)
 # ============================================================================
 build_stage_counts <- function() {
   d <- load_figure_data("fig1_stage_counts.csv")
@@ -208,19 +261,31 @@ build_stage_counts <- function() {
 # ============================================================================
 # Compose
 # ============================================================================
-retire_main_panels(1, letters[1:4])
+retire_main_panels(1, character())
 
-p1a <- build_cancer_pie()
-p1b <- build_stage_counts()
-p1c <- build_cohort_flow()
-p1d <- build_endpoint_counts()
+pS21a <- build_cancer_pie()
+pS21b <- build_stage_counts()
+pS1a <- build_cohort_flow()
+pS1b <- build_endpoint_counts()
 
 .tag <- metric_tag()
-save_panel(p1a, paste0("fig1a", .tag), group = "figure1", width = 3.5, height = 3.2, dpi = 600)
-save_panel(p1b, paste0("fig1b", .tag), group = "figure1", width = 3.5, height = 3.2, dpi = 600)
-save_panel(p1c, paste0("fig1c", .tag), group = "figure1", width = 3.5, height = 3.2, dpi = 600)
-save_panel(p1d, paste0("fig1d", .tag), group = "figure1", width = 3.5, height = 3.2, dpi = 600)
+save_clinical_text_workflow()
+save_panel(pS21a, paste0("figS21a_cancer_types", .tag), group = "figureS21",
+           width = 5, height = 4.5, dpi = 600)
+save_panel(pS21b, paste0("figS21b_stage_counts", .tag), group = "figureS21",
+           width = 5, height = 4.5, dpi = 600)
 save_compiled_figure(
-  list(a = p1a, b = p1b, c = p1c, d = p1d),
-  number = 1, width = COMPILED_FIGURE_WIDTH, height = COMPILED_FIGURE_HEIGHT
+  list(a = pS21a, b = pS21b), number = "S21",
+  # Retain the original five-inch cohort panels: the pie's percentage labels
+  # collide when the same legend is rendered in a 3.5-inch-wide panel.
+  width = 10, height = 4.5, name = paste0("figS21_cohort_composition", .tag)
+)
+
+save_panel(pS1a, paste0("figS1a_cohort_flow", .tag), group = "figureS1",
+           width = 3.5, height = 4.5, dpi = 600)
+save_panel(pS1b, paste0("figS1b_endpoint_counts", .tag), group = "figureS1",
+           width = 3.5, height = 4.5, dpi = 600)
+save_compiled_figure(
+  list(a = pS1a, b = pS1b), number = "S1",
+  width = 7.1, height = 4.5, name = paste0("figS1_cohort_endpoints", .tag)
 )

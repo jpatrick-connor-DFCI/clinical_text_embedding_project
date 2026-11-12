@@ -40,6 +40,9 @@ def test_render_once_with_cindex_despite_inherited_auc(tmp_path, selected):
     )
 
     calls = [json.loads(line) for line in log.read_text().splitlines()]
-    expected = selected or sorted(p.name for p in (repo / "R").glob("plot_figure_*.R"))
+    expected = selected or sorted(
+        p.name for p in (repo / "R").glob("plot_figure_*.R")
+        if p.name != "plot_figure_5.R"
+    )
     assert calls == [[f"R/{script}", "cindex", "cindex"] for script in expected]
     assert str(repo / "R/render_all_figures.sh") in result.stdout

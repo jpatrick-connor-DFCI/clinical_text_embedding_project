@@ -12,67 +12,7 @@ suppressPackageStartupMessages({ library(ggplot2); library(patchwork); library(d
 source("/data/gusev/USERS/jpconnor/code/clinical_text_embedding_project/R/figure_utils.R")
 source(file.path(REPO_ROOT, "R", "within_cancer_utils.R"))
 
-PS_GROUP <- "published_scores"
-PS_ANCHOR <- "treatment"
-PS_LAB_WINDOW <- 30L
-PS_MODELS <- c("published", "text", "published+text")
-PS_MODEL_LABELS <- c(published = "Published score", text = "Text",
-                     "published+text" = "Published + text")
-PS_MODEL_COLORS <- c(published = MODEL_COLORS[["published"]], text = MODEL_COLORS[["text"]],
-                     "published+text" = MODEL_COLORS[["published+text"]])
-PS_CONTRAST_LABELS <- c(
-  "published+text vs. published" = "published+text vs. published",
-  "published+text vs. text" = "published+text vs. text",
-  "text vs. published" = "text vs. published"
-)
-PS_SCORES <- c(mgps = "mGPS", rmh = "RMH", lipi = "LIPI", albi = "ALBI", meld = "MELD",
-               capra_mod = "CAPRA", ipi = "IPI", ipi_noecog = "IPI (ECOG-free)",
-               imdc = "IMDC", imdc_noecog = "IMDC (ECOG-free)",
-               mskcc = "MSKCC", mskcc_noecog = "MSKCC (ECOG-free)",
-               ecog_only = "ECOG", kps_only = "KPS")
-PS_MIN_PATIENTS <- 50L
-PS_SOURCES <- c(calculated = "calculated", regex = "notes (regex)")
-PS_COUNT_LEVELS <- c(n_eligible = "Eligible", n_complete = "Scored",
-                     n_patients = "Evaluated", n_events = "Deaths")
-
-ps_contrast_label <- function(model, reference) paste(model, "vs.", reference)
-
-# Restrict to the primary anchor/window and the whole-population stratum (the
-# only one the prep emits); tables from before the regex source existed have
-# no `source` column and are all calculated.
-ps_primary <- function(d) {
-  if (!nrow(d)) return(d)
-  if (!"source" %in% names(d)) d$source <- "calculated"
-  d <- filter(d, anchor == PS_ANCHOR, lab_window_days == PS_LAB_WINDOW)
-  if ("stratum" %in% names(d)) d <- filter(d, stratum == "all")
-  d
-}
-
-# One row per (score, source) with at least PS_MIN_PATIENTS evaluated, in
-# catalog then source order; `row` is the y-axis label shared by every panel,
-# so this is the single place that decides which scores are shown.
-ps_rows <- function(cohort) {
-  d <- ps_primary(cohort)
-  if (!nrow(d)) return(tibble::tibble(score = character(), source = character(), row = character()))
-  d %>%
-    filter(score %in% names(PS_SCORES), source %in% names(PS_SOURCES),
-           !is.na(n_patients), n_patients >= PS_MIN_PATIENTS) %>%
-    mutate(
-      n_label = ifelse(is.na(n_patients), "n = NA",
-                       sprintf("n = %s, %s deaths", scales::comma(n_patients),
-                               scales::comma(n_events))),
-      row = sprintf("%s, %s\n%s", PS_SCORES[score], PS_SOURCES[source], n_label),
-      order = match(score, names(PS_SCORES)) * 10 + match(source, names(PS_SOURCES))
-    ) %>%
-    arrange(order) %>%
-    select(score, source, row, n_patients, n_events, n_eligible, n_complete)
-}
-
-# Join the shared row labels; top-to-bottom in catalog order.
-ps_attach_rows <- function(d, rows) {
-  d <- inner_join(d, select(rows, score, source, row), by = c("score", "source"))
-  mutate(d, row = factor(row, levels = rev(rows$row)))
-}
+source(file.path(REPO_ROOT, "R", "published_score_utils.R"))
 
 build_published_n <- function(rows) {
   d <- rows %>% filter(!is.na(n_eligible))
@@ -94,23 +34,6 @@ build_published_n <- function(rows) {
                       name = NULL, drop = FALSE) +
     scale_x_log10(labels = scales::label_comma()) +
     labs(x = "Patients (log scale)", y = NULL, title = "Patients evaluated with each score") +
-    theme_combined() +
-    theme(legend.position = "bottom")
-}
-
-build_published_cindex <- function(cindex, rows) {
-  d <- ps_primary(cindex) %>% filter(status == "ok", is.finite(cindex))
-  if (!nrow(d)) return(placeholder_panel("no published-score C-index results"))
-  d <- ps_attach_rows(d, rows) %>% mutate(model = factor(model, levels = PS_MODELS))
-  if (!nrow(d)) return(placeholder_panel("no published-score C-index results"))
-  ggplot(d, aes(x = cindex, y = row, color = model)) +
-    geom_vline(xintercept = 0.5, color = "grey70", linetype = "dashed") +
-    geom_linerange(aes(xmin = ci_lower, xmax = ci_upper), position = position_dodge(width = 0.6),
-                   linewidth = 0.6) +
-    geom_point(position = position_dodge(width = 0.6), size = 2.2) +
-    scale_color_manual(values = PS_MODEL_COLORS, labels = PS_MODEL_LABELS, name = NULL) +
-    labs(x = "Overall survival C-index", y = NULL,
-         title = "Published score, text, and both combined") +
     theme_combined() +
     theme(legend.position = "bottom")
 }

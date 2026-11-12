@@ -14,19 +14,23 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle, FancyBboxPatch, FancyArrowPatch, Circle
 from matplotlib.colors import to_rgb
 import numpy as np
+from manuscript_fonts import configure_manuscript_font
 
 OUT = Path(__file__).resolve().parent / "workflow"
 W, H = 1200, 1110
+# Trim the former figure-title band; descriptive headings live in the caption.
+TOP = 53
 S = (180 / 25.4 * 72) / W
 C = dict(ink="#243448", muted="#617083", line="#D8E0E7", pale="#F5F8FA",
          clinical="#267DAB", imaging="#269388", pathology="#9370AE",
          red="#D62728", gold="#C59137", blue="#427BB0")
 TYPES = [C["clinical"], C["imaging"], C["pathology"]]
-plt.rcParams.update({"font.family": "DejaVu Sans", "svg.fonttype": "none",
+configure_manuscript_font()
+plt.rcParams.update({"svg.fonttype": "none",
                      "pdf.fonttype": 42, "ps.fonttype": 42,
                      "axes.unicode_minus": False})
-fig = plt.figure(figsize=(180 / 25.4, 180 / 25.4 * H / W), facecolor="white")
-ax = fig.add_axes([0, 0, 1, 1], xlim=(0, W), ylim=(H, 0))
+fig = plt.figure(figsize=(180 / 25.4, 180 / 25.4 * (H - TOP) / W), facecolor="white")
+ax = fig.add_axes([0, 0, 1, 1], xlim=(0, W), ylim=(H, TOP))
 ax.set_axis_off()
 texts = []
 
@@ -61,9 +65,8 @@ def arrow(x1, y1, x2, y2, color=None, lw=1.6, **kwargs):
                                 **kwargs))
 
 
-def section(letter, title, y):
+def section(letter, y):
     txt(30, y, letter, 25, weight="bold")
-    txt(59, y, title, 21, weight="bold")
 
 
 def vector(x, y, w, h, color, n=12, phase=0):
@@ -83,8 +86,7 @@ def document(x, y, color, label):
 
 
 # a: note-level encoding and patient-level pooling.
-txt(30, 32, "From clinical narratives to outcome prediction", 27, weight="bold")
-section("a", "Construct a patient representation from pretreatment notes", 85)
+section("a", 85)
 for x, num, title in [(30, "1", "Unstructured notes"), (302, "2", "Encode each note"),
                       (590, "3", "Pool within note type"), (926, "4", "Concatenate")]:
     txt(x, 134, num, 16, color=C["muted"], weight="bold")
@@ -147,7 +149,7 @@ txt(581, 499, "First treatment", 15, weight="bold")
 txt(941, 467, "Outcome follow-up", 15, color=C["muted"], ha="center")
 
 # b: one patient representation is reused across separate endpoint models.
-section("b", "Predict time to each clinical endpoint", 556)
+section("b", 556)
 box(30, 592, 253, 161, fill=C["pale"])
 txt(48, 616, "Patient-level inputs", 18, weight="bold")
 for k, color in enumerate(TYPES):
@@ -185,7 +187,7 @@ txt(30, 782, "Time-to-event labels include censoring; patient splits separate mo
 line(30, 805, 1166, 805)
 
 # c: main manuscript analysis families, illustrated without implying results.
-section("c", "Main manuscript analyses", 842)
+section("c", 842)
 CARD_Y, CARD_H = 876, 191
 for x in [30, 416, 802]:
     box(x, CARD_Y, 364, CARD_H, fill="white", radius=7)
@@ -195,7 +197,7 @@ txt(48, 902, "Predictive performance", 18, weight="bold")
 txt(434, 902, "Complementary information", 18, weight="bold")
 txt(820, 902, "Longitudinal risk", 18, weight="bold")
 
-# Conceptual C-index scatter and survival curves.
+# Conceptual C-index scatter and published-score comparisons.
 x, y = 60, 925
 line(x, y+66, x+96, y+66, C["muted"])
 line(x, y+66, x, y+3, C["muted"])
@@ -206,13 +208,14 @@ txt(107, 1006, "C-index", 14, color=C["muted"], ha="center")
 x, y = 220, 929
 line(x, y+62, x+139, y+62, C["muted"])
 line(x, y+62, x, y, C["muted"])
-for vals, color in [([0, 6, 9, 16, 20, 23, 27], C["blue"]),
-                    ([0, 12, 22, 35, 43, 49, 55], C["red"])]:
-    ax.step(x+np.array([0, 18, 38, 60, 83, 107, 132]), y+np.array(vals),
-            where="post", color=color, lw=1.6*S)
-txt(290, 1006, "Survival", 14, color=C["muted"], ha="center")
-txt(48, 1031, "Text vs. base; stage / risk stratification", 15.5)
-txt(48, 1052, "Pan-cancer and within-cancer evaluation", 15.5, color=C["muted"])
+for px, py, color, label in [(25, 39, C["blue"], "Score"),
+                             (70, 27, C["red"], "Text"),
+                             (115, 19, C["imaging"], "Both")]:
+    line(x+px, y+py-9, x+px, y+py+9, color, 1.8)
+    ax.add_patch(Circle((x+px, y+py), 3.8, facecolor=color, edgecolor="none"))
+    txt(x+px, 1006, label, 13, color=C["muted"], ha="center")
+txt(48, 1031, "Text vs. base across clinical endpoints", 15.5)
+txt(48, 1052, "Published score, text and combined", 15.5, color=C["muted"])
 
 # Conceptual modality comparisons; colors match shared/palette.json.
 mods = [("Stage", "#8C8C8C"), ("Treatment", "#E8B72E"), ("Somatic", "#60BD68"),
@@ -257,6 +260,10 @@ for t in texts:
         raise RuntimeError(f"Text outside canvas: {t.get_text()}")
 for ext in ("svg", "pdf"):
     fig.savefig(OUT / f"clinical_text_workflow.{ext}", facecolor="white")
+# Matplotlib inserts spaces before SVG path line breaks; keep generated source
+# compatible with the repository's whitespace checks.
+svg_path = OUT / "clinical_text_workflow.svg"
+svg_path.write_text("\n".join(line.rstrip() for line in svg_path.read_text().splitlines()) + "\n")
 fig.savefig(OUT / "clinical_text_workflow.png", dpi=600, facecolor="white")
 fig.savefig(OUT / "clinical_text_workflow_preview.png", dpi=180, facecolor="white")
 plt.close(fig)

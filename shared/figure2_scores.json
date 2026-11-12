@@ -1,0 +1,14 @@
+{
+  "scores": {
+    "mgps": "mGPS",
+    "rmh": "RMH",
+    "lipi": "LIPI",
+    "albi": "ALBI",
+    "meld": "MELD",
+    "ipi": "IPI",
+    "imdc": "IMDC (with ECOG)",
+    "mskcc": "MSKCC (with ECOG)",
+    "ecog_only": "ECOG",
+    "kps_only": "KPS"
+  }
+}

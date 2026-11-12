@@ -1,11 +1,14 @@
-"""Pre-compute inputs for Figure 1 (cohort & embedding overview).
+"""Pre-compute cohort inputs for Supplementary Figures 1 and 21.
+
+Main Figure 1 is the data-free full clinical-text workflow. Historical ``fig1_``
+CSV names remain stable so existing prepared data can regenerate the supplements.
 
 Writes to FIGURE_DATA_DIR:
-- fig1_endpoint_counts.csv        scheme → n_endpoints
+- fig1_endpoint_counts.csv        scheme → n_endpoints (Supplementary Figure 1b)
 - fig1_cancer_type_counts.csv     category, n   (top-10 raw cancer types + pooled "Other";
                                   restricted to the exact cancer-type + text cohort shown
-                                  in the Figure 1 flowchart)
-- fig1_stage_counts.csv           category, n
+                                  in the Supplementary Figure 1a flowchart)
+- fig1_stage_counts.csv           category, n (Supplementary Figure 21b)
 """
 
 from __future__ import annotations
@@ -110,7 +113,7 @@ def main() -> None:
 
     eligible_mrns = set(eligible_df["DFCI_MRN"].to_list())
     availability = modality_mrn_sets(eligible_mrns)
-    # This is deliberately the same cumulative intersection as Figure 0/1c:
+    # This is deliberately the same cumulative intersection as Supplementary Figure 1a:
     # eligible -> cancer type -> text. Do not substitute an event-specific
     # embedding-prediction dataframe, which has additional downstream exclusions.
     cohort_mrns = availability["cancer_type"] & availability["text"]
@@ -123,7 +126,7 @@ def main() -> None:
             f"Cancer-type pie denominator ({pie_n}) does not equal the flowchart "
             f"cancer-type + text denominator ({len(cohort_mrns)})"
         )
-    print(f"  Figure 1 denominator check passed: cancer type + text N={pie_n:,}")
+    print(f"  Supplementary Figure 21 denominator check passed: cancer type + text N={pie_n:,}")
     save_figure_data(cancer_counts, "fig1_cancer_type_counts.csv")
     save_figure_data(_stage_counts_from_pickle(cohort_mrns), "fig1_stage_counts.csv")
 

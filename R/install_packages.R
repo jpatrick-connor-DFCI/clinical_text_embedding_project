@@ -17,7 +17,7 @@ required <- c(
   # Correlation heatmap (Fig 3B)
   "ggcorrplot",
   # Fig 1A schematic + Fig 5A inset
-  "cowplot", "viridisLite",
+  "cowplot", "viridisLite", "png",
   # Top-Delta labels in Fig 2A
   "ggrepel",
   # shared/palette.json loader (figure_utils.R)

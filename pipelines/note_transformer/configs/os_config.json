@@ -1,0 +1,32 @@
+{
+  "d_model": 64,
+  "n_heads": 2,
+  "n_layers": 2,
+  "dim_ff": 128,
+  "dropout": 0.1,
+  "max_notes": 128,
+  "time_scale_days": 180.0,
+  "landmark_scale_days": 180.0,
+  "gap_cap_days": 1096.0,
+  "landmarks": [
+    0,
+    90,
+    180,
+    365
+  ],
+  "num_epochs": 30,
+  "min_epochs": 1,
+  "patience": 6,
+  "min_delta": 0.0001,
+  "lr": 0.0003,
+  "weight_decay": 0.0001,
+  "batch_size": 8,
+  "risk_set_max_controls": 32,
+  "use_ipw": false,
+  "max_grad_norm": 1.0,
+  "scheduler": "cosine",
+  "eval_batch_size": 32,
+  "seed": 42,
+  "device": "cpu",
+  "num_threads": 1
+}

@@ -15,10 +15,11 @@
 #
 # The main figures contain exactly these panels, in letter order:
 #
-#  - Figure 1 (a-d): cancer-type pie, stage barplot, cohort availability flowchart,
-#    outcome endpoints.
-#  - Figure 2 (a-d): base-versus-text C-index scatter, delta violin, stage KM,
-#    text-risk quartile KM.
+#  - Figure 1 (a-c): full clinical-text workflow: patient representation, endpoint
+#    prediction, and main analyses. Cancer type and stage move to Supplementary 21;
+#    cohort availability and endpoint counts remain in Supplementary 1.
+#  - Figure 2 (a-e): base-versus-text C-index scatter, delta violin, published-score
+#    versus text versus combined C-index, stage KM, text-risk quartile KM.
 #  - Figure 3 (a-c): modality rank, significant endpoint barplot, joint Cox violins.
 #  - Figure 4 (a-d): risk-score heatmap, KM by risk trajectory, risk-dynamics
 #    composition by stage, stage I-II rising-risk versus stage IV falling-risk KM.
@@ -58,7 +59,7 @@
 # differences across endpoints (figS3_combined_models), and per-endpoint C-index
 # scatters as in Figure 2a on two slide-sized pages (figS3_combined_scatter_modality_text,
 # figS3_combined_scatter_all_text), in the figure3 group.
-# plot_figure_2_supp_cancer_km.R renders Figure 2c/d within each selected cancer
+# plot_figure_2_supp_cancer_km.R renders Figure 2d/e within each selected cancer
 # type (figures.prep.within_cancer_km): KM grids by stage
 # (figS2_within_cancer_km_stage) and by within-cancer text risk quartile
 # (figS2_within_cancer_km_risk) in the figure2 group.
@@ -78,8 +79,9 @@
 # sequencing-anchor and 90-day-window sensitivity runs are in the report table only.
 # Supplemental caption wording is documented in figures/figure_captions.md.
 #
-# Compiled Figures 1, 2, and 4 render at 10 x 9 inches; Figure 3 renders at
-# 10 x 8.2 inches, with 600-dpi PNGs and vector PDFs. Compiled artwork retains panel
+# Figure 1 preserves the full workflow artwork; Figure 2 adds a full-width score
+# panel between two paired rows. Figure 3 is 10 x 8.2 inches and Figure 4 is 10 x 9
+# inches. Exports include 600-dpi PNGs and vector PDFs. Compiled artwork retains panel
 # letters and omits individual plot titles; KM curves have no number-at-risk tables.
 # Captions identify panels by letter. Each compiled figure also gets a _captioned PNG/PDF review copy;
 # standalone legends are written to $CLINICAL_FIGURES_OUT/captions/. Base wording
@@ -133,7 +135,6 @@ SCRIPTS <- c(
   "plot_figure_3_supp_combined.R",
   "plot_figure_4.R",
   "plot_figure_4_supp.R",
-  "plot_figure_5.R",
   "plot_figure_os_within_cancer.R",
   "plot_figure_published_scores.R"
 )
